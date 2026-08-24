@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Task Manager — Design Tokens</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   TASK MANAGER TOKENS  ·  prefix --tm-  (matches tm_ tables)
+   Every value on this page is drawn from these variables.
+   ============================================================ */
+
+:root {
+  /* ---- primitives: graphite ramp ---- */
+  --tm-gray-0:  #fafafa;
+  --tm-gray-1:  #f1f2f4;
+  --tm-gray-2:  #e3e5e8;
+  --tm-gray-3:  #c9ccd1;
+  --tm-gray-4:  #9aa0a6;
+  --tm-gray-5:  #6b7178;
+  --tm-gray-6:  #464b52;
+  --tm-gray-7:  #2c3036;
+  --tm-gray-8:  #1d2024;
+  --tm-gray-9:  #141619;
+  --tm-gray-10: #0c0e10;
+
+  /* ---- primitives: phosphor accent ---- */
+  --tm-teal-3: #7ff0dc;
+  --tm-teal-5: #2dd4bf;
+  --tm-teal-6: #14b8a6;
+  --tm-teal-7: #0d9488;
+  --tm-teal-9: #0f3d38;
+
+  /* ---- primitives: status hues ---- */
+  --tm-amber-5:  #f5b83d;
+  --tm-amber-7:  #b7791f;
+  --tm-green-5:  #4ade80;
+  --tm-green-7:  #15803d;
+  --tm-red-5:    #f4645f;
+  --tm-red-7:    #b91c1c;
+  --tm-violet-5: #a78bfa;
+  --tm-violet-7: #6d28d9;
+
+  /* ---- type ---- */
+  --tm-font-display: "Bricolage Grotesque", system-ui, sans-serif;
+  --tm-font-body: "Inter", system-ui, sans-serif;
+  --tm-font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --tm-text-xs:  0.75rem;
+  --tm-text-sm:  0.8125rem;
+  --tm-text-md:  0.9375rem;
+  --tm-text-lg:  1.125rem;
+  --tm-text-xl:  1.5rem;
+  --tm-text-2xl: 2.125rem;
+  --tm-text-3xl: 3.25rem;
+
+  /* ---- space (4px base) ---- */
+  --tm-space-1: 4px;
+  --tm-space-2: 8px;
+  --tm-space-3: 12px;
+  --tm-space-4: 16px;
+  --tm-space-5: 24px;
+  --tm-space-6: 32px;
+  --tm-space-7: 48px;
+  --tm-space-8: 64px;
+  --tm-space-9: 96px;
+
+  /* ---- radius ---- */
+  --tm-radius-sm: 4px;
+  --tm-radius-md: 8px;
+  --tm-radius-lg: 12px;
+  --tm-radius-pill: 999px;
+
+  /* ---- motion ---- */
+  --tm-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --tm-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --tm-dur-fast: 120ms;
+  --tm-dur-base: 200ms;
+  --tm-dur-slow: 380ms;
+}
+
+/* ---- semantic: dark (default — this is a terminal tool) ---- */
+[data-theme="dark"] {
+  --tm-bg: var(--tm-gray-10);
+  --tm-bg-raised: var(--tm-gray-9);
+  --tm-bg-overlay: var(--tm-gray-8);
+  --tm-bg-inset: #08090b;
+  --tm-border: var(--tm-gray-7);
+  --tm-border-strong: var(--tm-gray-6);
+  --tm-text: var(--tm-gray-1);
+  --tm-text-muted: var(--tm-gray-4);
+  --tm-text-faint: var(--tm-gray-5);
+  --tm-accent: var(--tm-teal-5);
+  --tm-accent-strong: var(--tm-teal-6);
+  --tm-accent-subtle: var(--tm-teal-9);
+  --tm-accent-contrast: #06251f;
+  --tm-status-queued: var(--tm-gray-4);
+  --tm-status-running: var(--tm-teal-5);
+  --tm-status-review: var(--tm-amber-5);
+  --tm-status-done: var(--tm-green-5);
+  --tm-status-failed: var(--tm-red-5);
+  --tm-status-attention: var(--tm-violet-5);
+  --tm-shadow-sm: 0 1px 2px rgba(0,0,0,.5);
+  --tm-shadow-md: 0 4px 16px rgba(0,0,0,.45);
+  --tm-shadow-lg: 0 12px 40px rgba(0,0,0,.55);
+  --tm-terminal-bg: #0a0c0e;
+  --tm-terminal-text: #d2f5ec;
+}
+
+/* ---- semantic: light ---- */
+[data-theme="light"] {
+  --tm-bg: var(--tm-gray-0);
+  --tm-bg-raised: #ffffff;
+  --tm-bg-overlay: #ffffff;
+  --tm-bg-inset: var(--tm-gray-1);
+  --tm-border: var(--tm-gray-2);
+  --tm-border-strong: var(--tm-gray-3);
+  --tm-text: var(--tm-gray-9);
+  --tm-text-muted: var(--tm-gray-5);
+  --tm-text-faint: var(--tm-gray-4);
+  --tm-accent: var(--tm-teal-7);
+  --tm-accent-strong: var(--tm-teal-6);
+  --tm-accent-subtle: #d9f5ef;
+  --tm-accent-contrast: #ffffff;
+  --tm-status-queued: var(--tm-gray-5);
+  --tm-status-running: var(--tm-teal-7);
+  --tm-status-review: var(--tm-amber-7);
+  --tm-status-done: var(--tm-green-7);
+  --tm-status-failed: var(--tm-red-7);
+  --tm-status-attention: var(--tm-violet-7);
+  --tm-shadow-sm: 0 1px 2px rgba(20,22,25,.07);
+  --tm-shadow-md: 0 4px 16px rgba(20,22,25,.09);
+  --tm-shadow-lg: 0 12px 40px rgba(20,22,25,.14);
+  --tm-terminal-bg: var(--tm-gray-10);
+  --tm-terminal-text: #d2f5ec;
+}
+
+/* ============================================================ */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--tm-font-body);
+  font-size: var(--tm-text-md);
+  line-height: 1.6;
+  background: var(--tm-bg);
+  color: var(--tm-text);
+  transition: background var(--tm-dur-slow) var(--tm-ease-in-out), color var(--tm-dur-slow) var(--tm-ease-in-out);
+}
+
+::selection { background: var(--tm-accent); color: var(--tm-accent-contrast); }
+
+a { color: var(--tm-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+:focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: 2px;
+  border-radius: var(--tm-radius-sm);
+}
+
+/* ---------- layout ---------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 var(--tm-space-5);
+  gap: var(--tm-space-8);
+}
+
+.sidenav {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100dvh;
+  padding: var(--tm-space-7) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-6);
+}
+
+.brand {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-sm);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.brand .tm { color: var(--tm-accent); }
+.brand .sub {
+  display: block;
+  margin-top: 2px;
+  font-weight: 400;
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-xs);
+}
+
+.sidenav nav { display: flex; flex-direction: column; gap: 2px; }
+.sidenav nav a {
+  font-size: var(--tm-text-sm);
+  color: var(--tm-text-muted);
+  padding: 6px 10px;
+  border-radius: var(--tm-radius-sm);
+  border-left: 2px solid transparent;
+  transition: color var(--tm-dur-fast) var(--tm-ease-out), background var(--tm-dur-fast) var(--tm-ease-out);
+}
+.sidenav nav a:hover {
+  color: var(--tm-text);
+  background: var(--tm-bg-raised);
+  text-decoration: none;
+}
+
+.theme-toggle {
+  margin-top: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+  background: var(--tm-bg-raised);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-pill);
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: border-color var(--tm-dur-fast) var(--tm-ease-out), color var(--tm-dur-fast) var(--tm-ease-out);
+}
+.theme-toggle:hover { border-color: var(--tm-accent); color: var(--tm-text); }
+.theme-toggle .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--tm-accent);
+}
+
+main { padding: var(--tm-space-7) 0 var(--tm-space-9); }
+
+/* ---------- hero ---------- */
+
+.hero { margin-bottom: var(--tm-space-9); }
+
+.eyebrow {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tm-accent);
+  margin-bottom: var(--tm-space-3);
+}
+
+h1 {
+  font-family: var(--tm-font-display);
+  font-size: var(--tm-text-3xl);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  margin-bottom: var(--tm-space-4);
+  max-width: 14ch;
+}
+
+.hero p.lede {
+  color: var(--tm-text-muted);
+  max-width: 52ch;
+  margin-bottom: var(--tm-space-6);
+}
+.hero p.lede code {
+  font-family: var(--tm-font-mono);
+  font-size: 0.875em;
+  color: var(--tm-text);
+  background: var(--tm-bg-raised);
+  border: 1px solid var(--tm-border);
+  padding: 1px 5px;
+  border-radius: var(--tm-radius-sm);
+}
+
+/* the signature: a run terminal whose readout IS the token sheet */
+.terminal {
+  background: var(--tm-terminal-bg);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-lg);
+  box-shadow: var(--tm-shadow-lg);
+  overflow: hidden;
+}
+.terminal-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  padding: 10px var(--tm-space-4);
+  border-bottom: 1px solid var(--tm-border);
+  background: color-mix(in srgb, var(--tm-terminal-bg) 60%, var(--tm-gray-8));
+}
+.terminal-bar .traffic { display: flex; gap: 6px; }
+.terminal-bar .traffic span {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--tm-gray-6);
+}
+.terminal-bar .title {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-gray-4);
+}
+.terminal-bar .live {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-status-running);
+}
+.terminal-bar .live::before {
+  content: "";
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--tm-status-running);
+  animation: pulse 1.6s var(--tm-ease-in-out) infinite;
+}
+.terminal pre {
+  padding: var(--tm-space-5);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-sm);
+  line-height: 1.7;
+  color: var(--tm-terminal-text);
+  overflow-x: auto;
+}
+.terminal pre .c  { color: var(--tm-gray-5); }
+.terminal pre .k  { color: var(--tm-teal-3); }
+.terminal pre .v  { color: var(--tm-gray-2); }
+.terminal pre .cursor {
+  display: inline-block;
+  width: 8px; height: 1.05em;
+  vertical-align: text-bottom;
+  background: var(--tm-teal-5);
+  animation: blink 1.1s steps(1) infinite;
+}
+
+@keyframes pulse { 50% { opacity: 0.3; } }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ---------- sections ---------- */
+
+section { margin-bottom: var(--tm-space-9); scroll-margin-top: var(--tm-space-6); }
+
+h2 {
+  font-family: var(--tm-font-display);
+  font-size: var(--tm-text-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-bottom: var(--tm-space-2);
+}
+.section-note {
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-sm);
+  max-width: 58ch;
+  margin-bottom: var(--tm-space-5);
+}
+.section-note code {
+  font-family: var(--tm-font-mono);
+  font-size: 0.9em;
+}
+
+/* ---------- color swatches ---------- */
+
+.swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--tm-space-3);
+}
+
+.swatch {
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  overflow: hidden;
+  background: var(--tm-bg-raised);
+  cursor: pointer;
+  transition: transform var(--tm-dur-fast) var(--tm-ease-out), box-shadow var(--tm-dur-fast) var(--tm-ease-out);
+}
+.swatch:hover { transform: translateY(-2px); box-shadow: var(--tm-shadow-md); }
+.swatch .chip { height: 56px; }
+.swatch .meta { padding: var(--tm-space-2) var(--tm-space-3); }
+.swatch .name {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  font-weight: 500;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.swatch .hex {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+.swatch.copied .hex { color: var(--tm-accent); }
+
+/* ---------- status lifecycle ---------- */
+
+.lifecycle {
+  display: flex;
+  align-items: stretch;
+  gap: var(--tm-space-2);
+  flex-wrap: wrap;
+}
+.stage {
+  flex: 1 1 140px;
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-raised);
+  padding: var(--tm-space-4);
+  position: relative;
+}
+.stage .badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: var(--tm-radius-pill);
+  border: 1px solid currentColor;
+  margin-bottom: var(--tm-space-2);
+}
+.stage .badge::before {
+  content: "";
+  width: 7px; height: 7px; border-radius: 50%;
+  background: currentColor;
+}
+.stage[data-s="running"] .badge::before { animation: pulse 1.6s var(--tm-ease-in-out) infinite; }
+.stage[data-s="attention"] .badge::before { animation: pulse 0.9s var(--tm-ease-in-out) infinite; }
+.stage p { font-size: var(--tm-text-xs); color: var(--tm-text-muted); line-height: 1.5; }
+.stage .var {
+  display: block;
+  margin-top: var(--tm-space-2);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+.stage[data-s="queued"]    .badge { color: var(--tm-status-queued); }
+.stage[data-s="running"]   .badge { color: var(--tm-status-running); }
+.stage[data-s="review"]    .badge { color: var(--tm-status-review); }
+.stage[data-s="done"]      .badge { color: var(--tm-status-done); }
+.stage[data-s="failed"]    .badge { color: var(--tm-status-failed); }
+.stage[data-s="attention"] .badge { color: var(--tm-status-attention); }
+
+/* ---------- typography table ---------- */
+
+.type-row {
+  display: grid;
+  grid-template-columns: 170px 1fr;
+  gap: var(--tm-space-5);
+  align-items: baseline;
+  padding: var(--tm-space-4) 0;
+  border-bottom: 1px solid var(--tm-border);
+}
+.type-row:last-child { border-bottom: none; }
+.type-row .spec {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+  line-height: 1.7;
+}
+.type-row .spec b { color: var(--tm-text-muted); font-weight: 500; display: block; }
+
+.t-display { font-family: var(--tm-font-display); font-size: var(--tm-text-2xl); font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; }
+.t-title   { font-family: var(--tm-font-display); font-size: var(--tm-text-xl); font-weight: 600; letter-spacing: -0.01em; }
+.t-body    { font-family: var(--tm-font-body); font-size: var(--tm-text-md); }
+.t-small   { font-family: var(--tm-font-body); font-size: var(--tm-text-sm); color: var(--tm-text-muted); }
+.t-mono    { font-family: var(--tm-font-mono); font-size: var(--tm-text-sm); }
+
+/* ---------- spacing ---------- */
+
+.space-list { display: flex; flex-direction: column; gap: var(--tm-space-2); }
+.space-item {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  align-items: center;
+  gap: var(--tm-space-4);
+}
+.space-item .label {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+}
+.space-item .bar {
+  height: 14px;
+  background: var(--tm-accent-subtle);
+  border-right: 2px solid var(--tm-accent);
+  border-radius: 2px;
+}
+
+/* ---------- radius & shadow ---------- */
+
+.demo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--tm-space-4);
+}
+.demo-card {
+  background: var(--tm-bg-raised);
+  border: 1px solid var(--tm-border);
+  padding: var(--tm-space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  justify-content: center;
+  min-height: 110px;
+}
+.demo-card .label {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+}
+.demo-card .sub { font-size: var(--tm-text-xs); color: var(--tm-text-faint); }
+
+/* ---------- motion ---------- */
+
+.motion-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-5);
+  padding: var(--tm-space-4);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-raised);
+  margin-bottom: var(--tm-space-3);
+}
+.motion-row .label {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+  width: 200px;
+  flex-shrink: 0;
+}
+.motion-track { flex: 1; position: relative; height: 20px; }
+.motion-ball {
+  position: absolute;
+  top: 3px;
+  left: 0;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--tm-accent);
+}
+.motion-row:hover .motion-ball { left: calc(100% - 14px); }
+.mb-fast { transition: left var(--tm-dur-fast) var(--tm-ease-out); }
+.mb-base { transition: left var(--tm-dur-base) var(--tm-ease-out); }
+.mb-slow { transition: left var(--tm-dur-slow) var(--tm-ease-in-out); }
+
+/* ---------- components ---------- */
+
+.component-panel {
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-bg-raised);
+  padding: var(--tm-space-6);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-5);
+  align-items: center;
+}
+
+.btn {
+  font-family: var(--tm-font-body);
+  font-size: var(--tm-text-sm);
+  font-weight: 600;
+  padding: 9px 18px;
+  border-radius: var(--tm-radius-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--tm-dur-fast) var(--tm-ease-out), border-color var(--tm-dur-fast) var(--tm-ease-out), transform var(--tm-dur-fast) var(--tm-ease-out);
+}
+.btn:active { transform: translateY(1px); }
+.btn-primary { background: var(--tm-accent); color: var(--tm-accent-contrast); }
+.btn-primary:hover { background: var(--tm-accent-strong); }
+.btn-secondary { background: transparent; color: var(--tm-text); border-color: var(--tm-border-strong); }
+.btn-secondary:hover { border-color: var(--tm-accent); color: var(--tm-accent); }
+.btn-danger { background: transparent; color: var(--tm-status-failed); border-color: var(--tm-status-failed); }
+.btn-danger:hover { background: var(--tm-status-failed); color: var(--tm-bg); }
+
+.field {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-sm);
+  background: var(--tm-bg-inset);
+  color: var(--tm-text);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  padding: 9px 14px;
+  min-width: 240px;
+  transition: border-color var(--tm-dur-fast) var(--tm-ease-out);
+}
+.field::placeholder { color: var(--tm-text-faint); }
+.field:focus { outline: none; border-color: var(--tm-accent); }
+
+.task-card {
+  flex: 1 1 300px;
+  background: var(--tm-bg);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  padding: var(--tm-space-4);
+  box-shadow: var(--tm-shadow-sm);
+}
+.task-card .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tm-space-3);
+  margin-bottom: var(--tm-space-2);
+}
+.task-card .repo {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+.task-card h4 { font-size: var(--tm-text-sm); font-weight: 600; margin-bottom: 4px; }
+.task-card p { font-size: var(--tm-text-xs); color: var(--tm-text-muted); }
+.badge-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  color: var(--tm-status-running);
+}
+.badge-sm::before {
+  content: "";
+  width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.6s var(--tm-ease-in-out) infinite;
+}
+
+/* ---------- footer ---------- */
+
+footer {
+  border-top: 1px solid var(--tm-border);
+  padding-top: var(--tm-space-5);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+  display: flex;
+  justify-content: space-between;
+  gap: var(--tm-space-4);
+  flex-wrap: wrap;
+}
+footer .mono { font-family: var(--tm-font-mono); }
+
+/* ---------- toast ---------- */
+
+.toast {
+  position: fixed;
+  bottom: var(--tm-space-5);
+  left: 50%;
+  transform: translate(-50%, 12px);
+  background: var(--tm-bg-overlay);
+  border: 1px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-pill);
+  box-shadow: var(--tm-shadow-md);
+  padding: 8px 18px;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--tm-dur-base) var(--tm-ease-out), transform var(--tm-dur-base) var(--tm-ease-out);
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast .k { color: var(--tm-accent); }
+
+/* ---------- responsive & a11y ---------- */
+
+@media (max-width: 860px) {
+  .shell { grid-template-columns: 1fr; gap: 0; }
+  .sidenav {
+    position: static;
+    height: auto;
+    padding: var(--tm-space-5) 0 var(--tm-space-4);
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--tm-space-4);
+    border-bottom: 1px solid var(--tm-border);
+  }
+  .sidenav nav { display: none; }
+  .theme-toggle { margin-top: 0; margin-left: auto; }
+  h1 { font-size: var(--tm-text-2xl); }
+  .type-row { grid-template-columns: 1fr; gap: var(--tm-space-2); }
+  .motion-row .label { width: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  html { scroll-behavior: auto; }
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <aside class="sidenav">
+    <div class="brand">
+      <span class="tm">tm_</span>tokens
+      <span class="sub">task manager · design system v1</span>
+    </div>
+    <nav aria-label="Sections">
+      <a href="#color">Color</a>
+      <a href="#status">Run lifecycle</a>
+      <a href="#type">Typography</a>
+      <a href="#space">Spacing</a>
+      <a href="#surface">Radius &amp; elevation</a>
+      <a href="#motion">Motion</a>
+      <a href="#components">Components</a>
+    </nav>
+    <button class="theme-toggle" id="themeToggle" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="themeLabel">theme: dark</span>
+    </button>
+  </aside>
+
+  <main>
+
+    <header class="hero">
+      <p class="eyebrow">// docs/design-tokens</p>
+      <h1>Tokens for a tool made of terminals</h1>
+      <p class="lede">
+        Every visual decision in the task manager resolves to a <code>--tm-*</code> variable —
+        the same prefix the database tables carry. Dark is the default theme because the product's
+        native habitat is a PTY; light exists for daytime review. Toggle the theme and watch the
+        semantic layer remap while the primitives stay put.
+      </p>
+
+      <div class="terminal" role="img" aria-label="Terminal window printing the core token variables">
+        <div class="terminal-bar">
+          <div class="traffic" aria-hidden="true"><span></span><span></span><span></span></div>
+          <span class="title">run #4821 · neko-web · claude</span>
+          <span class="live">attached</span>
+        </div>
+<pre><span class="c">$ cat tokens.css</span>
+<span class="v">:root {</span>
+  <span class="k">--tm-accent</span><span class="v">:        #2dd4bf;</span>   <span class="c">/* phosphor — the only loud voice */</span>
+  <span class="k">--tm-bg</span><span class="v">:            #0c0e10;</span>   <span class="c">/* graphite 10 */</span>
+  <span class="k">--tm-status-running</span><span class="v">: #2dd4bf;</span>   <span class="c">/* worker attached, streaming */</span>
+  <span class="k">--tm-status-review</span><span class="v">:  #f5b83d;</span>   <span class="c">/* first Stop hook fired */</span>
+  <span class="k">--tm-font-mono</span><span class="v">:      "JetBrains Mono";</span>
+<span class="v">}</span><span class="cursor" aria-hidden="true"></span></pre>
+      </div>
+    </header>
+
+    <section id="color">
+      <h2>Color</h2>
+      <p class="section-note">
+        One neutral ramp, one accent. The graphite ramp does all structural work; the phosphor teal
+        is reserved for interaction and the <code>running</code> state — if something glows, it's live
+        or clickable. Click any swatch to copy its hex.
+      </p>
+
+      <p class="eyebrow" style="margin-top: var(--tm-space-5);">graphite ramp</p>
+      <div class="swatch-grid" id="grayRamp"></div>
+
+      <p class="eyebrow" style="margin-top: var(--tm-space-6);">phosphor accent</p>
+      <div class="swatch-grid" id="tealRamp"></div>
+
+      <p class="eyebrow" style="margin-top: var(--tm-space-6);">semantic (theme-mapped)</p>
+      <div class="swatch-grid" id="semanticRamp"></div>
+    </section>
+
+    <section id="status">
+      <h2>Run lifecycle</h2>
+      <p class="section-note">
+        Status colors map one-to-one onto the worker state machine — the order below is the order
+        a task actually moves through. <code>attention</code> is orthogonal: it overlays any state
+        when a Notification hook fires, because a permission prompt in a hidden terminal is a
+        silent deadlock until someone attaches.
+      </p>
+      <div class="lifecycle">
+        <div class="stage" data-s="queued">
+          <span class="badge">queued</span>
+          <p>Claimed by nothing yet. Waiting for a concurrency slot (max 2).</p>
+          <span class="var">--tm-status-queued</span>
+        </div>
+        <div class="stage" data-s="running">
+          <span class="badge">running</span>
+          <p>Worker spawned, PTY live, ring buffer filling.</p>
+          <span class="var">--tm-status-running</span>
+        </div>
+        <div class="stage" data-s="review">
+          <span class="badge">review</span>
+          <p>First Stop hook fired. A human decides what happens next.</p>
+          <span class="var">--tm-status-review</span>
+        </div>
+        <div class="stage" data-s="done">
+          <span class="badge">done</span>
+          <p>Accepted, or auto-completed when the task allows it.</p>
+          <span class="var">--tm-status-done</span>
+        </div>
+        <div class="stage" data-s="failed">
+          <span class="badge">failed</span>
+          <p>Worker died, or an orphaned pid was reaped at boot.</p>
+          <span class="var">--tm-status-failed</span>
+        </div>
+        <div class="stage" data-s="attention">
+          <span class="badge">attention</span>
+          <p>Notification hook: the hidden terminal is waiting on you.</p>
+          <span class="var">--tm-status-attention</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="type">
+      <h2>Typography</h2>
+      <p class="section-note">
+        Three faces, three jobs. Bricolage Grotesque only for headings — it has opinions, so it's
+        rationed. Inter carries prose and UI chrome. JetBrains Mono is the workhorse: repo paths,
+        run IDs, token names, and every character inside a terminal.
+      </p>
+      <div>
+        <div class="type-row">
+          <div class="spec"><b>display / 2xl</b>Bricolage 700<br>2.125rem · -0.02em</div>
+          <div class="t-display">Spawn a worker</div>
+        </div>
+        <div class="type-row">
+          <div class="spec"><b>title / xl</b>Bricolage 600<br>1.5rem · -0.01em</div>
+          <div class="t-title">Runs in review</div>
+        </div>
+        <div class="type-row">
+          <div class="spec"><b>body / md</b>Inter 400<br>0.9375rem · 1.6lh</div>
+          <div class="t-body">The orchestrator claims the next queued task when a slot frees up, then attaches a PTY you can open from the browser at any point.</div>
+        </div>
+        <div class="type-row">
+          <div class="spec"><b>small / sm</b>Inter 400<br>0.8125rem</div>
+          <div class="t-small">Boot recovery verified the command line before killing pid 48213.</div>
+        </div>
+        <div class="type-row">
+          <div class="spec"><b>mono / sm</b>JetBrains Mono 400<br>0.8125rem</div>
+          <div class="t-mono">POST /api/internal/runs/4821/stop → 204</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="space">
+      <h2>Spacing</h2>
+      <p class="section-note">
+        A 4px base scale. Steps 1–4 are for insets inside components; 5–7 separate components;
+        8–9 separate page regions. If a gap isn't on the scale, it's a bug.
+      </p>
+      <div class="space-list" id="spaceList"></div>
+    </section>
+
+    <section id="surface">
+      <h2>Radius &amp; elevation</h2>
+      <p class="section-note">
+        Radius follows nesting: small for controls, medium for cards, large for panels and
+        terminals. Shadows signal how far a surface floats — inline, raised, or overlaid.
+      </p>
+      <div class="demo-grid">
+        <div class="demo-card" style="border-radius: var(--tm-radius-sm);">
+          <span class="label">--tm-radius-sm</span><span class="sub">4px · inputs, badges, kbd</span>
+        </div>
+        <div class="demo-card" style="border-radius: var(--tm-radius-md);">
+          <span class="label">--tm-radius-md</span><span class="sub">8px · buttons, cards</span>
+        </div>
+        <div class="demo-card" style="border-radius: var(--tm-radius-lg);">
+          <span class="label">--tm-radius-lg</span><span class="sub">12px · panels, terminal chrome</span>
+        </div>
+        <div class="demo-card" style="box-shadow: var(--tm-shadow-sm); border-radius: var(--tm-radius-md);">
+          <span class="label">--tm-shadow-sm</span><span class="sub">resting card</span>
+        </div>
+        <div class="demo-card" style="box-shadow: var(--tm-shadow-md); border-radius: var(--tm-radius-md);">
+          <span class="label">--tm-shadow-md</span><span class="sub">hover, dropdowns</span>
+        </div>
+        <div class="demo-card" style="box-shadow: var(--tm-shadow-lg); border-radius: var(--tm-radius-lg);">
+          <span class="label">--tm-shadow-lg</span><span class="sub">modals, attached terminal</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="motion">
+      <h2>Motion</h2>
+      <p class="section-note">
+        Three durations, two easings. Fast for hover feedback, base for state changes, slow only
+        for theme and layout shifts. Hover a row to see the curve. Reduced-motion preferences
+        collapse everything to instant.
+      </p>
+      <div class="motion-row">
+        <span class="label">--tm-dur-fast · 120ms · ease-out</span>
+        <div class="motion-track"><div class="motion-ball mb-fast"></div></div>
+      </div>
+      <div class="motion-row">
+        <span class="label">--tm-dur-base · 200ms · ease-out</span>
+        <div class="motion-track"><div class="motion-ball mb-base"></div></div>
+      </div>
+      <div class="motion-row">
+        <span class="label">--tm-dur-slow · 380ms · ease-in-out</span>
+        <div class="motion-track"><div class="motion-ball mb-slow"></div></div>
+      </div>
+    </section>
+
+    <section id="components">
+      <h2>Components</h2>
+      <p class="section-note">
+        Proof the tokens compose. Nothing below uses a value that isn't defined above.
+      </p>
+      <div class="component-panel">
+        <button class="btn btn-primary">Queue task</button>
+        <button class="btn btn-secondary">Attach terminal</button>
+        <button class="btn btn-danger">Kill run</button>
+        <input class="field" type="text" placeholder="~/repos/neko-web" aria-label="Repository path">
+        <div class="task-card">
+          <div class="row">
+            <span class="repo">neko-web · run #4821</span>
+            <span class="badge-sm">running</span>
+          </div>
+          <h4>Migrate listing filters to URL state</h4>
+          <p>Claimed 4 min ago · 2 subagents active · ring buffer 1.3 MiB</p>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <span>Task manager design tokens · v1</span>
+      <span class="mono">prefix: --tm- · themes: dark (default), light</span>
+    </footer>
+
+  </main>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(function () {
+  // ---- theme toggle ----
+  var root = document.documentElement;
+  var toggle = document.getElementById('themeToggle');
+  var label = document.getElementById('themeLabel');
+  toggle.addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    label.textContent = 'theme: ' + next;
+  });
+
+  // ---- swatch data ----
+  var grays = [
+    ['--tm-gray-0','#fafafa'],['--tm-gray-1','#f1f2f4'],['--tm-gray-2','#e3e5e8'],
+    ['--tm-gray-3','#c9ccd1'],['--tm-gray-4','#9aa0a6'],['--tm-gray-5','#6b7178'],
+    ['--tm-gray-6','#464b52'],['--tm-gray-7','#2c3036'],['--tm-gray-8','#1d2024'],
+    ['--tm-gray-9','#141619'],['--tm-gray-10','#0c0e10']
+  ];
+  var teals = [
+    ['--tm-teal-3','#7ff0dc'],['--tm-teal-5','#2dd4bf'],['--tm-teal-6','#14b8a6'],
+    ['--tm-teal-7','#0d9488'],['--tm-teal-9','#0f3d38']
+  ];
+  var semantics = [
+    ['--tm-bg'],['--tm-bg-raised'],['--tm-bg-inset'],['--tm-border'],
+    ['--tm-text'],['--tm-text-muted'],['--tm-accent'],['--tm-accent-subtle']
+  ];
+
+  function makeSwatch(name, fixedHex) {
+    var el = document.createElement('button');
+    el.className = 'swatch';
+    el.type = 'button';
+    var chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.style.background = 'var(' + name + ')';
+    var meta = document.createElement('div');
+    meta.className = 'meta';
+    var n = document.createElement('span');
+    n.className = 'name';
+    n.textContent = name;
+    var h = document.createElement('span');
+    h.className = 'hex';
+    h.textContent = fixedHex || '';
+    meta.appendChild(n); meta.appendChild(h);
+    el.appendChild(chip); el.appendChild(meta);
+
+    function refresh() {
+      if (!fixedHex) {
+        var v = getComputedStyle(root).getPropertyValue(name).trim();
+        h.textContent = v;
+      }
+    }
+    refresh();
+    new MutationObserver(refresh).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+
+    el.addEventListener('click', function () {
+      var value = h.textContent;
+      var text = name + ': ' + value + ';';
+      function done() {
+        el.classList.add('copied');
+        showToast('copied <span class="k">' + name + '</span>');
+        setTimeout(function () { el.classList.remove('copied'); }, 900);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, done);
+      } else { done(); }
+    });
+    el.setAttribute('aria-label', 'Copy ' + name);
+    return el;
+  }
+
+  var grayRamp = document.getElementById('grayRamp');
+  grays.forEach(function (s) { grayRamp.appendChild(makeSwatch(s[0], s[1])); });
+  var tealRamp = document.getElementById('tealRamp');
+  teals.forEach(function (s) { tealRamp.appendChild(makeSwatch(s[0], s[1])); });
+  var semanticRamp = document.getElementById('semanticRamp');
+  semantics.forEach(function (s) { semanticRamp.appendChild(makeSwatch(s[0], null)); });
+
+  // ---- spacing bars ----
+  var spaces = [
+    ['--tm-space-1', 4],['--tm-space-2', 8],['--tm-space-3', 12],['--tm-space-4', 16],
+    ['--tm-space-5', 24],['--tm-space-6', 32],['--tm-space-7', 48],['--tm-space-8', 64],
+    ['--tm-space-9', 96]
+  ];
+  var spaceList = document.getElementById('spaceList');
+  spaces.forEach(function (s) {
+    var row = document.createElement('div');
+    row.className = 'space-item';
+    var label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = s[0] + ' · ' + s[1] + 'px';
+    var bar = document.createElement('div');
+    bar.className = 'bar';
+    bar.style.width = (s[1] * 3) + 'px';
+    bar.style.maxWidth = '100%';
+    row.appendChild(label); row.appendChild(bar);
+    spaceList.appendChild(row);
+  });
+
+  // ---- toast ----
+  var toast = document.getElementById('toast');
+  var toastTimer;
+  function showToast(html) {
+    toast.innerHTML = html;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toast.classList.remove('show'); }, 1400);
+  }
+})();
+</script>
+
+</body>
+</html>
