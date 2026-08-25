@@ -595,6 +595,102 @@ select.field:focus {
   color: var(--tm-text-muted);
 }
 
+/* the Board's "active" strip — same micro-type, lifted out of the faint
+   grey so live work reads as the first thing on the page. */
+.section-head.accent {
+  color: var(--tm-accent);
+}
+
+.section-head.accent .count {
+  color: var(--tm-accent);
+}
+
+/* collapse/expand control living inside a section header — inherits the
+   header's mono micro-type instead of the default button face. */
+.section-head .section-toggle {
+  padding: 1px 8px;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tm-text-faint);
+}
+
+/* the whole section label is the fold control — same mono micro-type as the
+   header it lives in, so folding reads as part of the label, not a widget. */
+.section-head .section-fold {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+
+.section-head .section-fold:hover {
+  color: var(--tm-text);
+}
+
+.section-head.accent .section-fold:hover {
+  color: var(--tm-accent-strong);
+}
+
+.section-head .caret {
+  display: inline-flex;
+  transition: transform var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.section-head .caret.closed {
+  transform: rotate(-90deg);
+}
+
+/* board filter/sort toolbar — wraps instead of crowding the page title */
+.board-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+  margin: 0 0 var(--tm-space-4);
+}
+
+.board-bar select.field {
+  width: auto;
+  min-width: 150px;
+  font-size: var(--tm-text-sm);
+}
+
+/* row age — right-aligned before the quick actions so ages line up as a column */
+.task-row .age {
+  flex: none;
+  min-width: 3.5ch;
+  text-align: right;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+}
+
+/* an old row should not read like today's work */
+.task-row .age.stale {
+  color: var(--tm-text-faint);
+  opacity: 0.75;
+}
+
+.task-row .age.fresh {
+  color: var(--tm-accent);
+}
+
+/* filed in the last day: an accent edge, drawn inside so nothing shifts.
+   Colour is never the only carrier — the age chip's tooltip says "new". */
+.task-row.fresh {
+  box-shadow: inset 2px 0 0 var(--tm-accent);
+}
+
 /* ---------- slide-over ---------- */
 
 .overlay {

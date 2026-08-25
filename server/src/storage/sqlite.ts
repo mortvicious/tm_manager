@@ -503,7 +503,7 @@ export class SqliteStorage implements Storage {
     const id = randomUUID();
     this.db
       .prepare(
-        `INSERT INTO tm_runs (id, task_id, repo_id, mode, status, pid, model, effort, run_token, started_at) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`,
+        `INSERT INTO tm_runs (id, task_id, repo_id, mode, status, pid, model, effort, run_token, resumed_from, stats_baseline, started_at) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -514,6 +514,8 @@ export class SqliteStorage implements Storage {
         r.model ?? null,
         r.effort ?? null,
         r.runToken ?? null,
+        r.resumedFrom ?? null,
+        r.statsBaseline ? JSON.stringify(r.statsBaseline) : null,
         now(),
       );
     return (await this.getRun(id))!;

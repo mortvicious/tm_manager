@@ -67,6 +67,8 @@ export function rowToRun(r: any): Run {
     sessionId: r.session_id ?? null,
     transcriptPath: r.transcript_path ?? null,
     stats: safeParse(r.stats, null),
+    resumedFrom: r.resumed_from ?? null,
+    statsBaseline: safeParse(r.stats_baseline, null),
     startedAt: r.started_at,
     endedAt: r.ended_at ?? null,
   };

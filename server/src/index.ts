@@ -5,6 +5,7 @@ import fastifyMultipart from '@fastify/multipart';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ZodError } from 'zod';
+import { DEFAULT_SETTINGS } from '@tm/shared';
 import './app-types.ts';
 import { sessionToken } from './auth.ts';
 import { loadBootConfig, serverRoot } from './config.ts';
@@ -27,12 +28,21 @@ import { registerTerminalWs } from './ws/terminal.ts';
 const cfg = loadBootConfig();
 const storage = await createStorage(cfg);
 
-let scrollbackBytes = 2 * 1024 * 1024;
-storage
-  .getSettings()
-  .then((s) => (scrollbackBytes = s['pty.scrollbackBytes']))
-  .catch(() => {}); // keep the default on failure (review F13)
-const sessions = new SessionManager(() => scrollbackBytes);
+// PTY knobs are read live so a config change takes effect without a restart
+// (the session TTL in particular — 0 means "keep terminals forever").
+let scrollbackBytes = DEFAULT_SETTINGS['pty.scrollbackBytes'];
+let sessionTtlMs = DEFAULT_SETTINGS['pty.sessionTtlMinutes'] * 60_000;
+const refreshPtySettings = async () => {
+  const s = await storage.getSettings();
+  scrollbackBytes = s['pty.scrollbackBytes'];
+  sessionTtlMs = s['pty.sessionTtlMinutes'] * 60_000;
+};
+void refreshPtySettings().catch(() => {}); // keep the defaults on failure (review F13)
+setInterval(() => void refreshPtySettings().catch(() => {}), 30_000).unref();
+const sessions = new SessionManager(
+  () => scrollbackBytes,
+  () => sessionTtlMs,
+);
 const orchestrator = new Orchestrator(storage, sessions, `http://127.0.0.1:${cfg.port}`);
 await orchestrator.recoverOnBoot();
 

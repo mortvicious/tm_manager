@@ -101,3 +101,9 @@ export const IconMoon = () => (
     <path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z" />
   </svg>
 );
+
+export const IconChevron = () => (
+  <svg {...p}>
+    <path d="m6 9 6 6 6-6" />
+  </svg>
+);

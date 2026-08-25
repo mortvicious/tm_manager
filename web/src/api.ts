@@ -60,6 +60,10 @@ export const api = {
   stopAgent: (id: string) => req<{ ok: true; closed: number }>('POST', `/api/tasks/${id}/stop-agent`),
   followUp: (id: string, message: string) => req<Task>('POST', `/api/tasks/${id}/follow-up`, { message }),
   applyReview: (id: string) => req<Task>('POST', `/api/tasks/${id}/apply-review`),
+  proceed: (id: string, message?: string) =>
+    req<Task>('POST', `/api/tasks/${id}/proceed`, { message: message ?? null }),
+  resumable: (id: string) =>
+    req<{ resumable: boolean; sessionId: string | null }>('GET', `/api/tasks/${id}/resumable`),
   taskFiles: (id: string) => req<{ name: string; size: number; mtime: string }[]>('GET', `/api/tasks/${id}/files`),
   uploadTaskFiles: async (id: string, files: File[]) => {
     const fd = new FormData();

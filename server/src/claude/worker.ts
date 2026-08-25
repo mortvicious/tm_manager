@@ -22,6 +22,22 @@ const STANDING_RULES = [
   'self-consistent: verify it compiles/passes and handle the edge cases a reviewer would probe.',
 ].join(' ');
 
+/** Sent when the human hits "proceed" without typing anything. */
+export const DEFAULT_PROCEED =
+  'Proceed — continue from exactly where you left off. The previous session was interrupted' +
+  ' (usage limit, connection loss or a closed terminal), not finished. Re-check the current state' +
+  ' of the work before assuming anything, then carry on.';
+
+// A resumed session keeps its original prompt, so this only re-anchors the caps
+// in case the conversation was compacted along the way.
+const RESUME_REMINDER = [
+  'This is the same session as before — everything you already did and learned still applies.',
+  'The standing rules from the start of this session remain in force: work autonomously, do not',
+  'spawn more than 3 subagents and avoid parallel agent fan-outs, save deliverables into',
+  '$TM_ARTIFACTS_DIR, file follow-up/cross-repo work through the Task Manager API instead of doing',
+  'it yourself, and finish with a short summary of what you changed and how you verified it.',
+].join(' ');
+
 /**
  * Builds the interactive `claude` invocation for a worker PTY.
  * Args array only — never a shell string (quoting hazard, review m8).
@@ -39,6 +55,12 @@ export function buildWorkerInvocation(opts: {
   artifactsDir: string;
   /** re-run with an additional human instruction (previous summary included) */
   followUp?: string;
+  /**
+   * Continue an existing claude session instead of starting a fresh one
+   * (`claude --resume <id>`) — the "proceed" flow. The agent keeps its whole
+   * conversation, so the prompt carries only the new instruction.
+   */
+  resumeSessionId?: string;
 }): WorkerInvocation {
   const { task, settings } = opts;
   const model = task.model ?? settings['agent.model'];
@@ -67,7 +89,11 @@ export function buildWorkerInvocation(opts: {
     },
   };
 
-  const args: string[] = ['--model', model, '--effort', effort, '--settings', JSON.stringify(hookSettings)];
+  const args: string[] = [];
+  // --resume must name the session we continue; everything else stays identical
+  // so hooks, permissions and tool policy are re-applied to the resumed turn.
+  if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
+  args.push('--model', model, '--effort', effort, '--settings', JSON.stringify(hookSettings));
 
   if (permissionMode === 'bypassPermissions') {
     args.push('--dangerously-skip-permissions');
@@ -77,14 +103,24 @@ export function buildWorkerInvocation(opts: {
   const allowed = settings['agent.allowedTools'];
   if (allowed.length > 0) args.push('--allowedTools', allowed.join(' '));
 
-  const prompt = [
-    `# Task: ${task.title}`,
-    task.description ? `\n${task.description}` : '',
-    opts.followUp
-      ? `\n\n## Previous run summary\n${task.resultSummary ?? '(none recorded)'}\n\n## Follow-up instruction from the user\n${opts.followUp}`
-      : '',
-    `\n\n${STANDING_RULES}`,
-  ].join('');
+  // A resumed session already holds the task, the rules and everything it did
+  // before — restating them would only bury the new instruction.
+  const prompt = opts.resumeSessionId
+    ? [
+        `# Continuing task: ${task.title}`,
+        '',
+        opts.followUp ?? DEFAULT_PROCEED,
+        '',
+        RESUME_REMINDER,
+      ].join('\n')
+    : [
+        `# Task: ${task.title}`,
+        task.description ? `\n${task.description}` : '',
+        opts.followUp
+          ? `\n\n## Previous run summary\n${task.resultSummary ?? '(none recorded)'}\n\n## Follow-up instruction from the user\n${opts.followUp}`
+          : '',
+        `\n\n${STANDING_RULES}`,
+      ].join('');
   args.push(prompt);
 
   return {

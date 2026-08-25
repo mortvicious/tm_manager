@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { summarizeTranscript } from '../claude/stats.ts';
+import { summarizeRun } from '../claude/stats.ts';
 import { broadcast } from '../events.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
@@ -49,7 +49,9 @@ export function registerInternalRoutes(
     // A permission-prompt storm fires Notification repeatedly — don't re-read
     // a potentially huge transcript for those (review M3).
     if (tp && !opts?.skipSummarize) {
-      const summary = await summarizeTranscript(tp, run.model);
+      // summarizeRun, not summarizeTranscript: a resumed run shares the earlier
+      // session's transcript and must report only its own delta.
+      const summary = await summarizeRun(run, tp);
       if (summary) {
         patch.stats = summary.stats;
         lastAssistantText = summary.lastAssistantText;

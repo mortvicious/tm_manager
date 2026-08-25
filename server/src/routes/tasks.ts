@@ -156,6 +156,30 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     return result.task;
   });
 
+  // Proceed: continue the task's previous claude session instead of starting a
+  // fresh agent — the recovery path for a worker whose terminal died mid-task
+  // (usage limit, dropped connection, closed terminal). Optional message; the
+  // default is a plain "carry on from where you left off".
+  app.post('/api/tasks/:id/proceed', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = z
+      .object({ message: z.string().max(20_000).nullish() })
+      .strict()
+      .parse(req.body ?? {});
+    if (!app.orchestrator) return reply.code(503).send({ error: 'orchestrator not ready' });
+    const result = await app.orchestrator.proceed(id, body.message ?? null);
+    if ('error' in result) return reply.code(result.code).send({ error: result.error });
+    return result.task;
+  });
+
+  // Does this task have a claude session "proceed" could continue?
+  app.get('/api/tasks/:id/resumable', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!app.orchestrator) return reply.code(503).send({ error: 'orchestrator not ready' });
+    const sessionId = await app.orchestrator.resumableSessionId(id);
+    return { resumable: sessionId !== null, sessionId };
+  });
+
   // Deliverable files the agent saved to TM_ARTIFACTS_DIR for this task.
   const taskDir = (id: string) => path.join(artifactsRoot, id);
   const safeEntries = (id: string): { name: string; size: number; mtime: string }[] => {

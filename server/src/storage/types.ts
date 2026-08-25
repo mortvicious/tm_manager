@@ -11,6 +11,7 @@ import type {
   Repo,
   Run,
   RunMode,
+  RunStats,
   RunStatus,
   Task,
   TaskSource,
@@ -95,6 +96,11 @@ export interface NewRun {
   effort?: Task['effort'];
   /** per-run auth token for hook callbacks and the agent API (never exposed in Run) */
   runToken?: string | null;
+  /** run whose claude session this one continues (`claude --resume`) */
+  resumedFrom?: string | null;
+  /** cumulative transcript totals inherited from that session, subtracted from
+   *  this run's raw sums so usage is never counted twice */
+  statsBaseline?: RunStats | null;
 }
 
 export interface NewProposal {

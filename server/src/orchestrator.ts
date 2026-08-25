@@ -1,12 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AppSettings, Task } from '@tm/shared';
+import type { AppSettings, Run, Task } from '@tm/shared';
 import type { ActionResult, OrchestratorApi } from './app-types.ts';
-import { buildWorkerInvocation } from './claude/worker.ts';
+import { DEFAULT_PROCEED, buildWorkerInvocation } from './claude/worker.ts';
 import { killAnalysis } from './claude/analyze.ts';
 import { reviewWorkerChange } from './claude/review.ts';
-import { summarizeTranscript } from './claude/stats.ts';
+import { summarizeRun, summarizeTranscript } from './claude/stats.ts';
 import { needsFallbackModel, sessionUsagePct } from './claude/usage.ts';
 import { broadcast } from './events.ts';
 import { MAX_LIVE_SESSIONS, pidLooksLikeOurs, type SessionManager } from './pty/session-manager.ts';
@@ -43,7 +43,7 @@ export class Orchestrator implements OrchestratorApi {
         if (run.idle || !run.transcriptPath) continue;
         const s = this.sessions.get(run.id);
         if (!s || s.exit !== null) continue;
-        const summary = await summarizeTranscript(run.transcriptPath, run.model);
+        const summary = await summarizeRun(run);
         if (summary) {
           const updated = await this.storage.updateRun(run.id, { stats: summary.stats });
           if (updated) broadcast({ type: 'run.updated', run: updated });
@@ -209,8 +209,38 @@ export class Orchestrator implements OrchestratorApi {
       : settings['router.fallbackModel'];
   }
 
+  /**
+   * The most recent worker run of this task whose claude session can still be
+   * continued with `claude --resume`. Requires (a) a recorded session id,
+   * (b) the same repo — sessions live under their project directory, so
+   * resuming from elsewhere would not find them, and (c) the transcript still
+   * on disk, so a deleted/pruned session degrades to a fresh spawn instead of
+   * a `claude` that exits immediately and fails the task.
+   */
+  private async findResumableRun(taskId: string, repoId: string): Promise<Run | null> {
+    const runs = await this.storage.listRuns({ taskId }); // newest first
+    for (const r of runs) {
+      if (r.mode !== 'worker' || !r.sessionId) continue;
+      if (r.repoId && r.repoId !== repoId) continue;
+      if (!r.transcriptPath || !fs.existsSync(r.transcriptPath)) continue;
+      return r;
+    }
+    return null;
+  }
+
+  /** Wait (briefly) for a killed PTY to actually die before reusing its claude
+   *  session — resuming while the old process still holds it can fail. */
+  private async waitForSessionExit(runId: string, timeoutMs = 5000): Promise<void> {
+    const s = this.sessions.get(runId);
+    if (!s) return;
+    const deadline = Date.now() + timeoutMs;
+    while (s.exit === null && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
   /** Spawns the PTY for a task already in `running`. Reverts the claim on failure. */
-  private async startWorker(task: Task, followUp?: string): Promise<boolean> {
+  private async startWorker(task: Task, followUp?: string, resumeFrom?: Run | null): Promise<boolean> {
     // Claim-loop twin of the runNow guard (review R3b): a task enqueued from
     // review may still have its previous session alive.
     if (await this.hasLiveSession(task.id)) {
@@ -233,6 +263,12 @@ export class Orchestrator implements OrchestratorApi {
     // Per-run token (agent-API review R5): hook callbacks and agent API calls
     // authenticate as THIS run — attribution is server-derived, not client-asserted.
     const runToken = randomBytes(24).toString('hex');
+    // Resumed runs append to the SAME transcript, so snapshot its cumulative
+    // totals now and report only what this run adds on top (no double billing).
+    const baseline =
+      resumeFrom?.transcriptPath && fs.existsSync(resumeFrom.transcriptPath)
+        ? (await summarizeTranscript(resumeFrom.transcriptPath, resumeFrom.model))?.stats ?? null
+        : null;
     const run = await this.storage.createRun({
       taskId: task.id,
       repoId: repo.id,
@@ -240,6 +276,8 @@ export class Orchestrator implements OrchestratorApi {
       model,
       effort: task.effort ?? settings['agent.effort'],
       runToken,
+      resumedFrom: resumeFrom?.id ?? null,
+      statsBaseline: baseline,
     });
     try {
       const artifactsDir = path.join(artifactsRoot, task.id);
@@ -252,6 +290,7 @@ export class Orchestrator implements OrchestratorApi {
         callbackUrl: this.callbackUrl,
         artifactsDir,
         followUp,
+        resumeSessionId: resumeFrom?.sessionId ?? undefined,
       });
       const session = this.sessions.spawn({
         runId: run.id,
@@ -267,7 +306,12 @@ export class Orchestrator implements OrchestratorApi {
         taskId: task.id,
         runId: run.id,
         repoId: repo.id,
-        data: { model, effort: task.effort ?? settings['agent.effort'] },
+        data: {
+          model,
+          effort: task.effort ?? settings['agent.effort'],
+          resumedFrom: resumeFrom?.id ?? null,
+          sessionId: resumeFrom?.sessionId ?? null,
+        },
       });
       broadcast({ type: 'run.started', run: withPid ?? run });
       broadcast({ type: 'task.updated', task });
@@ -313,10 +357,21 @@ export class Orchestrator implements OrchestratorApi {
   /**
    * Human/loop follow-up. A session that has FINISHED its turn (idle) sits at
    * the claude prompt where PTY-injected text does not reliably submit, so we
-   * kill it and RESPAWN with the follow-up + previous summary in the prompt
-   * (reliable). A genuinely mid-task session can't take a follow-up yet.
+   * always respawn.
+   *
+   * The respawn CONTINUES the previous claude session (`claude --resume`) when
+   * one is still on disk — the terminal-user habit of reopening a session and
+   * typing "proceed". That keeps everything the agent already learned instead
+   * of restarting a fresh agent from the task text plus a summary. Falls back
+   * to a fresh session when nothing is resumable, unless mode is 'resume'
+   * (the explicit Proceed button), which reports the reason instead.
    */
-  async followUp(taskId: string, message: string, actor = 'human'): Promise<ActionResult> {
+  async followUp(
+    taskId: string,
+    message: string,
+    actor = 'human',
+    mode: 'auto' | 'resume' | 'fresh' = 'auto',
+  ): Promise<ActionResult> {
     const cur = await this.storage.getTask(taskId);
     if (!cur) return { error: 'task not found', code: 404 };
     if (!cur.repoId) return { error: 'assign a repo first', code: 409 };
@@ -330,9 +385,24 @@ export class Orchestrator implements OrchestratorApi {
       // still working — a follow-up mid-turn would interleave; make them wait.
       return { error: 'the agent is still working — wait for it to finish (review), then follow up', code: 409 };
     }
+
+    const settings = await this.storage.getSettings();
+    const wantResume = mode === 'resume' || (mode === 'auto' && settings['agent.resumeSessions']);
+    const resumeFrom = wantResume ? await this.findResumableRun(taskId, cur.repoId) : null;
+    if (mode === 'resume' && !resumeFrom) {
+      return {
+        error: 'no resumable agent session for this task — use Run now to start a fresh agent',
+        code: 409,
+      };
+    }
+
     if (liveRun) {
-      // idle session: retire it so the respawn below starts clean
+      // Idle session: retire it so the respawn below starts clean, and wait for
+      // the process to ACTUALLY die. Two reasons: `--resume` on a session
+      // another process still holds fails, and startWorker's live-session guard
+      // would otherwise see the dying PTY and refuse its own respawn.
       this.sessions.kill(liveRun.id);
+      await this.waitForSessionExit(liveRun.id);
       await this.storage.updateRun(liveRun.id, { status: 'killed', endedAt: new Date().toISOString() });
     }
 
@@ -355,14 +425,35 @@ export class Orchestrator implements OrchestratorApi {
       kind: 'task.follow-up',
       actor,
       taskId,
-      data: { delivery: 'respawn', chars: message.length },
+      data: {
+        delivery: resumeFrom ? 'resume' : 'respawn',
+        resumedFrom: resumeFrom?.id ?? null,
+        chars: message.length,
+      },
     });
-    const ok = await this.startWorker(task, message);
+    const ok = await this.startWorker(task, message, resumeFrom);
     if (!ok) {
       const latest = await this.storage.getTask(taskId);
       return { error: latest?.error ?? 'failed to start worker', code: 500 };
     }
     return { task: (await this.storage.getTask(taskId))! };
+  }
+
+  /**
+   * "Proceed": reopen the task's previous claude session and carry on — the
+   * recovery path for a worker whose terminal died mid-task (usage limit hit,
+   * network drop, TTL eviction, server restart). Unlike Run now it never
+   * starts a fresh agent: without a resumable session it refuses and says so.
+   */
+  async proceed(taskId: string, message?: string | null, actor = 'human'): Promise<ActionResult> {
+    return this.followUp(taskId, message?.trim() || DEFAULT_PROCEED, actor, 'resume');
+  }
+
+  /** Whether "proceed" would find a session to continue (drives the UI button). */
+  async resumableSessionId(taskId: string): Promise<string | null> {
+    const task = await this.storage.getTask(taskId);
+    if (!task?.repoId) return null;
+    return (await this.findResumableRun(taskId, task.repoId))?.sessionId ?? null;
   }
 
   /**
@@ -486,7 +577,7 @@ export class Orchestrator implements OrchestratorApi {
     // missed (transcript flush lag).
     const forStats = await this.storage.getRun(runId);
     if (forStats?.transcriptPath) {
-      const summary = await summarizeTranscript(forStats.transcriptPath, forStats.model);
+      const summary = await summarizeRun(forStats);
       if (summary) {
         await this.storage.updateRun(runId, { stats: summary.stats });
         if (forStats.taskId && summary.lastAssistantText) {
@@ -527,6 +618,20 @@ export class Orchestrator implements OrchestratorApi {
     }
 
     if (run.taskId && run.mode === 'worker') {
+      // Stale-exit guard (twin of the Stop-hook guard): a follow-up/proceed
+      // kills the previous session and immediately spawns a newer run for the
+      // same task. That old PTY's death must never flip the task the NEWER run
+      // is working on (it would read as "failed" mid-work). A run explicitly
+      // marked `killed` is covered by the same rule even before its successor
+      // exists: whoever killed it (cancel, killRun, follow-up, proceed) already
+      // decided what the task should become.
+      const fresh = await this.storage.getRun(runId);
+      const latest = (await this.storage.listRuns({ taskId: run.taskId }))[0];
+      if (fresh?.status === 'killed' || (latest && latest.id !== runId)) {
+        broadcast({ type: 'orchestrator.status', status: await this.status() });
+        this.maybeSchedule();
+        return;
+      }
       // Exit before any Stop hook: nonzero → failed; zero → review (someone
       // ended the session deliberately; a human should look).
       const to = exitCode === 0 ? 'review' : 'failed';

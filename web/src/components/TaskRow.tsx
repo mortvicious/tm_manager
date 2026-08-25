@@ -45,17 +45,20 @@ function QuickBtn({
  * One task line with its quick actions: terminal on the left (attaches to the
  * task's live session, else its most recent one), run-now + mark-as-ready
  * (mark-done for a task in review) on the right. `children` renders between
- * the title and the actions (chips, status badge).
+ * the title and the actions (chips, status badge, age).
  */
 export function TaskRow({
   task,
   onOpenTask,
   onOpenTerminal,
+  fresh,
   children,
 }: {
   task: Task;
   onOpenTask: (id: string) => void;
   onOpenTerminal: (runId: string) => void;
+  /** filed recently — draws the accent edge that separates new from old */
+  fresh?: boolean;
   children?: ReactNode;
 }) {
   const { runs, refresh } = useApp();
@@ -125,7 +128,7 @@ export function TaskRow({
     : 'No session yet — run this task first';
 
   return (
-    <div className="task-row" onClick={() => onOpenTask(task.id)}>
+    <div className={`task-row ${fresh ? 'fresh' : ''}`} onClick={() => onOpenTask(task.id)}>
       <QuickBtn
         label={termLabel}
         disabled={!run}

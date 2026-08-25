@@ -93,9 +93,18 @@ export function TaskSlideOver({
   const [err, setErr] = useState<string | null>(null);
   const [followUpMsg, setFollowUpMsg] = useState('');
   const [sendingFollowUp, setSendingFollowUp] = useState(false);
+  const [resumeSession, setResumeSession] = useState<string | null>(null);
   const [files, setFiles] = useState<{ name: string; size: number; mtime: string }[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
+
+  const taskRuns = useMemo(() => runs.filter((r) => r.taskId === taskId), [runs, taskId]);
+  // Changes whenever one of this task's runs gains a session id or ends, which
+  // is exactly when resumability can flip.
+  const runSig = useMemo(
+    () => taskRuns.map((r) => `${r.id}:${r.sessionId ?? ''}:${r.status}`).join('|'),
+    [taskRuns],
+  );
 
   // Keyed on id, not the task object: task.updated events must not wipe edits.
   useEffect(() => {
@@ -118,7 +127,21 @@ export function TaskSlideOver({
     api.taskFiles(task.id).then(setFiles).catch(() => setFiles([]));
   }, [task?.id, task?.status]);
 
-  const taskRuns = useMemo(() => runs.filter((r) => r.taskId === taskId), [runs, taskId]);
+  // Can "Proceed" reopen an earlier agent session? Only the server knows —
+  // it also checks the transcript is still on disk. Re-checked when a run
+  // starts/ends so the button appears as soon as a session is recorded.
+  useEffect(() => {
+    if (!task) return;
+    let live = true;
+    api
+      .resumable(task.id)
+      .then((r) => live && setResumeSession(r.sessionId))
+      .catch(() => live && setResumeSession(null));
+    return () => {
+      live = false;
+    };
+  }, [task?.id, runSig]);
+
   const latestRun = taskRuns[0];
   const taskProposals = useMemo(() => proposals.filter((p) => p.taskId === taskId), [proposals, taskId]);
 
@@ -197,6 +220,21 @@ export function TaskSlideOver({
       loadFiles();
     } catch (e) {
       setErr((e as Error).message);
+    }
+  };
+
+  // Both follow-up buttons: same busy/error/clear handling, different call.
+  const send = async (call: () => Promise<unknown>) => {
+    setErr(null);
+    setSendingFollowUp(true);
+    try {
+      await call();
+      setFollowUpMsg('');
+      await refresh();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setSendingFollowUp(false);
     }
   };
 
@@ -421,33 +459,39 @@ export function TaskSlideOver({
                 className="field"
                 rows={3}
                 placeholder={
-                  latestRun && latestRun.status === 'running'
-                    ? 'Steer the agent — sent straight into its live session'
+                  resumeSession
+                    ? 'New instruction — continues the agent\'s previous session, which still remembers everything'
                     : 'New instruction — re-runs the task with the previous summary as context'
                 }
                 value={followUpMsg}
                 onChange={(e) => setFollowUpMsg(e.target.value)}
               />
-              <button
-                className="btn primary"
-                style={{ marginTop: 8 }}
-                disabled={!followUpMsg.trim() || sendingFollowUp}
-                onClick={async () => {
-                  setErr(null);
-                  setSendingFollowUp(true);
-                  try {
-                    await api.followUp(task.id, followUpMsg.trim());
-                    setFollowUpMsg('');
-                    await refresh();
-                  } catch (e) {
-                    setErr((e as Error).message);
-                  } finally {
-                    setSendingFollowUp(false);
+              <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  className="btn primary"
+                  disabled={!followUpMsg.trim() || sendingFollowUp}
+                  onClick={() => send(() => api.followUp(task.id, followUpMsg.trim()))}
+                >
+                  {sendingFollowUp ? 'Sending…' : 'Send follow-up'}
+                </button>
+                <button
+                  className="btn"
+                  disabled={!resumeSession || sendingFollowUp}
+                  title={
+                    resumeSession
+                      ? `Reopen session ${resumeSession.slice(0, 8)} and carry on — use this when the terminal died mid-task (usage limit, dropped connection). Any text above is sent as the instruction.`
+                      : 'No agent session to continue — run the task first, or use Run now for a fresh agent'
                   }
-                }}
-              >
-                {sendingFollowUp ? 'Sending…' : 'Send follow-up'}
-              </button>
+                  onClick={() => send(() => api.proceed(task.id, followUpMsg.trim() || undefined))}
+                >
+                  <IconPlay /> Proceed
+                </button>
+                {resumeSession && (
+                  <span className="mono muted" style={{ fontSize: 11 }}>
+                    resumes {resumeSession.slice(0, 8)}
+                  </span>
+                )}
+              </div>
             </div>
           )}
 

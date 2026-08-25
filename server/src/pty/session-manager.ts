@@ -35,19 +35,29 @@ export interface Session {
   endedAt: number | null;
 }
 
-const EXITED_TTL_MS = 30 * 60_000;
+const DEFAULT_TTL_MS = 30 * 60_000;
 export const MAX_LIVE_SESSIONS = 10;
 
 export class SessionManager {
   private sessions = new Map<string, Session>();
   private onExitCb: ((info: SessionEndInfo) => void) | null = null;
 
-  constructor(private scrollbackBytes: () => number) {
+  /** @param ttlMs how long an idle/exited session stays attachable; <= 0 = forever
+   *  (config `pty.sessionTtlMinutes`, user request 2026-08-25). */
+  constructor(
+    private scrollbackBytes: () => number,
+    private ttlMs: () => number = () => DEFAULT_TTL_MS,
+  ) {
     // GC exited sessions past their post-mortem window — unless someone is
     // still reading them (review F8). Idle-completed sessions never exit on
-    // their own, so they get the same TTL (review R2).
+    // their own, so they get the same TTL (review R2). A non-positive TTL
+    // disables age-based eviction entirely; the MAX_LIVE_SESSIONS pressure
+    // eviction in spawn() still reclaims the oldest unwatched session, so an
+    // infinite TTL can never wedge the cap.
     setInterval(() => {
-      const cutoff = Date.now() - EXITED_TTL_MS;
+      const ttl = this.ttlMs();
+      if (!(ttl > 0)) return;
+      const cutoff = Date.now() - ttl;
       for (const [id, s] of this.sessions) {
         if (s.clients.size > 0) continue;
         const exitedLongAgo = s.endedAt !== null && s.endedAt < cutoff;

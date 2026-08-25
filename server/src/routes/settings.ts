@@ -34,6 +34,10 @@ const settingsSchema = z
     'router.budgetWeekFableTokens': z.number().int().min(10_000),
     'agent.permissionMode': z.enum(['acceptEdits', 'auto', 'bypassPermissions']),
     'agent.allowedTools': z.array(z.string()),
+    'agent.resumeSessions': z.boolean(),
+    // 0 = keep finished terminals forever (bounded by MAX_LIVE_SESSIONS); a
+    // week is the practical upper bound for a local tool.
+    'pty.sessionTtlMinutes': z.number().int().min(0).max(10_080),
     'pty.scrollbackBytes': z
       .number()
       .int()

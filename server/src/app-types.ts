@@ -6,7 +6,16 @@ export interface OrchestratorApi {
   maybeSchedule(): void;
   runNow(taskId: string, actor?: string): Promise<ActionResult>;
   cancel(taskId: string, actor?: string): Promise<ActionResult>;
-  followUp(taskId: string, message: string, actor?: string): Promise<ActionResult>;
+  followUp(
+    taskId: string,
+    message: string,
+    actor?: string,
+    mode?: 'auto' | 'resume' | 'fresh',
+  ): Promise<ActionResult>;
+  /** Reopen the task's previous claude session and carry on ("proceed"). */
+  proceed(taskId: string, message?: string | null, actor?: string): Promise<ActionResult>;
+  /** Session id "proceed" would continue, or null when there is none. */
+  resumableSessionId(taskId: string): Promise<string | null>;
   /** Re-evaluate a task's dependents after it reached a terminal status: its
    *  split parent AND, when it belongs to one, its feature's phase gate. */
   resolveCompletion(child: Task, actor?: string): Promise<void>;

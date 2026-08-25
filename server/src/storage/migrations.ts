@@ -146,4 +146,15 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS tm_tasks_feature_idx ON tm_tasks(feature_id)`,
     ],
   },
+  {
+    id: 10,
+    // Session continuity ("proceed"): a run may CONTINUE the claude session of
+    // an earlier run (`claude --resume`). Both runs then share one transcript,
+    // so the resumed run stores the cumulative totals it inherited and reports
+    // only the delta — otherwise every proceed double-counts cost/tokens.
+    statements: [
+      `ALTER TABLE tm_runs ADD COLUMN resumed_from TEXT`,
+      `ALTER TABLE tm_runs ADD COLUMN stats_baseline TEXT`,
+    ],
+  },
 ];

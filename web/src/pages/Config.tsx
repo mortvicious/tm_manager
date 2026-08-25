@@ -210,6 +210,36 @@ export function ConfigPage() {
         </div>
         <div className="cfg-row">
           <div>
+            <div>Resume sessions on follow-up</div>
+            <div className="hint">
+              a follow-up reopens the agent's previous claude session (<span className="mono">--resume</span>)
+              instead of starting a fresh agent that lost its context — the same habit as typing "proceed" in a
+              terminal. OFF = every follow-up respawns from the task text plus the previous summary
+            </div>
+          </div>
+          <Toggle on={cfg['agent.resumeSessions']} onChange={(v) => set('agent.resumeSessions', v)} />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Terminal keep-alive (minutes)</div>
+            <div className="hint">
+              how long a finished or exited terminal stays attachable before it's evicted. 0 = keep forever;
+              terminals are still recycled oldest-first when all 10 session slots are busy. "Proceed" works even
+              after eviction — it reopens the session from disk
+            </div>
+          </div>
+          <input
+            className="field"
+            style={{ width: 80 }}
+            type="number"
+            min={0}
+            max={10080}
+            value={cfg['pty.sessionTtlMinutes']}
+            onChange={(e) => set('pty.sessionTtlMinutes', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
             <div>Adversarial self-review</div>
             <div className="hint">
               review every worker's change before it lands in review — on the review model, falling back to

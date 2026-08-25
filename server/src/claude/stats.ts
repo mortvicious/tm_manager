@@ -28,6 +28,37 @@ export interface TranscriptSummary {
   lastAssistantText: string | null;
 }
 
+/**
+ * Usage a RESUMED run is responsible for. Both runs share one transcript file,
+ * so the raw sums include everything the earlier session spent — subtract the
+ * baseline captured at resume time. contextPct is a last-turn measure, not a
+ * total, so it passes through untouched.
+ */
+export function netStats(raw: RunStats, baseline: RunStats | null): RunStats {
+  if (!baseline) return raw;
+  const pos = (n: number) => (n > 0 ? n : 0);
+  return {
+    inputTokens: pos(raw.inputTokens - baseline.inputTokens),
+    outputTokens: pos(raw.outputTokens - baseline.outputTokens),
+    cacheReadTokens: pos(raw.cacheReadTokens - baseline.cacheReadTokens),
+    cacheWriteTokens: pos(raw.cacheWriteTokens - baseline.cacheWriteTokens),
+    costUsd: Math.round(pos(raw.costUsd - baseline.costUsd) * 1000) / 1000,
+    contextPct: raw.contextPct,
+  };
+}
+
+/** summarizeTranscript for a run row: applies its resume baseline, if any. */
+export async function summarizeRun(
+  run: { transcriptPath: string | null; model: string | null; statsBaseline: RunStats | null },
+  transcriptPath?: string | null,
+): Promise<TranscriptSummary | null> {
+  const tp = transcriptPath ?? run.transcriptPath;
+  if (!tp) return null;
+  const summary = await summarizeTranscript(tp, run.model);
+  if (!summary) return null;
+  return { ...summary, stats: netStats(summary.stats, run.statsBaseline) };
+}
+
 export async function summarizeTranscript(
   transcriptPath: string,
   model: string | null,

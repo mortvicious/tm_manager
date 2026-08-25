@@ -89,6 +89,11 @@ export interface Run {
   sessionId: string | null;
   transcriptPath: string | null;
   stats: RunStats | null;
+  /** run whose claude session this run CONTINUED (`claude --resume`); null = fresh session */
+  resumedFrom: string | null;
+  /** cumulative transcript totals at the moment this run resumed — subtracted
+   *  from the raw transcript sums so a resumed run reports only its OWN usage */
+  statsBaseline: RunStats | null;
   startedAt: string;
   endedAt: string | null;
 }
@@ -200,6 +205,11 @@ export interface AppSettings {
   'anomaly.costUsd': number;
   'anomaly.staleReviewHours': number;
   'pty.scrollbackBytes': number;
+  /** how long a finished (idle) or exited PTY stays attachable, in minutes; 0 = forever */
+  'pty.sessionTtlMinutes': number;
+  /** follow-ups continue the previous claude session (`--resume`) when one is
+   *  still on disk, instead of respawning a fresh agent that lost its context */
+  'agent.resumeSessions': boolean;
   'sentry.dsn': string;
   'sentry.authToken': string;
   'sentry.org': string;
@@ -249,6 +259,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'anomaly.costUsd': 10,
   'anomaly.staleReviewHours': 72,
   'pty.scrollbackBytes': 2 * 1024 * 1024,
+  // 0 = never evict on age (user request 2026-08-25); the MAX_LIVE_SESSIONS
+  // eviction still reclaims the oldest unwatched session under cap pressure.
+  'pty.sessionTtlMinutes': 30,
+  'agent.resumeSessions': true,
   'sentry.dsn': '',
   'sentry.authToken': '',
   'sentry.org': '',

@@ -43,9 +43,19 @@ draft → queued → running → review → done
 
 Every run is a real interactive `claude` session in a hidden PTY, spawned in the repo's directory. Open it from the task panel or Queue — history replays, and your keyboard input goes straight to the agent.
 
-After a task completes, its session goes **idle**: still attachable (Queue → *Idle terminals*) so you can review or keep chatting, but it no longer occupies a worker slot. Idle terminals close when you **Mark done**, press **Stop agent** / **Close**, or automatically after 30 minutes unwatched. They never pile up: the session cap evicts the oldest unwatched ones under pressure.
+After a task completes, its session goes **idle**: still attachable (Queue → *Idle terminals*) so you can review or keep chatting, but it no longer occupies a worker slot. Idle terminals close when you **Mark done**, press **Stop agent** / **Close**, or automatically once they have gone unwatched for **Terminal keep-alive** minutes (Config; default 30, **0 = keep them forever**). They never pile up: the session cap evicts the oldest unwatched ones under pressure, whatever the keep-alive.
 
 **Stop agent** (task panel) closes the session without touching task status. **Cancel** (running tasks) kills the session *and* cancels the task.
+
+### Proceed — pick up where the agent left off
+
+A worker's terminal can die with the work half-done: usage hits 100%, the wifi drops, the server restarts, the terminal ages out. Starting the task again would throw away everything the agent had figured out.
+
+**Proceed** (task panel, next to the follow-up field) reopens that agent's own `claude` session — the same thing as reopening a session in a terminal and typing "proceed". It works even when the terminal is long gone, because the session lives on disk, not in the PTY. Type an instruction in the follow-up box first and Proceed sends it; leave it empty and the agent is simply told to carry on from where it stopped, re-checking the state of the work first.
+
+Plain **Send follow-up** does the same continuation by default (Config → *Resume sessions on follow-up*), so a follow-up on a finished task keeps its context instead of briefing a fresh agent from the summary. The difference: a follow-up falls back to a fresh agent when there is no session left to continue, while Proceed says so and does nothing. **Run now** always starts a clean agent.
+
+The button is disabled when the task has never produced a session, or the session's transcript is gone (deleted, or from a different repo). Usage is never counted twice: a resumed run reports only what it spends on top of what it inherited.
 
 ## Model routing
 
@@ -81,6 +91,14 @@ A **Feature** is the home for a request that is far too big for one task: a para
 
 **Pause** stops new tasks being handed out (running ones finish). **Cancel feature** cancels its draft/queued tasks and kills its running ones. Design and as-built notes: `docs/features.md`.
 
+## Reading the Board
+
+Top to bottom: **active** (everything running or waiting on you), **drafts** (the inbox — newest 7, `show all N` for the rest), the remaining status/category/repo groups, and **recent** (the last 10 touched tasks, whatever their status) at the foot.
+
+Each row ends with its **age** — how long ago it was filed (drafts) or last touched (everywhere else); hover it for the exact times. A task filed in the **last 24 hours** carries an accent edge down the left of the row; anything older than two weeks has its age dimmed.
+
+Three ways to see less: the **sort** selector (last touched / newest filed / oldest filed / title A–Z) reorders every section, **clicking a section header folds it** (done and cancelled start folded), and **essentials** in the top right strips the board to titles and status badges only — no tags, no ages, no history. Sort, folds and essentials are remembered in the browser; the filters below reset each visit.
+
 ## Categories, filtering & grouping
 
 Every task can carry a free-text **category** ("UI", "Estimator", "Auth"…). You set one in the create form or the task panel; **agents assign them too** — the Analyze run labels each task by domain, and workers can categorize tasks they file. The Board header filters by repo, source (human / agent / sentry / analyze / feature), and category, and groups by status, category, or repo.
@@ -103,13 +121,16 @@ The task panel has a **Follow-up** field: send an instruction to steer a live ag
 | Permission mode | `auto` (everyday) / `acceptEdits` (cautious) / `bypassPermissions` (⚠ no prompts at all; first use shows a one-time dialog — attach and accept) |
 | Allowed tools | extra pre-approved tools, e.g. `Bash(git *)` |
 | Router | primary/fallback models, usage threshold, 5h / weekly / weekly-fable estimate budgets (fallback only) |
+| Resume sessions on follow-up | a follow-up reopens the agent's previous `claude` session instead of briefing a fresh one (default on); OFF = every follow-up respawns from the task text plus the previous summary. The **Proceed** button always resumes, whatever this is set to |
+| Terminal keep-alive | minutes a finished/exited terminal stays attachable before it is evicted (default 30, **0 = forever**). Proceed still works after eviction — it reopens the session from disk |
 | Tasks an agent may file | how many follow-up tasks one worker session can file through the agent API before it's refused and told to finish its turn (default 15, 1–100) |
 | Feature plan re-analysis rounds | a blocker verdict on a feature's plan feeds the findings into a fresh analysis, up to N rounds (0 = review the plan once, never re-plan) |
 | Sentry | org/project/token + target repo; **Sync issues now** pulls unresolved issues (14d) as tasks — idempotent, never duplicates. Token needs `event:read` + `project:read` scopes (a sourcemap-upload token 403s). EU orgs: API base `https://de.sentry.io` |
 
 ## Troubleshooting
 
-- **Task failed with "server restarted"** — the server went down mid-run; boot recovery killed the orphaned agent. Hit **Retry**.
+- **Task failed with "server restarted"** — the server went down mid-run; boot recovery killed the orphaned agent. Hit **Proceed** to continue the same session where it stopped, or **Retry** to start over.
+- **Agent died at 100% usage / lost connection** — the run exits and the task lands in `failed` (or `review`). **Proceed** picks the same session back up once you have headroom again; nothing it learned is lost.
 - **Task stuck running, no output growth** — open its terminal; it's probably a permission or trust prompt (should also show *needs attention*). Answer it inline. The workspace-trust dialog appears once per repo.
 - **`posix_spawnp failed` on task start** — node-pty's `spawn-helper` lost its exec bit; run `npm rebuild` or `chmod +x node_modules/node-pty/prebuilds/*/spawn-helper` (postinstall normally handles this).
 - **UI not updating live** — it reconnects automatically (including across server restarts); if a tab predates the current build, reload it once.

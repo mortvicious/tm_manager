@@ -500,8 +500,20 @@ export class PostgresStorage implements Storage {
   async createRun(r: NewRun): Promise<Run> {
     const id = randomUUID();
     await this.q(
-      `INSERT INTO tm_runs (id, task_id, repo_id, mode, status, pid, model, effort, run_token, started_at) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`,
-      [id, r.taskId ?? null, r.repoId ?? null, r.mode, r.pid ?? null, r.model ?? null, r.effort ?? null, r.runToken ?? null, now()],
+      `INSERT INTO tm_runs (id, task_id, repo_id, mode, status, pid, model, effort, run_token, resumed_from, stats_baseline, started_at) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        r.taskId ?? null,
+        r.repoId ?? null,
+        r.mode,
+        r.pid ?? null,
+        r.model ?? null,
+        r.effort ?? null,
+        r.runToken ?? null,
+        r.resumedFrom ?? null,
+        r.statsBaseline ? JSON.stringify(r.statsBaseline) : null,
+        now(),
+      ],
     );
     return (await this.getRun(id))!;
   }
