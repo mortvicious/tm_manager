@@ -6,24 +6,32 @@ import {
   DEFAULT_SETTINGS,
   type AppSettings,
   type AuditEvent,
+  type Feature,
+  type FeatureStatus,
   type Proposal,
   type Repo,
   type Run,
   type Task,
 } from '@tm/shared';
+import { planCards } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
+import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
 import { MIGRATIONS } from './migrations.ts';
-import { eventId, now, rowToEvent, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
+import { eventId, now, rowToEvent, rowToFeature, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
 import type {
   ChildCounts,
   EventFilter,
+  FeaturePatch,
+  FeatureResolution,
   NewAuditEvent,
+  NewFeature,
   NewProposal,
   NewRun,
   NewTask,
   Storage,
   TaskFilter,
 } from './types.ts';
+
 
 export class SqliteStorage implements Storage {
   private db: Database.Database;
@@ -163,6 +171,9 @@ export class SqliteStorage implements Storage {
   async deleteRepo(id: string): Promise<void> {
     const del = this.db.transaction((repoId: string) => {
       this.db.prepare(`UPDATE tm_tasks SET repo_id = NULL WHERE repo_id = ?`).run(repoId);
+      // Features follow tasks: detached, not deleted (their plan is still
+      // readable) — and the FK would otherwise reject the delete.
+      this.db.prepare(`UPDATE tm_features SET repo_id = NULL, updated_at = ? WHERE repo_id = ?`).run(now(), repoId);
       this.db.prepare(`DELETE FROM tm_repos WHERE id = ?`).run(repoId);
     });
     del(id);
@@ -185,6 +196,10 @@ export class SqliteStorage implements Storage {
       where.push(`parent_id = ?`);
       params.push(f.parentId);
     }
+    if (f?.featureId) {
+      where.push(`feature_id = ?`);
+      params.push(f.featureId);
+    }
     const sql = `SELECT * FROM tm_tasks ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY priority DESC, created_at`;
     return (this.db.prepare(sql).all(...params) as any[]).map(rowToTask);
   }
@@ -199,8 +214,8 @@ export class SqliteStorage implements Storage {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, status, source, source_ref, priority, model, effort, category, review, created_by_run, spawn_depth, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, status, source, source_ref, priority, model, effort, category, review, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -218,6 +233,8 @@ export class SqliteStorage implements Storage {
         t.review == null ? null : t.review ? 1 : 0,
         t.createdByRun ?? null,
         t.spawnDepth ?? 0,
+        t.featureId ?? null,
+        t.featurePhase ?? null,
         ts,
         ts,
       );
@@ -245,7 +262,7 @@ export class SqliteStorage implements Storage {
     const next = { ...t, ...clean, updatedAt: now() };
     this.db
       .prepare(
-        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, result_summary=?, review_summary=?, error=?, updated_at=? WHERE id=?`,
+        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, error=?, updated_at=? WHERE id=?`,
       )
       .run(
         next.title,
@@ -260,6 +277,8 @@ export class SqliteStorage implements Storage {
         next.effort,
         next.category,
         next.review == null ? null : next.review ? 1 : 0,
+        next.featureId,
+        next.featurePhase,
         next.resultSummary,
         next.reviewSummary,
         next.error,
@@ -291,8 +310,9 @@ export class SqliteStorage implements Storage {
       const r = this.db
         .prepare(
           `UPDATE tm_tasks SET status = 'running', updated_at = ?
-           WHERE id = (SELECT id FROM tm_tasks WHERE status = 'queued' AND repo_id IS NOT NULL
-                       ORDER BY priority DESC, created_at LIMIT 1)
+           WHERE id = (SELECT t.id FROM tm_tasks t WHERE t.status = 'queued' AND t.repo_id IS NOT NULL
+                         AND ${FEATURE_CLAIM_GATE}
+                       ORDER BY t.priority DESC, t.created_at LIMIT 1)
            RETURNING *`,
         )
         .get(now());
@@ -459,9 +479,10 @@ export class SqliteStorage implements Storage {
       const r = this.db
         .prepare(
           `UPDATE tm_tasks SET status = 'running', updated_at = ?
-           WHERE id = (SELECT id FROM tm_tasks
-                       WHERE status = 'queued' AND repo_id IS NOT NULL AND created_by_run IN (${placeholders})
-                       ORDER BY created_at LIMIT 1)
+           WHERE id = (SELECT t.id FROM tm_tasks t
+                       WHERE t.status = 'queued' AND t.repo_id IS NOT NULL AND t.created_by_run IN (${placeholders})
+                         AND ${FEATURE_OVERFLOW_GATE}
+                       ORDER BY t.created_at LIMIT 1)
            RETURNING *`,
         )
         .get(now(), ...eligibleRunIds);
@@ -632,6 +653,10 @@ export class SqliteStorage implements Storage {
                 // inherit depth: split must not launder agent-created tasks
                 // back to depth 0 (review R4)
                 spawnDepth: parentTask.spawnDepth,
+                // children of a feature task belong to the SAME phase — the
+                // phase cannot close until they are resolved too.
+                featureId: parentTask.featureId,
+                featurePhase: parentTask.featurePhase,
               }, actor),
             );
           }
@@ -679,6 +704,273 @@ export class SqliteStorage implements Storage {
         data: { proposalId: id, kind: proposal.kind, decision: 'accepted' },
       });
       return { proposal: updated, tasks: affected };
+    });
+  }
+
+  // ---- features ----
+
+  async listFeatures(f?: { repoId?: string; status?: FeatureStatus }): Promise<Feature[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (f?.repoId) {
+      where.push(`repo_id = ?`);
+      params.push(f.repoId);
+    }
+    if (f?.status) {
+      where.push(`status = ?`);
+      params.push(f.status);
+    }
+    const sql = `SELECT * FROM tm_features ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC`;
+    return (this.db.prepare(sql).all(...params) as any[]).map(rowToFeature);
+  }
+
+  async getFeature(id: string): Promise<Feature | null> {
+    const r = this.db.prepare(`SELECT * FROM tm_features WHERE id = ?`).get(id);
+    return r ? rowToFeature(r) : null;
+  }
+
+  async createFeature(f: NewFeature, actor: string): Promise<Feature> {
+    return this.inTxn((): Feature => {
+      const id = randomUUID();
+      const ts = now();
+      this.db
+        .prepare(
+          `INSERT INTO tm_features (id, repo_id, title, request, status, analysis, review, analysis_rounds, error, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'draft', NULL, NULL, 0, NULL, ?, ?)`,
+        )
+        .run(id, f.repoId, f.title, f.request, ts, ts);
+      const feature = rowToFeature(this.db.prepare(`SELECT * FROM tm_features WHERE id = ?`).get(id));
+      this.appendEventSync({
+        kind: 'feature.created',
+        actor,
+        repoId: feature.repoId,
+        data: { featureId: feature.id, title: feature.title },
+      });
+      return feature;
+    });
+  }
+
+  /** Applies only the present keys; `analysis: null` explicitly clears. */
+  private writeFeaturePatchSync(id: string, patch: FeaturePatch): Feature | null {
+    const sets: string[] = ['updated_at = ?'];
+    const vals: unknown[] = [now()];
+    if ('title' in patch && patch.title !== undefined) {
+      sets.push('title = ?');
+      vals.push(patch.title);
+    }
+    if ('request' in patch && patch.request !== undefined) {
+      sets.push('request = ?');
+      vals.push(patch.request);
+    }
+    if ('analysis' in patch) {
+      sets.push('analysis = ?');
+      vals.push(patch.analysis ? JSON.stringify(patch.analysis) : null);
+    }
+    if ('review' in patch) {
+      sets.push('review = ?');
+      vals.push(patch.review ? JSON.stringify(patch.review) : null);
+    }
+    if ('analysisRounds' in patch && patch.analysisRounds !== undefined) {
+      sets.push('analysis_rounds = ?');
+      vals.push(patch.analysisRounds);
+    }
+    if ('error' in patch) {
+      sets.push('error = ?');
+      vals.push(patch.error ?? null);
+    }
+    const r = this.db.prepare(`UPDATE tm_features SET ${sets.join(', ')} WHERE id = ? RETURNING *`).get(...vals, id);
+    return r ? rowToFeature(r) : null;
+  }
+
+  async updateFeature(id: string, patch: FeaturePatch, actor: string): Promise<Feature | null> {
+    return this.inTxn((): Feature | null => {
+      const feature = this.writeFeaturePatchSync(id, patch);
+      if (!feature) return null;
+      this.appendEventSync({
+        kind: 'feature.edited',
+        actor,
+        repoId: feature.repoId,
+        data: { featureId: id, fields: Object.keys(patch) },
+      });
+      return feature;
+    });
+  }
+
+  async transitionFeature(
+    id: string,
+    from: FeatureStatus[],
+    to: FeatureStatus,
+    actor: string,
+    patch?: FeaturePatch,
+  ): Promise<Feature | null> {
+    return this.inTxn((): Feature | null => this.transitionFeatureSync(id, from, to, actor, patch));
+  }
+
+  /** Conditional status move — the twin of transitionTask, immune to
+   *  check-then-set races between routes, the analysis pipeline and hooks. */
+  private transitionFeatureSync(
+    id: string,
+    from: FeatureStatus[],
+    to: FeatureStatus,
+    actor: string,
+    patch?: FeaturePatch,
+  ): Feature | null {
+    const prev = this.db.prepare(`SELECT status FROM tm_features WHERE id = ?`).get(id) as
+      | { status: string }
+      | undefined;
+    const placeholders = from.map(() => '?').join(', ');
+    const guarded = this.db
+      .prepare(`SELECT id FROM tm_features WHERE id = ? AND status IN (${placeholders})`)
+      .get(id, ...from) as { id: string } | undefined;
+    if (!guarded) return null;
+    if (patch) this.writeFeaturePatchSync(id, patch);
+    const r = this.db
+      .prepare(`UPDATE tm_features SET status = ?, updated_at = ? WHERE id = ? AND status IN (${placeholders}) RETURNING *`)
+      .get(to, now(), id, ...from);
+    if (!r) return null;
+    const feature = rowToFeature(r);
+    this.appendEventSync({
+      kind: 'feature.transition',
+      actor,
+      repoId: feature.repoId,
+      data: { featureId: id, from: prev?.status ?? null, to },
+    });
+    return feature;
+  }
+
+  async deleteFeature(id: string): Promise<boolean> {
+    return this.inTxn((): boolean => {
+      const n = this.db.prepare(`SELECT COUNT(*) AS n FROM tm_tasks WHERE feature_id = ?`).get(id) as { n: number };
+      if (Number(n.n) > 0) return false;
+      this.db.prepare(`DELETE FROM tm_features WHERE id = ?`).run(id);
+      return true;
+    });
+  }
+
+  async approveFeature(id: string, actor: string): Promise<{ feature: Feature; tasks: Task[] } | null> {
+    return this.inTxn((): { feature: Feature; tasks: Task[] } | null => {
+      const row = this.db.prepare(`SELECT * FROM tm_features WHERE id = ?`).get(id);
+      if (!row) return null;
+      const feature = rowToFeature(row);
+      if (feature.status !== 'proposed' || !feature.repoId || !feature.analysis) return null;
+      const cards = planCards(feature);
+      if (cards.length === 0) return null;
+      const tasks: Task[] = [];
+      for (const c of cards) {
+        tasks.push(
+          this.insertTaskSync(
+            {
+              title: c.card.title,
+              description: c.description,
+              repoId: feature.repoId,
+              // Approved ≠ started: cards land as drafts and only the feature's
+              // phase gate moves them to queued.
+              status: 'draft',
+              source: 'feature',
+              category: c.card.category ?? null,
+              effort: c.card.effort ?? null,
+              review: c.card.review ?? null,
+              featureId: feature.id,
+              featurePhase: c.phase,
+            },
+            actor,
+          ),
+        );
+      }
+      const updated = this.transitionFeatureSync(id, ['proposed'], 'approved', actor, { error: null });
+      // Unreachable (status was read inside this transaction), but returning
+      // null here would COMMIT the inserts above and leave orphan tasks under a
+      // still-'proposed' feature — throw so the whole approval rolls back.
+      if (!updated) throw new Error('feature approval raced: status changed mid-transaction');
+      return { feature: updated, tasks };
+    });
+  }
+
+  async resolveFeatureCompletion(featureId: string, actor: string): Promise<FeatureResolution | null> {
+    return this.inTxn((): FeatureResolution | null => {
+      const row = this.db.prepare(`SELECT * FROM tm_features WHERE id = ?`).get(featureId);
+      if (!row) return null;
+      const feature = rowToFeature(row);
+      if (feature.status !== 'running') return null;
+      const tasks = (
+        this.db.prepare(`SELECT * FROM tm_tasks WHERE feature_id = ?`).all(featureId) as any[]
+      ).map(rowToTask);
+      if (tasks.length === 0) return null;
+
+      const failed = tasks.filter((t) => t.status === 'failed');
+      if (failed.length > 0) {
+        const paused = this.transitionFeatureSync(featureId, ['running'], 'paused', actor, {
+          error: `${failed.length} task(s) failed — retry or cancel them, then Resume`,
+        });
+        return paused ? { feature: paused, tasks: [], action: 'paused' } : null;
+      }
+
+      const pending = tasks.filter(isFeatureTaskBlocking);
+      if (pending.length === 0) {
+        const done = this.transitionFeatureSync(featureId, ['running'], 'review', actor, { error: null });
+        return done ? { feature: done, tasks: [], action: 'review' } : null;
+      }
+
+      const phase = Math.min(...pending.map((t) => t.featurePhase ?? 0));
+      const started: Task[] = [];
+      for (const t of pending) {
+        if ((t.featurePhase ?? 0) !== phase || t.status !== 'draft' || t.source !== 'feature') continue;
+        if (!t.repoId) continue; // never queue a repo-less task: the claim loop skips it forever
+        const r = this.db
+          .prepare(`UPDATE tm_tasks SET status = 'queued', error = NULL, updated_at = ? WHERE id = ? AND status = 'draft' RETURNING *`)
+          .get(now(), t.id);
+        if (!r) continue;
+        const queued = rowToTask(r);
+        started.push(queued);
+        this.appendEventSync({
+          kind: 'task.transition',
+          actor,
+          taskId: queued.id,
+          repoId: queued.repoId,
+          data: { from: 'draft', to: 'queued', featureId, featurePhase: phase },
+        });
+      }
+      if (started.length === 0) return { feature, tasks: [], action: 'none', phase };
+      return { feature, tasks: started, action: 'phase-started', phase };
+    });
+  }
+
+  async cancelFeature(
+    id: string,
+    actor: string,
+  ): Promise<{ feature: Feature; tasks: Task[]; runningTaskIds: string[] } | null> {
+    return this.inTxn((): { feature: Feature; tasks: Task[]; runningTaskIds: string[] } | null => {
+      // Cancel the FEATURE first: if it is already cancelled/done this returns
+      // null before a single task row is touched (cancelling tasks under a
+      // feature that stayed alive would be worse than doing nothing).
+      const feature = this.transitionFeatureSync(
+        id,
+        ['draft', 'analyzing', 'proposed', 'approved', 'running', 'paused', 'review', 'failed'],
+        'cancelled',
+        actor,
+      );
+      if (!feature) return null;
+      const tasks = (this.db.prepare(`SELECT * FROM tm_tasks WHERE feature_id = ?`).all(id) as any[]).map(rowToTask);
+      const cancelled: Task[] = [];
+      for (const t of tasks) {
+        if (t.status !== 'draft' && t.status !== 'queued') continue;
+        const r = this.db
+          .prepare(
+            `UPDATE tm_tasks SET status = 'cancelled', updated_at = ? WHERE id = ? AND status IN ('draft', 'queued') RETURNING *`,
+          )
+          .get(now(), t.id);
+        if (!r) continue;
+        const c = rowToTask(r);
+        cancelled.push(c);
+        this.appendEventSync({
+          kind: 'task.transition',
+          actor,
+          taskId: c.id,
+          repoId: c.repoId,
+          data: { from: t.status, to: 'cancelled', featureId: id },
+        });
+      }
+      return { feature, tasks: cancelled, runningTaskIds: tasks.filter((t) => t.status === 'running').map((t) => t.id) };
     });
   }
 

@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import type { AuditEvent, OrchestratorStatus, Proposal, Repo, Run, ServerEvent, Task } from '@tm/shared';
+import type { AuditEvent, Feature, OrchestratorStatus, Proposal, Repo, Run, ServerEvent, Task } from '@tm/shared';
 import { api } from './api.ts';
 
 interface AppState {
@@ -15,6 +15,7 @@ interface AppState {
   tasks: Task[];
   runs: Run[];
   proposals: Proposal[];
+  features: Feature[];
   /** live audit events received this session (cap 200, newest last) */
   auditEvents: AuditEvent[];
   orch: OrchestratorStatus;
@@ -38,6 +39,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [features, setFeatures] = useState<Feature[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [orch, setOrch] = useState<OrchestratorStatus>({ enabled: false, running: 0, concurrency: 2 });
   const [token, setToken] = useState<string | null>(null);
@@ -52,6 +54,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // These endpoints appear in later phases; tolerate their absence.
     api.listRuns().then(setRuns).catch(() => {});
     api.listProposals().then(setProposals).catch(() => {});
+    api.listFeatures().then(setFeatures).catch(() => {});
     api.orchestrator().then(setOrch).catch(() => {});
   }, []);
 
@@ -123,6 +126,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
               return next;
             });
             break;
+          case 'feature.updated':
+            setFeatures((cur) => {
+              const i = cur.findIndex((f) => f.id === e.feature.id);
+              if (i === -1) return [e.feature, ...cur];
+              const next = cur.slice();
+              next[i] = e.feature;
+              return next;
+            });
+            break;
+          case 'feature.deleted':
+            setFeatures((cur) => cur.filter((f) => f.id !== e.featureId));
+            break;
           case 'event.appended':
             setAuditEvents((cur) => [...cur.slice(-199), e.event]);
             break;
@@ -165,7 +180,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [token]);
 
   return (
-    <Ctx.Provider value={{ repos, tasks, runs, proposals, auditEvents, orch, token, connected, bootedAt, refresh, setOrch }}>
+    <Ctx.Provider
+      value={{ repos, tasks, runs, proposals, features, auditEvents, orch, token, connected, bootedAt, refresh, setOrch }}
+    >
       {children}
     </Ctx.Provider>
   );

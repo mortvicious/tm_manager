@@ -10,7 +10,7 @@ export type TaskStatus =
   | 'failed'
   | 'cancelled';
 
-export type TaskSource = 'manual' | 'sentry' | 'auto';
+export type TaskSource = 'manual' | 'sentry' | 'auto' | 'feature';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -45,6 +45,10 @@ export interface Task {
   createdByRun: string | null;
   /** distance from human intent: human 0, agent-filed = creator's depth + 1 (cap 2) */
   spawnDepth: number;
+  /** the Feature this task was generated from (null = standalone task) */
+  featureId: string | null;
+  /** 0-based phase index inside that feature; phases run in order */
+  featurePhase: number | null;
   resultSummary: string | null;
   /** per-task adversarial review override: null = use review.enabled setting */
   review: boolean | null;
@@ -188,6 +192,8 @@ export interface AppSettings {
   'review.model': string;
   /** max work→review→work rounds before a task lands in the human review queue */
   'review.maxRounds': number;
+  /** max feature-plan re-analysis rounds after a blocker verdict (mirrors review.maxRounds) */
+  'feature.analysisMaxRounds': number;
   'anomaly.longRunMin': number;
   'anomaly.costUsd': number;
   'anomaly.staleReviewHours': number;
@@ -235,6 +241,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'review.enabled': true,
   'review.model': 'claude-fable-5',
   'review.maxRounds': 2,
+  'feature.analysisMaxRounds': 2,
   'anomaly.longRunMin': 30,
   'anomaly.costUsd': 10,
   'anomaly.staleReviewHours': 72,
@@ -247,6 +254,86 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'sentry.repoId': '',
   'sentry.categoryTag': '',
 };
+
+// ---- Features (big request → analysis → reviewed plan → approved tasks) ----
+
+export type FeatureStatus =
+  | 'draft'
+  | 'analyzing'
+  | 'proposed'
+  | 'approved'
+  | 'running'
+  | 'paused'
+  | 'review'
+  | 'done'
+  | 'failed'
+  | 'cancelled';
+
+/** One planned task card. Nothing exists as a tm_tasks row until approval. */
+export interface FeaturePlanTask {
+  /** stable client-side id so edits/reorders survive re-renders (not a task id) */
+  id: string;
+  title: string;
+  description: string;
+  category?: string | null;
+  effort?: EffortLevel | null;
+  /** per-task adversarial review override, mirrors Task.review */
+  review?: boolean | null;
+  exitCriteria: string[];
+  /** excluded from approval (card toggled off) */
+  excluded?: boolean;
+}
+
+export interface FeaturePlanPhase {
+  title: string;
+  goal: string;
+  tasks: FeaturePlanTask[];
+}
+
+export interface FeaturePlan {
+  summary: string;
+  considerations: string[];
+  phases: FeaturePlanPhase[];
+}
+
+export type PlanVerdict = 'clean' | 'minor' | 'blocker';
+
+export interface PlanFinding {
+  severity: 'blocker' | 'major' | 'minor';
+  summary: string;
+  detail: string | null;
+}
+
+/** One adversarial pass over one generated plan. */
+export interface PlanReviewRound {
+  round: number;
+  verdict: PlanVerdict;
+  findings: PlanFinding[];
+  model: string;
+  at: string;
+}
+
+export interface FeatureReview {
+  rounds: PlanReviewRound[];
+}
+
+export interface Feature {
+  id: string;
+  repoId: string | null;
+  title: string;
+  /** the big request, markdown */
+  request: string;
+  status: FeatureStatus;
+  /** latest (possibly user-edited) plan; null until the first analysis lands */
+  analysis: FeaturePlan | null;
+  /** adversarial plan-review rounds, newest last */
+  review: FeatureReview | null;
+  /** how many analysis rounds have run (bounded by feature.analysisMaxRounds) */
+  analysisRounds: number;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 // ---- Audit log ("nothing untraced") ----
 
@@ -263,6 +350,10 @@ export type AuditKind =
   | 'run.stats-final'
   | 'proposal.created'
   | 'proposal.decided'
+  | 'feature.created'
+  | 'feature.transition'
+  | 'feature.edited'
+  | 'feature.analyzed'
   | 'repo.changed'
   | 'config.changed'
   | 'orchestrator.toggle'
@@ -346,5 +437,7 @@ export type ServerEvent =
   | { type: 'run.exited'; run: Run }
   | { type: 'run.needs-attention'; run: Run }
   | { type: 'proposal.created'; proposal: Proposal }
+  | { type: 'feature.updated'; feature: Feature }
+  | { type: 'feature.deleted'; featureId: string }
   | { type: 'event.appended'; event: AuditEvent }
   | { type: 'orchestrator.status'; status: OrchestratorStatus };

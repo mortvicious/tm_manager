@@ -538,6 +538,43 @@ select.field:focus {
   font-family: var(--tm-font-mono);
 }
 
+/* quick actions: terminal before the title, run / mark-ready after it */
+.task-row .quick-wrap {
+  display: inline-flex;
+  flex: none;
+}
+
+.task-row .quick {
+  padding: var(--tm-space-1);
+  border-radius: var(--tm-radius-sm);
+  color: var(--tm-text-faint);
+}
+
+.task-row .quick:hover {
+  color: var(--tm-accent);
+  background: var(--tm-bg-overlay);
+}
+
+/* the check means "mark done" on a task in review, not "enqueue" */
+.task-row .quick.affirm:hover {
+  color: var(--tm-status-done);
+}
+
+.task-row .row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+  margin-left: calc(-1 * var(--tm-space-2));
+}
+
+.task-row .row-err {
+  font-size: var(--tm-text-xs);
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .section-head {
   display: flex;
   align-items: center;
@@ -1040,3 +1077,178 @@ table.tbl tr:last-child td {
   background: var(--tm-accent-subtle);
   color: var(--tm-text);
 }
+
+/* ---------- features: phase board + plan cards ---------- */
+.feature-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--tm-space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--tm-space-4);
+}
+.feature-head .grow { flex: 1; min-width: 240px; }
+.feature-actions {
+  display: flex;
+  gap: var(--tm-space-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.fbadge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+  padding: 2px var(--tm-space-2);
+  border-radius: var(--tm-radius-pill);
+  border: 1px solid var(--tm-border);
+  background: var(--tm-bg-raised);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+  white-space: nowrap;
+}
+.fbadge .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.fbadge.f-draft { color: var(--tm-status-queued); }
+.fbadge.f-analyzing { color: var(--tm-status-running); }
+.fbadge.f-proposed { color: var(--tm-accent); }
+.fbadge.f-approved { color: var(--tm-accent); }
+.fbadge.f-running { color: var(--tm-status-running); }
+.fbadge.f-paused { color: var(--tm-status-review); }
+.fbadge.f-review { color: var(--tm-status-review); }
+.fbadge.f-done { color: var(--tm-status-done); }
+.fbadge.f-failed { color: var(--tm-status-failed); }
+.fbadge.f-cancelled { color: var(--tm-text-faint); }
+
+.verdict-clean { color: var(--tm-status-done); }
+.verdict-minor { color: var(--tm-status-review); }
+.verdict-blocker { color: var(--tm-status-failed); }
+
+.phase-board {
+  display: flex;
+  gap: var(--tm-space-4);
+  align-items: flex-start;
+  overflow-x: auto;
+  padding-bottom: var(--tm-space-3);
+}
+.phase-col {
+  flex: 0 0 320px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  background: var(--tm-bg-raised);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-lg);
+  padding: var(--tm-space-3);
+}
+.phase-col.current {
+  border-color: var(--tm-accent);
+  box-shadow: 0 0 0 1px var(--tm-accent-subtle);
+}
+.phase-col > .phase-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  padding-bottom: var(--tm-space-2);
+  border-bottom: 1px solid var(--tm-border);
+}
+.phase-col .phase-index {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.phase-col .phase-title {
+  font-family: var(--tm-font-display);
+  font-size: var(--tm-text-md);
+  font-weight: 600;
+  color: var(--tm-text);
+}
+.phase-col .phase-goal {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+  line-height: 1.45;
+}
+
+.plan-card {
+  background: var(--tm-bg-overlay);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  padding: var(--tm-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  transition: border-color var(--tm-dur-fast) var(--tm-ease-out);
+}
+.plan-card:hover { border-color: var(--tm-border-strong); }
+.plan-card.excluded { opacity: 0.45; }
+.plan-card.clickable { cursor: pointer; }
+.plan-card .card-title {
+  font-size: var(--tm-text-sm);
+  font-weight: 600;
+  color: var(--tm-text);
+  line-height: 1.35;
+}
+.plan-card .card-body {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  /* clamp long plan bodies so a column stays scannable; Edit shows it whole */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  line-clamp: 6;
+  overflow: hidden;
+}
+.plan-card .card-meta {
+  display: flex;
+  gap: var(--tm-space-1);
+  flex-wrap: wrap;
+  align-items: center;
+}
+.plan-card .card-tools {
+  display: flex;
+  gap: var(--tm-space-1);
+  flex-wrap: wrap;
+  align-items: center;
+  border-top: 1px solid var(--tm-border);
+  padding-top: var(--tm-space-2);
+}
+.plan-card .crit {
+  margin: 0;
+  padding-left: var(--tm-space-4);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+  line-height: 1.5;
+}
+
+.finding-row {
+  display: flex;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2) 0;
+  border-bottom: 1px solid var(--tm-border);
+  font-size: var(--tm-text-sm);
+  line-height: 1.5;
+}
+.finding-row:last-child { border-bottom: none; }
+.finding-row .sev-tag {
+  flex: none;
+  width: 62px;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* table links (Features list) speak the accent, not the browser default */
+table.tbl a {
+  color: var(--tm-accent);
+  text-decoration: none;
+}
+table.tbl a:hover { text-decoration: underline; }

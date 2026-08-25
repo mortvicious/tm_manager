@@ -3,6 +3,7 @@ import { EFFORT_LEVELS, MODEL_OPTIONS, type EffortLevel, type Task, type TaskSta
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { StatusBadge } from '../components/StatusBadge.tsx';
+import { TaskRow } from '../components/TaskRow.tsx';
 
 const ORDER: TaskStatus[] = ['running', 'queued', 'blocked', 'review', 'draft', 'failed', 'done', 'cancelled'];
 
@@ -134,17 +135,26 @@ function NewTaskForm({ onCreated }: { onCreated: () => void }) {
   );
 }
 
-type Provenance = 'all' | 'human' | 'agent' | 'sentry' | 'analyze';
+type Provenance = 'all' | 'human' | 'agent' | 'sentry' | 'analyze' | 'feature';
 type GroupBy = 'status' | 'category' | 'repo';
 
 const provenanceOf = (t: Task): Exclude<Provenance, 'all'> => {
+  // feature wins over agent: a feature-generated task is the plan's, not a
+  // worker's follow-up (its children keep featureId but are still 'agent').
+  if (t.source === 'feature') return 'feature';
   if (t.createdByRun) return 'agent';
   if (t.source === 'sentry') return 'sentry';
   if (t.source === 'auto') return 'analyze';
   return 'human';
 };
 
-export function BoardPage({ onOpenTask }: { onOpenTask: (id: string) => void }) {
+export function BoardPage({
+  onOpenTask,
+  onOpenTerminal,
+}: {
+  onOpenTask: (id: string) => void;
+  onOpenTerminal: (runId: string) => void;
+}) {
   const { tasks, repos, runs, refresh } = useApp();
   const repoName = (id: string | null) => repos.find((r) => r.id === id)?.name;
   const [filterRepo, setFilterRepo] = useState('all');
@@ -226,6 +236,7 @@ export function BoardPage({ onOpenTask }: { onOpenTask: (id: string) => void }) 
           <option value="agent">agent</option>
           <option value="sentry">sentry</option>
           <option value="analyze">analyze</option>
+          <option value="feature">feature</option>
         </select>
         <select className="field" style={{ width: 160 }} value={filterCat} onChange={(e) => setFilterCat(e.target.value)}>
           <option value="all">all categories</option>
@@ -262,16 +273,20 @@ export function BoardPage({ onOpenTask }: { onOpenTask: (id: string) => void }) 
           </div>
           <div className="panel">
             {list.map((t) => (
-              <div className="task-row" key={t.id} onClick={() => onOpenTask(t.id)}>
-                <span className={`title ${t.parentId ? 'child' : ''}`}>{t.title}</span>
+              <TaskRow key={t.id} task={t} onOpenTask={onOpenTask} onOpenTerminal={onOpenTerminal}>
                 {t.category && groupBy !== 'category' && (
                   <span className="chip" style={{ color: 'var(--tm-accent)' }}>{t.category}</span>
                 )}
+                {t.featureId && (
+                  <span className="chip" style={{ color: 'var(--tm-accent)' }} title={`feature phase ${(t.featurePhase ?? 0) + 1}`}>
+                    feat p{(t.featurePhase ?? 0) + 1}
+                  </span>
+                )}
                 {t.createdByRun && <span className="chip" title="filed by an agent session">agent</span>}
-                {t.source !== 'manual' && !t.createdByRun && <span className="chip">{t.source}</span>}
+                {t.source !== 'manual' && t.source !== 'feature' && !t.createdByRun && <span className="chip">{t.source}</span>}
                 {repoName(t.repoId) && groupBy !== 'repo' && <span className="chip">{repoName(t.repoId)}</span>}
                 <StatusBadge status={t.status} attention={attention(t)} />
-              </div>
+              </TaskRow>
             ))}
           </div>
         </div>

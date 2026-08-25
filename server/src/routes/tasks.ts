@@ -76,6 +76,8 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     fs.rmSync(path.join(artifactsRoot, id), { recursive: true, force: true });
     await storage.appendEvent({ kind: 'task.deleted', actor: 'human', taskId: id, data: { title: cur.title } });
     broadcast({ type: 'task.deleted', taskId: id });
+    // Deleting the last unresolved card of a phase must not strand its feature.
+    if (cur.featureId) await app.orchestrator?.advanceFeature(cur.featureId, 'human');
     return { ok: true };
   });
 
@@ -140,7 +142,7 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     if (!task) return reply.code(409).send({ error: 'task is not in review' });
     broadcast({ type: 'task.updated', task });
     await app.orchestrator?.closeTaskSessions(id);
-    await app.orchestrator?.resolveParent(task); // done child may unblock a split parent
+    await app.orchestrator?.resolveCompletion(task); // done child may unblock a split parent
     return task;
   });
 
@@ -265,7 +267,7 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     const dequeued = await storage.transitionTask(id, ['queued'], 'cancelled', 'human');
     if (dequeued) {
       broadcast({ type: 'task.updated', task: dequeued });
-      await app.orchestrator?.resolveParent(dequeued); // cancelled child resolves its parent (F2)
+      await app.orchestrator?.resolveCompletion(dequeued); // cancelled child resolves its parent (F2)
       return dequeued;
     }
     if (!app.orchestrator) return reply.code(503).send({ error: 'orchestrator not ready' });

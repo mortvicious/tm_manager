@@ -7,8 +7,12 @@ export interface OrchestratorApi {
   runNow(taskId: string, actor?: string): Promise<ActionResult>;
   cancel(taskId: string, actor?: string): Promise<ActionResult>;
   followUp(taskId: string, message: string, actor?: string): Promise<ActionResult>;
-  /** Re-evaluate the parent after a child reached a terminal status. */
-  resolveParent(child: Task, actor?: string): Promise<void>;
+  /** Re-evaluate a task's dependents after it reached a terminal status: its
+   *  split parent AND, when it belongs to one, its feature's phase gate. */
+  resolveCompletion(child: Task, actor?: string): Promise<void>;
+  /** Feature phase pump: enqueue the current phase, pause on failure, or roll
+   *  up to review. Also called directly by the start/resume routes. */
+  advanceFeature(featureId: string, actor?: string): Promise<void>;
   reviewCompletedRun(taskId: string): Promise<void>;
   applyReviewFixes(taskId: string, actor?: string): Promise<ActionResult>;
   /** True when a PTY for this task is still alive (live or idle post-Stop). */

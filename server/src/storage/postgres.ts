@@ -4,18 +4,25 @@ import {
   DEFAULT_SETTINGS,
   type AppSettings,
   type AuditEvent,
+  type Feature,
+  type FeatureStatus,
   type Proposal,
   type Repo,
   type Run,
   type Task,
 } from '@tm/shared';
+import { planCards } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
+import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
 import { MIGRATIONS } from './migrations.ts';
-import { eventId, now, rowToEvent, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
+import { eventId, now, rowToEvent, rowToFeature, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
 import type {
   ChildCounts,
   EventFilter,
+  FeaturePatch,
+  FeatureResolution,
   NewAuditEvent,
+  NewFeature,
   NewProposal,
   NewRun,
   NewTask,
@@ -169,6 +176,8 @@ export class PostgresStorage implements Storage {
   async deleteRepo(id: string): Promise<void> {
     await this.tx(async (c) => {
       await c.query(`UPDATE tm_tasks SET repo_id = NULL WHERE repo_id = $1`, [id]);
+      // Features follow tasks: detached, not deleted (see sqlite driver).
+      await c.query(`UPDATE tm_features SET repo_id = NULL, updated_at = $1 WHERE repo_id = $2`, [now(), id]);
       await c.query(`DELETE FROM tm_repos WHERE id = $1`, [id]);
     });
   }
@@ -190,6 +199,10 @@ export class PostgresStorage implements Storage {
       where.push(`parent_id = ?`);
       params.push(f.parentId);
     }
+    if (f?.featureId) {
+      where.push(`feature_id = ?`);
+      params.push(f.featureId);
+    }
     const sql = `SELECT * FROM tm_tasks ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY priority DESC, created_at`;
     return (await this.q(sql, params)).map(rowToTask);
   }
@@ -208,8 +221,8 @@ export class PostgresStorage implements Storage {
     const id = randomUUID();
     const ts = now();
     await c.query(
-      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, status, source, source_ref, priority, model, effort, category, review, created_by_run, spawn_depth, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, status, source, source_ref, priority, model, effort, category, review, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
       [
         id,
         t.title,
@@ -226,6 +239,8 @@ export class PostgresStorage implements Storage {
         t.review == null ? null : t.review ? 1 : 0,
         t.createdByRun ?? null,
         t.spawnDepth ?? 0,
+        t.featureId ?? null,
+        t.featurePhase ?? null,
         ts,
         ts,
       ],
@@ -257,7 +272,7 @@ export class PostgresStorage implements Storage {
     const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
     const next = { ...t, ...clean, updatedAt: now() };
     await c.query(
-      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, status=$5, source=$6, source_ref=$7, priority=$8, model=$9, effort=$10, category=$11, review=$12, result_summary=$13, review_summary=$14, error=$15, updated_at=$16 WHERE id=$17`,
+      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, status=$5, source=$6, source_ref=$7, priority=$8, model=$9, effort=$10, category=$11, review=$12, feature_id=$13, feature_phase=$14, result_summary=$15, review_summary=$16, error=$17, updated_at=$18 WHERE id=$19`,
       [
         next.title,
         next.description,
@@ -271,6 +286,8 @@ export class PostgresStorage implements Storage {
         next.effort,
         next.category,
         next.review == null ? null : next.review ? 1 : 0,
+        next.featureId,
+        next.featurePhase,
         next.resultSummary,
         next.reviewSummary,
         next.error,
@@ -300,8 +317,9 @@ export class PostgresStorage implements Storage {
     return this.tx(async (c, sink) => {
       const r = await c.query(
         `UPDATE tm_tasks SET status = 'running', updated_at = $1
-         WHERE id = (SELECT id FROM tm_tasks WHERE status = 'queued' AND repo_id IS NOT NULL
-                     ORDER BY priority DESC, created_at LIMIT 1)
+         WHERE id = (SELECT t.id FROM tm_tasks t WHERE t.status = 'queued' AND t.repo_id IS NOT NULL
+                       AND ${FEATURE_CLAIM_GATE}
+                     ORDER BY t.priority DESC, t.created_at LIMIT 1)
          RETURNING *`,
         [now()],
       );
@@ -459,9 +477,10 @@ export class PostgresStorage implements Storage {
     return this.tx(async (c, sink) => {
       const r = await c.query(
         `UPDATE tm_tasks SET status = 'running', updated_at = $1
-         WHERE id = (SELECT id FROM tm_tasks
-                     WHERE status = 'queued' AND repo_id IS NOT NULL AND created_by_run IN (${placeholders})
-                     ORDER BY created_at LIMIT 1)
+         WHERE id = (SELECT t.id FROM tm_tasks t
+                     WHERE t.status = 'queued' AND t.repo_id IS NOT NULL AND t.created_by_run IN (${placeholders})
+                       AND ${FEATURE_OVERFLOW_GATE}
+                     ORDER BY t.created_at LIMIT 1)
          RETURNING *`,
         [now(), ...eligibleRunIds],
       );
@@ -613,6 +632,9 @@ export class PostgresStorage implements Storage {
                 status: 'queued',
                 source: 'auto',
                 spawnDepth: parentTask.spawnDepth, // review R4
+                // children of a feature task belong to the SAME phase
+                featureId: parentTask.featureId,
+                featurePhase: parentTask.featurePhase,
               }, actor, sink),
             );
           }
@@ -662,6 +684,284 @@ export class PostgresStorage implements Storage {
         data: { proposalId: id, kind: proposal.kind, decision: 'accepted' },
       }, sink);
       return { proposal: updated, tasks: affected };
+    });
+  }
+
+  // ---- features ----
+
+  async listFeatures(f?: { repoId?: string; status?: FeatureStatus }): Promise<Feature[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (f?.repoId) {
+      where.push(`repo_id = ?`);
+      params.push(f.repoId);
+    }
+    if (f?.status) {
+      where.push(`status = ?`);
+      params.push(f.status);
+    }
+    const sql = `SELECT * FROM tm_features ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC`;
+    return (await this.q(sql, params)).map(rowToFeature);
+  }
+
+  async getFeature(id: string): Promise<Feature | null> {
+    const r = await this.q(`SELECT * FROM tm_features WHERE id = ?`, [id]);
+    return r[0] ? rowToFeature(r[0]) : null;
+  }
+
+  async createFeature(f: NewFeature, actor: string): Promise<Feature> {
+    return this.tx(async (c, sink) => {
+      const id = randomUUID();
+      const ts = now();
+      await c.query(
+        `INSERT INTO tm_features (id, repo_id, title, request, status, analysis, review, analysis_rounds, error, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'draft', NULL, NULL, 0, NULL, $5, $6)`,
+        [id, f.repoId, f.title, f.request, ts, ts],
+      );
+      const feature = rowToFeature((await c.query(`SELECT * FROM tm_features WHERE id = $1`, [id])).rows[0]);
+      await this.appendEventWith(
+        c,
+        {
+          kind: 'feature.created',
+          actor,
+          repoId: feature.repoId,
+          data: { featureId: feature.id, title: feature.title },
+        },
+        sink,
+      );
+      return feature;
+    });
+  }
+
+  /** Applies only the present keys; `analysis: null` explicitly clears. */
+  private async writeFeaturePatchWith(c: pg.PoolClient, id: string, patch: FeaturePatch): Promise<Feature | null> {
+    const sets: string[] = ['updated_at = ?'];
+    const vals: unknown[] = [now()];
+    if ('title' in patch && patch.title !== undefined) {
+      sets.push('title = ?');
+      vals.push(patch.title);
+    }
+    if ('request' in patch && patch.request !== undefined) {
+      sets.push('request = ?');
+      vals.push(patch.request);
+    }
+    if ('analysis' in patch) {
+      sets.push('analysis = ?');
+      vals.push(patch.analysis ? JSON.stringify(patch.analysis) : null);
+    }
+    if ('review' in patch) {
+      sets.push('review = ?');
+      vals.push(patch.review ? JSON.stringify(patch.review) : null);
+    }
+    if ('analysisRounds' in patch && patch.analysisRounds !== undefined) {
+      sets.push('analysis_rounds = ?');
+      vals.push(patch.analysisRounds);
+    }
+    if ('error' in patch) {
+      sets.push('error = ?');
+      vals.push(patch.error ?? null);
+    }
+    const r = await c.query(toPg(`UPDATE tm_features SET ${sets.join(', ')} WHERE id = ? RETURNING *`), [...vals, id]);
+    return r.rows[0] ? rowToFeature(r.rows[0]) : null;
+  }
+
+  async updateFeature(id: string, patch: FeaturePatch, actor: string): Promise<Feature | null> {
+    return this.tx(async (c, sink) => {
+      const feature = await this.writeFeaturePatchWith(c, id, patch);
+      if (!feature) return null;
+      await this.appendEventWith(
+        c,
+        { kind: 'feature.edited', actor, repoId: feature.repoId, data: { featureId: id, fields: Object.keys(patch) } },
+        sink,
+      );
+      return feature;
+    });
+  }
+
+  async transitionFeature(
+    id: string,
+    from: FeatureStatus[],
+    to: FeatureStatus,
+    actor: string,
+    patch?: FeaturePatch,
+  ): Promise<Feature | null> {
+    return this.tx((c, sink) => this.transitionFeatureWith(c, sink, id, from, to, actor, patch));
+  }
+
+  /** Conditional status move — twin of transitionTask (see sqlite driver). */
+  private async transitionFeatureWith(
+    c: pg.PoolClient,
+    sink: AuditEvent[],
+    id: string,
+    from: FeatureStatus[],
+    to: FeatureStatus,
+    actor: string,
+    patch?: FeaturePatch,
+  ): Promise<Feature | null> {
+    const prevRes = await c.query(`SELECT status FROM tm_features WHERE id = $1`, [id]);
+    const placeholders = from.map(() => '?').join(', ');
+    const guard = await c.query(toPg(`SELECT id FROM tm_features WHERE id = ? AND status IN (${placeholders})`), [
+      id,
+      ...from,
+    ]);
+    if (!guard.rows[0]) return null;
+    if (patch) await this.writeFeaturePatchWith(c, id, patch);
+    const r = await c.query(
+      toPg(`UPDATE tm_features SET status = ?, updated_at = ? WHERE id = ? AND status IN (${placeholders}) RETURNING *`),
+      [to, now(), id, ...from],
+    );
+    if (!r.rows[0]) return null;
+    const feature = rowToFeature(r.rows[0]);
+    await this.appendEventWith(
+      c,
+      {
+        kind: 'feature.transition',
+        actor,
+        repoId: feature.repoId,
+        data: { featureId: id, from: prevRes.rows[0]?.status ?? null, to },
+      },
+      sink,
+    );
+    return feature;
+  }
+
+  async deleteFeature(id: string): Promise<boolean> {
+    return this.tx(async (c) => {
+      const n = await c.query(`SELECT COUNT(*) AS n FROM tm_tasks WHERE feature_id = $1`, [id]);
+      if (Number(n.rows[0].n) > 0) return false;
+      await c.query(`DELETE FROM tm_features WHERE id = $1`, [id]);
+      return true;
+    });
+  }
+
+  async approveFeature(id: string, actor: string): Promise<{ feature: Feature; tasks: Task[] } | null> {
+    return this.tx(async (c, sink) => {
+      const row = await c.query(`SELECT * FROM tm_features WHERE id = $1 FOR UPDATE`, [id]);
+      if (!row.rows[0]) return null;
+      const feature = rowToFeature(row.rows[0]);
+      if (feature.status !== 'proposed' || !feature.repoId || !feature.analysis) return null;
+      const cards = planCards(feature);
+      if (cards.length === 0) return null;
+      const tasks: Task[] = [];
+      for (const card of cards) {
+        tasks.push(
+          await this.insertTaskWith(
+            c,
+            {
+              title: card.card.title,
+              description: card.description,
+              repoId: feature.repoId,
+              status: 'draft',
+              source: 'feature',
+              category: card.card.category ?? null,
+              effort: card.card.effort ?? null,
+              review: card.card.review ?? null,
+              featureId: feature.id,
+              featurePhase: card.phase,
+            },
+            actor,
+            sink,
+          ),
+        );
+      }
+      const updated = await this.transitionFeatureWith(c, sink, id, ['proposed'], 'approved', actor, { error: null });
+      // See the sqlite driver: returning null here would commit orphan tasks.
+      if (!updated) throw new Error('feature approval raced: status changed mid-transaction');
+      return { feature: updated, tasks };
+    });
+  }
+
+  async resolveFeatureCompletion(featureId: string, actor: string): Promise<FeatureResolution | null> {
+    return this.tx(async (c, sink) => {
+      const row = await c.query(`SELECT * FROM tm_features WHERE id = $1 FOR UPDATE`, [featureId]);
+      if (!row.rows[0]) return null;
+      const feature = rowToFeature(row.rows[0]);
+      if (feature.status !== 'running') return null;
+      const tasks = (await c.query(`SELECT * FROM tm_tasks WHERE feature_id = $1`, [featureId])).rows.map(rowToTask);
+      if (tasks.length === 0) return null;
+
+      const failed = tasks.filter((t) => t.status === 'failed');
+      if (failed.length > 0) {
+        const paused = await this.transitionFeatureWith(c, sink, featureId, ['running'], 'paused', actor, {
+          error: `${failed.length} task(s) failed — retry or cancel them, then Resume`,
+        });
+        return paused ? { feature: paused, tasks: [], action: 'paused' as const } : null;
+      }
+
+      const pending = tasks.filter(isFeatureTaskBlocking);
+      if (pending.length === 0) {
+        const done = await this.transitionFeatureWith(c, sink, featureId, ['running'], 'review', actor, { error: null });
+        return done ? { feature: done, tasks: [], action: 'review' as const } : null;
+      }
+
+      const phase = Math.min(...pending.map((t) => t.featurePhase ?? 0));
+      const started: Task[] = [];
+      for (const t of pending) {
+        if ((t.featurePhase ?? 0) !== phase || t.status !== 'draft' || t.source !== 'feature') continue;
+        if (!t.repoId) continue; // never queue a repo-less task
+        const r = await c.query(
+          `UPDATE tm_tasks SET status = 'queued', error = NULL, updated_at = $1 WHERE id = $2 AND status = 'draft' RETURNING *`,
+          [now(), t.id],
+        );
+        if (!r.rows[0]) continue;
+        const queued = rowToTask(r.rows[0]);
+        started.push(queued);
+        await this.appendEventWith(
+          c,
+          {
+            kind: 'task.transition',
+            actor,
+            taskId: queued.id,
+            repoId: queued.repoId,
+            data: { from: 'draft', to: 'queued', featureId, featurePhase: phase },
+          },
+          sink,
+        );
+      }
+      if (started.length === 0) return { feature, tasks: [], action: 'none' as const, phase };
+      return { feature, tasks: started, action: 'phase-started' as const, phase };
+    });
+  }
+
+  async cancelFeature(
+    id: string,
+    actor: string,
+  ): Promise<{ feature: Feature; tasks: Task[]; runningTaskIds: string[] } | null> {
+    return this.tx(async (c, sink) => {
+      // Feature first — see the sqlite driver.
+      const feature = await this.transitionFeatureWith(
+        c,
+        sink,
+        id,
+        ['draft', 'analyzing', 'proposed', 'approved', 'running', 'paused', 'review', 'failed'],
+        'cancelled',
+        actor,
+      );
+      if (!feature) return null;
+      const tasks = (await c.query(`SELECT * FROM tm_tasks WHERE feature_id = $1`, [id])).rows.map(rowToTask);
+      const cancelled: Task[] = [];
+      for (const t of tasks) {
+        if (t.status !== 'draft' && t.status !== 'queued') continue;
+        const r = await c.query(
+          `UPDATE tm_tasks SET status = 'cancelled', updated_at = $1 WHERE id = $2 AND status IN ('draft', 'queued') RETURNING *`,
+          [now(), t.id],
+        );
+        if (!r.rows[0]) continue;
+        const cur = rowToTask(r.rows[0]);
+        cancelled.push(cur);
+        await this.appendEventWith(
+          c,
+          {
+            kind: 'task.transition',
+            actor,
+            taskId: cur.id,
+            repoId: cur.repoId,
+            data: { from: t.status, to: 'cancelled', featureId: id },
+          },
+          sink,
+        );
+      }
+      return { feature, tasks: cancelled, runningTaskIds: tasks.filter((t) => t.status === 'running').map((t) => t.id) };
     });
   }
 

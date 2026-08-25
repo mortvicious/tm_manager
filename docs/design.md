@@ -32,6 +32,9 @@ server/src/
   pty/session-manager.ts
   claude/worker.ts      claude invocation builder (args array, hooks settings JSON)
   claude/analyze.ts     headless -p runner + proposal apply
+  claude/feature-plan.ts      feature plan contract: zod + json-schema, prompts, standing-caps injection (pure)
+  claude/feature-analysis.ts  feature pipeline: plan run → adversarial plan review → bounded re-analysis
+  storage/feature-sql.ts      phase-gating SQL fragment shared verbatim by both drivers (+ its JS twin)
   orchestrator.ts
   routes/…  ws/{terminal,events}.ts
   data/                 taskman.db, config.json (gitignored)
@@ -46,8 +49,10 @@ Deps (minimal): fastify, @fastify/websocket, @fastify/static, better-sqlite3 ^13
 - `tm_repos(id, name, path /*absolute, ~ expanded*/, role /*"backend"/"frontend" note*/, created_at)`
 - `tm_tasks(id, title, description, repo_id, parent_id, status, source /*manual|sentry|auto*/, source_ref, priority, result_summary, error, created_at, updated_at)`
   - status: `draft | queued | running | blocked | review | done | failed | cancelled`
+  - source: `manual | sentry | auto | feature`
 - `tm_runs(id, task_id, repo_id, mode /*worker|analyze*/, status /*running|exited|killed*/, pid, exit_code, started_at, ended_at)`
 - `tm_proposals(id, run_id, repo_id, task_id, kind /*rewrite|split|new_task|solution_options*/, payload TEXT/*JSON*/, status /*pending|accepted|rejected*/, created_at)`
+- `tm_features(id, repo_id /*nullable: repo deletion detaches*/, title, request TEXT, status /*draft|analyzing|proposed|approved|running|paused|review|done|failed|cancelled*/, analysis TEXT/*JSON plan*/, review TEXT/*JSON review rounds*/, analysis_rounds, error, created_at, updated_at)` — a big request decomposed into ordered phases of tasks (`docs/features.md`); `tm_tasks` carries `feature_id` + `feature_phase` and the `feature` source value
 - `tm_migrations`
 
 Scrollback is NOT stored in DB (in-memory ring buffer per session).
@@ -59,6 +64,7 @@ Scrollback is NOT stored in DB (in-memory ring buffer per session).
 Interface: async CRUD methods per entity **plus first-class composite methods instead of a generic `transaction(fn)`** (better-sqlite3's `.transaction()` is sync-only; an async facade would commit before awaited work runs — adversarial-review blocker B1):
 - `claimNextQueuedTask()` — `UPDATE … SET status='running' WHERE id=(SELECT id FROM tm_tasks WHERE status='queued' ORDER BY priority DESC, created_at LIMIT 1) RETURNING *`; in better-sqlite3 run via `stmt.get()` (`.run()` discards RETURNING). If PTY spawn then throws → revert task to `queued`.
 - `acceptProposal(id, chosenOption?)` — atomic per driver (sync `db.transaction()` / pg `BEGIN..COMMIT` on one client): rewrite→patch task; split→create `queued` children (`source:'auto'`, `parent_id`) + parent→`blocked`; new_task→`draft` task; solution_options→append chosen approach to description.
+- `approveFeature(id)` / `resolveFeatureCompletion(featureId)` / `cancelFeature(id)` — the Feature composites: materialise the approved plan as `draft` tasks (standing caps injected server-side), then pump phases (pause on any failure, enqueue the lowest unresolved phase, roll up to `review` when nothing is left). Phase eligibility is one shared SQL fragment spliced into `claimNextQueuedTask` in both drivers, with a JS twin used by the pump — see `storage/feature-sql.ts`.
 - `resolveChildCompletion(childId)` — recompute parent: all children done (cancelled counts as resolved) → parent `queued`-again? No: parent → `review`; any failed → parent stays `blocked` with error surfaced. Manual **Unblock** / **Fail parent** actions exist in UI (review finding M5 — no dead-end states).
 
 Both drivers share SQL strings with `?` placeholders; pg driver rewrites to `$n` once per statement (comment the "no `?` in string literals" constraint).
@@ -85,20 +91,22 @@ Interactive session (hard requirement: real usable terminal), completion via hoo
 
 ## Orchestrator
 
-Singleton; `orchestrator.enabled` persisted in `tm_config`. Event-driven `maybeSchedule()` (on start/enqueue/exit/stop-hook + 10s safety tick): claim tasks while activeWorkers < 2. Boot recovery (M4): for each `running` run row, verify pid's command line is `claude`, kill it, then mark task `failed('server restarted')` — never leave orphaned agents editing repos. Start/Stop = stop picking new tasks (live sessions continue); separate "Stop & kill all".
+Singleton; `orchestrator.enabled` persisted in `tm_config`. Event-driven `maybeSchedule()` (on start/enqueue/exit/stop-hook + 10s safety tick): claim tasks while activeWorkers < 2. Boot recovery (M4): for each `running` run row, verify pid's command line is `claude`, kill it, then mark task `failed('server restarted')` — never leave orphaned agents editing repos. Start/Stop = stop picking new tasks (live sessions continue); separate "Stop & kill all". Untouched by Features except for claim eligibility: a task with `feature_id` is claimable only while its feature is `running` and every task in a lower phase is resolved. `resolveCompletion(task)` (formerly `resolveParent`) re-evaluates both the split parent and the feature phase gate whenever a task reaches a terminal status.
 
 ## Analyze
 
 Headless, per repo/task selection: `execFile('claude', ['-p','--model','claude-opus-5','--permission-mode','dontAsk','--disallowedTools','Edit','Write','Bash','--output-format','json','--json-schema',schema], {cwd: repo.path, maxBuffer: 64*1024*1024, timeout: 10*60_000})`, prompt via stdin (repo role/path + open tasks JSON + instructions). NOT plan mode (fights json-schema output — M2); read-only enforced via disallowed tools. **Phase 6 step 1 = a cheap spike to capture the exact `-p` JSON result envelope** (`{type:"result", result, is_error,…}`) — parse the envelope, not raw stdout. Proposals validated with zod → `tm_proposals` rows → UI accept/reject (accept paths in Storage composites above). Trust dialog is skipped in `-p` mode (verified), so Analyze never stalls.
 
+**Feature analysis** reuses the same envelope, `dontAsk` + disallowed write tools, and zod validation, but runs the loop shape of the diff review instead: a plan run decomposes the request into phases, a SECOND independent run reviews that plan adversarially, and a `blocker` verdict folds the findings into a re-analysis, bounded by `feature.analysisMaxRounds` (default 2). One run row spans the whole pipeline; each child registers with `trackHeadlessChild` so Kill always reaches the live process. Full design + as-built notes: `docs/features.md`.
+
 ## API
 
-REST `/api`: repos CRUD; tasks CRUD + `/enqueue|run-now|cancel|retry|unblock`; runs list + `/kill`; `/analyze {repoId, taskIds?}`; proposals list + `/accept|reject`; config get/put; orchestrator get + `/start|stop|stop-and-kill`; `/usage` (session + weekly + weekly-fable windows, each `{pct,source,resetsAt,tokens,budget}` — real account figures from the CLI's `~/.claude.json` cache, local-transcript estimate as fallback); internal `/internal/runs/:id/{stop,session-end,needs-attention}`; `/health`.
-WS: `/ws/terminal/:runId?token=…` (history/data/exit ↔ input/resize, base64-in-JSON) and `/ws/events` (task.updated, run.started/exited, run.needs-attention, proposal.created, orchestrator.status) — frontend fully event-driven, no polling.
+REST `/api`: repos CRUD; tasks CRUD + `/enqueue|run-now|cancel|retry|unblock`; runs list + `/kill`; `/analyze {repoId, taskIds?}`; proposals list + `/accept|reject`; features CRUD + `/analyze|plan|approve|start|pause|resume|cancel|complete`; config get/put; orchestrator get + `/start|stop|stop-and-kill`; `/usage` (session + weekly + weekly-fable windows, each `{pct,source,resetsAt,tokens,budget}` — real account figures from the CLI's `~/.claude.json` cache, local-transcript estimate as fallback); internal `/internal/runs/:id/{stop,session-end,needs-attention}`; `/health`.
+WS: `/ws/terminal/:runId?token=…` (history/data/exit ↔ input/resize, base64-in-JSON) and `/ws/events` (task.updated, run.started/exited, run.needs-attention, proposal.created, feature.updated/deleted, orchestrator.status) — frontend fully event-driven, no polling.
 
 ## Frontend
 
-Sidebar (Board, Queue, Repos, Config) + header (prominent Start/Stop switch, `running N/2`, usage pill `5h % · wk % · fable % · routed model`, server uptime/restart, theme toggle). Board: status columns, cards with source chip/repo tag/parent indent/needs-attention badge → TaskSlideOver (edit, proposals accept/reject, Enqueue/Run now/Open terminal/Analyze/Unblock). Queue: active runs (elapsed, Open terminal, Kill) + queued list. Repos: path+role table, add form with server-side path validation, per-repo Analyze. Config: Storage / Agent (permission mode with warning, allowedTools) / Orchestrator / Sentry-stub groups. TerminalDrawer: xterm + fit, **StrictMode-safe effect cleanup (close WS + `terminal.dispose()`)**. Theme: CSS variables `:root` (light) + `[data-theme="dark"]`, localStorage + `prefers-color-scheme` default; 13–14px system font, ui-monospace for paths, 1px borders, subtle radii.
+Sidebar (Board, Queue, Features, Repos, Config) + header (prominent Start/Stop switch, `running N/2`, usage pill `5h % · wk % · fable % · routed model`, server uptime/restart, theme toggle). Board: status columns, cards with per-row quick actions (terminal glyph before the title → attaches to the task's live/most-recent run; run-now + mark-as-ready after the status badge — the check means **mark done** (`complete`) on a task in review, `enqueue` elsewhere — disabled with a reason when the server would reject them, including the client mirror of `hasLiveSession()` — `components/TaskRow.tsx`, shared with Queue's queued list), source chip/repo tag/parent indent/needs-attention badge → TaskSlideOver (edit, proposals accept/reject, Enqueue/Run now/Open terminal/Analyze/Unblock). Queue: active runs (elapsed, Open terminal, Kill) + queued list. Features: list + intake form per repo, then a Feature page — request, analysis summary/considerations, adversarial plan-review verdict, and the plan as horizontal **phase columns of editable task cards** (edit/exclude/reorder/move/add pre-approval, Save plan → Approve). After approval the same columns become the execution dashboard: cards are the real tasks, live over `/ws/events`, current phase highlighted. Repos: path+role table, add form with server-side path validation, per-repo Analyze. Config: Storage / Agent (permission mode with warning, allowedTools) / Orchestrator / Sentry-stub groups. TerminalDrawer: xterm + fit, **StrictMode-safe effect cleanup (close WS + `terminal.dispose()`)**. Theme: CSS variables `:root` (light) + `[data-theme="dark"]`, localStorage + `prefers-color-scheme` default; 13–14px system font, ui-monospace for paths, 1px borders, subtle radii.
 
 ## Commands
 

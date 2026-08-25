@@ -119,7 +119,7 @@ export function registerInternalRoutes(
             },
           });
         }
-        await orchestrator.resolveParent(task, 'hook');
+        await orchestrator.resolveCompletion(task, 'hook');
         broadcast({ type: 'orchestrator.status', status: await orchestrator.status() });
         orchestrator.maybeSchedule();
         // Adversarial review of the change, off the hook path (don't block the

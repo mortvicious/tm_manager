@@ -3,7 +3,7 @@ import type { UsageSnapshot, UsageWindow } from '@tm/shared';
 import { NavLink } from 'react-router-dom';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
-import { IconBoard, IconBook, IconConfig, IconMoon, IconQueue, IconRepo, IconSun, IconTerminal } from './Icons.tsx';
+import { IconBoard, IconBook, IconConfig, IconFeature, IconMoon, IconQueue, IconRepo, IconSun, IconTerminal } from './Icons.tsx';
 
 function ThemeToggle() {
   const [theme, setTheme] = useState(document.documentElement.dataset.theme ?? 'dark');
@@ -198,6 +198,7 @@ export function Layout({ children }: { children: ReactNode }) {
     { to: '/', label: 'Dashboard', icon: <IconQueue /> },
     { to: '/board', label: 'Board', icon: <IconBoard /> },
     { to: '/queue', label: 'Queue', icon: <IconTerminal /> },
+    { to: '/features', label: 'Features', icon: <IconFeature /> },
     { to: '/repos', label: 'Repos', icon: <IconRepo /> },
     { to: '/config', label: 'Config', icon: <IconConfig /> },
     { to: '/handbook', label: 'Handbook', icon: <IconBook /> },

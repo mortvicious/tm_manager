@@ -55,6 +55,12 @@ export const IconStop = () => (
   </svg>
 );
 
+export const IconCheck = () => (
+  <svg {...p}>
+    <path d="M20 6L9 17l-5-5" />
+  </svg>
+);
+
 export const IconX = () => (
   <svg {...p}>
     <path d="M18 6L6 18M6 6l12 12" />
@@ -65,6 +71,14 @@ export const IconAnalyze = () => (
   <svg {...p}>
     <circle cx="11" cy="11" r="7" />
     <path d="M21 21l-4.5-4.5M8 11h6M11 8v6" />
+  </svg>
+);
+
+export const IconFeature = () => (
+  <svg {...p}>
+    <path d="M3 6.5h5.5M3 12h5.5M3 17.5h5.5" />
+    <rect x="12.5" y="3.5" width="8" height="6" rx="1.5" />
+    <rect x="12.5" y="14.5" width="8" height="6" rx="1.5" />
   </svg>
 );
 

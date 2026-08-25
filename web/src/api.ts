@@ -1,4 +1,16 @@
-import type { Anomaly, AppSettings, AuditEvent, Proposal, Repo, Run, StatsOverview, Task, UsageSnapshot } from '@tm/shared';
+import type {
+  Anomaly,
+  AppSettings,
+  AuditEvent,
+  Feature,
+  FeaturePlan,
+  Proposal,
+  Repo,
+  Run,
+  StatsOverview,
+  Task,
+  UsageSnapshot,
+} from '@tm/shared';
 
 // Only user-editable fields — status/error/resultSummary are machine-owned and
 // the server rejects them with a 400 (.strict() schemas).
@@ -68,6 +80,21 @@ export const api = {
   acceptProposal: (id: string, chosenOptionIndex?: number) =>
     req<{ proposal: Proposal; tasks: Task[] }>('POST', `/api/proposals/${id}/accept`, { chosenOptionIndex }),
   rejectProposal: (id: string) => req<Proposal>('POST', `/api/proposals/${id}/reject`),
+
+  listFeatures: () => req<Feature[]>('GET', '/api/features'),
+  getFeature: (id: string) => req<{ feature: Feature; tasks: Task[] }>('GET', `/api/features/${id}`),
+  createFeature: (b: { repoId: string; title: string; request: string }) => req<Feature>('POST', '/api/features', b),
+  updateFeature: (id: string, b: { title?: string; request?: string }) =>
+    req<Feature>('PATCH', `/api/features/${id}`, b),
+  updateFeaturePlan: (id: string, analysis: FeaturePlan) =>
+    req<Feature>('PATCH', `/api/features/${id}/plan`, { analysis }),
+  deleteFeature: (id: string) => req<{ ok: true }>('DELETE', `/api/features/${id}`),
+  analyzeFeature: (id: string, note?: string) =>
+    req<{ runId: string; feature: Feature }>('POST', `/api/features/${id}/analyze`, { note: note || null }),
+  approveFeature: (id: string) =>
+    req<{ feature: Feature; tasks: Task[] }>('POST', `/api/features/${id}/approve`),
+  featureAction: (id: string, action: 'start' | 'pause' | 'resume' | 'cancel' | 'complete') =>
+    req<unknown>('POST', `/api/features/${id}/${action}`),
 
   getConfig: () => req<AppSettings>('GET', '/api/config'),
   putConfig: (b: Partial<AppSettings>) => req<AppSettings>('PUT', '/api/config', b),

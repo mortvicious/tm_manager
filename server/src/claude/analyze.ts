@@ -269,15 +269,24 @@ export async function startAnalysis(
   child.stdin?.on('error', () => {});
   child.stdin?.write(buildPrompt(repo, tasks));
   child.stdin?.end();
-  analyzeChildren.set(run.id, child);
-  child.on('exit', () => analyzeChildren.delete(run.id));
+  trackHeadlessChild(run.id, child);
   await storage.updateRun(run.id, { pid: child.pid ?? null });
 
   return { runId: run.id };
 }
 
-// Live analyze children by runId — lets the kill route stop a burning run (R4).
+// Live headless children by runId — lets the kill route stop a burning run
+// (R4). Shared with the feature-analysis pipeline, which spawns several
+// `claude -p` processes under ONE run row; registering each in turn keeps a
+// single Kill button honest.
 const analyzeChildren = new Map<string, ReturnType<typeof execFile>>();
+
+export function trackHeadlessChild(runId: string, child: ReturnType<typeof execFile>): void {
+  analyzeChildren.set(runId, child);
+  child.on('exit', () => {
+    if (analyzeChildren.get(runId) === child) analyzeChildren.delete(runId);
+  });
+}
 
 export function killAnalysis(runId: string): boolean {
   const child = analyzeChildren.get(runId);

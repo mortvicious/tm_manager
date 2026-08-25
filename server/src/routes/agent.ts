@@ -207,6 +207,39 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
     return { ok: true, category: updated.category };
   });
 
+  // Read-only sibling context: the feature this run's task belongs to. Agents
+  // do NOT create or mutate features in v1 (that is the autonomy doc's intake
+  // question) — this exists so a worker can see the phases around it.
+  app.get('/api/agent/features/:id', async (req, reply) => {
+    const run = await authRun(req);
+    if (!run) return reply.code(403).send({ error: 'forbidden' });
+    const { id } = req.params as { id: string };
+    const own = run.taskId ? await storage.getTask(run.taskId) : null;
+    if (!own?.featureId || own.featureId !== id) {
+      return reply.code(404).send({ error: 'not found — you may only read the feature your task belongs to' });
+    }
+    const feature = await storage.getFeature(id);
+    if (!feature) return reply.code(404).send({ error: 'not found' });
+    const tasks = await storage.listTasks({ featureId: id });
+    return {
+      id: feature.id,
+      title: feature.title,
+      request: feature.request,
+      status: feature.status,
+      summary: feature.analysis?.summary ?? null,
+      considerations: feature.analysis?.considerations ?? [],
+      yourPhase: own.featurePhase,
+      phases: (feature.analysis?.phases ?? []).map((p, i) => ({ index: i, title: p.title, goal: p.goal })),
+      tasks: tasks.map((t) => ({
+        id: t.id,
+        title: t.title,
+        phase: t.featurePhase,
+        status: t.status,
+        isYours: t.id === own.id,
+      })),
+    };
+  });
+
   // Poll a task this run created (R7) — optional long-poll via waitMs.
   app.get('/api/agent/tasks/:id', async (req, reply) => {
     const run = await authRun(req);

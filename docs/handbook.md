@@ -69,9 +69,21 @@ The header pill mirrors the CLI's own `/usage` panel: `5h` (current session), `w
 
 Proposals appear in the task panel with Accept/Reject. One analysis per repo at a time; kill it from the Queue if it's burning too long.
 
+## Features — when one task is too small
+
+A **Feature** is the home for a request that is far too big for one task: a paragraph-to-page description of a whole capability. Write it on the **Features** page (title + markdown request, one repo), then:
+
+1. **Analyze** — a read-only headless agent reads the repo and decomposes the request into *ordered phases* of worker-grade tasks. A second, independent agent then reviews that plan adversarially (missing steps? wrong ordering? tasks too big or too vague? contradicts `CLAUDE.md`?). A **blocker** verdict feeds the findings back into a fresh analysis, up to *Feature plan re-analysis rounds* in Config.
+2. **Review the plan** — the feature page shows the request, the analysis summary and considerations, the review verdict with its findings, and the plan as **phase columns of task cards**. Every card is yours to edit before approval: retitle, rewrite, set category/effort/review, exclude it, reorder it, move it to another phase, or add one. Nothing exists as a real task yet — hit **Save plan** to keep your edits.
+3. **Approve** — the included cards become real tasks (source `feature`, tagged `feat pN` on the Board). They land as **drafts**: approving does not start anything.
+4. **Start** — phase 1 is enqueued and the normal orchestrator takes over; each task runs exactly like any other (worker PTY, hooks, adversarial diff review, your review → done). When every task in a phase is resolved, the next phase enqueues itself.
+5. If a task **fails**, the feature **pauses** — it never barrels into the next phase on a half-done one. Retry or cancel the failed task, then **Resume**. When every phase is resolved the feature moves to **review** for a final look, and you mark it done.
+
+**Pause** stops new tasks being handed out (running ones finish). **Cancel feature** cancels its draft/queued tasks and kills its running ones. Design and as-built notes: `docs/features.md`.
+
 ## Categories, filtering & grouping
 
-Every task can carry a free-text **category** ("UI", "Estimator", "Auth"…). You set one in the create form or the task panel; **agents assign them too** — the Analyze run labels each task by domain, and workers can categorize tasks they file. The Board header filters by repo, source (human / agent / sentry / analyze), and category, and groups by status, category, or repo.
+Every task can carry a free-text **category** ("UI", "Estimator", "Auth"…). You set one in the create form or the task panel; **agents assign them too** — the Analyze run labels each task by domain, and workers can categorize tasks they file. The Board header filters by repo, source (human / agent / sentry / analyze / feature), and category, and groups by status, category, or repo.
 
 ## Reviewing & fixing
 
@@ -91,6 +103,7 @@ The task panel has a **Follow-up** field: send an instruction to steer a live ag
 | Permission mode | `auto` (everyday) / `acceptEdits` (cautious) / `bypassPermissions` (⚠ no prompts at all; first use shows a one-time dialog — attach and accept) |
 | Allowed tools | extra pre-approved tools, e.g. `Bash(git *)` |
 | Router | primary/fallback models, usage threshold, 5h / weekly / weekly-fable estimate budgets (fallback only) |
+| Feature plan re-analysis rounds | a blocker verdict on a feature's plan feeds the findings into a fresh analysis, up to N rounds (0 = review the plan once, never re-plan) |
 | Sentry | org/project/token + target repo; **Sync issues now** pulls unresolved issues (14d) as tasks — idempotent, never duplicates. Token needs `event:read` + `project:read` scopes (a sourcemap-upload token 403s). EU orgs: API base `https://de.sentry.io` |
 
 ## Troubleshooting

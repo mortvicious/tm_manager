@@ -96,7 +96,7 @@ export class Orchestrator implements OrchestratorApi {
           const task = await this.storage.transitionTask(run.taskId, ['running'], 'failed', 'system', {
             error: 'server restarted while the worker was running',
           });
-          if (task) await this.resolveParent(task, 'system');
+          if (task) await this.resolveCompletion(task, 'system');
         }
       }
     }
@@ -293,7 +293,7 @@ export class Orchestrator implements OrchestratorApi {
       });
       if (failed) {
         broadcast({ type: 'task.updated', task: failed });
-        await this.resolveParent(failed, 'orchestrator');
+        await this.resolveCompletion(failed, 'orchestrator');
       }
       return false;
     }
@@ -428,7 +428,7 @@ export class Orchestrator implements OrchestratorApi {
     if (!task) return { error: 'task is not running or queued', code: 409 };
     broadcast({ type: 'task.updated', task });
     // cancelled counts as resolved for split parents (review F2)
-    await this.resolveParent(task, actor);
+    await this.resolveCompletion(task, actor);
     this.maybeSchedule();
     return { task };
   }
@@ -463,7 +463,7 @@ export class Orchestrator implements OrchestratorApi {
         const task = await this.storage.transitionTask(run.taskId, ['running'], 'cancelled', actor);
         if (task) {
           broadcast({ type: 'task.updated', task });
-          await this.resolveParent(task, actor);
+          await this.resolveCompletion(task, actor);
         }
       }
     }
@@ -535,7 +535,7 @@ export class Orchestrator implements OrchestratorApi {
       });
       if (task) {
         broadcast({ type: 'task.updated', task });
-        await this.resolveParent(task, 'system');
+        await this.resolveCompletion(task, 'system');
       }
     }
     broadcast({ type: 'orchestrator.status', status: await this.status() });
@@ -605,12 +605,37 @@ export class Orchestrator implements OrchestratorApi {
     }
   }
 
-  /** Re-evaluate a parent when one of its children reaches a terminal status. */
-  async resolveParent(child: Task, actor = 'system'): Promise<void> {
-    if (!child.parentId) return;
-    const settings = await this.storage.getSettings();
-    const parentDone = settings['orchestrator.autoComplete'] ? 'done' : 'review';
-    const parent = await this.storage.resolveChildCompletion(child.id, parentDone, actor);
-    if (parent) broadcast({ type: 'task.updated', task: parent });
+  /**
+   * A task reached a terminal status — re-evaluate everything that waits on it:
+   * its split parent (all-children-resolve semantics) and, when it belongs to a
+   * feature, that feature's phase gate. Both are independent: a feature task
+   * may also be a split parent.
+   */
+  async resolveCompletion(child: Task, actor = 'system'): Promise<void> {
+    if (child.parentId) {
+      const settings = await this.storage.getSettings();
+      const parentDone = settings['orchestrator.autoComplete'] ? 'done' : 'review';
+      const parent = await this.storage.resolveChildCompletion(child.id, parentDone, actor);
+      if (parent) broadcast({ type: 'task.updated', task: parent });
+    }
+    if (child.featureId) await this.advanceFeature(child.featureId, actor);
+  }
+
+  /**
+   * Feature phase pump. Idempotent and safe to call from anywhere: the storage
+   * composite decides whether to pause (a task failed), enqueue the lowest
+   * unresolved phase, or roll the feature up to `review`.
+   */
+  async advanceFeature(featureId: string, actor = 'system'): Promise<void> {
+    try {
+      const res = await this.storage.resolveFeatureCompletion(featureId, actor);
+      if (!res) return;
+      broadcast({ type: 'feature.updated', feature: res.feature });
+      for (const task of res.tasks) broadcast({ type: 'task.updated', task });
+      if (res.action === 'phase-started') this.maybeSchedule();
+    } catch (err) {
+      // A feature must never take the scheduler down with it.
+      console.error('feature advance failed:', err);
+    }
   }
 }

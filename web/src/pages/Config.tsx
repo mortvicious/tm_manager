@@ -219,6 +219,24 @@ export function ConfigPage() {
           />
         </div>
         <div className="cfg-row">
+          <div>
+            <div>Feature plan re-analysis rounds</div>
+            <div className="hint">
+              a blocker verdict on a feature's plan feeds the findings back into a fresh analysis, up to N rounds
+              (mirrors review→fix; 0 = review the plan once, never re-plan)
+            </div>
+          </div>
+          <input
+            className="field"
+            style={{ width: 80 }}
+            type="number"
+            min={0}
+            max={5}
+            value={cfg['feature.analysisMaxRounds']}
+            onChange={(e) => set('feature.analysisMaxRounds', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
           <div>Review model</div>
           <select
             className="field mono"

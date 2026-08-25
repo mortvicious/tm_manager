@@ -3,6 +3,7 @@ import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { IconTerminal } from '../components/Icons.tsx';
 import { Elapsed } from '../components/RunMeta.tsx';
+import { TaskRow } from '../components/TaskRow.tsx';
 
 export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (runId: string) => void; onOpenTask: (id: string) => void }) {
   const { runs, tasks, refresh } = useApp();
@@ -137,10 +138,9 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
       ) : (
         <div className="panel">
           {queued.map((t) => (
-            <div className="task-row" key={t.id} onClick={() => onOpenTask(t.id)}>
-              <span className="title">{t.title}</span>
+            <TaskRow key={t.id} task={t} onOpenTask={onOpenTask} onOpenTerminal={onOpenTerminal}>
               <span className="mono muted">prio {t.priority}</span>
-            </div>
+            </TaskRow>
           ))}
         </div>
       )}

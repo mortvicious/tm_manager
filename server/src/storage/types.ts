@@ -2,6 +2,10 @@ import type {
   AppSettings,
   AuditEvent,
   AuditKind,
+  Feature,
+  FeaturePlan,
+  FeatureReview,
+  FeatureStatus,
   Proposal,
   ProposalPayload,
   Repo,
@@ -35,6 +39,7 @@ export interface TaskFilter {
   status?: TaskStatus;
   repoId?: string;
   parentId?: string;
+  featureId?: string;
 }
 
 export interface NewTask {
@@ -52,6 +57,33 @@ export interface NewTask {
   review?: boolean | null;
   createdByRun?: string | null;
   spawnDepth?: number;
+  featureId?: string | null;
+  featurePhase?: number | null;
+}
+
+export interface NewFeature {
+  repoId: string;
+  title: string;
+  request: string;
+}
+
+export interface FeaturePatch {
+  title?: string;
+  request?: string;
+  analysis?: FeaturePlan | null;
+  review?: FeatureReview | null;
+  analysisRounds?: number;
+  error?: string | null;
+}
+
+/** What resolveFeatureCompletion actually did, so callers can broadcast. */
+export interface FeatureResolution {
+  feature: Feature;
+  /** tasks whose status changed (phase enqueued) */
+  tasks: Task[];
+  action: 'paused' | 'phase-started' | 'review' | 'none';
+  /** 0-based index of the phase that was just enqueued */
+  phase?: number;
 }
 
 export interface NewRun {
@@ -150,6 +182,42 @@ export interface Storage {
     actor: string,
     chosenOptionIndex?: number,
   ): Promise<{ proposal: Proposal; tasks: Task[] } | null>;
+
+  // ---- features (docs/future/feature-interface.md) ----
+
+  listFeatures(f?: { repoId?: string; status?: FeatureStatus }): Promise<Feature[]>;
+  getFeature(id: string): Promise<Feature | null>;
+  createFeature(f: NewFeature, actor: string): Promise<Feature>;
+  /** Content edits only — status moves exclusively through transitionFeature. */
+  updateFeature(id: string, patch: FeaturePatch, actor: string): Promise<Feature | null>;
+  /** Conditional transition, twin of transitionTask. */
+  transitionFeature(
+    id: string,
+    from: FeatureStatus[],
+    to: FeatureStatus,
+    actor: string,
+    patch?: FeaturePatch,
+  ): Promise<Feature | null>;
+  /** Deletes a feature that owns no tasks; returns false when it still does. */
+  deleteFeature(id: string): Promise<boolean>;
+  /**
+   * Atomic approval: proposed→approved, materialising every non-excluded plan
+   * card as a `draft` tm_tasks row (source 'feature', feature_id/feature_phase
+   * set). Descriptions are built server-side so the standing caps are always
+   * present. Returns null when the feature is not approvable.
+   */
+  approveFeature(id: string, actor: string): Promise<{ feature: Feature; tasks: Task[] } | null>;
+  /**
+   * Atomic re-evaluation of a RUNNING feature after one of its tasks reached a
+   * terminal status (or on start/resume):
+   *  - any task failed → feature → paused
+   *  - lowest phase with unresolved tasks → enqueue its draft tasks
+   *  - nothing unresolved anywhere → feature → review
+   */
+  resolveFeatureCompletion(featureId: string, actor: string): Promise<FeatureResolution | null>;
+  /** Cancels the feature and its non-terminal tasks; running ones are returned
+   *  so the caller can kill their sessions (storage never touches PTYs). */
+  cancelFeature(id: string, actor: string): Promise<{ feature: Feature; tasks: Task[]; runningTaskIds: string[] } | null>;
 
   /** Append-only audit log (synchronous inline; transitions log inside the
    *  same transaction as the mutation). */

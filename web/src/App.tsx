@@ -5,6 +5,8 @@ import { TaskSlideOver } from './components/TaskSlideOver.tsx';
 import { TerminalDrawer } from './components/TerminalDrawer.tsx';
 import { BoardPage } from './pages/Board.tsx';
 import { DashboardPage } from './pages/Dashboard.tsx';
+import { FeaturePage } from './pages/Feature.tsx';
+import { FeaturesPage } from './pages/Features.tsx';
 import { ConfigPage } from './pages/Config.tsx';
 import { HandbookPage } from './pages/Handbook.tsx';
 import { QueuePage } from './pages/Queue.tsx';
@@ -18,8 +20,10 @@ export function App() {
     <Layout>
       <Routes>
         <Route path="/" element={<DashboardPage onOpenTask={setOpenTask} />} />
-        <Route path="/board" element={<BoardPage onOpenTask={setOpenTask} />} />
+        <Route path="/board" element={<BoardPage onOpenTask={setOpenTask} onOpenTerminal={setOpenTerminal} />} />
         <Route path="/queue" element={<QueuePage onOpenTask={setOpenTask} onOpenTerminal={setOpenTerminal} />} />
+        <Route path="/features" element={<FeaturesPage />} />
+        <Route path="/features/:id" element={<FeaturePage onOpenTask={setOpenTask} />} />
         <Route path="/repos" element={<ReposPage />} />
         <Route path="/config" element={<ConfigPage />} />
         <Route path="/handbook" element={<HandbookPage />} />

@@ -120,4 +120,30 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
     // per-task review override (null = use the review.enabled setting)
     statements: [`ALTER TABLE tm_tasks ADD COLUMN review INTEGER`],
   },
+  {
+    id: 9,
+    // Feature interface (docs/future/feature-interface.md): a per-repo big
+    // request that an analysis decomposes into ordered phases of tasks.
+    // repo_id is nullable ON PURPOSE — deleteRepo nulls it, exactly as it does
+    // for tm_tasks, so removing a repo never trips a foreign key.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_features (
+        id TEXT PRIMARY KEY,
+        repo_id TEXT REFERENCES tm_repos(id),
+        title TEXT NOT NULL,
+        request TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft',
+        analysis TEXT,
+        review TEXT,
+        analysis_rounds INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `ALTER TABLE tm_tasks ADD COLUMN feature_id TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN feature_phase INTEGER`,
+      `CREATE INDEX IF NOT EXISTS tm_features_repo_idx ON tm_features(repo_id)`,
+      `CREATE INDEX IF NOT EXISTS tm_tasks_feature_idx ON tm_tasks(feature_id)`,
+    ],
+  },
 ];
