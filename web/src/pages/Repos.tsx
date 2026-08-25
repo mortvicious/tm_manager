@@ -64,19 +64,72 @@ function GitCell({ repoId }: { repoId: string }) {
   );
 }
 
+/** Inline per-repo preview URL (what the mobile emulator frames). Saves on
+ *  blur/Enter; the server normalises "localhost:5173" and rejects non-http. */
+function PreviewCell({ repoId, value, onSaved }: { repoId: string; value: string | null; onSaved: () => Promise<void> }) {
+  const [draft, setDraft] = useState(value ?? '');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  // A refresh elsewhere (or another tab) may change the stored value.
+  useEffect(() => {
+    setDraft(value ?? '');
+  }, [value]);
+  const save = async () => {
+    if (draft.trim() === (value ?? '')) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      // Show what was STORED, not what was typed — the server normalises
+      // "localhost:5173" into a full URL.
+      const saved = await api.updateRepo(repoId, { previewUrl: draft.trim() || null });
+      setDraft(saved.previewUrl ?? '');
+      await onSaved();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 190 }}>
+      <input
+        className="field mono"
+        style={{ fontSize: 'var(--tm-text-xs)', padding: '5px 8px' }}
+        placeholder="localhost:5173"
+        value={draft}
+        disabled={busy}
+        spellCheck={false}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          if (e.key === 'Escape') setDraft(value ?? '');
+        }}
+      />
+      {err && (
+        <span className="warn-text" style={{ fontSize: 'var(--tm-text-xs)' }}>
+          {err}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function ReposPage() {
   const { repos, tasks, refresh } = useApp();
   const [path, setPath] = useState('');
   const [role, setRole] = useState('');
+  const [previewUrl, setPreviewUrl] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState<string | null>(null);
 
   const add = async () => {
     setErr(null);
     try {
-      await api.createRepo({ path, role: role || null });
+      await api.createRepo({ path, role: role || null, previewUrl: previewUrl || null });
       setPath('');
       setRole('');
+      setPreviewUrl('');
       await refresh();
     } catch (e) {
       setErr((e as Error).message);
@@ -112,7 +165,7 @@ export function ReposPage() {
     <div>
       <h1 className="page-title">Repos</h1>
       <div className="panel" style={{ padding: 14, maxWidth: 720, marginBottom: 18 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr auto', gap: 10, alignItems: 'end' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1.2fr auto', gap: 10, alignItems: 'end' }}>
           <div>
             <label className="label">Local path</label>
             <input
@@ -129,6 +182,16 @@ export function ReposPage() {
               placeholder="backend"
               value={role}
               onChange={(e) => setRole(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="label">Dev URL (emulator)</label>
+            <input
+              className="field mono"
+              placeholder="localhost:5173"
+              value={previewUrl}
+              spellCheck={false}
+              onChange={(e) => setPreviewUrl(e.target.value)}
             />
           </div>
           <button className="btn primary" disabled={!path.trim()} onClick={add}>
@@ -151,6 +214,7 @@ export function ReposPage() {
                 <th>Name</th>
                 <th>Path</th>
                 <th>Role</th>
+                <th title="Dev-server URL framed by the mobile emulator">Dev URL</th>
                 <th>Tasks</th>
                 <th>Git</th>
                 <th></th>
@@ -162,6 +226,9 @@ export function ReposPage() {
                   <td style={{ fontWeight: 600 }}>{r.name}</td>
                   <td className="mono muted">{r.path.replace(/^\/Users\/[^/]+/, '~')}</td>
                   <td>{r.role ? <span className="chip">{r.role}</span> : <span className="muted">—</span>}</td>
+                  <td>
+                    <PreviewCell repoId={r.id} value={r.previewUrl} onSaved={refresh} />
+                  </td>
                   <td className="mono">{count(r.id)}</td>
                   <td>
                     <GitCell repoId={r.id} />

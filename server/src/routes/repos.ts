@@ -10,8 +10,36 @@ const repoBody = z
     name: z.string().min(1).optional(),
     path: z.string().min(1),
     role: z.string().nullish(),
+    // dev-server URL framed by the mobile emulator; '' / null clears it
+    previewUrl: z.string().nullish(),
   })
   .strict();
+
+/** The emulator puts this string straight into an iframe `src`, so the scheme
+ *  is pinned to http/https here — the one place every write passes through. */
+function normalizePreviewUrl(raw: string | null | undefined): string | null {
+  if (raw === null || raw === undefined) return null;
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  // An explicit `scheme://` is taken at its word (so ftp:// is rejected, not
+  // silently rewritten); anything else is tried as written and then as a bare
+  // host, because "localhost:5173" is what people actually type and it parses
+  // as a bogus "localhost:" scheme.
+  const explicit = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
+  const url = explicit ? parseHttpUrl(trimmed) : parseHttpUrl(trimmed) ?? parseHttpUrl(`http://${trimmed}`);
+  if (!url) throw new Error(`Preview URL must be an http(s) address, got: ${trimmed}`);
+  return url.toString();
+}
+
+function parseHttpUrl(candidate: string): URL | null {
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return null;
+  }
+  return url.protocol === 'http:' || url.protocol === 'https:' ? url : null;
+}
 
 export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
   app.get('/api/repos', async () => storage.listRepos());
@@ -28,7 +56,13 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
       return reply.code(400).send({ error: `Path is not an existing directory: ${abs}` });
     }
     const name = body.name?.trim() || abs.split('/').filter(Boolean).pop() || abs;
-    const repo = await storage.createRepo({ name, path: abs, role: body.role ?? null });
+    let previewUrl: string | null;
+    try {
+      previewUrl = normalizePreviewUrl(body.previewUrl);
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+    const repo = await storage.createRepo({ name, path: abs, role: body.role ?? null, previewUrl });
     await storage.appendEvent({ kind: 'repo.changed', actor: 'human', repoId: repo.id, data: { action: 'created', name } });
     return repo;
   });
@@ -47,7 +81,15 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
         return reply.code(400).send({ error: `Path is not an existing directory: ${abs}` });
       }
     }
-    const repo = await storage.updateRepo(id, { name: body.name, path: abs, role: body.role });
+    let previewUrl: string | null | undefined;
+    if ('previewUrl' in body) {
+      try {
+        previewUrl = normalizePreviewUrl(body.previewUrl);
+      } catch (e) {
+        return reply.code(400).send({ error: (e as Error).message });
+      }
+    }
+    const repo = await storage.updateRepo(id, { name: body.name, path: abs, role: body.role, previewUrl });
     if (!repo) return reply.code(404).send({ error: 'repo not found' });
     await storage.appendEvent({ kind: 'repo.changed', actor: 'human', repoId: id, data: { action: 'updated' } });
     return repo;

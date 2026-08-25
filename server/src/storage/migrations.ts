@@ -157,4 +157,11 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `ALTER TABLE tm_runs ADD COLUMN stats_baseline TEXT`,
     ],
   },
+  {
+    id: 11,
+    // Mobile emulator: per-repo dev-server URL framed in the floating window.
+    // Scheme is validated at the API boundary (http/https only) — the column
+    // itself is a plain TEXT so an existing row simply stays NULL.
+    statements: [`ALTER TABLE tm_repos ADD COLUMN preview_url TEXT`],
+  },
 ];

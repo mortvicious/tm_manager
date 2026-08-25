@@ -8,7 +8,9 @@ import { ZodError } from 'zod';
 import { DEFAULT_SETTINGS } from '@tm/shared';
 import './app-types.ts';
 import { sessionToken } from './auth.ts';
+import { ActivityWatcher } from './claude/activity.ts';
 import { loadBootConfig, serverRoot } from './config.ts';
+import { broadcast } from './events.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { SessionManager } from './pty/session-manager.ts';
 import { createStorage } from './storage/index.ts';
@@ -45,6 +47,21 @@ const sessions = new SessionManager(
 );
 const orchestrator = new Orchestrator(storage, sessions, `http://127.0.0.1:${cfg.port}`);
 await orchestrator.recoverOnBoot();
+
+// Live "what is it doing right now" line per running agent, tailed off the
+// session transcripts. Started after boot recovery so orphaned runs from the
+// previous process are already retired and never get tailed.
+const activity = new ActivityWatcher({
+  hasLiveSessions: () => sessions.liveCount() > 0,
+  liveRuns: async () => {
+    const runs = await storage.listRuns({ status: 'running' });
+    return runs
+      .filter((r) => !r.idle)
+      .map((r) => ({ runId: r.id, taskId: r.taskId, transcriptPath: r.transcriptPath }));
+  },
+  emit: (a) => broadcast({ type: 'run.activity', activity: a }),
+});
+activity.start();
 
 const app = Fastify({
   logger: {
@@ -125,7 +142,7 @@ app.get('/api/session', async () => ({ token: sessionToken }));
 registerRepoRoutes(app, storage);
 registerTaskRoutes(app, storage);
 registerSettingsRoutes(app, storage);
-registerRunRoutes(app, storage, orchestrator);
+registerRunRoutes(app, storage, orchestrator, activity);
 registerOrchestratorRoutes(app, storage, orchestrator);
 registerInternalRoutes(app, storage, sessions, orchestrator);
 registerAgentRoutes(app, storage, orchestrator);

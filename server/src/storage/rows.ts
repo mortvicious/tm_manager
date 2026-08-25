@@ -20,6 +20,7 @@ export function rowToRepo(r: any): Repo {
     name: r.name,
     path: r.path,
     role: r.role ?? null,
+    previewUrl: r.preview_url ?? null,
     createdAt: r.created_at,
   };
 }

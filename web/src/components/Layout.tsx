@@ -3,6 +3,7 @@ import type { UsageSnapshot, UsageWindow } from '@tm/shared';
 import { NavLink } from 'react-router-dom';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
+import { EmulatorLauncher } from './Emulator.tsx';
 import { IconBoard, IconBook, IconConfig, IconFeature, IconMoon, IconQueue, IconRepo, IconSun, IconTerminal } from './Icons.tsx';
 
 function ThemeToggle() {
@@ -225,6 +226,7 @@ export function Layout({ children }: { children: ReactNode }) {
         <UsagePill />
         <span className="spacer" />
         <ServerControl />
+        <EmulatorLauncher />
         <ThemeToggle />
       </header>
       <main className="main">{children}</main>

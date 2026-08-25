@@ -107,3 +107,25 @@ export const IconChevron = () => (
     <path d="m6 9 6 6 6-6" />
   </svg>
 );
+
+export const IconPhone = () => (
+  <svg {...p}>
+    <rect x="6" y="2" width="12" height="20" rx="2.5" />
+    <path d="M10.5 18.5h3" />
+  </svg>
+);
+
+export const IconRefresh = () => (
+  <svg {...p}>
+    <path d="M20 11a8 8 0 1 0-.6 4" />
+    <path d="M20 4v6h-6" />
+  </svg>
+);
+
+export const IconExternal = () => (
+  <svg {...p}>
+    <path d="M14 4h6v6" />
+    <path d="M20 4 11 13" />
+    <path d="M18 14v5a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V7.5A1.5 1.5 0 0 1 5 6h5" />
+  </svg>
+);

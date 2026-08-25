@@ -24,8 +24,10 @@ import type {
   NewAuditEvent,
   NewFeature,
   NewProposal,
+  NewRepo,
   NewRun,
   NewTask,
+  RepoPatch,
   Storage,
   TaskFilter,
 } from './types.ts';
@@ -149,25 +151,27 @@ export class PostgresStorage implements Storage {
     return r[0] ? rowToRepo(r[0]) : null;
   }
 
-  async createRepo(r: { name: string; path: string; role?: string | null }): Promise<Repo> {
+  async createRepo(r: NewRepo): Promise<Repo> {
     const id = randomUUID();
-    await this.q(`INSERT INTO tm_repos (id, name, path, role, created_at) VALUES (?, ?, ?, ?, ?)`, [
+    await this.q(`INSERT INTO tm_repos (id, name, path, role, preview_url, created_at) VALUES (?, ?, ?, ?, ?, ?)`, [
       id,
       r.name,
       r.path,
       r.role ?? null,
+      r.previewUrl ?? null,
       now(),
     ]);
     return (await this.getRepo(id))!;
   }
 
-  async updateRepo(id: string, patch: Partial<Pick<Repo, 'name' | 'path' | 'role'>>): Promise<Repo | null> {
+  async updateRepo(id: string, patch: RepoPatch): Promise<Repo | null> {
     const cur = await this.getRepo(id);
     if (!cur) return null;
-    await this.q(`UPDATE tm_repos SET name = ?, path = ?, role = ? WHERE id = ?`, [
+    await this.q(`UPDATE tm_repos SET name = ?, path = ?, role = ?, preview_url = ? WHERE id = ?`, [
       patch.name ?? cur.name,
       patch.path ?? cur.path,
       patch.role === undefined ? cur.role : patch.role,
+      patch.previewUrl === undefined ? cur.previewUrl : patch.previewUrl,
       id,
     ]);
     return this.getRepo(id);

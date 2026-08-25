@@ -7,6 +7,7 @@ import type {
   Proposal,
   Repo,
   Run,
+  RunActivity,
   StatsOverview,
   Task,
   UsageSnapshot,
@@ -43,8 +44,9 @@ export const api = {
   restartServer: () => req<{ ok: true; restarting: true }>('POST', '/api/server/restart'),
 
   listRepos: () => req<Repo[]>('GET', '/api/repos'),
-  createRepo: (b: { name?: string; path: string; role?: string | null }) => req<Repo>('POST', '/api/repos', b),
-  updateRepo: (id: string, b: Partial<Pick<Repo, 'name' | 'path' | 'role'>>) =>
+  createRepo: (b: { name?: string; path: string; role?: string | null; previewUrl?: string | null }) =>
+    req<Repo>('POST', '/api/repos', b),
+  updateRepo: (id: string, b: Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl'>>) =>
     req<Repo>('PATCH', `/api/repos/${id}`, b),
   deleteRepo: (id: string) => req<{ ok: true }>('DELETE', `/api/repos/${id}`),
   gitStatus: (id: string) => req<{ isRepo: boolean; branch: string | null; dirty: number; ahead: number }>('GET', `/api/repos/${id}/git`),
@@ -76,6 +78,7 @@ export const api = {
     req<{ ok: true }>('DELETE', `/api/tasks/${id}/files/${encodeURIComponent(name)}`),
 
   listRuns: () => req<Run[]>('GET', '/api/runs'),
+  runActivity: () => req<RunActivity[]>('GET', '/api/runs/activity'),
   killRun: (id: string) => req<Run>('POST', `/api/runs/${id}/kill`),
 
   analyze: (b: { repoId: string; taskIds?: string[] }) => req<{ runId: string }>('POST', '/api/analyze', b),

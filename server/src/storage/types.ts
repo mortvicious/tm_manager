@@ -43,6 +43,17 @@ export interface TaskFilter {
   featureId?: string;
 }
 
+export interface NewRepo {
+  name: string;
+  path: string;
+  role?: string | null;
+  /** dev-server URL for the mobile emulator; validated http/https at the route */
+  previewUrl?: string | null;
+}
+
+/** undefined = leave as-is; null clears the column. */
+export type RepoPatch = Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl'>>;
+
 export interface NewTask {
   title: string;
   description?: string | null;
@@ -127,8 +138,8 @@ export interface Storage {
 
   listRepos(): Promise<Repo[]>;
   getRepo(id: string): Promise<Repo | null>;
-  createRepo(r: { name: string; path: string; role?: string | null }): Promise<Repo>;
-  updateRepo(id: string, patch: Partial<Pick<Repo, 'name' | 'path' | 'role'>>): Promise<Repo | null>;
+  createRepo(r: NewRepo): Promise<Repo>;
+  updateRepo(id: string, patch: RepoPatch): Promise<Repo | null>;
   deleteRepo(id: string): Promise<void>;
 
   listTasks(f?: TaskFilter): Promise<Task[]>;

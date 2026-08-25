@@ -61,7 +61,7 @@ export function TaskRow({
   fresh?: boolean;
   children?: ReactNode;
 }) {
-  const { runs, refresh } = useApp();
+  const { runs, activity, refresh } = useApp();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -123,6 +123,11 @@ export function TaskRow({
           : live
             ? LIVE_MSG
             : 'Mark as ready — enqueue for the orchestrator';
+  // The live line: what the agent is doing right now, straight off its
+  // transcript. The server only tracks live, non-idle runs and clears the
+  // entry when one ends, so a present entry means "still working".
+  const liveLine = run ? activity[run.id] : undefined;
+
   const termLabel = run
     ? `Open terminal (session ${run.id.slice(0, 8)}${run.status === 'running' ? '' : ', ended'})`
     : 'No session yet — run this task first';
@@ -139,7 +144,18 @@ export function TaskRow({
       >
         <IconTerminal />
       </QuickBtn>
-      <span className={`title ${task.parentId ? 'child' : ''}`}>{task.title}</span>
+      <span className={`task-main ${task.parentId ? 'child' : ''}`}>
+        <span className="title">{task.title}</span>
+        {liveLine?.text && (
+          <span
+            className={`row-activity ${liveLine.kind}`}
+            title={`${liveLine.text}\n(live — from the agent's session)`}
+          >
+            <span className="live-dot" aria-hidden="true" />
+            <span className="what">{liveLine.text}</span>
+          </span>
+        )}
+      </span>
       {children}
       {err && (
         <span className="warn-text row-err" title={err}>

@@ -7,13 +7,25 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import type { AuditEvent, Feature, OrchestratorStatus, Proposal, Repo, Run, ServerEvent, Task } from '@tm/shared';
+import type {
+  AuditEvent,
+  Feature,
+  OrchestratorStatus,
+  Proposal,
+  Repo,
+  Run,
+  RunActivity,
+  ServerEvent,
+  Task,
+} from '@tm/shared';
 import { api } from './api.ts';
 
 interface AppState {
   repos: Repo[];
   tasks: Task[];
   runs: Run[];
+  /** what each live run is doing right now, keyed by run id (live runs only) */
+  activity: Record<string, RunActivity>;
   proposals: Proposal[];
   features: Feature[];
   /** live audit events received this session (cap 200, newest last) */
@@ -38,6 +50,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
+  const [activity, setActivity] = useState<Record<string, RunActivity>>({});
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [features, setFeatures] = useState<Feature[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
@@ -53,6 +66,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setTasks(t);
     // These endpoints appear in later phases; tolerate their absence.
     api.listRuns().then(setRuns).catch(() => {});
+    // Snapshot, not merge: the server's map IS the set of live runs, so a run
+    // that finished while we were away disappears instead of lingering.
+    api
+      .runActivity()
+      .then((list) => setActivity(Object.fromEntries(list.map((a) => [a.runId, a]))))
+      .catch(() => {});
     api.listProposals().then(setProposals).catch(() => {});
     api.listFeatures().then(setFeatures).catch(() => {});
     api.orchestrator().then(setOrch).catch(() => {});
@@ -115,6 +134,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
               const next = cur.slice();
               next[i] = e.run;
               return next;
+            });
+            break;
+          case 'run.activity':
+            setActivity((cur) => {
+              // text:null is the server saying "this run is no longer live"
+              if (e.activity.text === null) {
+                if (!(e.activity.runId in cur)) return cur;
+                const next = { ...cur };
+                delete next[e.activity.runId];
+                return next;
+              }
+              return { ...cur, [e.activity.runId]: e.activity };
             });
             break;
           case 'proposal.created':
@@ -181,7 +212,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ repos, tasks, runs, proposals, features, auditEvents, orch, token, connected, bootedAt, refresh, setOrch }}
+      value={{ repos, tasks, runs, activity, proposals, features, auditEvents, orch, token, connected, bootedAt, refresh, setOrch }}
     >
       {children}
     </Ctx.Provider>

@@ -23,6 +23,8 @@ export interface Repo {
   name: string;
   path: string; // absolute; ~ expanded on insert
   role: string | null; // free note: "backend", "frontend", ...
+  /** dev-server URL framed by the mobile emulator window (http/https only; null = no preview) */
+  previewUrl: string | null;
   createdAt: string;
 }
 
@@ -446,6 +448,22 @@ export interface OrchestratorStatus {
   concurrency: number;
 }
 
+/**
+ * What a live agent is doing right now, in one line — the last thing that
+ * showed up in its terminal (a tool call or its own narration), lifted out of
+ * the session transcript so the Board can be eyeballed without attaching.
+ */
+export interface RunActivity {
+  runId: string;
+  taskId: string | null;
+  /** one-line description; null means "no longer live" — drop the entry */
+  text: string | null;
+  /** 'tool' = an action it took, 'text' = something it said */
+  kind: 'tool' | 'text';
+  /** ISO time the line was produced */
+  at: string;
+}
+
 export type ServerEvent =
   | { type: 'task.updated'; task: Task }
   | { type: 'task.deleted'; taskId: string }
@@ -453,6 +471,7 @@ export type ServerEvent =
   | { type: 'run.updated'; run: Run }
   | { type: 'run.exited'; run: Run }
   | { type: 'run.needs-attention'; run: Run }
+  | { type: 'run.activity'; activity: RunActivity }
   | { type: 'proposal.created'; proposal: Proposal }
   | { type: 'feature.updated'; feature: Feature }
   | { type: 'feature.deleted'; featureId: string }

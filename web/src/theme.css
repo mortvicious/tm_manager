@@ -516,26 +516,79 @@ select.field:focus {
   background: var(--tm-bg-overlay);
 }
 
+/* title + (when the agent is live) the line of what it is doing, stacked so
+   the activity reads as a caption of the task rather than another chip */
+.task-row .task-main {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
 .task-row .title {
   font-weight: 500;
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.task-row .title.child {
+.task-row .task-main.child {
   padding-left: 22px;
   position: relative;
 }
 
-.task-row .title.child::before {
+.task-row .task-main.child::before {
   content: '└';
   position: absolute;
   left: 6px;
+  top: 0;
   color: var(--tm-text-faint);
   font-family: var(--tm-font-mono);
+}
+
+/* the live activity line — deliberately the quietest text on the row: it is
+   glanceable context, never something that competes with the task title */
+.task-row .row-activity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  line-height: 1.35;
+  color: var(--tm-text-faint);
+}
+
+/* what it SAID reads as speech; what it DID stays plain */
+.task-row .row-activity.text .what {
+  font-style: italic;
+}
+
+.task-row .row-activity .what {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the only bit of colour: it says "this is happening now", the same signal the
+   status badge's pulse carries */
+.task-row .row-activity .live-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-accent);
+  animation: pulse 1.8s var(--tm-ease-in-out) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-row .row-activity .live-dot {
+    animation: none;
+  }
 }
 
 /* quick actions: terminal before the title, run / mark-ready after it */
@@ -1348,3 +1401,136 @@ table.tbl a {
   text-decoration: none;
 }
 table.tbl a:hover { text-decoration: underline; }
+
+/* ---------- mobile emulator (floating window) ---------- */
+
+/* Above the terminal drawer (25), below the slide-over overlay (30/31) — a
+   task drawer is a deliberate focus change and should cover the phone. */
+.emu {
+  position: fixed;
+  z-index: 28;
+  min-width: 300px;
+  background: var(--tm-bg-raised);
+  border: 1px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-lg);
+  box-shadow: var(--tm-shadow-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.emu-head,
+.emu-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: 6px var(--tm-space-2);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.emu-head {
+  border-bottom: 1px solid var(--tm-border);
+  background: var(--tm-bg-overlay);
+}
+
+.emu-head.dragging,
+.emu-bar.dragging {
+  cursor: grabbing;
+}
+
+.emu-bar {
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.emu-grip {
+  display: inline-flex;
+  color: var(--tm-text-faint);
+  flex: none;
+}
+
+.emu .grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.emu select.emu-select {
+  width: auto;
+  flex: none;
+  padding: 4px 6px;
+  font-size: var(--tm-text-xs);
+  cursor: pointer;
+}
+
+.emu input.emu-path {
+  flex: 1;
+  min-width: 60px;
+  padding: 4px 8px;
+  font-size: var(--tm-text-xs);
+}
+
+.emu .btn {
+  padding: 4px 6px;
+  flex: none;
+}
+
+.emu .btn.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.emu-body {
+  background: var(--tm-bg-inset);
+  align-self: center;
+  overflow: hidden;
+  position: relative;
+}
+
+.emu-frame {
+  display: block;
+  border: 0;
+  /* a phone screen is light in both themes — the framed page paints over it */
+  background: var(--tm-gray-0);
+}
+
+.emu-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--tm-space-4);
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-sm);
+  line-height: 1.6;
+}
+
+.emu-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: 4px var(--tm-space-2);
+  border-top: 1px solid var(--tm-border);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+.emu-foot .emu-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.emu-foot .emu-dims {
+  flex: none;
+}
+
+/* header toggle reads as pressed while the window is open */
+.btn.ghost.on {
+  color: var(--tm-accent);
+  background: var(--tm-accent-subtle);
+}
