@@ -2,7 +2,8 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import type { Run } from '@tm/shared';
+import type { AppSettings, Run } from '@tm/shared';
+import { DEFAULT_SETTINGS } from '@tm/shared';
 import { serverRoot } from '../config.ts';
 import { broadcast } from '../events.ts';
 import { onEvent } from '../events.ts';
@@ -30,8 +31,15 @@ const createBody = z
   })
   .strict();
 
-const PER_RUN_CAP = 5;
 const QUEUED_AGENT_CEILING = 10;
+
+/** Per-run creation cap: `agent.taskCreationCap`, sanitised (a hand-edited or
+ *  legacy config row must not disable the guard or make it unreachable). */
+function perRunCap(settings: AppSettings): number {
+  const raw = settings['agent.taskCreationCap'] as unknown;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_SETTINGS['agent.taskCreationCap'];
+  return Math.min(100, Math.max(1, Math.floor(raw)));
+}
 
 export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orchestrator: Orchestrator) {
   const authRun = async (req: FastifyRequest): Promise<Run | null> => {
@@ -54,19 +62,28 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
     const repos = await storage.listRepos();
     const task = run.taskId ? await storage.getTask(run.taskId) : null;
     const repo = run.repoId ? await storage.getRepo(run.repoId) : null;
+    const cap = perRunCap(await storage.getSettings());
+    const filed = await storage.countTasksCreatedByRun(run.id);
     return {
       taskId: run.taskId,
       repoId: run.repoId,
       repoRole: repo?.role ?? null,
       spawnDepth: task?.spawnDepth ?? 0,
+      taskCreationCap: cap,
+      tasksCreated: filed,
+      tasksRemaining: Math.max(0, cap - filed),
       repos: repos.map((r) => ({ id: r.id, name: r.name, role: r.role })),
     };
   });
 
+  // The sheet is static markdown with one live value: the current cap. Keeping
+  // the placeholder server-side means the doc can never drift from the setting.
   app.get('/api/agent/instructions', async (_req, reply) => {
     const p = path.resolve(serverRoot, '../docs/agent-instructions.md');
     if (!fs.existsSync(p)) return reply.code(404).send({ error: 'instructions not found' });
-    return reply.type('text/markdown').send(fs.readFileSync(p, 'utf8'));
+    const cap = perRunCap(await storage.getSettings());
+    const md = fs.readFileSync(p, 'utf8').replaceAll('{{taskCreationCap}}', String(cap));
+    return reply.type('text/markdown').send(md);
   });
 
   app.post('/api/agent/tasks', async (req, reply) => {
@@ -84,10 +101,12 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
     }
 
     // Per-run cap (R8-adjacent): hard stop, do not retry.
-    if ((await storage.countTasksCreatedByRun(run.id)) >= PER_RUN_CAP) {
+    const settings = await storage.getSettings();
+    const cap = perRunCap(settings);
+    if ((await storage.countTasksCreatedByRun(run.id)) >= cap) {
       return reply
         .code(403)
-        .send({ error: `task creation cap (${PER_RUN_CAP}) reached for this session — stop creating tasks and finish your turn` });
+        .send({ error: `task creation cap (${cap}) reached for this session — stop creating tasks and finish your turn` });
     }
 
     // Repo resolution: id → exact name → unique role (case-insensitive
@@ -115,7 +134,6 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
     // Enqueue gating (R6): needs the explicit opt-in setting AND the queue on;
     // same-repo creations are ALWAYS drafts (two agents must not edit one
     // working tree); global ceiling degrades to draft (R8), never a retry-bait 4xx.
-    const settings = await storage.getSettings();
     let status: 'draft' | 'queued' = 'draft';
     let note: string | null = null;
     if (body.enqueue) {

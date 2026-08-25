@@ -52,7 +52,7 @@ trivial task) directly when creating a task.
 
 ## Rules (server-enforced — do not work around refusals)
 
-1. **Max 5 tasks per session.** A 403 means stop creating and finish your turn.
+1. **Max {{taskCreationCap}} tasks per session** (the `agent.taskCreationCap` setting; `GET /api/agent/context` reports `taskCreationCap`/`tasksRemaining`). A 403 means stop creating and finish your turn.
 2. **Depth cap**: if your own task was agent-created twice over, you cannot create more.
 3. **`enqueue: true` may be honored or downgraded to `draft`** (the response's
    `note` says why: the enqueue setting is off, the queue is stopped, the

@@ -186,6 +186,8 @@ export interface AppSettings {
   'agent.allowedTools': string[];
   /** honor agents' enqueue:true (cross-repo coordination); OFF = agent tasks land as drafts */
   'agent.allowEnqueue': boolean;
+  /** max follow-up tasks ONE worker session may file via the agent API (403 after) */
+  'agent.taskCreationCap': number;
   /** run an adversarial review of each worker's change before it lands in review */
   'review.enabled': boolean;
   /** reviewer model; falls back to Opus 5 xhigh when unavailable */
@@ -237,6 +239,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // conservative fallback, bypassPermissions the loud red switch.
   'agent.permissionMode': 'auto',
   'agent.allowEnqueue': false,
+  'agent.taskCreationCap': 15,
   'agent.allowedTools': [],
   'review.enabled': true,
   'review.model': 'claude-fable-5',

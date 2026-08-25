@@ -47,7 +47,7 @@ Concurrency note: with concurrency 2, a backend worker polling while its fronten
 
 ### 3. Loop and flood guards
 
-- **Per-run creation cap**: max 5 tasks per run (403 with a stop-and-finish message after).
+- **Per-run creation cap**: `agent.taskCreationCap` tasks per run (default 15, settable 1–100 in Config; 403 with a stop-and-finish message after). The served instruction sheet interpolates the live value and `GET /api/agent/context` reports `taskCreationCap`/`tasksCreated`/`tasksRemaining`. The global queued-agent ceiling (10) is unchanged and independent: past it, honored enqueues degrade to drafts rather than 403s, so a large per-run cap can never flood the queue.
 - **Depth cap**: `spawn_depth` column; a created task's depth = creator's depth + 1; depth > 2 → 400. Human-created tasks are depth 0.
 - **Enqueue rights**: `enqueue: true` requires the orchestrator to be enabled; otherwise task lands as `draft` with a note (never silently queue work the human hasn't turned the queue on for).
 - All agent-created tasks are visible on the Board immediately (`task.updated` events) — nothing happens silently.

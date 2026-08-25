@@ -192,6 +192,24 @@ export function ConfigPage() {
         </div>
         <div className="cfg-row">
           <div>
+            <div>Tasks an agent may file</div>
+            <div className="hint">
+              how many follow-up tasks ONE worker session can file through the agent API before it's
+              refused and told to finish its turn
+            </div>
+          </div>
+          <input
+            className="field"
+            style={{ width: 80 }}
+            type="number"
+            min={1}
+            max={100}
+            value={cfg['agent.taskCreationCap']}
+            onChange={(e) => set('agent.taskCreationCap', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
             <div>Adversarial self-review</div>
             <div className="hint">
               review every worker's change before it lands in review — on the review model, falling back to
