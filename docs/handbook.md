@@ -52,9 +52,9 @@ After a task completes, its session goes **idle**: still attachable (Queue → *
 Per task: **override wins** (set at creation or in the task panel). Otherwise:
 
 1. Tasks mentioning browser/e2e/screenshot/UI-testing keywords → **fallback model** (`claude-opus-5`).
-2. Estimated 5h usage < threshold (85%) → **primary** (`claude-fable-5`); above it → fallback.
+2. Session (5h) usage < threshold (85%) → **primary** (`claude-fable-5`); above it → fallback.
 
-The header pill shows the live estimate and where the next task would route. The estimate is computed from your local claude transcripts against the *5h token budget* in Config — there's no official account-usage API, so calibrate the budget to your plan. Cost chips on runs are estimates from the same transcripts.
+The header pill mirrors the CLI's own `/usage` panel: `5h` (current session), `wk` (weekly, all models) and `fable` (the weekly cap scoped to fable-family models), plus where the next task would route. Those percentages are the REAL account figures — the claude CLI caches its last `/usage` fetch in `~/.claude.json` and the server reads it. Nothing local can refresh that cache (there is no `claude usage` subcommand, and `claude -p` runs do not update it), so hover the pill for its age; it refreshes when a Claude Code TUI fetches usage, e.g. when you open `/usage`. A window whose reset time has passed falls back to a local-transcript estimate, shown dimmed with a `~` and measured against the token budgets in Config. Only the session figure drives model routing. A segment turns amber past the usage threshold. Cost chips on runs are estimates from the same transcripts.
 
 `--effort` (low → max) follows the same pattern: config default, per-task override.
 
@@ -90,7 +90,7 @@ The task panel has a **Follow-up** field: send an instruction to steer a live ag
 | Model / Effort | defaults for workers and analysis |
 | Permission mode | `auto` (everyday) / `acceptEdits` (cautious) / `bypassPermissions` (⚠ no prompts at all; first use shows a one-time dialog — attach and accept) |
 | Allowed tools | extra pre-approved tools, e.g. `Bash(git *)` |
-| Router | primary/fallback models, usage threshold, 5h budget |
+| Router | primary/fallback models, usage threshold, 5h / weekly / weekly-fable estimate budgets (fallback only) |
 | Sentry | org/project/token + target repo; **Sync issues now** pulls unresolved issues (14d) as tasks — idempotent, never duplicates. Token needs `event:read` + `project:read` scopes (a sourcemap-upload token 403s). EU orgs: API base `https://de.sentry.io` |
 
 ## Troubleshooting

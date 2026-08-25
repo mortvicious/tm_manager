@@ -28,6 +28,8 @@ const settingsSchema = z
     'router.fallbackModel': z.string().min(1),
     'router.usageThresholdPct': z.number().min(1).max(100),
     'router.budget5hTokens': z.number().int().min(10_000),
+    'router.budgetWeekTokens': z.number().int().min(10_000),
+    'router.budgetWeekFableTokens': z.number().int().min(10_000),
     'agent.permissionMode': z.enum(['acceptEdits', 'auto', 'bypassPermissions']),
     'agent.allowedTools': z.array(z.string()),
     'pty.scrollbackBytes': z

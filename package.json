@@ -1,13 +1,36 @@
 {
   "name": "task-manager",
+  "version": "0.1.0",
   "private": true,
+  "description": "Local control panel that turns a task list into running Claude Code agents, each an attachable terminal session",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mortvicious/tm_manager.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mortvicious/tm_manager/issues"
+  },
+  "homepage": "https://github.com/mortvicious/tm_manager#readme",
+  "keywords": [
+    "claude-code",
+    "agents",
+    "orchestrator",
+    "task-manager",
+    "pty",
+    "fastify"
+  ],
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "workspaces": ["shared", "server", "web"],
   "scripts": {
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true",
     "dev": "concurrently -n server,web -c blue,green \"npm run dev -w server\" \"npm run dev -w web\"",
     "build": "npm run build -w web",
-    "start": "tsx server/src/index.ts"
+    "start": "tsx server/src/index.ts",
+    "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",

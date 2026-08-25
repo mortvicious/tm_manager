@@ -24,3 +24,14 @@ Phase checklist (each phase ends with a docs update + adversarial review):
 - [x] Dashboard implementation adversarial review — amendment scorecard 12/12 faithful; 4 required fixes applied (R1 anomaly knobs added to settings schema, R2 context/cost anomalies gated to live-or-24h runs, R3 dashboard live-refetch keyed on newest event id not capped length, R4 event broadcasts buffered per-transaction and fired only post-commit in BOTH drivers) + W1 local-midnight window anchor, W2 per-kind event queries vs truncation, W3 proposal rejections now traced. Verified live after restart.
 
 **All work to date is built, adversarially reviewed, and fix-verified.** Outstanding (needs the user): Sentry token with event:read+project:read; Postgres live smoke-test with a real connection string; subscription usage reset before running workers.
+
+## Open-source release prep (2026-08-25)
+
+- [x] Root docs: `README.md` (what it is, requirements, install, first run, storage, security, layout), `LICENSE` (MIT), `CONTRIBUTING.md` (setup, required checks, the conventions that trip people up), `SECURITY.md` (threat model + reporting).
+- [x] `package.json` metadata: description, license, repository/bugs/homepage, keywords, `engines.node >=22.12.0`, `typecheck` script; lockfile synced.
+- [x] `@fastify/static` 8 → 10.1.3, clearing four high-severity advisories; `npm audit` now reports 0 vulnerabilities.
+- [x] `.gitignore` extended (`.env*`, `.claude/settings.local.json`; `server/data/` comment explains it holds credentials and artifacts).
+- [x] GitHub Actions CI (`.github/workflows/ci.yml`): `npm ci` + typecheck + build on Node 22 and 24.
+- [x] Personal absolute path removed from `docs/design.md`; repo scanned for secrets and emails (none found).
+- [x] Header: the reload-icon restart control is now a labelled "Restart server" ghost button (shows "Restarting…" while in flight), sitting on the same row/height as the theme toggle; the unused `IconRestart` glyph was dropped from `Icons.tsx`.
+- [x] Header usage: session / weekly / weekly-fable, from the account (2026-08-25). `/api/usage` returns a `UsageSnapshot` whose windows carry `{pct, source, resetsAt, tokens, budget}` — real plan figures read from the CLI's `~/.claude.json` usage cache, local-transcript estimate as the fallback for expired/missing windows. Verified: typecheck + SPA build clean; account reader exercised against the live config (weekly 30% / fable 45% real, expired session correctly falling back) and against a missing config dir; `/api/usage` handler exercised offline incl. a zero-budget guard; estimator cold 549ms / cached 0ms with a shared in-flight scan; both the new pill and its legacy fallback confirmed rendering in the browser. The running server was NOT restarted (two workers active), so the new payload goes live on the user's next restart.

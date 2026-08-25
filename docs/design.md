@@ -2,7 +2,7 @@
 
 ## Context
 
-Greenfield internal tool in `/Users/faigomarov/Development/17 - task-manager` (empty dir). A local web app to collect tasks for the user's projects (repos registered by local path + role note) and automate their implementation by spawning Claude Code agents (`claude` CLI, opus) inside the target repo directories — each run is a hidden but fully interactive PTY terminal, attachable from the browser. Reference aesthetic: "Foreman"-like open-source tool. Design validated by an adversarial review pass (3 blockers + 7 majors found and folded in below).
+Greenfield internal tool (started from an empty directory). A local web app to collect tasks for the user's projects (repos registered by local path + role note) and automate their implementation by spawning Claude Code agents (`claude` CLI, opus) inside the target repo directories — each run is a hidden but fully interactive PTY terminal, attachable from the browser. Reference aesthetic: "Foreman"-like open-source tool. Design validated by an adversarial review pass (3 blockers + 7 majors found and folded in below).
 
 Environment verified: Node v24.15, `claude` CLI 2.1.241 (`--settings` inline JSON, `--permission-mode`, `--json-schema`, hooks all confirmed), `claude-opus-5` valid model id.
 
@@ -93,12 +93,12 @@ Headless, per repo/task selection: `execFile('claude', ['-p','--model','claude-o
 
 ## API
 
-REST `/api`: repos CRUD; tasks CRUD + `/enqueue|run-now|cancel|retry|unblock`; runs list + `/kill`; `/analyze {repoId, taskIds?}`; proposals list + `/accept|reject`; config get/put; orchestrator get + `/start|stop|stop-and-kill`; internal `/internal/runs/:id/{stop,session-end,needs-attention}`; `/health`.
+REST `/api`: repos CRUD; tasks CRUD + `/enqueue|run-now|cancel|retry|unblock`; runs list + `/kill`; `/analyze {repoId, taskIds?}`; proposals list + `/accept|reject`; config get/put; orchestrator get + `/start|stop|stop-and-kill`; `/usage` (session + weekly + weekly-fable windows, each `{pct,source,resetsAt,tokens,budget}` — real account figures from the CLI's `~/.claude.json` cache, local-transcript estimate as fallback); internal `/internal/runs/:id/{stop,session-end,needs-attention}`; `/health`.
 WS: `/ws/terminal/:runId?token=…` (history/data/exit ↔ input/resize, base64-in-JSON) and `/ws/events` (task.updated, run.started/exited, run.needs-attention, proposal.created, orchestrator.status) — frontend fully event-driven, no polling.
 
 ## Frontend
 
-Sidebar (Board, Queue, Repos, Config) + header (prominent Start/Stop switch, `running N/2`, theme toggle). Board: status columns, cards with source chip/repo tag/parent indent/needs-attention badge → TaskSlideOver (edit, proposals accept/reject, Enqueue/Run now/Open terminal/Analyze/Unblock). Queue: active runs (elapsed, Open terminal, Kill) + queued list. Repos: path+role table, add form with server-side path validation, per-repo Analyze. Config: Storage / Agent (permission mode with warning, allowedTools) / Orchestrator / Sentry-stub groups. TerminalDrawer: xterm + fit, **StrictMode-safe effect cleanup (close WS + `terminal.dispose()`)**. Theme: CSS variables `:root` (light) + `[data-theme="dark"]`, localStorage + `prefers-color-scheme` default; 13–14px system font, ui-monospace for paths, 1px borders, subtle radii.
+Sidebar (Board, Queue, Repos, Config) + header (prominent Start/Stop switch, `running N/2`, usage pill `5h % · wk % · fable % · routed model`, server uptime/restart, theme toggle). Board: status columns, cards with source chip/repo tag/parent indent/needs-attention badge → TaskSlideOver (edit, proposals accept/reject, Enqueue/Run now/Open terminal/Analyze/Unblock). Queue: active runs (elapsed, Open terminal, Kill) + queued list. Repos: path+role table, add form with server-side path validation, per-repo Analyze. Config: Storage / Agent (permission mode with warning, allowedTools) / Orchestrator / Sentry-stub groups. TerminalDrawer: xterm + fit, **StrictMode-safe effect cleanup (close WS + `terminal.dispose()`)**. Theme: CSS variables `:root` (light) + `[data-theme="dark"]`, localStorage + `prefers-color-scheme` default; 13–14px system font, ui-monospace for paths, 1px borders, subtle radii.
 
 ## Commands
 

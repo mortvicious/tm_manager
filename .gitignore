@@ -1,5 +1,12 @@
 node_modules/
+
+# Runtime state: SQLite db, config.json (may hold credentials), task artifacts
 server/data/
+
 web/dist/
+
 *.log
 .DS_Store
+.env
+.env.*
+.claude/settings.local.json

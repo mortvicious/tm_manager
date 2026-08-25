@@ -89,6 +89,38 @@ export interface Run {
   endedAt: string | null;
 }
 
+/** Where a usage figure came from. `account` = the real plan utilization the
+ *  claude CLI last fetched (same numbers as its `/usage` panel); `estimate` =
+ *  our own tally of local transcripts, used when the account figure is missing
+ *  or its window has already reset. */
+export type UsageSource = 'account' | 'estimate';
+
+/** One rate-limit window of the subscription usage shown in the header. */
+export interface UsageWindow {
+  /** 0..100, one decimal */
+  pct: number;
+  source: UsageSource;
+  /** ISO time the window rolls over — account source only */
+  resetsAt: string | null;
+  /** tokens counted and the budget behind them — estimate source only */
+  tokens: number | null;
+  budget: number | null;
+}
+
+/** Header usage pill payload: the three metered windows plus current routing. */
+export interface UsageSnapshot {
+  /** the session/5h percentage — the figure the router threshold compares against */
+  pct: number;
+  threshold: number;
+  routedModel: string;
+  fiveHour: UsageWindow;
+  week: UsageWindow;
+  /** the weekly window scoped to fable-family models (their own weekly cap) */
+  weekFable: UsageWindow;
+  /** age of the CLI's account-usage cache, or null when none was usable */
+  accountAgeMs: number | null;
+}
+
 export type ProposalKind = 'rewrite' | 'split' | 'new_task' | 'solution_options';
 export type ProposalStatus = 'pending' | 'accepted' | 'rejected';
 
@@ -142,6 +174,10 @@ export interface AppSettings {
   'router.usageThresholdPct': number;
   /** trailing-5h token budget the usage % is estimated against (local transcripts) */
   'router.budget5hTokens': number;
+  /** trailing-7d token budget behind the weekly usage ESTIMATE (fallback only) */
+  'router.budgetWeekTokens': number;
+  /** trailing-7d token budget for the fable weekly ESTIMATE (fallback only) */
+  'router.budgetWeekFableTokens': number;
   'agent.permissionMode': 'acceptEdits' | 'auto' | 'bypassPermissions';
   'agent.allowedTools': string[];
   /** honor agents' enqueue:true (cross-repo coordination); OFF = agent tasks land as drafts */
@@ -185,6 +221,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'router.fallbackModel': 'claude-opus-5',
   'router.usageThresholdPct': 85,
   'router.budget5hTokens': 2_000_000,
+  // No official account API, so every budget here is a calibration knob, not a
+  // published limit. Seeded at 10 saturated 5h sessions per week, a quarter of
+  // that for fable — same undercounting metric as the 5h figure, so retune both
+  // together if you recalibrate.
+  'router.budgetWeekTokens': 20_000_000,
+  'router.budgetWeekFableTokens': 5_000_000,
   // auto is the everyday mode (user decision 2026-08-24); acceptEdits is the
   // conservative fallback, bypassPermissions the loud red switch.
   'agent.permissionMode': 'auto',

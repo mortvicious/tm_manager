@@ -1,4 +1,4 @@
-import type { Anomaly, AppSettings, AuditEvent, Proposal, Repo, Run, StatsOverview, Task } from '@tm/shared';
+import type { Anomaly, AppSettings, AuditEvent, Proposal, Repo, Run, StatsOverview, Task, UsageSnapshot } from '@tm/shared';
 
 // Only user-editable fields — status/error/resultSummary are machine-owned and
 // the server rejects them with a 400 (.strict() schemas).
@@ -73,7 +73,7 @@ export const api = {
   putConfig: (b: Partial<AppSettings>) => req<AppSettings>('PUT', '/api/config', b),
 
   orchestrator: () => req<{ enabled: boolean; running: number; concurrency: number }>('GET', '/api/orchestrator'),
-  usage: () => req<{ pct: number; threshold: number; routedModel: string }>('GET', '/api/usage'),
+  usage: () => req<UsageSnapshot>('GET', '/api/usage'),
   sentrySync: () => req<{ created: number; skipped: number; fetched: number }>('POST', '/api/sentry/sync'),
   statsOverview: (days: number) => req<StatsOverview>('GET', `/api/stats/overview?days=${days}`),
   anomalies: () => req<Anomaly[]>('GET', '/api/stats/anomalies'),

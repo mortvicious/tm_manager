@@ -288,7 +288,7 @@ export function ConfigPage() {
           <div>
             <div>Route by usage</div>
             <div className="hint">
-              primary model while estimated 5h usage &lt; threshold, then fallback; tool/browser-testing
+              primary model while session (5h) usage &lt; threshold, then fallback; tool/browser-testing
               tasks always use the fallback. Per-task model overrides win.
             </div>
           </div>
@@ -349,7 +349,8 @@ export function ConfigPage() {
           <div>
             <div>5h token budget</div>
             <div className="hint">
-              usage % is estimated from local transcripts against this budget (no official account API)
+              fallback only: when the account's own figure is unavailable, usage % is estimated from local
+              transcripts against this budget
             </div>
           </div>
           <input
@@ -360,6 +361,36 @@ export function ConfigPage() {
             step={100000}
             value={cfg['router.budget5hTokens']}
             onChange={(e) => set('router.budget5hTokens', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Weekly token budget</div>
+            <div className="hint">trailing-7d budget for the `wk` estimate fallback (reporting only)</div>
+          </div>
+          <input
+            className="field mono"
+            style={{ width: 140 }}
+            type="number"
+            min={10000}
+            step={1000000}
+            value={cfg['router.budgetWeekTokens']}
+            onChange={(e) => set('router.budgetWeekTokens', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Weekly fable budget</div>
+            <div className="hint">same fallback, counting fable-family models only (their separate cap)</div>
+          </div>
+          <input
+            className="field mono"
+            style={{ width: 140 }}
+            type="number"
+            min={10000}
+            step={1000000}
+            value={cfg['router.budgetWeekFableTokens']}
+            onChange={(e) => set('router.budgetWeekFableTokens', Number(e.target.value))}
           />
         </div>
       </div>

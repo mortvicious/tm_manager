@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@fastify/multipart": "^9.4.0",
-    "@fastify/static": "^8.0.3",
+    "@fastify/static": "^10.1.3",
     "@fastify/websocket": "^11.0.1",
     "@tm/shared": "*",
     "better-sqlite3": "^13.0.0",

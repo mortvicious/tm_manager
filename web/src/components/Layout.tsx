@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import type { UsageSnapshot, UsageWindow } from '@tm/shared';
 import { NavLink } from 'react-router-dom';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
@@ -46,8 +47,57 @@ function OrchestratorSwitch() {
   );
 }
 
+/** 1_234_567 -> "1.2M"; keeps the tooltip readable without a formatter dep. */
+function fmtTokens(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
+
+function fmtAge(ms: number) {
+  const m = Math.round(ms / 60_000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
+}
+
+/** "in 4h 30m" until the window rolls over. */
+function fmtResets(iso: string | null) {
+  if (!iso) return null;
+  const ms = Date.parse(iso) - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const m = Math.floor(ms / 60_000);
+  const h = Math.floor(m / 60);
+  if (h >= 24) return `resets in ${Math.floor(h / 24)}d ${h % 24}h`;
+  return h > 0 ? `resets in ${h}h ${m % 60}m` : `resets in ${m}m`;
+}
+
+function windowTitle(label: string, w: UsageWindow) {
+  const detail =
+    w.source === 'account'
+      ? [fmtResets(w.resetsAt)].filter(Boolean).join('')
+      : `estimated ${fmtTokens(w.tokens ?? 0)}/${fmtTokens(w.budget ?? 0)}`;
+  return detail ? `${label} ${w.pct}% (${detail})` : `${label} ${w.pct}%`;
+}
+
+function UsageSegment({ label, w, threshold }: { label: string; w: UsageWindow; threshold: number }) {
+  return (
+    <span
+      style={{
+        color: w.pct >= threshold ? 'var(--tm-status-review)' : undefined,
+        // An estimated figure is dimmed so it never reads as the account's own.
+        opacity: w.source === 'estimate' ? 0.65 : undefined,
+      }}
+    >
+      {label} {Math.round(w.pct)}%
+      {w.source === 'estimate' ? '~' : ''}
+    </span>
+  );
+}
+
 function UsagePill() {
-  const [usage, setUsage] = useState<{ pct: number; threshold: number; routedModel: string } | null>(null);
+  const [usage, setUsage] = useState<UsageSnapshot | null>(null);
   useEffect(() => {
     let alive = true;
     const load = () => api.usage().then((u) => alive && setUsage(u)).catch(() => {});
@@ -59,10 +109,32 @@ function UsagePill() {
     };
   }, []);
   if (!usage) return null;
-  const hot = usage.pct >= usage.threshold;
+  // A server still on the pre-weekly payload (this one only restarts between
+  // worker runs) sends the flat pct alone — degrade rather than crash.
+  const { fiveHour, week, weekFable } = usage as Partial<UsageSnapshot>;
+  if (!fiveHour || !week || !weekFable) {
+    return (
+      <span className="runcount" title={`estimated 5h usage · routing to ${usage.routedModel}`}>
+        5h {Math.round(usage.pct)}% · {usage.routedModel.replace('claude-', '')}
+      </span>
+    );
+  }
+  const anyEstimate = [fiveHour, week, weekFable].some((w) => w.source === 'estimate');
+  const title = [
+    usage.accountAgeMs === null
+      ? 'estimated from local transcripts — no account figures cached'
+      : `plan usage as of ${fmtAge(usage.accountAgeMs)}${anyEstimate ? ' (~ = local estimate instead)' : ''}`,
+    windowTitle('session', fiveHour),
+    windowTitle('week', week),
+    windowTitle('week fable', weekFable),
+    `routing to ${usage.routedModel}`,
+  ].join(' · ');
   return (
-    <span className="runcount" title={`estimated 5h usage · routing to ${usage.routedModel}`}>
-      usage {usage.pct}% · <span style={{ color: hot ? 'var(--tm-status-review)' : undefined }}>{usage.routedModel.replace('claude-', '')}</span>
+    <span className="runcount" title={title}>
+      <UsageSegment label="5h" w={fiveHour} threshold={usage.threshold} /> ·{' '}
+      <UsageSegment label="wk" w={week} threshold={usage.threshold} /> ·{' '}
+      <UsageSegment label="fable" w={weekFable} threshold={usage.threshold} /> ·{' '}
+      {usage.routedModel.replace('claude-', '')}
     </span>
   );
 }
@@ -113,8 +185,8 @@ function ServerControl() {
         />
         {restarting ? 'restarting…' : connected ? `up ${uptime}` : 'offline'}
       </span>
-      <button className="btn ghost" title="Restart server" disabled={restarting} onClick={restart}>
-        ⟳
+      <button className="btn ghost" title="Restart the task-manager server" disabled={restarting} onClick={restart}>
+        {restarting ? 'Restarting…' : 'Restart server'}
       </button>
     </span>
   );

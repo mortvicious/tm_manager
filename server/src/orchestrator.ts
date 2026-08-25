@@ -7,7 +7,7 @@ import { buildWorkerInvocation } from './claude/worker.ts';
 import { killAnalysis } from './claude/analyze.ts';
 import { reviewWorkerChange } from './claude/review.ts';
 import { summarizeTranscript } from './claude/stats.ts';
-import { estimateUsagePct, needsFallbackModel } from './claude/usage.ts';
+import { needsFallbackModel, sessionUsagePct } from './claude/usage.ts';
 import { broadcast } from './events.ts';
 import { MAX_LIVE_SESSIONS, pidLooksLikeOurs, type SessionManager } from './pty/session-manager.ts';
 import { artifactsRoot } from './config.ts';
@@ -195,13 +195,15 @@ export class Orchestrator implements OrchestratorApi {
   /**
    * Model routing (user rule 2026-08-24): explicit task.model always wins;
    * tool/browser-testing tasks get the fallback model (Opus); otherwise the
-   * primary (Fable) while estimated 5h usage < threshold, then the fallback.
+   * primary (Fable) while 5h/session usage < threshold, then the fallback.
+   * The percentage is the account's own when the CLI cached a live one, else
+   * our transcript estimate.
    */
   private async resolveModel(task: Task, settings: AppSettings): Promise<string> {
     if (task.model) return task.model;
     if (!settings['router.enabled']) return settings['agent.model'];
     if (needsFallbackModel(task.title, task.description)) return settings['router.fallbackModel'];
-    const pct = await estimateUsagePct(settings['router.budget5hTokens']);
+    const pct = await sessionUsagePct(settings['router.budget5hTokens']);
     return pct < settings['router.usageThresholdPct']
       ? settings['router.primaryModel']
       : settings['router.fallbackModel'];

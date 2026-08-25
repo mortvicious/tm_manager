@@ -12,6 +12,7 @@ A local web app ("task manager") that collects tasks for registered repos and au
 - `npm run dev` — server (tsx watch, http://127.0.0.1:5175) + Vite dev server (http://localhost:5173, proxies /api and /ws)
 - `npm run build` — builds the SPA (`web/dist`); the server has no build step
 - `npm start` — production mode: tsx runs the server, which serves `web/dist` at http://localhost:5175
+- `npm run typecheck` — tsc --noEmit over both server and web (CI runs this plus `npm run build`)
 
 No test framework yet. Verify with curl against the REST API and the flows in `docs/design.md` § Verification.
 
