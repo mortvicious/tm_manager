@@ -1,20 +1,24 @@
+import { spawn } from 'node:child_process';
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import fastifyMultipart from '@fastify/multipart';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ZodError } from 'zod';
+import { z, ZodError } from 'zod';
 import { DEFAULT_SETTINGS } from '@tm/shared';
 import './app-types.ts';
 import { sessionToken } from './auth.ts';
 import { ActivityWatcher } from './claude/activity.ts';
+import { CommandRunner } from './commands/runner.ts';
+import { liveHeadless, onHeadlessChange, stopAllHeadless } from './claude/headless.ts';
 import { loadBootConfig, serverRoot } from './config.ts';
 import { broadcast } from './events.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { SessionManager } from './pty/session-manager.ts';
 import { createStorage } from './storage/index.ts';
 import { registerAgentRoutes } from './routes/agent.ts';
+import { registerCommandRoutes } from './routes/commands.ts';
 import { registerFeatureRoutes } from './routes/features.ts';
 import { registerInternalRoutes } from './routes/internal.ts';
 import { registerProposalRoutes } from './routes/proposals.ts';
@@ -45,12 +49,29 @@ const sessions = new SessionManager(
   () => scrollbackBytes,
   () => sessionTtlMs,
 );
+// Repo commands (docs/commands.md) get their OWN PTY pool: a dev server runs
+// for hours, and sharing the agent pool would let it consume the orchestrator's
+// concurrency accounting and the MAX_LIVE_SESSIONS spawn cap.
+const commandSessions = new SessionManager(
+  () => scrollbackBytes,
+  () => sessionTtlMs,
+);
 const orchestrator = new Orchestrator(storage, sessions, `http://127.0.0.1:${cfg.port}`);
+const commandRunner = new CommandRunner(storage, commandSessions);
 await orchestrator.recoverOnBoot();
 
 // Live "what is it doing right now" line per running agent, tailed off the
 // session transcripts. Started after boot recovery so orphaned runs from the
 // previous process are already retired and never get tailed.
+// Headless agents start and finish without any PTY event, so nothing else
+// would refresh the status the header (and its restart guard) reads.
+onHeadlessChange(() => {
+  void orchestrator
+    .status()
+    .then((status) => broadcast({ type: 'orchestrator.status', status }))
+    .catch(() => {});
+});
+
 const activity = new ActivityWatcher({
   hasLiveSessions: () => sessions.liveCount() > 0,
   liveRuns: async () => {
@@ -118,12 +139,46 @@ app.get('/api/health', async () => ({ ok: true, driver: cfg.storage.driver, boot
 // outlives us (detached+unref) and rebinds the port after we release it. Only
 // works when launched normally (npm start / tsx); there is no supervisor, so
 // this IS the supervisor for one hop.
-app.post('/api/server/restart', async (_req, reply) => {
+// A restart kills every agent, so it is REFUSED while any is working: worker
+// tasks would be swept to `failed` by boot recovery and their sessions lost,
+// and an in-flight analysis / adversarial review / feature plan dies mid-run.
+// BOTH kinds count — interactive PTY workers AND headless `claude -p` children,
+// which own no PTY and would otherwise slip through the gate entirely.
+// `{"force": true}` is the deliberate override (curl / a UI that asked twice).
+const restartBody = z.object({ force: z.boolean().optional() }).strict();
+app.post('/api/server/restart', async (req, reply) => {
+  const { force } = restartBody.parse(req.body ?? {});
+  const { running } = await orchestrator.status();
+  const headless = liveHeadless();
+  const services = commandRunner.running().length;
+  if ((running > 0 || headless.length > 0) && !force) {
+    const parts = [
+      running > 0 ? `${running} agent session(s)` : null,
+      headless.length > 0 ? `${headless.length} headless agent(s) (${headless.join(', ')})` : null,
+    ].filter(Boolean);
+    return reply.code(409).send({
+      error: `${parts.join(' and ')} still working — stop them first, or retry with force.`,
+      running,
+      headless: headless.length,
+      services,
+    });
+  }
+  // Dev servers are children of this process: kill them deliberately instead
+  // of orphaning them onto the port the restarted server's repos will want.
+  // Headless agents only ever exist here on the force path — same reasoning.
+  commandRunner.stopAll();
+  stopAllHeadless();
   reply.send({ ok: true, restarting: true });
   setTimeout(() => {
     try {
-      const { spawn } = require('node:child_process') as typeof import('node:child_process');
-      const child = spawn(process.argv[0], process.argv.slice(1), {
+      // Two things this respawn has to get right, both learned the hard way:
+      // `spawn` is imported at the top (this file is ESM — the `require` that
+      // used to be here threw "require is not defined"), and the loader flags
+      // are carried over. Under tsx, `process.argv` is already rewritten to
+      // [node, /abs/index.ts], so respawning argv alone gave a bare node that
+      // died on the first type annotation. `execArgv` holds tsx's --require /
+      // --import; it is empty for a plain `node file.js`, where this is a no-op.
+      const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
         cwd: process.cwd(),
         detached: true,
         stdio: 'ignore',
@@ -146,10 +201,11 @@ registerRunRoutes(app, storage, orchestrator, activity);
 registerOrchestratorRoutes(app, storage, orchestrator);
 registerInternalRoutes(app, storage, sessions, orchestrator);
 registerAgentRoutes(app, storage, orchestrator);
+registerCommandRoutes(app, storage, commandRunner);
 registerProposalRoutes(app, storage);
 registerFeatureRoutes(app, storage);
 registerStatsRoutes(app, storage, sessions, orchestrator);
-registerTerminalWs(app, sessions);
+registerTerminalWs(app, [sessions, commandSessions]);
 registerEventsWs(app);
 
 // Serve the built SPA when present (production mode).
@@ -165,6 +221,11 @@ if (fs.existsSync(webDist)) {
 }
 
 const stop = async () => {
+  // Dev servers and watchers die with us either way; signalling them first is
+  // what makes them release their ports before the next boot. Headless agents
+  // do NOT die with us — they would keep spending tokens for nobody.
+  commandRunner.stopAll();
+  stopAllHeadless();
   await app.close();
   await storage.close();
   process.exit(0);

@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import type { Task, TaskStatus } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
@@ -52,6 +52,7 @@ export function TaskRow({
   onOpenTask,
   onOpenTerminal,
   fresh,
+  depth = 0,
   children,
 }: {
   task: Task;
@@ -59,6 +60,9 @@ export function TaskRow({
   onOpenTerminal: (runId: string) => void;
   /** filed recently — draws the accent edge that separates new from old */
   fresh?: boolean;
+  /** nesting level under the deepest ancestor visible in the SAME list
+   *  (0 = shown as a root there); drives the indent, not the data model */
+  depth?: number;
   children?: ReactNode;
 }) {
   const { runs, activity, refresh } = useApp();
@@ -144,7 +148,10 @@ export function TaskRow({
       >
         <IconTerminal />
       </QuickBtn>
-      <span className={`task-main ${task.parentId ? 'child' : ''}`}>
+      <span
+        className={`task-main ${depth > 0 ? 'child' : ''}`}
+        style={depth > 1 ? ({ '--tm-depth': depth } as CSSProperties) : undefined}
+      >
         <span className="title">{task.title}</span>
         {liveLine?.text && (
           <span

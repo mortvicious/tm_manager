@@ -10,20 +10,24 @@ import {
   type FeatureStatus,
   type Proposal,
   type Repo,
+  type RepoCommand,
   type Run,
   type Task,
 } from '@tm/shared';
 import { planCards } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
+import { MOVE_SUBTREE_SQL, ROOT_PATH, moveSubtreeParams, pathContains, placement } from './group.ts';
 import { MIGRATIONS } from './migrations.ts';
-import { eventId, now, rowToEvent, rowToFeature, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
+import { eventId, now, rowToCommand, rowToEvent, rowToFeature, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
 import type {
   ChildCounts,
+  CommandPatch,
   EventFilter,
   FeaturePatch,
   FeatureResolution,
   NewAuditEvent,
+  NewCommand,
   NewFeature,
   NewProposal,
   NewRepo,
@@ -179,12 +183,68 @@ export class SqliteStorage implements Storage {
   async deleteRepo(id: string): Promise<void> {
     const del = this.db.transaction((repoId: string) => {
       this.db.prepare(`UPDATE tm_tasks SET repo_id = NULL WHERE repo_id = ?`).run(repoId);
+      // Commands are owned by the repo (repo_id NOT NULL): a command line has
+      // no meaning without the directory it runs in, so it goes with it.
+      this.db.prepare(`DELETE FROM tm_commands WHERE repo_id = ?`).run(repoId);
       // Features follow tasks: detached, not deleted (their plan is still
       // readable) — and the FK would otherwise reject the delete.
       this.db.prepare(`UPDATE tm_features SET repo_id = NULL, updated_at = ? WHERE repo_id = ?`).run(now(), repoId);
       this.db.prepare(`DELETE FROM tm_repos WHERE id = ?`).run(repoId);
     });
     del(id);
+  }
+
+  // ---- commands (docs/commands.md) ----
+
+  async listCommands(repoId?: string): Promise<RepoCommand[]> {
+    const sql = `SELECT * FROM tm_commands ${repoId ? 'WHERE repo_id = ?' : ''} ORDER BY sort_order, created_at`;
+    const rows = repoId ? this.db.prepare(sql).all(repoId) : this.db.prepare(sql).all();
+    return (rows as any[]).map(rowToCommand);
+  }
+
+  async getCommand(id: string): Promise<RepoCommand | null> {
+    const r = this.db.prepare(`SELECT * FROM tm_commands WHERE id = ?`).get(id);
+    return r ? rowToCommand(r) : null;
+  }
+
+  async createCommand(c: NewCommand): Promise<RepoCommand> {
+    const id = randomUUID();
+    const at = now();
+    const sortOrder =
+      c.sortOrder ??
+      Number(
+        (this.db.prepare(`SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM tm_commands WHERE repo_id = ?`).get(
+          c.repoId,
+        ) as { next: number }).next,
+      );
+    this.db
+      .prepare(
+        `INSERT INTO tm_commands (id, repo_id, name, command, kind, cwd, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, c.repoId, c.name, c.command, c.kind ?? 'task', c.cwd ?? null, sortOrder, at, at);
+    return (await this.getCommand(id))!;
+  }
+
+  async updateCommand(id: string, patch: CommandPatch): Promise<RepoCommand | null> {
+    const cur = await this.getCommand(id);
+    if (!cur) return null;
+    this.db
+      .prepare(`UPDATE tm_commands SET name = ?, command = ?, kind = ?, cwd = ?, sort_order = ?, updated_at = ? WHERE id = ?`)
+      .run(
+        patch.name ?? cur.name,
+        patch.command ?? cur.command,
+        patch.kind ?? cur.kind,
+        patch.cwd === undefined ? cur.cwd : patch.cwd,
+        patch.sortOrder ?? cur.sortOrder,
+        now(),
+        id,
+      );
+    return this.getCommand(id);
+  }
+
+  async deleteCommand(id: string): Promise<void> {
+    this.db.prepare(`DELETE FROM tm_commands WHERE id = ?`).run(id);
   }
 
   // ---- tasks ----
@@ -204,6 +264,10 @@ export class SqliteStorage implements Storage {
       where.push(`parent_id = ?`);
       params.push(f.parentId);
     }
+    if (f?.groupId) {
+      where.push(`group_id = ?`);
+      params.push(f.groupId);
+    }
     if (f?.featureId) {
       where.push(`feature_id = ?`);
       params.push(f.featureId);
@@ -217,13 +281,26 @@ export class SqliteStorage implements Storage {
     return r ? rowToTask(r) : null;
   }
 
+  /** The group columns a row must carry, derived from its parent (docs/grouping.md). */
+  private placeSync(id: string, parentId: string | null | undefined): { groupId: string; groupPath: string } {
+    if (!parentId) return placement(id, null);
+    const p = this.db.prepare(`SELECT id, group_id, group_path FROM tm_tasks WHERE id = ?`).get(parentId) as
+      | { id: string; group_id: string | null; group_path: string | null }
+      | undefined;
+    // Unknown parent: the FK rejects the write anyway, so fall back to a root
+    // placement instead of inventing a group id.
+    if (!p) return placement(id, null);
+    return placement(id, { id: p.id, group_id: p.group_id ?? p.id, group_path: p.group_path ?? ROOT_PATH });
+  }
+
   private insertTaskSync(t: NewTask, actor: string): Task {
     const id = randomUUID();
     const ts = now();
+    const place = this.placeSync(id, t.parentId);
     this.db
       .prepare(
-        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, status, source, source_ref, priority, model, effort, category, review, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -231,6 +308,8 @@ export class SqliteStorage implements Storage {
         t.description ?? null,
         t.repoId ?? null,
         t.parentId ?? null,
+        place.groupId,
+        place.groupPath,
         t.status ?? 'draft',
         t.source ?? 'manual',
         t.sourceRef ?? null,
@@ -252,7 +331,13 @@ export class SqliteStorage implements Storage {
       actor,
       taskId: task.id,
       repoId: task.repoId,
-      data: { title: task.title, status: task.status, source: task.source, spawnDepth: task.spawnDepth },
+      data: {
+        title: task.title,
+        status: task.status,
+        source: task.source,
+        spawnDepth: task.spawnDepth,
+        groupId: task.groupId,
+      },
     });
     return task;
   }
@@ -268,15 +353,47 @@ export class SqliteStorage implements Storage {
     // Spread keeps undefined values, which would clobber NOT NULL columns — strip them.
     const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
     const next = { ...t, ...clean, updatedAt: now() };
+    // Re-parenting moves this task AND everything under it into the new group.
+    const moved = next.parentId !== t.parentId;
+    let place = { groupId: t.groupId, groupPath: t.groupPath };
+    if (moved) {
+      if (next.parentId === id) throw new Error('a task cannot be its own parent');
+      const p = next.parentId
+        ? (this.db.prepare(`SELECT id, group_id, group_path FROM tm_tasks WHERE id = ?`).get(next.parentId) as
+            | { id: string; group_id: string | null; group_path: string | null }
+            | undefined)
+        : undefined;
+      if (next.parentId && !p) throw new Error('parent task not found');
+      if (p && pathContains(p.group_path ?? ROOT_PATH, id)) {
+        throw new Error('re-parenting a task under its own descendant would create a cycle');
+      }
+      place = placement(
+        id,
+        p ? { id: p.id, group_id: p.group_id ?? p.id, group_path: p.group_path ?? ROOT_PATH } : null,
+      );
+      // Descendants first: their match uses this row's OLD path prefix.
+      this.db.prepare(MOVE_SUBTREE_SQL).run(...(moveSubtreeParams(
+        { id, group_path: t.groupPath },
+        place,
+        next.updatedAt,
+      ) as any[]));
+    }
+    // group_name/group_color describe a GROUP, and only its root may carry
+    // them — a task that just gained a parent drops both.
+    const isRoot = place.groupId === id;
     this.db
       .prepare(
-        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, error=?, updated_at=? WHERE id=?`,
+        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, error=?, updated_at=? WHERE id=?`,
       )
       .run(
         next.title,
         next.description,
         next.repoId,
         next.parentId,
+        place.groupId,
+        place.groupPath,
+        isRoot ? next.groupName : null,
+        isRoot ? next.groupColor : null,
         next.status,
         next.source,
         next.sourceRef,
@@ -297,12 +414,26 @@ export class SqliteStorage implements Storage {
   }
 
   async updateTask(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Promise<Task | null> {
-    return this.updateTaskSync(id, patch);
+    // A re-parent rewrites the moved subtree too, so it must be one transaction.
+    return this.inTxn(() => this.updateTaskSync(id, patch));
   }
 
   async deleteTask(id: string): Promise<void> {
     const del = this.db.transaction((taskId: string) => {
-      this.db.prepare(`UPDATE tm_tasks SET parent_id = NULL WHERE parent_id = ?`).run(taskId);
+      // Orphaned children become roots of their own groups, carrying their
+      // descendants with them (docs/grouping.md § Deleting a task).
+      const kids = this.db
+        .prepare(`SELECT id, group_path FROM tm_tasks WHERE parent_id = ?`)
+        .all(taskId) as { id: string; group_path: string | null }[];
+      const ts = now();
+      for (const k of kids) {
+        const node = { id: k.id, group_path: k.group_path ?? ROOT_PATH };
+        const place = placement(k.id, null);
+        this.db.prepare(MOVE_SUBTREE_SQL).run(...(moveSubtreeParams(node, place, ts) as any[]));
+        this.db
+          .prepare(`UPDATE tm_tasks SET parent_id = NULL, group_id = ?, group_path = ?, updated_at = ? WHERE id = ?`)
+          .run(place.groupId, place.groupPath, ts, k.id);
+      }
       this.db.prepare(`DELETE FROM tm_proposals WHERE task_id = ?`).run(taskId);
       this.db.prepare(`UPDATE tm_runs SET task_id = NULL WHERE task_id = ?`).run(taskId);
       this.db.prepare(`DELETE FROM tm_tasks WHERE id = ?`).run(taskId);

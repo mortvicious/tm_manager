@@ -2,10 +2,14 @@ import type {
   Anomaly,
   AppSettings,
   AuditEvent,
+  CommandRun,
   Feature,
   FeaturePlan,
+  OrchestratorStatus,
   Proposal,
   Repo,
+  RepoCommand,
+  RepoScripts,
   Run,
   RunActivity,
   StatsOverview,
@@ -15,9 +19,42 @@ import type {
 
 // Only user-editable fields — status/error/resultSummary are machine-owned and
 // the server rejects them with a 400 (.strict() schemas).
+// groupName/groupColor are accepted on a group's ROOT task only (the server
+// answers 400 otherwise) — see docs/grouping.md.
 export type TaskWrite = Partial<
-  Pick<Task, 'title' | 'description' | 'repoId' | 'parentId' | 'priority' | 'source' | 'sourceRef' | 'model' | 'effort' | 'category' | 'review'>
+  Pick<
+    Task,
+    | 'title'
+    | 'description'
+    | 'repoId'
+    | 'parentId'
+    | 'priority'
+    | 'source'
+    | 'sourceRef'
+    | 'model'
+    | 'effort'
+    | 'category'
+    | 'review'
+    | 'groupName'
+    | 'groupColor'
+  >
 >;
+
+/**
+ * A server that predates the task-group migration sends tasks without the
+ * group columns; read such a task as its own single-task group so a rebuilt
+ * SPA still renders against a server that has not restarted yet.
+ */
+export function normalizeTask(t: Task): Task {
+  if (t.groupId && t.groupPath) return t;
+  return {
+    ...t,
+    groupId: t.groupId ?? t.id,
+    groupPath: t.groupPath ?? '/',
+    groupName: t.groupName ?? null,
+    groupColor: t.groupColor ?? null,
+  };
+}
 
 async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
@@ -41,7 +78,8 @@ async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
 export const api = {
   session: () => req<{ token: string }>('GET', '/api/session'),
   health: () => req<{ ok: boolean; driver: string; bootedAt: string }>('GET', '/api/health'),
-  restartServer: () => req<{ ok: true; restarting: true }>('POST', '/api/server/restart'),
+  // Refused with 409 while agents are working; `force` is the explicit override.
+  restartServer: (force = false) => req<{ ok: true; restarting: true }>('POST', '/api/server/restart', { force }),
 
   listRepos: () => req<Repo[]>('GET', '/api/repos'),
   createRepo: (b: { name?: string; path: string; role?: string | null; previewUrl?: string | null }) =>
@@ -53,9 +91,23 @@ export const api = {
   gitCommit: (id: string) => req<{ ok: true; message: string; summary: string }>('POST', `/api/repos/${id}/commit`),
   gitPush: (id: string) => req<{ ok: true; output: string }>('POST', `/api/repos/${id}/push`),
 
-  listTasks: () => req<Task[]>('GET', '/api/tasks'),
-  createTask: (b: TaskWrite & { title: string }) => req<Task>('POST', '/api/tasks', b),
-  updateTask: (id: string, b: TaskWrite) => req<Task>('PATCH', `/api/tasks/${id}`, b),
+  listCommands: () => req<RepoCommand[]>('GET', '/api/commands'),
+  createCommand: (b: { repoId: string; name: string; command: string; kind?: RepoCommand['kind']; cwd?: string | null }) =>
+    req<RepoCommand>('POST', '/api/commands', b),
+  updateCommand: (id: string, b: Partial<Pick<RepoCommand, 'name' | 'command' | 'kind' | 'cwd' | 'sortOrder'>>) =>
+    req<RepoCommand>('PATCH', `/api/commands/${id}`, b),
+  deleteCommand: (id: string) => req<{ ok: true }>('DELETE', `/api/commands/${id}`),
+  repoScripts: (repoId: string) => req<RepoScripts>('GET', `/api/repos/${repoId}/scripts`),
+  runCommand: (id: string) => req<CommandRun>('POST', `/api/commands/${id}/run`),
+  listCommandRuns: () => req<CommandRun[]>('GET', '/api/command-runs'),
+  stopCommandRun: (runId: string) => req<{ ok: true }>('POST', `/api/command-runs/${runId}/stop`),
+  clearCommandRuns: () => req<{ ok: true; cleared: number }>('POST', '/api/command-runs/clear'),
+
+  listTasks: () => req<Task[]>('GET', '/api/tasks').then((l) => l.map(normalizeTask)),
+  createTask: (b: TaskWrite & { title: string }) =>
+    req<Task>('POST', '/api/tasks', b).then(normalizeTask),
+  updateTask: (id: string, b: TaskWrite) =>
+    req<Task>('PATCH', `/api/tasks/${id}`, b).then(normalizeTask),
   deleteTask: (id: string) => req<{ ok: true }>('DELETE', `/api/tasks/${id}`),
   taskAction: (id: string, action: 'enqueue' | 'run-now' | 'cancel' | 'retry' | 'unblock' | 'complete') =>
     req<Task>('POST', `/api/tasks/${id}/${action}`),
@@ -106,7 +158,7 @@ export const api = {
   getConfig: () => req<AppSettings>('GET', '/api/config'),
   putConfig: (b: Partial<AppSettings>) => req<AppSettings>('PUT', '/api/config', b),
 
-  orchestrator: () => req<{ enabled: boolean; running: number; concurrency: number }>('GET', '/api/orchestrator'),
+  orchestrator: () => req<OrchestratorStatus>('GET', '/api/orchestrator'),
   usage: () => req<UsageSnapshot>('GET', '/api/usage'),
   sentrySync: () => req<{ created: number; skipped: number; fetched: number }>('POST', '/api/sentry/sync'),
   statsOverview: (days: number) => req<StatsOverview>('GET', `/api/stats/overview?days=${days}`),

@@ -18,7 +18,7 @@ export function ConfigPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const snapshot = useRef<AppSettings | null>(null);
-  const { repos } = useApp();
+  const { repos, refresh } = useApp();
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -52,6 +52,8 @@ export function ConfigPage() {
       const next = await api.putConfig(diff);
       setCfg(next);
       snapshot.current = next;
+      // the app state carries settings the UI reacts to (board.groupColors)
+      await refresh();
       setSaved(true);
       setTimeout(() => setSaved(false), 1600);
     } catch (e) {
@@ -458,6 +460,22 @@ export function ConfigPage() {
             value={cfg['router.budgetWeekFableTokens']}
             onChange={(e) => set('router.budgetWeekFableTokens', Number(e.target.value))}
           />
+        </div>
+      </div>
+
+      <div className="panel cfg-group">
+        <h3>Board</h3>
+        <div className="cfg-row">
+          <div>
+            <div>Group colours</div>
+            <div className="hint">
+              tint each task group (a task and everything split out of it) with its own colour on the board —
+              off leaves the neutral grey blocks, grouping itself is unaffected
+            </div>
+          </div>
+          {/* `?? true` so a server that predates this setting renders the real
+              default and the key stays out of the save diff until touched */}
+          <Toggle on={cfg['board.groupColors'] ?? true} onChange={(v) => set('board.groupColors', v)} />
         </div>
       </div>
 

@@ -30,7 +30,7 @@ GET  /api/agent/tasks/:id        → { id, status, resultSummary, error }   # po
 
 - `repo` resolves id → exact name → unique role. Ambiguous role (two "frontend" repos) → 400 listing candidates.
 - Created tasks get `source: 'auto'`, and a new column `created_by_run` for attribution (shown in the UI as an "agent" chip with the creating task's title).
-- `linkToParent: true` makes it a **sibling-child**: `parentId = caller's task.parentId ?? caller's taskId` — a worker's follow-ups block ITS parent, not itself (a task must never become its own dependency).
+- `linkToParent: true` makes it a **sibling-child**: `parentId = caller's task.parentId ?? caller's taskId` — a worker's follow-ups block ITS parent, not itself (a task must never become its own dependency). It also joins the caller's **task group** (`group_id`/`group_path` are derived from the parent row on insert, `docs/grouping.md`), so the follow-up shows up in the same block on the Board.
 
 ### 2. Coordination model: async handoff via tasks (v1)
 

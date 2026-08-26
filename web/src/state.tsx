@@ -8,17 +8,20 @@ import {
   type ReactNode,
 } from 'react';
 import type {
+  AppSettings,
   AuditEvent,
+  CommandRun,
   Feature,
   OrchestratorStatus,
   Proposal,
   Repo,
+  RepoCommand,
   Run,
   RunActivity,
   ServerEvent,
   Task,
 } from '@tm/shared';
-import { api } from './api.ts';
+import { api, normalizeTask } from './api.ts';
 
 interface AppState {
   repos: Repo[];
@@ -28,9 +31,16 @@ interface AppState {
   activity: Record<string, RunActivity>;
   proposals: Proposal[];
   features: Feature[];
+  /** saved per-repo command definitions (docs/commands.md) */
+  commands: RepoCommand[];
+  /** command executions this server knows about — running ones first-class,
+   *  finished ones kept briefly for the launcher's history */
+  commandRuns: CommandRun[];
   /** live audit events received this session (cap 200, newest last) */
   auditEvents: AuditEvent[];
   orch: OrchestratorStatus;
+  /** runtime settings the UI reacts to (board.groupColors…); null until loaded */
+  settings: AppSettings | null;
   token: string | null;
   connected: boolean;
   bootedAt: string | null;
@@ -53,8 +63,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activity, setActivity] = useState<Record<string, RunActivity>>({});
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [features, setFeatures] = useState<Feature[]>([]);
+  const [commands, setCommands] = useState<RepoCommand[]>([]);
+  const [commandRuns, setCommandRuns] = useState<CommandRun[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
-  const [orch, setOrch] = useState<OrchestratorStatus>({ enabled: false, running: 0, concurrency: 2 });
+  const [orch, setOrch] = useState<OrchestratorStatus>({ enabled: false, running: 0, concurrency: 2, headless: 0 });
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [bootedAt, setBootedAt] = useState<string | null>(null);
@@ -74,7 +87,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .catch(() => {});
     api.listProposals().then(setProposals).catch(() => {});
     api.listFeatures().then(setFeatures).catch(() => {});
+    api.listCommands().then(setCommands).catch(() => {});
+    api.listCommandRuns().then(setCommandRuns).catch(() => {});
     api.orchestrator().then(setOrch).catch(() => {});
+    api.getConfig().then(setSettings).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -114,10 +130,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         switch (e.type) {
           case 'task.updated':
             setTasks((cur) => {
-              const i = cur.findIndex((t) => t.id === e.task.id);
-              if (i === -1) return [...cur, e.task];
+              const task = normalizeTask(e.task);
+              const i = cur.findIndex((t) => t.id === task.id);
+              if (i === -1) return [...cur, task];
               const next = cur.slice();
-              next[i] = e.task;
+              next[i] = task;
               return next;
             });
             break;
@@ -172,6 +189,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
           case 'event.appended':
             setAuditEvents((cur) => [...cur.slice(-199), e.event]);
             break;
+          case 'command.updated':
+            setCommands((cur) => {
+              const i = cur.findIndex((c) => c.id === e.command.id);
+              if (i === -1) return [...cur, e.command];
+              const next = cur.slice();
+              next[i] = e.command;
+              return next;
+            });
+            break;
+          case 'command.deleted':
+            setCommands((cur) => cur.filter((c) => c.id !== e.commandId));
+            break;
+          case 'command.run':
+            setCommandRuns((cur) => {
+              const i = cur.findIndex((r) => r.id === e.run.id);
+              if (i === -1) return [e.run, ...cur];
+              const next = cur.slice();
+              next[i] = e.run;
+              return next;
+            });
+            break;
           case 'orchestrator.status':
             setOrch(e.status);
             break;
@@ -212,7 +250,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ repos, tasks, runs, activity, proposals, features, auditEvents, orch, token, connected, bootedAt, refresh, setOrch }}
+      value={{
+        repos,
+        tasks,
+        runs,
+        activity,
+        proposals,
+        features,
+        commands,
+        commandRuns,
+        auditEvents,
+        orch,
+        settings,
+        token,
+        connected,
+        bootedAt,
+        refresh,
+        setOrch,
+      }}
     >
       {children}
     </Ctx.Provider>

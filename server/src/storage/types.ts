@@ -9,6 +9,7 @@ import type {
   Proposal,
   ProposalPayload,
   Repo,
+  RepoCommand,
   Run,
   RunMode,
   RunStats,
@@ -40,6 +41,8 @@ export interface TaskFilter {
   status?: TaskStatus;
   repoId?: string;
   parentId?: string;
+  /** every task in one tree — the root's id (docs/grouping.md) */
+  groupId?: string;
   featureId?: string;
 }
 
@@ -53,6 +56,18 @@ export interface NewRepo {
 
 /** undefined = leave as-is; null clears the column. */
 export type RepoPatch = Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl'>>;
+
+export interface NewCommand {
+  repoId: string;
+  name: string;
+  command: string;
+  kind?: RepoCommand['kind'];
+  cwd?: string | null;
+  sortOrder?: number;
+}
+
+/** undefined = leave as-is; `cwd: null` clears it back to the repo root. */
+export type CommandPatch = Partial<Pick<RepoCommand, 'name' | 'command' | 'kind' | 'cwd' | 'sortOrder'>>;
 
 export interface NewTask {
   title: string;
@@ -142,7 +157,21 @@ export interface Storage {
   updateRepo(id: string, patch: RepoPatch): Promise<Repo | null>;
   deleteRepo(id: string): Promise<void>;
 
+  /** Saved repo commands (docs/commands.md), launcher order. */
+  listCommands(repoId?: string): Promise<RepoCommand[]>;
+  getCommand(id: string): Promise<RepoCommand | null>;
+  createCommand(c: NewCommand): Promise<RepoCommand>;
+  updateCommand(id: string, patch: CommandPatch): Promise<RepoCommand | null>;
+  deleteCommand(id: string): Promise<void>;
+
   listTasks(f?: TaskFilter): Promise<Task[]>;
+  /**
+   * Task-group invariants (docs/grouping.md), maintained by BOTH drivers:
+   * createTask derives `group_id`/`group_path` from the parent row; updateTask
+   * re-parents the whole subtree (throwing on a self/descendant parent) and
+   * drops `group_name`/`group_color` from a task that stops being a root;
+   * deleteTask promotes orphaned children to roots of their own groups.
+   */
   getTask(id: string): Promise<Task | null>;
   createTask(t: NewTask, actor: string): Promise<Task>;
   updateTask(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Promise<Task | null>;

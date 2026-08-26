@@ -8,20 +8,24 @@ import {
   type FeatureStatus,
   type Proposal,
   type Repo,
+  type RepoCommand,
   type Run,
   type Task,
 } from '@tm/shared';
 import { planCards } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
+import { MOVE_SUBTREE_SQL, ROOT_PATH, moveSubtreeParams, pathContains, placement } from './group.ts';
 import { MIGRATIONS } from './migrations.ts';
-import { eventId, now, rowToEvent, rowToFeature, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
+import { eventId, now, rowToCommand, rowToEvent, rowToFeature, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
 import type {
   ChildCounts,
+  CommandPatch,
   EventFilter,
   FeaturePatch,
   FeatureResolution,
   NewAuditEvent,
+  NewCommand,
   NewFeature,
   NewProposal,
   NewRepo,
@@ -180,10 +184,63 @@ export class PostgresStorage implements Storage {
   async deleteRepo(id: string): Promise<void> {
     await this.tx(async (c) => {
       await c.query(`UPDATE tm_tasks SET repo_id = NULL WHERE repo_id = $1`, [id]);
+      // Owned by the repo (repo_id NOT NULL) — see the sqlite driver.
+      await c.query(`DELETE FROM tm_commands WHERE repo_id = $1`, [id]);
       // Features follow tasks: detached, not deleted (see sqlite driver).
       await c.query(`UPDATE tm_features SET repo_id = NULL, updated_at = $1 WHERE repo_id = $2`, [now(), id]);
       await c.query(`DELETE FROM tm_repos WHERE id = $1`, [id]);
     });
+  }
+
+  // ---- commands (docs/commands.md) ----
+
+  async listCommands(repoId?: string): Promise<RepoCommand[]> {
+    const sql = `SELECT * FROM tm_commands ${repoId ? 'WHERE repo_id = ?' : ''} ORDER BY sort_order, created_at`;
+    return (await this.q(sql, repoId ? [repoId] : [])).map(rowToCommand);
+  }
+
+  async getCommand(id: string): Promise<RepoCommand | null> {
+    const r = await this.q(`SELECT * FROM tm_commands WHERE id = ?`, [id]);
+    return r[0] ? rowToCommand(r[0]) : null;
+  }
+
+  async createCommand(c: NewCommand): Promise<RepoCommand> {
+    const id = randomUUID();
+    const at = now();
+    const sortOrder =
+      c.sortOrder ??
+      Number(
+        (await this.q(`SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM tm_commands WHERE repo_id = ?`, [c.repoId]))[0]
+          .next,
+      );
+    await this.q(
+      `INSERT INTO tm_commands (id, repo_id, name, command, kind, cwd, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, c.repoId, c.name, c.command, c.kind ?? 'task', c.cwd ?? null, sortOrder, at, at],
+    );
+    return (await this.getCommand(id))!;
+  }
+
+  async updateCommand(id: string, patch: CommandPatch): Promise<RepoCommand | null> {
+    const cur = await this.getCommand(id);
+    if (!cur) return null;
+    await this.q(
+      `UPDATE tm_commands SET name = ?, command = ?, kind = ?, cwd = ?, sort_order = ?, updated_at = ? WHERE id = ?`,
+      [
+        patch.name ?? cur.name,
+        patch.command ?? cur.command,
+        patch.kind ?? cur.kind,
+        patch.cwd === undefined ? cur.cwd : patch.cwd,
+        patch.sortOrder ?? cur.sortOrder,
+        now(),
+        id,
+      ],
+    );
+    return this.getCommand(id);
+  }
+
+  async deleteCommand(id: string): Promise<void> {
+    await this.q(`DELETE FROM tm_commands WHERE id = ?`, [id]);
   }
 
   // ---- tasks ----
@@ -203,6 +260,10 @@ export class PostgresStorage implements Storage {
       where.push(`parent_id = ?`);
       params.push(f.parentId);
     }
+    if (f?.groupId) {
+      where.push(`group_id = ?`);
+      params.push(f.groupId);
+    }
     if (f?.featureId) {
       where.push(`feature_id = ?`);
       params.push(f.featureId);
@@ -216,6 +277,20 @@ export class PostgresStorage implements Storage {
     return r[0] ? rowToTask(r[0]) : null;
   }
 
+  /** The group columns a row must carry, derived from its parent (twin of the sqlite driver). */
+  private async placeWith(
+    c: pg.PoolClient | pg.Pool,
+    id: string,
+    parentId: string | null | undefined,
+  ): Promise<{ groupId: string; groupPath: string }> {
+    if (!parentId) return placement(id, null);
+    const r = await c.query(`SELECT id, group_id, group_path FROM tm_tasks WHERE id = $1`, [parentId]);
+    const p = r.rows[0] as { id: string; group_id: string | null; group_path: string | null } | undefined;
+    // Unknown parent: the FK rejects the write anyway (see sqlite driver).
+    if (!p) return placement(id, null);
+    return placement(id, { id: p.id, group_id: p.group_id ?? p.id, group_path: p.group_path ?? ROOT_PATH });
+  }
+
   private async insertTaskWith(
     c: pg.PoolClient | pg.Pool,
     t: NewTask,
@@ -224,15 +299,18 @@ export class PostgresStorage implements Storage {
   ): Promise<Task> {
     const id = randomUUID();
     const ts = now();
+    const place = await this.placeWith(c, id, t.parentId);
     await c.query(
-      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, status, source, source_ref, priority, model, effort, category, review, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
       [
         id,
         t.title,
         t.description ?? null,
         t.repoId ?? null,
         t.parentId ?? null,
+        place.groupId,
+        place.groupPath,
         t.status ?? 'draft',
         t.source ?? 'manual',
         t.sourceRef ?? null,
@@ -256,7 +334,13 @@ export class PostgresStorage implements Storage {
       actor,
       taskId: task.id,
       repoId: task.repoId,
-      data: { title: task.title, status: task.status, source: task.source, spawnDepth: task.spawnDepth },
+      data: {
+        title: task.title,
+        status: task.status,
+        source: task.source,
+        spawnDepth: task.spawnDepth,
+        groupId: task.groupId,
+      },
     }, sink);
     return task;
   }
@@ -275,13 +359,42 @@ export class PostgresStorage implements Storage {
     const t = rowToTask(curRes.rows[0]);
     const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
     const next = { ...t, ...clean, updatedAt: now() };
+    // Re-parenting moves this task AND everything under it (twin of the sqlite driver).
+    const moved = next.parentId !== t.parentId;
+    let place = { groupId: t.groupId, groupPath: t.groupPath };
+    if (moved) {
+      if (next.parentId === id) throw new Error('a task cannot be its own parent');
+      const pr = next.parentId
+        ? await c.query(`SELECT id, group_id, group_path FROM tm_tasks WHERE id = $1`, [next.parentId])
+        : null;
+      const p = pr?.rows[0] as { id: string; group_id: string | null; group_path: string | null } | undefined;
+      if (next.parentId && !p) throw new Error('parent task not found');
+      if (p && pathContains(p.group_path ?? ROOT_PATH, id)) {
+        throw new Error('re-parenting a task under its own descendant would create a cycle');
+      }
+      place = placement(
+        id,
+        p ? { id: p.id, group_id: p.group_id ?? p.id, group_path: p.group_path ?? ROOT_PATH } : null,
+      );
+      // Descendants first: their match uses this row's OLD path prefix.
+      await c.query(
+        toPg(MOVE_SUBTREE_SQL),
+        moveSubtreeParams({ id, group_path: t.groupPath }, place, next.updatedAt),
+      );
+    }
+    // Only a group ROOT carries the group's name/colour.
+    const isRoot = place.groupId === id;
     await c.query(
-      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, status=$5, source=$6, source_ref=$7, priority=$8, model=$9, effort=$10, category=$11, review=$12, feature_id=$13, feature_phase=$14, result_summary=$15, review_summary=$16, error=$17, updated_at=$18 WHERE id=$19`,
+      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, feature_id=$17, feature_phase=$18, result_summary=$19, review_summary=$20, error=$21, updated_at=$22 WHERE id=$23`,
       [
         next.title,
         next.description,
         next.repoId,
         next.parentId,
+        place.groupId,
+        place.groupPath,
+        isRoot ? next.groupName : null,
+        isRoot ? next.groupColor : null,
         next.status,
         next.source,
         next.sourceRef,
@@ -304,12 +417,29 @@ export class PostgresStorage implements Storage {
   }
 
   async updateTask(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Promise<Task | null> {
-    return this.updateTaskWith(this.pool, id, patch);
+    // A re-parent rewrites the moved subtree too, so it must be one transaction.
+    return this.tx((c) => this.updateTaskWith(c, id, patch));
   }
 
   async deleteTask(id: string): Promise<void> {
     await this.tx(async (c) => {
-      await c.query(`UPDATE tm_tasks SET parent_id = NULL WHERE parent_id = $1`, [id]);
+      // Orphaned children become roots of their own groups (see sqlite driver).
+      const kids = (await c.query(`SELECT id, group_path FROM tm_tasks WHERE parent_id = $1`, [id])).rows as {
+        id: string;
+        group_path: string | null;
+      }[];
+      const ts = now();
+      for (const k of kids) {
+        const place = placement(k.id, null);
+        await c.query(
+          toPg(MOVE_SUBTREE_SQL),
+          moveSubtreeParams({ id: k.id, group_path: k.group_path ?? ROOT_PATH }, place, ts),
+        );
+        await c.query(
+          `UPDATE tm_tasks SET parent_id = NULL, group_id = $1, group_path = $2, updated_at = $3 WHERE id = $4`,
+          [place.groupId, place.groupPath, ts, k.id],
+        );
+      }
       await c.query(`DELETE FROM tm_proposals WHERE task_id = $1`, [id]);
       await c.query(`UPDATE tm_runs SET task_id = NULL WHERE task_id = $1`, [id]);
       await c.query(`DELETE FROM tm_tasks WHERE id = $1`, [id]);

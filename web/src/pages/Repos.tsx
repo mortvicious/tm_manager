@@ -1,7 +1,11 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
-import { IconAnalyze } from '../components/Icons.tsx';
+import { RepoCommandsMenu, RepoCommandsPanel } from '../components/Commands.tsx';
+import { IconAnalyze, IconPencil } from '../components/Icons.tsx';
+
+/** Home-relative path — the prefix is the same on every row, so it is noise. */
+const shortPath = (p: string) => p.replace(/^\/Users\/[^/]+/, '~');
 
 type Git = { isRepo: boolean; branch: string | null; dirty: number; ahead: number };
 
@@ -46,7 +50,11 @@ function GitCell({ repoId }: { repoId: string }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
         <span className="chip">{git.branch}</span>
-        {git.dirty > 0 && <span className="chip" style={{ color: 'var(--tm-status-review)' }}>{git.dirty} changed</span>}
+        {git.dirty > 0 && (
+          <span className="chip" style={{ color: 'var(--tm-status-review)' }} title={`${git.dirty} uncommitted change(s)`}>
+            {git.dirty}
+          </span>
+        )}
         {git.ahead > 0 && <span className="chip" style={{ color: 'var(--tm-accent)' }}>↑{git.ahead}</span>}
         <button className="btn" disabled={busy !== null || git.dirty === 0} onClick={commit} title="git add -A + commit (message written by Opus 5)">
           {busy === 'commit' ? 'Committing…' : 'Commit'}
@@ -64,18 +72,31 @@ function GitCell({ repoId }: { repoId: string }) {
   );
 }
 
-/** Inline per-repo preview URL (what the mobile emulator frames). Saves on
- *  blur/Enter; the server normalises "localhost:5173" and rejects non-http. */
+/** Inline per-repo preview URL (what the mobile emulator frames), rendered as
+ *  the third line of the repo cell under name/path. It READS as a plain line of
+ *  text — same mono/muted voice as the path above it — and only becomes an
+ *  input once the pencil is clicked, so a row of repos is three lines of
+ *  identity rather than three lines with a form field wedged in.
+ *  Saves on blur/Enter; the server normalises "localhost:5173" and rejects
+ *  non-http. Escape leaves without saving. */
 function PreviewCell({ repoId, value, onSaved }: { repoId: string; value: string | null; onSaved: () => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value ?? '');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // A refresh elsewhere (or another tab) may change the stored value.
+  // A refresh elsewhere (or another tab) may change the stored value. Never
+  // stomp what is being typed — only resync while the field is closed.
   useEffect(() => {
-    setDraft(value ?? '');
-  }, [value]);
+    if (!editing) setDraft(value ?? '');
+  }, [value, editing]);
+  /** Escape must not save; the blur it causes has to know that. */
+  const cancelled = useRef(false);
   const save = async () => {
-    if (draft.trim() === (value ?? '')) return;
+    if (draft.trim() === (value ?? '')) {
+      setEditing(false);
+      setErr(null);
+      return;
+    }
     setBusy(true);
     setErr(null);
     try {
@@ -83,40 +104,80 @@ function PreviewCell({ repoId, value, onSaved }: { repoId: string; value: string
       // "localhost:5173" into a full URL.
       const saved = await api.updateRepo(repoId, { previewUrl: draft.trim() || null });
       setDraft(saved.previewUrl ?? '');
+      setEditing(false);
       await onSaved();
     } catch (e) {
+      // Stay open on failure: closing would hide both the bad value and why.
       setErr((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
+  const open = () => {
+    cancelled.current = false;
+    setDraft(value ?? '');
+    setErr(null);
+    setEditing(true);
+  };
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 190 }}>
-      <input
-        className="field mono"
-        style={{ fontSize: 'var(--tm-text-xs)', padding: '5px 8px' }}
-        placeholder="localhost:5173"
-        value={draft}
-        disabled={busy}
-        spellCheck={false}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={save}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-          if (e.key === 'Escape') setDraft(value ?? '');
-        }}
-      />
-      {err && (
-        <span className="warn-text" style={{ fontSize: 'var(--tm-text-xs)' }}>
-          {err}
+    <div className="repo-url">
+      {editing ? (
+        <input
+          className="field mono repo-url-input"
+          placeholder="localhost:5173"
+          aria-label="Dev URL"
+          autoFocus
+          value={draft}
+          disabled={busy}
+          spellCheck={false}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => {
+            if (cancelled.current) {
+              cancelled.current = false;
+              setDraft(value ?? '');
+              setErr(null);
+              setEditing(false);
+              return;
+            }
+            void save();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            if (e.key === 'Escape') {
+              cancelled.current = true;
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+        />
+      ) : (
+        <span className="repo-url-line">
+          {value ? (
+            <span className="mono muted repo-path" title={value}>
+              {value}
+            </span>
+          ) : (
+            <span className="muted repo-url-empty">no dev URL</span>
+          )}
+          <button
+            type="button"
+            className="btn ghost repo-url-edit"
+            title="Edit the dev-server URL framed by the mobile emulator"
+            aria-label="Edit dev URL"
+            onClick={open}
+          >
+            <IconPencil />
+          </button>
         </span>
       )}
+      {err && <span className="warn-text repo-url-err">{err}</span>}
     </div>
   );
 }
 
-export function ReposPage() {
+export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string) => void }) {
   const { repos, tasks, refresh } = useApp();
+  /** repo whose command drawer is open — one at a time, like a details row */
+  const [openCommands, setOpenCommands] = useState<string | null>(null);
   const [path, setPath] = useState('');
   const [role, setRole] = useState('');
   const [previewUrl, setPreviewUrl] = useState('');
@@ -207,42 +268,68 @@ export function ReposPage() {
           Add local project paths so tasks know where agents should run.
         </div>
       ) : (
-        <div className="panel">
-          <table className="tbl">
+        <div className="panel tbl-scroll">
+          <table className="tbl repos-tbl">
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Path</th>
+                <th>Repo</th>
                 <th>Role</th>
-                <th title="Dev-server URL framed by the mobile emulator">Dev URL</th>
                 <th>Tasks</th>
                 <th>Git</th>
-                <th></th>
+                <th title="Commands, analysis and repo removal">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {repos.map((r) => (
-                <tr key={r.id}>
-                  <td style={{ fontWeight: 600 }}>{r.name}</td>
-                  <td className="mono muted">{r.path.replace(/^\/Users\/[^/]+/, '~')}</td>
-                  <td>{r.role ? <span className="chip">{r.role}</span> : <span className="muted">—</span>}</td>
-                  <td>
-                    <PreviewCell repoId={r.id} value={r.previewUrl} onSaved={refresh} />
-                  </td>
-                  <td className="mono">{count(r.id)}</td>
-                  <td>
-                    <GitCell repoId={r.id} />
-                  </td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button className="btn" disabled={analyzing === r.id} onClick={() => analyze(r.id)}>
-                      <IconAnalyze /> {analyzing === r.id ? 'Starting…' : 'Analyze'}
-                    </button>{' '}
-                    <button className="btn danger" onClick={() => del(r.id)}>
-                      Remove
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {repos.map((r) => {
+                const expanded = openCommands === r.id;
+                return (
+                  <Fragment key={r.id}>
+                    <tr className={expanded ? 'repo-open' : ''}>
+                      {/* Name / path / dev URL in ONE cell: all three identify the
+                          repo, and stacking them keeps every other column on one
+                          line. The URL stays editable in place. */}
+                      <td>
+                        <div className="repo-id">
+                          <span className="repo-name">{r.name}</span>
+                          <span className="mono muted repo-path" title={r.path}>
+                            {shortPath(r.path)}
+                          </span>
+                          <PreviewCell repoId={r.id} value={r.previewUrl} onSaved={refresh} />
+                        </div>
+                      </td>
+                      <td>{r.role ? <span className="chip">{r.role}</span> : <span className="muted">—</span>}</td>
+                      <td className="mono">{count(r.id)}</td>
+                      <td>
+                        <GitCell repoId={r.id} />
+                      </td>
+                      {/* One actions cluster: commands (behind their own menu),
+                          then the two repo-level buttons. */}
+                      <td>
+                        <span className="repo-actions">
+                          <RepoCommandsMenu
+                            repoId={r.id}
+                            onManage={() => setOpenCommands(expanded ? null : r.id)}
+                            onOpenTerminal={onOpenTerminal}
+                          />
+                          <button className="btn" disabled={analyzing === r.id} onClick={() => analyze(r.id)}>
+                            <IconAnalyze /> {analyzing === r.id ? 'Starting…' : 'Analyze'}
+                          </button>
+                          <button className="btn danger" onClick={() => del(r.id)}>
+                            Remove
+                          </button>
+                        </span>
+                      </td>
+                    </tr>
+                    {expanded && (
+                      <tr className="repo-open">
+                        <td colSpan={5} className="repo-cmd-cell">
+                          <RepoCommandsPanel repoId={r.id} onOpenTerminal={onOpenTerminal} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>

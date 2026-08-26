@@ -47,9 +47,10 @@ Deps (minimal): fastify, @fastify/websocket, @fastify/static, better-sqlite3 ^13
 
 - `tm_config(key PK, value TEXT)` — runtime-tunable settings as JSON values
 - `tm_repos(id, name, path /*absolute, ~ expanded*/, role /*"backend"/"frontend" note*/, preview_url /*nullable http(s) dev-server URL for the mobile emulator*/, created_at)`
-- `tm_tasks(id, title, description, repo_id, parent_id, status, source /*manual|sentry|auto*/, source_ref, priority, result_summary, error, created_at, updated_at)`
+- `tm_tasks(id, title, description, repo_id, parent_id, group_id, group_path, group_name, group_color, status, source /*manual|sentry|auto*/, source_ref, priority, result_summary, error, created_at, updated_at)`
   - status: `draft | queued | running | blocked | review | done | failed | cancelled`
   - source: `manual | sentry | auto | feature`
+  - group: `group_id` is the root ancestor (a task with no parent is its own group), `group_path` the ancestor ids root-first (`/rootId/midId/`); `group_name`/`group_color` are root-row only. Invariants and the board rendering: `docs/grouping.md`
 - `tm_runs(id, task_id, repo_id, mode /*worker|analyze*/, status /*running|exited|killed*/, pid, exit_code, started_at, ended_at, session_id, transcript_path, stats TEXT/*JSON*/, resumed_from /*run whose claude session this one continued*/, stats_baseline TEXT/*JSON: cumulative transcript totals inherited at resume*/)`
 - `tm_proposals(id, run_id, repo_id, task_id, kind /*rewrite|split|new_task|solution_options*/, payload TEXT/*JSON*/, status /*pending|accepted|rejected*/, created_at)`
 - `tm_features(id, repo_id /*nullable: repo deletion detaches*/, title, request TEXT, status /*draft|analyzing|proposed|approved|running|paused|review|done|failed|cancelled*/, analysis TEXT/*JSON plan*/, review TEXT/*JSON review rounds*/, analysis_rounds, error, created_at, updated_at)` — a big request decomposed into ordered phases of tasks (`docs/features.md`); `tm_tasks` carries `feature_id` + `feature_phase` and the `feature` source value
@@ -132,6 +133,15 @@ A floating, draggable phone window that frames a repo's own dev server, so a cha
 - `npm run dev` — concurrently: `tsx watch server` (127.0.0.1:5175) + `vite` (5173, proxy `/api` + `/ws` with `ws:true`)
 - `npm run build` — `vite build` (SPA only)
 - `npm start` — `tsx server/src/index.ts` serving `web/dist` at `http://localhost:5175`
+
+## Repo commands (`docs/commands.md`)
+
+Saved per-repo command lines (`tm_commands`, migration 13) run in their own
+`SessionManager` pool: one-shot scripts and long-running dev servers, attachable
+at `/ws/terminal/cmd-<uuid>`, with a running-state indicator in the header. The
+command text is tokenized and spawned as argv — never through a shell. Runs are
+in-memory by design (a PTY dies with the server, and `tm_runs` means "agent").
+Restarting the server is refused while agents are working.
 
 ## Phases (docs/ update = exit criterion of every phase)
 

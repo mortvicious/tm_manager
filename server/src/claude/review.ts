@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { z } from 'zod';
 import type { Repo, Task } from '@tm/shared';
+import { registerHeadless } from './headless.ts';
 
 // Adversarial review of a worker's change — exactly how we work: read the diff,
 // hunt correctness bugs / regressions / missed edges / security, report findings,
@@ -56,6 +57,8 @@ function runClaude(
   model: string,
   effort: string | null,
   prompt: string,
+  /** what this child is doing, for the restart guard's refusal message */
+  label: string,
 ): Promise<{ envelope: any; err: Error | null; stdout: string }> {
   const args = [
     '-p',
@@ -92,6 +95,9 @@ function runClaude(
     child.stdin?.on('error', () => {});
     child.stdin?.write(prompt);
     child.stdin?.end();
+    // This reviewer owns no run row (it runs inside the worker's completion
+    // path), so the registry is the ONLY thing that knows it is working.
+    registerHeadless(child, label);
   });
 }
 
@@ -130,7 +136,8 @@ export async function reviewWorkerChange(repo: Repo, task: Task, reviewModel: st
     `\n--- git diff (the worker's uncommitted change) ---\n${diff}`,
   ].join('\n');
 
-  const attempt = async (model: string, effort: string | null) => runClaude(repo.path, model, effort, prompt);
+  const attempt = async (model: string, effort: string | null) =>
+    runClaude(repo.path, model, effort, prompt, `reviewing "${task.title}"`);
 
   // Fable first (unless already known unavailable); on a model-availability
   // failure, fall back to Opus 5 at xhigh — exactly as specified.

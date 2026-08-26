@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { TaskStatus } from '@tm/shared';
+import { GROUP_COLOR_COUNT, type TaskStatus } from '@tm/shared';
 import { z } from 'zod';
 import { artifactsRoot } from '../config.ts';
 import { broadcast } from '../events.ts';
@@ -23,6 +23,10 @@ const taskBody = z
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullish(),
     category: z.string().min(1).max(60).nullish(),
     review: z.boolean().nullish(),
+    // group identity lives on the group's ROOT task (docs/grouping.md); the
+    // route rejects both on a task that has a parent.
+    groupName: z.string().min(1).max(80).nullish(),
+    groupColor: z.number().int().min(1).max(GROUP_COLOR_COUNT).nullish(),
   })
   .strict();
 
@@ -30,8 +34,18 @@ const taskPatch = taskBody.partial().strict();
 
 export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
   app.get('/api/tasks', async (req) => {
-    const q = req.query as { status?: any; repoId?: string; parentId?: string };
-    return storage.listTasks({ status: q.status, repoId: q.repoId, parentId: q.parentId });
+    const q = req.query as { status?: any; repoId?: string; parentId?: string; groupId?: string };
+    return storage.listTasks({ status: q.status, repoId: q.repoId, parentId: q.parentId, groupId: q.groupId });
+  });
+
+  // Every task in one tree, root first — the group behind a task.
+  app.get('/api/tasks/:id/group', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const task = await storage.getTask(id);
+    if (!task) return reply.code(404).send({ error: 'task not found' });
+    const tasks = await storage.listTasks({ groupId: task.groupId });
+    const root = tasks.find((t) => t.id === task.groupId) ?? null;
+    return { groupId: task.groupId, name: root?.groupName ?? null, color: root?.groupColor ?? null, tasks };
   });
 
   app.get('/api/tasks/:id', async (req, reply) => {
@@ -52,6 +66,25 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     const { id } = req.params as { id: string };
     const body = taskPatch.parse(req.body);
     if (body.parentId === id) return reply.code(400).send({ error: 'a task cannot be its own parent' });
+    const cur = await storage.getTask(id);
+    if (!cur) return reply.code(404).send({ error: 'task not found' });
+    // Naming/colouring is a property of the GROUP, so it is only accepted on
+    // the group's root — otherwise two members could claim different names.
+    const namesGroup = body.groupName !== undefined || body.groupColor !== undefined;
+    const parentAfter = body.parentId === undefined ? cur.parentId : (body.parentId ?? null);
+    if (namesGroup && parentAfter) {
+      return reply
+        .code(400)
+        .send({ error: 'only the root task of a group can be named or coloured — patch the root instead' });
+    }
+    const moving = body.parentId !== undefined && (body.parentId ?? null) !== cur.parentId;
+    if (moving && body.parentId) {
+      const parent = await storage.getTask(body.parentId);
+      if (!parent) return reply.code(400).send({ error: 'parent task not found' });
+      if (parent.groupPath.split('/').includes(id)) {
+        return reply.code(400).send({ error: 'a task cannot be moved under its own descendant' });
+      }
+    }
     const task = await storage.updateTask(id, body);
     if (!task) return reply.code(404).send({ error: 'task not found' });
     await storage.appendEvent({
@@ -59,9 +92,16 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
       actor: 'human',
       taskId: id,
       repoId: task.repoId,
-      data: { fields: Object.keys(body) },
+      data: { fields: Object.keys(body), ...(moving ? { groupId: task.groupId } : {}) },
     });
     broadcast({ type: 'task.updated', task });
+    // A move re-groups the whole subtree; those rows changed too, so clients
+    // that are not about to refresh still see the new grouping.
+    if (moving) {
+      for (const t of await storage.listTasks({ groupId: task.groupId })) {
+        if (t.id !== task.id) broadcast({ type: 'task.updated', task: t });
+      }
+    }
     return task;
   });
 
@@ -72,10 +112,20 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     if (cur.status === 'running') {
       return reply.code(409).send({ error: 'cancel the running task before deleting it' });
     }
+    // Children are promoted to roots of their own groups — capture them before
+    // the delete so the re-grouped rows can be broadcast afterwards.
+    const orphans = (await storage.listTasks({ parentId: id })).map((t) => t.id);
     await storage.deleteTask(id);
     fs.rmSync(path.join(artifactsRoot, id), { recursive: true, force: true });
     await storage.appendEvent({ kind: 'task.deleted', actor: 'human', taskId: id, data: { title: cur.title } });
     broadcast({ type: 'task.deleted', taskId: id });
+    for (const orphanId of orphans) {
+      const promoted = await storage.getTask(orphanId);
+      if (!promoted) continue;
+      for (const t of await storage.listTasks({ groupId: promoted.groupId })) {
+        broadcast({ type: 'task.updated', task: t });
+      }
+    }
     // Deleting the last unresolved card of a phase must not strand its feature.
     if (cur.featureId) await app.orchestrator?.advanceFeature(cur.featureId, 'human');
     return { ok: true };

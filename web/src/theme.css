@@ -34,6 +34,16 @@
   --tm-violet-5: #a78bfa;
   --tm-violet-7: #6d28d9;
 
+  /* ---- primitives: task-group hues (docs/grouping.md) ---- */
+  --tm-blue-5: #60a5fa;
+  --tm-blue-7: #1d4ed8;
+  --tm-pink-5: #f472b6;
+  --tm-pink-7: #be185d;
+  --tm-orange-5: #fb923c;
+  --tm-orange-7: #c2410c;
+  --tm-lime-5: #a3e635;
+  --tm-lime-7: #4d7c0f;
+
   /* ---- type ---- */
   --tm-font-display: 'Bricolage Grotesque', system-ui, sans-serif;
   --tm-font-body: 'Inter', system-ui, sans-serif;
@@ -96,6 +106,16 @@
   --tm-status-done: var(--tm-green-5);
   --tm-status-failed: var(--tm-red-5);
   --tm-status-attention: var(--tm-violet-5);
+  /* one hue per task group; `groupColorSlot` picks the slot (1..7) */
+  --tm-group-1: var(--tm-violet-5);
+  --tm-group-2: var(--tm-blue-5);
+  --tm-group-3: var(--tm-amber-5);
+  --tm-group-4: var(--tm-pink-5);
+  --tm-group-5: var(--tm-green-5);
+  --tm-group-6: var(--tm-orange-5);
+  --tm-group-7: var(--tm-lime-5);
+  /* how much of the hue a group surface carries */
+  --tm-group-tint: 14%;
   --tm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
   --tm-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
   --tm-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
@@ -128,6 +148,14 @@
   --tm-status-done: var(--tm-green-7);
   --tm-status-failed: var(--tm-red-7);
   --tm-status-attention: var(--tm-violet-7);
+  --tm-group-1: var(--tm-violet-7);
+  --tm-group-2: var(--tm-blue-7);
+  --tm-group-3: var(--tm-amber-7);
+  --tm-group-4: var(--tm-pink-7);
+  --tm-group-5: var(--tm-green-7);
+  --tm-group-6: var(--tm-orange-7);
+  --tm-group-7: var(--tm-lime-7);
+  --tm-group-tint: 9%;
   --tm-shadow-sm: 0 1px 2px rgba(20, 22, 25, 0.07);
   --tm-shadow-md: 0 4px 16px rgba(20, 22, 25, 0.09);
   --tm-shadow-lg: 0 12px 40px rgba(20, 22, 25, 0.14);
@@ -535,18 +563,126 @@ select.field:focus {
   white-space: nowrap;
 }
 
+/* nesting depth: --tm-depth is set per row (1 = direct child of a visible
+   parent), so a grandchild indents twice without a class per level */
 .task-row .task-main.child {
-  padding-left: 22px;
+  padding-left: calc(var(--tm-depth, 1) * 22px);
   position: relative;
 }
 
 .task-row .task-main.child::before {
   content: '└';
   position: absolute;
-  left: 6px;
+  left: calc((var(--tm-depth, 1) - 1) * 22px + 6px);
   top: 0;
   color: var(--tm-text-faint);
   font-family: var(--tm-font-mono);
+}
+
+/* ---------- task groups (docs/grouping.md) ----------
+   A group is one task tree. --tm-group is set inline per block from the
+   group's colour slot; with group colours off it is simply absent and every
+   fallback below resolves to the neutral border/faint tokens. */
+.task-group {
+  border-left: 2px solid var(--tm-group, var(--tm-border-strong));
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.task-group:last-child {
+  border-bottom: none;
+}
+
+.task-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  width: 100%;
+  padding: 5px var(--tm-space-4);
+  border: none;
+  border-bottom: 1px solid var(--tm-border);
+  background: color-mix(in srgb, var(--tm-group, var(--tm-border)) var(--tm-group-tint), transparent);
+  color: var(--tm-group, var(--tm-text-faint));
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-group-head:hover {
+  background: color-mix(in srgb, var(--tm-group, var(--tm-border)) calc(var(--tm-group-tint) * 2), transparent);
+}
+
+.task-group-head .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-group-head .count {
+  flex: none;
+  padding: 0 7px;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-bg-overlay);
+  color: var(--tm-text-muted);
+}
+
+.task-group-head .part {
+  flex: none;
+  color: var(--tm-text-faint);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* the task's line of ancestry in the slide-over: root / … / this task */
+.group-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-1);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+.group-path .crumb {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: var(--tm-text-muted);
+  cursor: pointer;
+}
+
+.group-path .crumb:hover:not(:disabled) {
+  color: var(--tm-accent);
+}
+
+.group-path .crumb:disabled {
+  color: var(--tm-text-faint);
+  cursor: default;
+}
+
+.group-path .sep {
+  margin: 0 var(--tm-space-1);
+}
+
+.group-path .self {
+  color: var(--tm-text);
+}
+
+/* colour preview on the group-colour picker */
+.field.group-swatch {
+  border-left: 4px solid var(--tm-group, var(--tm-border));
+}
+
+/* group tag on a flat list (recent), where there is no block header */
+.chip.group-chip {
+  color: var(--tm-group, var(--tm-text-muted));
+  border-color: color-mix(in srgb, var(--tm-group, var(--tm-border)) 45%, var(--tm-border));
 }
 
 /* the live activity line — deliberately the quietest text on the row: it is
@@ -646,6 +782,15 @@ select.field:focus {
   border-radius: var(--tm-radius-pill);
   padding: 0 7px;
   color: var(--tm-text-muted);
+}
+
+/* a section that IS one task group carries the group's hue */
+.section-head.group-tint {
+  color: var(--tm-group, var(--tm-text-faint));
+}
+
+.section-head.group-tint .count {
+  color: var(--tm-group, var(--tm-text-muted));
 }
 
 /* the Board's "active" strip — same micro-type, lifted out of the faint
@@ -904,6 +1049,38 @@ table.tbl tr:last-child td {
 
 .form-grid .wide {
   grid-column: 1 / -1;
+}
+
+/* preset row: one-click model/effort/review bundles above the three dropdowns */
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+}
+
+.btn.preset-btn {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 5px 12px;
+}
+
+.btn.preset-btn.on {
+  border-color: var(--tm-accent);
+  background: var(--tm-accent-subtle);
+  color: var(--tm-accent);
+}
+
+.preset-hint {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  font-weight: 400;
+  color: var(--tm-text-muted);
+}
+
+.btn.preset-btn.on .preset-hint,
+.btn.preset-btn:hover .preset-hint {
+  color: inherit;
 }
 
 /* ---------- config groups ---------- */
@@ -1533,4 +1710,288 @@ table.tbl a:hover { text-decoration: underline; }
 .btn.ghost.on {
   color: var(--tm-accent);
   background: var(--tm-accent-subtle);
+}
+
+/* ---------- repo commands: header launcher + per-repo editor ----------
+   docs/commands.md. Every value resolves to a --tm-* token. */
+
+.cmd-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.btn.cmd-launch {
+  gap: 6px;
+}
+
+.cmd-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--tm-text-faint);
+}
+
+/* live reuses the running-badge pulse, so "alive" looks the same everywhere */
+.cmd-dot.live {
+  background: var(--tm-status-running);
+  animation: pulse 1.6s var(--tm-ease-in-out) infinite;
+}
+
+.cmd-dot.ok {
+  background: var(--tm-status-done);
+}
+
+.cmd-dot.bad {
+  background: var(--tm-status-failed);
+}
+
+.cmd-pop {
+  position: absolute;
+  top: calc(100% + var(--tm-space-2));
+  right: 0;
+  z-index: 30;
+  width: 440px;
+  max-width: calc(100vw - var(--tm-sidebar-w) - var(--tm-space-5));
+  max-height: 72vh;
+  overflow: auto;
+  padding: var(--tm-space-2);
+  background: var(--tm-bg-raised);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-lg);
+  box-shadow: var(--tm-shadow-lg);
+}
+
+.cmd-pop-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-1) var(--tm-space-2);
+}
+
+.cmd-run,
+.cmd-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-1) var(--tm-space-2);
+  border-radius: var(--tm-radius-md);
+}
+
+.cmd-run:hover,
+.cmd-row:hover {
+  background: var(--tm-bg-overlay);
+}
+
+.cmd-run-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.cmd-run-name {
+  font-size: var(--tm-text-sm);
+  font-weight: 600;
+}
+
+.cmd-run-name,
+.cmd-run-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cmd-run-age {
+  flex: none;
+}
+
+.cmd-empty {
+  padding: var(--tm-space-2);
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-sm);
+}
+
+.cmd-err {
+  margin: var(--tm-space-2) var(--tm-space-2) 0;
+  font-size: var(--tm-text-xs);
+}
+
+select.field.cmd-select {
+  width: auto;
+  padding: 4px 8px;
+  font-size: var(--tm-text-xs);
+}
+
+select.field.cmd-script-select {
+  flex: 1;
+  min-width: 220px;
+  max-width: 520px;
+  padding: 4px 8px;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
+.cmd-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  padding: var(--tm-space-2) 0;
+}
+
+.cmd-add {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-2);
+  padding-top: var(--tm-space-3);
+  border-top: 1px dashed var(--tm-border);
+}
+
+.cmd-scan,
+.cmd-form {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  flex-wrap: wrap;
+}
+
+.cmd-form input.field {
+  width: auto;
+  padding: 5px 8px;
+  font-size: var(--tm-text-sm);
+}
+
+.cmd-form input.field:nth-of-type(1) {
+  width: 160px;
+}
+
+.cmd-form input.field:nth-of-type(2) {
+  flex: 1;
+  min-width: 240px;
+}
+
+.cmd-form input.field:nth-of-type(3) {
+  width: 150px;
+}
+
+/* ---------- repos table: name over path, one line per column ---------- */
+
+/* A wide table scrolls INSIDE its panel — never the page. Without this the
+   nowrap rows below push the whole main area sideways and the page title
+   scrolls out of view. */
+.tbl-scroll {
+  overflow-x: auto;
+}
+
+.repos-tbl td {
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.repos-tbl td.repo-cmd-cell {
+  white-space: normal;
+  background: var(--tm-bg-inset);
+}
+
+.repo-id {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 240px;
+}
+
+.repo-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.repo-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Third line of the repo cell: the dev URL. At rest it is a line of text in the
+   same voice as `.repo-path` above it — a pencil opens the input, so the cell
+   stays three lines of identity instead of a form field wedged into the row. */
+.repo-url {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.repo-url-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* Flex children do not shrink below their content unless told to; without this
+   a long URL pushes the pencil out of the cell instead of ellipsing. */
+.repo-url-line > .repo-path {
+  min-width: 0;
+}
+
+.repo-url-empty {
+  font-size: var(--tm-text-xs);
+  font-style: italic;
+}
+
+/* Icon-only, and it must not add height: the pencil sits on a text line. */
+.repo-url-edit {
+  padding: 0;
+  flex: none;
+  line-height: 0;
+  opacity: 0.4;
+}
+
+/* Dim at rest so it does not compete with the path, full strength once the row
+   is hovered or the button is tabbed to. Never fully hidden: a pencil that only
+   exists on hover does not exist on a touch screen. */
+tr:hover .repo-url-edit,
+.repo-url-edit:hover,
+.repo-url-edit:focus-visible {
+  opacity: 1;
+}
+
+.repo-url-input {
+  font-size: var(--tm-text-xs);
+  padding: 2px 6px;
+}
+
+/* The row is `white-space: nowrap`; a save error has to wrap to stay readable. */
+.repo-url-err {
+  white-space: normal;
+  font-size: var(--tm-text-xs);
+}
+
+tr.repo-open > td {
+  border-bottom-color: var(--tm-border-strong);
+}
+
+/* Repo row actions: one cluster (commands menu · analyze · remove), so the
+   row reads as `git | actions` instead of three drifting columns. */
+.repo-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  white-space: nowrap;
+}
+
+/* The commands menu is `position: fixed` (the table is a scroll container,
+   which would clip an absolutely positioned popover). */
+.cmd-pop.cmd-menu {
+  position: fixed;
+  right: auto;
+  width: 380px;
+  max-width: calc(100vw - 2 * var(--tm-space-2));
+}
+
+.cmd-menu-foot {
+  margin-top: var(--tm-space-1);
+  padding-top: var(--tm-space-2);
+  border-top: 1px dashed var(--tm-border);
 }

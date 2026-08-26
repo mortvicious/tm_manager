@@ -1,8 +1,17 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { EFFORT_LEVELS, MODEL_OPTIONS, type EffortLevel, type Task, type TaskStatus } from '@tm/shared';
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import {
+  EFFORT_LEVELS,
+  MODEL_OPTIONS,
+  groupColorSlot,
+  groupLabel,
+  type EffortLevel,
+  type Task,
+  type TaskStatus,
+} from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { IconChevron } from '../components/Icons.tsx';
+import { PresetPicker, reviewChoiceOf, reviewValueOf, type ReviewChoice } from '../components/PresetPicker.tsx';
 import { StatusBadge } from '../components/StatusBadge.tsx';
 import { TaskRow } from '../components/TaskRow.tsx';
 import { TimeAgo, isNew, useNow } from '../components/TimeAgo.tsx';
@@ -32,7 +41,7 @@ function NewTaskForm({ onCreated }: { onCreated: () => void }) {
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
   const [category, setCategory] = useState('');
-  const [review, setReview] = useState<'default' | 'on' | 'off'>('default');
+  const [review, setReview] = useState<ReviewChoice>('default');
   const [err, setErr] = useState<string | null>(null);
   const { tasks } = useApp();
   const knownCategories = [...new Set(tasks.map((t) => t.category).filter(Boolean))] as string[];
@@ -55,7 +64,7 @@ function NewTaskForm({ onCreated }: { onCreated: () => void }) {
         model: model || null,
         effort: (effort || null) as EffortLevel | null,
         category: category.trim() || null,
-        review: review === 'default' ? null : review === 'on',
+        review: reviewValueOf(review),
       });
       setTitle('');
       setDescription('');
@@ -107,6 +116,19 @@ function NewTaskForm({ onCreated }: { onCreated: () => void }) {
             ))}
           </datalist>
         </div>
+        <div className="wide">
+          <label className="label">Preset</label>
+          <PresetPicker
+            model={model}
+            effort={effort}
+            review={review}
+            onApply={(p) => {
+              setModel(p.model);
+              setEffort(p.effort);
+              setReview(reviewChoiceOf(p.review));
+            }}
+          />
+        </div>
         <div>
           <label className="label">Model override</label>
           <select className="field mono" value={model} onChange={(e) => setModel(e.target.value)}>
@@ -131,7 +153,7 @@ function NewTaskForm({ onCreated }: { onCreated: () => void }) {
         </div>
         <div>
           <label className="label">Adversarial review</label>
-          <select className="field" value={review} onChange={(e) => setReview(e.target.value as 'default' | 'on' | 'off')}>
+          <select className="field" value={review} onChange={(e) => setReview(e.target.value as ReviewChoice)}>
             <option value="default">default (config)</option>
             <option value="on">review this</option>
             <option value="off">skip (small task)</option>
@@ -152,7 +174,7 @@ function NewTaskForm({ onCreated }: { onCreated: () => void }) {
 }
 
 type Provenance = 'all' | 'human' | 'agent' | 'sentry' | 'analyze' | 'feature';
-type GroupBy = 'status' | 'category' | 'repo';
+type GroupBy = 'status' | 'category' | 'repo' | 'group';
 type SortKey = 'updated' | 'created' | 'oldest' | 'title';
 
 const SORTS: { key: SortKey; label: string; field: 'createdAt' | 'updatedAt' }[] = [
@@ -209,6 +231,23 @@ const loadPrefs = (): Prefs => {
   }
 };
 
+/** One rendered line: the task plus how deep it sits in the visible tree. */
+interface Row {
+  task: Task;
+  depth: number;
+}
+
+/** Consecutive rows of the same group — the tree ordering keeps them together. */
+function blocksOf(rows: Row[]): { groupId: string; rows: Row[] }[] {
+  const out: { groupId: string; rows: Row[] }[] = [];
+  for (const r of rows) {
+    const last = out[out.length - 1];
+    if (last && last.groupId === r.task.groupId) last.rows.push(r);
+    else out.push({ groupId: r.task.groupId, rows: [r] });
+  }
+  return out;
+}
+
 /**
  * A titled strip of rows that can be folded away. The header is the control:
  * the whole label is the toggle, `action` sits outside it (its own button).
@@ -217,6 +256,7 @@ function Section({
   label,
   count,
   accent,
+  tint,
   collapsed,
   onToggle,
   action,
@@ -225,6 +265,8 @@ function Section({
   label: string;
   count: number;
   accent?: boolean;
+  /** group colour for the header (`--tm-group`); absent = the neutral header */
+  tint?: CSSProperties;
   collapsed: boolean;
   onToggle: () => void;
   action?: ReactNode;
@@ -232,7 +274,7 @@ function Section({
 }) {
   return (
     <div>
-      <div className={`section-head ${accent ? 'accent' : ''}`}>
+      <div className={`section-head ${accent ? 'accent' : ''} ${tint ? 'group-tint' : ''}`} style={tint}>
         <button className="section-fold" aria-expanded={!collapsed} onClick={onToggle}>
           <span className={`caret ${collapsed ? 'closed' : ''}`}>
             <IconChevron />
@@ -253,11 +295,15 @@ export function BoardPage({
   onOpenTask: (id: string) => void;
   onOpenTerminal: (runId: string) => void;
 }) {
-  const { tasks, repos, runs, refresh } = useApp();
+  const { tasks, repos, runs, settings, refresh } = useApp();
+  // default ON so the board is coloured before /api/config answers, matching
+  // DEFAULT_SETTINGS['board.groupColors']
+  const groupColors = settings?.['board.groupColors'] ?? true;
   const repoName = (id: string | null) => repos.find((r) => r.id === id)?.name;
   const [filterRepo, setFilterRepo] = useState('all');
   const [filterProv, setFilterProv] = useState<Provenance>('all');
   const [filterCat, setFilterCat] = useState('all');
+  const [filterGroup, setFilterGroup] = useState('all');
   const [groupBy, setGroupBy] = useState<GroupBy>('status');
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   const { sort, focus, showAllDrafts } = prefs;
@@ -290,28 +336,78 @@ export function BoardPage({
         (t) =>
           (filterRepo === 'all' || t.repoId === filterRepo) &&
           (filterProv === 'all' || provenanceOf(t) === filterProv) &&
-          (filterCat === 'all' || (filterCat === 'none' ? !t.category : t.category === filterCat)),
+          (filterCat === 'all' || (filterCat === 'none' ? !t.category : t.category === filterCat)) &&
+          (filterGroup === 'all' || t.groupId === filterGroup),
       ),
-    [tasks, filterRepo, filterProv, filterCat],
+    [tasks, filterRepo, filterProv, filterCat, filterGroup],
   );
 
-  // children right under their parent within each group
-  const withChildren = (list: Task[]): Task[] => {
-    const roots = list.filter((t) => !t.parentId || !list.some((x) => x.id === t.parentId));
-    const out: Task[] = [];
-    for (const r of roots) {
-      out.push(r);
-      out.push(...list.filter((t) => t.parentId === r.id));
+  // Every task tree on the board, keyed by root id: the name/colour to draw it
+  // with and its FULL size, so a section showing part of a group can say so.
+  // Built from all tasks, never the filtered set — a group does not shrink
+  // because a filter hides some of its members.
+  const groupIndex = useMemo(() => {
+    const out = new Map<string, { id: string; label: string; size: number; slot: number }>();
+    const roots = new Map(tasks.filter((t) => t.id === t.groupId).map((t) => [t.id, t]));
+    for (const t of tasks) {
+      const cur = out.get(t.groupId);
+      if (cur) {
+        cur.size++;
+        continue;
+      }
+      const root = roots.get(t.groupId);
+      out.set(t.groupId, {
+        id: t.groupId,
+        // A group whose root is gone (deleted mid-tree) is still a group; fall
+        // back to this member's title rather than rendering "group".
+        label: groupLabel(root ?? (t.id === t.groupId ? t : undefined), t.title),
+        size: 1,
+        slot: groupColorSlot(root, t.groupId),
+      });
     }
+    return out;
+  }, [tasks]);
+
+  /** Groups worth offering as a filter / a section: anything with a real tree. */
+  const namedGroups = useMemo(
+    () => [...groupIndex.values()].filter((g) => g.size > 1).sort((a, b) => a.label.localeCompare(b.label)),
+    [groupIndex],
+  );
+
+  // Children under their parent at any depth, and all roots of one group kept
+  // adjacent — that adjacency is what lets a group render as one block below.
+  const ordered = (list: Task[]): Row[] => {
+    const sorted = [...list].sort(comparator(sort));
+    const present = new Set(sorted.map((t) => t.id));
+    const childrenOf = new Map<string, Task[]>();
+    const roots: Task[] = [];
+    for (const t of sorted) {
+      if (t.parentId && present.has(t.parentId)) {
+        const kids = childrenOf.get(t.parentId);
+        if (kids) kids.push(t);
+        else childrenOf.set(t.parentId, [t]);
+      } else roots.push(t);
+    }
+    const rootsByGroup = new Map<string, Task[]>();
+    for (const r of roots) {
+      const cur = rootsByGroup.get(r.groupId);
+      if (cur) cur.push(r);
+      else rootsByGroup.set(r.groupId, [r]);
+    }
+    const out: Row[] = [];
+    const seen = new Set<string>(); // a corrupt parent chain must not hang the board
+    const walk = (t: Task, depth: number) => {
+      if (seen.has(t.id)) return;
+      seen.add(t.id);
+      out.push({ task: t, depth });
+      for (const c of childrenOf.get(t.id) ?? []) walk(c, depth + 1);
+    };
+    for (const r of roots) for (const sibling of rootsByGroup.get(r.groupId) ?? []) walk(sibling, 0);
     return out;
   };
 
-  // every list on the page obeys the sort control, so "where new / where old"
-  // is one decision the user makes once rather than a per-section rule.
-  const ordered = (list: Task[]) => withChildren([...list].sort(comparator(sort)));
-
   const groups = useMemo(() => {
-    const out = new Map<string, Task[]>();
+    const out = new Map<string, Row[]>();
     if (groupBy === 'status') {
       for (const s of ORDER) {
         const list = filtered.filter((t) => t.status === s);
@@ -324,6 +420,17 @@ export function BoardPage({
       }
       const none = filtered.filter((t) => !t.category);
       if (none.length) out.set('uncategorized', ordered(none));
+    } else if (groupBy === 'group') {
+      // One section per task tree, biggest first — the trees ARE the sections
+      // here, so the in-panel group headers are suppressed below.
+      // keyed by group id, not label: two groups may share a title, and the
+      // key is also the fold-state id
+      for (const g of [...namedGroups].sort((a, b) => b.size - a.size || a.label.localeCompare(b.label))) {
+        const list = filtered.filter((t) => t.groupId === g.id);
+        if (list.length) out.set(g.id, ordered(list));
+      }
+      const single = filtered.filter((t) => (groupIndex.get(t.groupId)?.size ?? 1) <= 1);
+      if (single.length) out.set('ungrouped', ordered(single));
     } else {
       for (const r of repos) {
         const list = filtered.filter((t) => t.repoId === r.id);
@@ -334,7 +441,7 @@ export function BoardPage({
     }
     return out;
     // `ordered` closes over `sort` and nothing else — listing it is the honest dep
-  }, [filtered, groupBy, categories, repos, sort]);
+  }, [filtered, groupBy, categories, repos, sort, namedGroups, groupIndex]);
 
   // running first, then review; sorted inside each — never capped, active work
   // is exactly what must stay visible.
@@ -352,21 +459,38 @@ export function BoardPage({
 
   // "Recent" ignores the sort control on purpose: it is the by-definition
   // last-touched shortcut, and it now closes the page instead of opening it.
-  const recent = useMemo(() => [...filtered].sort(byRecency('updatedAt')).slice(0, RECENT_LIMIT), [filtered]);
+  // Flat by design — it is a lookup list, so no nesting and no group blocks.
+  const recent = useMemo(
+    () => [...filtered].sort(byRecency('updatedAt')).slice(0, RECENT_LIMIT).map((task) => ({ task, depth: 0 })),
+    [filtered],
+  );
 
   const attention = (t: Task) =>
     t.status === 'running' && runs.some((r) => r.taskId === t.id && r.needsAttention && r.status === 'running');
 
   const sortField = SORTS.find((s) => s.key === sort)!.field;
 
+  // Colour a group carries wherever it is drawn — `--tm-group` resolves the
+  // slot token; with board.groupColors off nothing is set and every rule falls
+  // back to the neutral border tokens.
+  const groupStyle = (groupId: string): CSSProperties | undefined =>
+    groupColors ? ({ '--tm-group': `var(--tm-group-${groupIndex.get(groupId)?.slot ?? 1})` } as CSSProperties) : undefined;
+
   // one row, shared by the strips and the grouped lists below them
-  const row = (t: Task, ctx: GroupBy | 'recent' | 'active' | 'drafts') => {
+  const row = (t: Task, ctx: GroupBy | 'recent' | 'active' | 'drafts', depth = 0) => {
     // drafts never ran, so their created time is the honest one; recent is a
     // last-touched list; everywhere else the age matches the active sort.
     const field = ctx === 'drafts' ? 'createdAt' : ctx === 'recent' ? 'updatedAt' : sortField;
     const fresh = isNew(t.createdAt, now);
+    const g = groupIndex.get(t.groupId);
     return (
-      <TaskRow key={t.id} task={t} onOpenTask={onOpenTask} onOpenTerminal={onOpenTerminal} fresh={fresh}>
+      <TaskRow key={t.id} task={t} onOpenTask={onOpenTask} onOpenTerminal={onOpenTerminal} fresh={fresh} depth={depth}>
+        {/* flat lists have no group header above them, so the tag carries it */}
+        {!focus && ctx === 'recent' && g && g.size > 1 && (
+          <span className="chip group-chip" style={groupStyle(t.groupId)} title={`group · ${g.size} tasks`}>
+            {g.label}
+          </span>
+        )}
         {!focus && (
           <>
             {t.category && ctx !== 'category' && (
@@ -395,6 +519,32 @@ export function BoardPage({
       </TaskRow>
     );
   };
+
+  /**
+   * Rows of one panel, with every group of more than one task wrapped in its own
+   * block. `heads: false` is for the `group: group` sections, where the
+   * section header already names the group.
+   */
+  const renderRows = (rows: Row[], ctx: GroupBy | 'recent' | 'active' | 'drafts', heads = true) =>
+    blocksOf(rows).map((b) => {
+      const g = groupIndex.get(b.groupId);
+      if (!heads || !g || g.size < 2) return b.rows.map((r) => row(r.task, ctx, r.depth));
+      const partial = b.rows.length < g.size;
+      return (
+        <div className="task-group" key={b.groupId} style={groupStyle(b.groupId)}>
+          <button
+            className="task-group-head"
+            title={`Filter the board to this group (${g.size} tasks)`}
+            onClick={() => setFilterGroup(g.id)}
+          >
+            <span className="name">{g.label}</span>
+            <span className="count">{b.rows.length}</span>
+            {partial && <span className="part">of {g.size}</span>}
+          </button>
+          <div className="task-group-rows">{b.rows.map((r) => row(r.task, ctx, r.depth))}</div>
+        </div>
+      );
+    });
 
   const draftsShown = showAllDrafts ? drafts : drafts.slice(0, DRAFT_LIMIT);
 
@@ -438,10 +588,21 @@ export function BoardPage({
           ))}
           <option value="none">uncategorized</option>
         </select>
+        {namedGroups.length > 0 && (
+          <select className="field" value={filterGroup} onChange={(e) => setFilterGroup(e.target.value)}>
+            <option value="all">all groups</option>
+            {namedGroups.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.label} ({g.size})
+              </option>
+            ))}
+          </select>
+        )}
         <select className="field" value={groupBy} onChange={(e) => setGroupBy(e.target.value as GroupBy)}>
           <option value="status">group: status</option>
           <option value="category">group: category</option>
           <option value="repo">group: repo</option>
+          <option value="group">group: task group</option>
         </select>
         <select className="field" value={sort} onChange={(e) => setPrefs((p) => ({ ...p, sort: e.target.value as SortKey }))}>
           {SORTS.map((s) => (
@@ -466,7 +627,7 @@ export function BoardPage({
       )}
       {active.length > 0 && (
         <Section label="active" count={active.length} accent collapsed={collapsed.has('active')} onToggle={() => toggleFold('active')}>
-          <div className="panel">{active.map((t) => row(t, 'active'))}</div>
+          <div className="panel">{renderRows(active, 'active')}</div>
         </Section>
       )}
       {drafts.length > 0 && (
@@ -487,7 +648,7 @@ export function BoardPage({
             )
           }
         >
-          <div className="panel">{draftsShown.map((t) => row(t, 'drafts'))}</div>
+          <div className="panel">{renderRows(draftsShown, 'drafts')}</div>
         </Section>
       )}
       {[...groups.entries()].map(([label, list]) => {
@@ -499,15 +660,24 @@ export function BoardPage({
         // essentials mode drops finished history entirely
         if (focus && groupBy === 'status' && (label === 'done' || label === 'cancelled')) return null;
         const id = `${groupBy}:${label}`;
+        // under `group: task group` the key is the group id — show its name
+        const heading = groupBy === 'group' ? (groupIndex.get(label)?.label ?? label) : label;
         return (
-          <Section key={id} label={label} count={list.length} collapsed={collapsed.has(id)} onToggle={() => toggleFold(id)}>
-            <div className="panel">{list.map((t) => row(t, groupBy))}</div>
+          <Section
+            key={id}
+            label={heading}
+            count={list.length}
+            tint={groupBy === 'group' && groupIndex.has(label) ? groupStyle(label) : undefined}
+            collapsed={collapsed.has(id)}
+            onToggle={() => toggleFold(id)}
+          >
+            <div className="panel">{renderRows(list, groupBy, groupBy !== 'group')}</div>
           </Section>
         );
       })}
       {!focus && recent.length > 0 && (
         <Section label="recent" count={recent.length} collapsed={collapsed.has('recent')} onToggle={() => toggleFold('recent')}>
-          <div className="panel">{recent.map((t) => row(t, 'recent'))}</div>
+          <div className="panel">{recent.map((r) => row(r.task, 'recent'))}</div>
         </Section>
       )}
     </div>

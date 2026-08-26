@@ -15,7 +15,13 @@ export function isAllowedOrigin(origin: string | undefined): boolean {
   }
 }
 
-export function registerTerminalWs(app: FastifyInstance, sessions: SessionManager) {
+/**
+ * @param managers every PTY pool that can own a session id — the orchestrator's
+ * agent sessions and the repo-command sessions (docs/commands.md). Ids are
+ * unique across pools (commands are `cmd-`-prefixed), so the first pool that
+ * knows the id owns the socket for its whole lifetime.
+ */
+export function registerTerminalWs(app: FastifyInstance, managers: SessionManager[]) {
   app.get('/ws/terminal/:runId', { websocket: true }, (socket: WebSocket, req) => {
     const { runId } = req.params as { runId: string };
     const { token } = req.query as { token?: string };
@@ -26,7 +32,8 @@ export function registerTerminalWs(app: FastifyInstance, sessions: SessionManage
       return;
     }
 
-    if (!sessions.attach(runId, socket)) {
+    const sessions = managers.find((m) => m.get(runId) !== undefined);
+    if (!sessions || !sessions.attach(runId, socket)) {
       socket.close(4404, 'no such session');
       return;
     }

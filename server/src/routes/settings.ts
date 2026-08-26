@@ -18,6 +18,7 @@ const settingsSchema = z
     'orchestrator.model': z.string().min(1),
     'agent.allowEnqueue': z.boolean(),
     'agent.taskCreationCap': z.number().int().min(1).max(100),
+    'board.groupColors': z.boolean(),
     'review.enabled': z.boolean(),
     'review.model': z.string().min(1),
     'review.maxRounds': z.number().int().min(0).max(5),

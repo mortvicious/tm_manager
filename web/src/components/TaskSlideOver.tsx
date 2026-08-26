@@ -1,9 +1,20 @@
-import { useEffect, useMemo, useState } from 'react';
-import { EFFORT_LEVELS, MODEL_OPTIONS, type EffortLevel, type Proposal, type Task } from '@tm/shared';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import {
+  EFFORT_LEVELS,
+  GROUP_COLOR_COUNT,
+  MODEL_OPTIONS,
+  groupAncestors,
+  groupColorSlot,
+  groupLabel,
+  type EffortLevel,
+  type Proposal,
+  type Task,
+} from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { IconAnalyze, IconPlay, IconTerminal, IconX } from './Icons.tsx';
 import { Markdown } from './Markdown.tsx';
+import { PresetPicker, reviewChoiceOf, reviewValueOf, type ReviewChoice } from './PresetPicker.tsx';
 import { RunStatsChips } from './RunMeta.tsx';
 import { StatusBadge } from './StatusBadge.tsx';
 
@@ -72,13 +83,38 @@ function ProposalCard({ p, onDone }: { p: Proposal; onDone: () => void }) {
   );
 }
 
+/** The task's line of ancestry, root first — its path to the first parent. */
+function GroupPath({ task, tasks, onOpen }: { task: Task; tasks: Task[]; onOpen: (id: string) => void }) {
+  const ancestors = groupAncestors(task);
+  if (ancestors.length === 0) return null;
+  return (
+    <div className="group-path">
+      {ancestors.map((id) => {
+        const a = tasks.find((t) => t.id === id);
+        return (
+          <span key={id}>
+            <button className="crumb" title={a ? 'Open this task' : 'This ancestor no longer exists'} disabled={!a} onClick={() => onOpen(id)}>
+              {a ? a.title : `${id.slice(0, 8)}…`}
+            </button>
+            <span className="sep">/</span>
+          </span>
+        );
+      })}
+      <span className="self">{task.title}</span>
+    </div>
+  );
+}
+
 export function TaskSlideOver({
   taskId,
   onClose,
+  onOpenTask,
   onOpenTerminal,
 }: {
   taskId: string;
   onClose: () => void;
+  /** swap the panel to another task (the group breadcrumb) */
+  onOpenTask: (id: string) => void;
   onOpenTerminal: (runId: string) => void;
 }) {
   const { tasks, repos, runs, proposals, refresh } = useApp();
@@ -89,7 +125,9 @@ export function TaskSlideOver({
   const [model, setModel] = useState<string>('');
   const [effort, setEffort] = useState<string>('');
   const [category, setCategory] = useState<string>('');
-  const [review, setReview] = useState<'default' | 'on' | 'off'>('default');
+  const [groupName, setGroupName] = useState<string>('');
+  const [groupColor, setGroupColor] = useState<string>('');
+  const [review, setReview] = useState<ReviewChoice>('default');
   const [err, setErr] = useState<string | null>(null);
   const [followUpMsg, setFollowUpMsg] = useState('');
   const [sendingFollowUp, setSendingFollowUp] = useState(false);
@@ -115,7 +153,9 @@ export function TaskSlideOver({
       setModel(task.model ?? '');
       setEffort(task.effort ?? '');
       setCategory(task.category ?? '');
-      setReview(task.review == null ? 'default' : task.review ? 'on' : 'off');
+      setGroupName(task.groupName ?? '');
+      setGroupColor(task.groupColor == null ? '' : String(task.groupColor));
+      setReview(reviewChoiceOf(task.review));
       setFollowUpMsg('');
     }
   }, [task?.id]);
@@ -147,6 +187,13 @@ export function TaskSlideOver({
 
   if (!task) return null;
 
+  // group identity lives on the ROOT task — the server rejects it elsewhere
+  const isRoot = task.id === task.groupId;
+  const groupTasks = tasks.filter((t) => t.groupId === task.groupId);
+  const groupRoot = groupTasks.find((t) => t.id === task.groupId);
+  const slot = groupColorSlot(groupRoot, task.groupId);
+  const groupTint = { '--tm-group': `var(--tm-group-${slot})` } as CSSProperties;
+
   const dirty =
     title !== task.title ||
     description !== (task.description ?? '') ||
@@ -154,7 +201,9 @@ export function TaskSlideOver({
     model !== (task.model ?? '') ||
     effort !== (task.effort ?? '') ||
     category !== (task.category ?? '') ||
-    review !== (task.review == null ? 'default' : task.review ? 'on' : 'off');
+    review !== reviewChoiceOf(task.review) ||
+    (isRoot &&
+      (groupName !== (task.groupName ?? '') || groupColor !== (task.groupColor == null ? '' : String(task.groupColor))));
 
   const save = async () => {
     setErr(null);
@@ -166,7 +215,10 @@ export function TaskSlideOver({
         model: model || null,
         effort: (effort || null) as EffortLevel | null,
         category: category.trim() || null,
-        review: review === 'default' ? null : review === 'on',
+        review: reviewValueOf(review),
+        ...(isRoot
+          ? { groupName: groupName.trim() || null, groupColor: groupColor === '' ? null : Number(groupColor) }
+          : {}),
       });
       await refresh();
     } catch (e) {
@@ -257,6 +309,15 @@ export function TaskSlideOver({
           <StatusBadge status={task.status} attention={latestRun?.needsAttention && task.status === 'running'} />
           <span className="chip">{task.source}</span>
           {task.category && <span className="chip" style={{ color: 'var(--tm-accent)' }}>{task.category}</span>}
+          {groupTasks.length > 1 && (
+            <span
+              className="chip group-chip"
+              style={groupTint}
+              title={`task group · ${groupTasks.length} tasks${isRoot ? ' · this is the group root' : ''}`}
+            >
+              {groupLabel(groupRoot, task.title)} · {groupTasks.length}
+            </span>
+          )}
           {task.parentId && <span className="chip">subtask</span>}
           {task.createdByRun && (
             <span className="chip" title={`filed by agent run ${task.createdByRun.slice(0, 8)} (depth ${task.spawnDepth})`}>
@@ -269,6 +330,7 @@ export function TaskSlideOver({
           </button>
         </div>
         <div className="slideover-body">
+          <GroupPath task={task} tasks={tasks} onOpen={onOpenTask} />
           <div>
             <label className="label">Title</label>
             <input className="field" value={title} onChange={(e) => setTitle(e.target.value)} />
@@ -310,13 +372,51 @@ export function TaskSlideOver({
                 ))}
               </datalist>
             </div>
+            {isRoot && groupTasks.length > 1 && (
+              <>
+                <div>
+                  <label className="label">Group name</label>
+                  <input
+                    className="field"
+                    placeholder={task.title}
+                    value={groupName}
+                    onChange={(e) => setGroupName(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="label">Group colour</label>
+                  <select
+                    className="field group-swatch"
+                    style={groupColor === '' ? groupTint : ({ '--tm-group': `var(--tm-group-${groupColor})` } as CSSProperties)}
+                    value={groupColor}
+                    onChange={(e) => setGroupColor(e.target.value)}
+                  >
+                    <option value="">auto (from group id)</option>
+                    {Array.from({ length: GROUP_COLOR_COUNT }, (_, i) => (
+                      <option key={i + 1} value={String(i + 1)}>
+                        colour {i + 1}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
+            <div className="wide">
+              <label className="label">Preset</label>
+              <PresetPicker
+                model={model}
+                effort={effort}
+                review={review}
+                onApply={(p) => {
+                  setModel(p.model);
+                  setEffort(p.effort);
+                  setReview(reviewChoiceOf(p.review));
+                }}
+              />
+            </div>
             <div>
               <label className="label">Adversarial review</label>
-              <select
-                className="field"
-                value={review}
-                onChange={(e) => setReview(e.target.value as 'default' | 'on' | 'off')}
-              >
+              <select className="field" value={review} onChange={(e) => setReview(e.target.value as ReviewChoice)}>
                 <option value="default">default (config)</option>
                 <option value="on">review this</option>
                 <option value="off">skip (small task)</option>

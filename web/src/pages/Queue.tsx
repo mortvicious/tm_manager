@@ -138,7 +138,13 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
       ) : (
         <div className="panel">
           {queued.map((t) => (
-            <TaskRow key={t.id} task={t} onOpenTask={onOpenTask} onOpenTerminal={onOpenTerminal}>
+            <TaskRow
+              key={t.id}
+              task={t}
+              onOpenTask={onOpenTask}
+              onOpenTerminal={onOpenTerminal}
+              depth={t.parentId ? 1 : 0}
+            >
               <span className="mono muted">prio {t.priority}</span>
             </TaskRow>
           ))}

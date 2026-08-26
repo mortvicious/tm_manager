@@ -1,5 +1,18 @@
 // Dialect-neutral DDL: runs unchanged on bundled SQLite (>=3.35) and Postgres.
 // All tables carry the fixed `tm_` prefix (see docs/decisions.md).
+
+// One generation of the migration-12 group backfill: every row whose parent
+// already has a group inherits it. Dialect-neutral (correlated subquery on the
+// table being updated works on both SQLite and Postgres).
+const BACKFILL_GENERATION = `UPDATE tm_tasks SET
+    group_id = (SELECT p.group_id FROM tm_tasks p WHERE p.id = tm_tasks.parent_id),
+    group_path = (SELECT p.group_path || p.id || '/' FROM tm_tasks p WHERE p.id = tm_tasks.parent_id)
+  WHERE group_id IS NULL AND parent_id IS NOT NULL
+    AND (SELECT p.group_id FROM tm_tasks p WHERE p.id = tm_tasks.parent_id) IS NOT NULL`;
+
+/** Depth the backfill reaches. Real trees are 1-2 deep (split children, and
+ *  agent follow-ups linked as siblings); 8 is slack, not a limit on new rows. */
+const BACKFILL_GENERATIONS = 8;
 export const MIGRATIONS: { id: number; statements: string[] }[] = [
   {
     id: 1,
@@ -163,5 +176,51 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
     // Scheme is validated at the API boundary (http/https only) — the column
     // itself is a plain TEXT so an existing row simply stays NULL.
     statements: [`ALTER TABLE tm_repos ADD COLUMN preview_url TEXT`],
+  },
+  {
+    id: 12,
+    // Task groups (docs/grouping.md): every task carries the id of its ROOT
+    // ancestor plus the materialized path of ancestor ids to it, so a split
+    // tree is one addressable, filterable, nameable group. Both columns stay
+    // nullable in SQL (ALTER ADD COLUMN cannot backfill a NOT NULL) — the
+    // drivers always write them and rowToTask falls back to "own root".
+    // group_name / group_color are meaningful on the ROOT row only.
+    statements: [
+      `ALTER TABLE tm_tasks ADD COLUMN group_id TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN group_path TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN group_name TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN group_color INTEGER`,
+      // Backfill generation by generation instead of a recursive CTE: bounded
+      // iteration terminates even if a legacy row pair references each other
+      // (nothing rejected a 2-cycle before this migration), where WITH
+      // RECURSIVE would spin forever.
+      `UPDATE tm_tasks SET group_id = id, group_path = '/' WHERE parent_id IS NULL`,
+      ...Array.from({ length: BACKFILL_GENERATIONS }, () => BACKFILL_GENERATION),
+      // Deeper than the bounded sweep, or inside a cycle: stand it up as its
+      // own root rather than leaving a NULL group.
+      `UPDATE tm_tasks SET group_id = id, group_path = '/' WHERE group_id IS NULL`,
+      `CREATE INDEX IF NOT EXISTS tm_tasks_group_idx ON tm_tasks(group_id)`,
+    ],
+  },
+  {
+    id: 13,
+    // Custom repo commands (docs/commands.md): saved command lines ("pnpm run
+    // start:dev") a repo can run in a PTY on demand. `sort_order`, not `sort`
+    // — a bare `sort` reads as a keyword in too many dialects to be worth it.
+    // Runs are NOT stored: a PTY dies with the server (see CommandRun).
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_commands (
+        id TEXT PRIMARY KEY,
+        repo_id TEXT NOT NULL REFERENCES tm_repos(id),
+        name TEXT NOT NULL,
+        command TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'task',
+        cwd TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_commands_repo_idx ON tm_commands(repo_id)`,
+    ],
   },
 ];

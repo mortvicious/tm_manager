@@ -1,4 +1,4 @@
-import type { Feature, FeaturePlan, FeatureReview, Proposal, Repo, Run, Task } from '@tm/shared';
+import type { Feature, FeaturePlan, FeatureReview, Proposal, Repo, RepoCommand, Run, Task } from '@tm/shared';
 
 // One malformed JSON cell must not break every list query (review F4).
 function safeParse<T>(raw: unknown, fallback: T): T {
@@ -25,6 +25,22 @@ export function rowToRepo(r: any): Repo {
   };
 }
 
+export function rowToCommand(r: any): RepoCommand {
+  return {
+    id: r.id,
+    repoId: r.repo_id,
+    name: r.name,
+    command: r.command,
+    // An unknown value (hand-edited row) reads as the harmless kind: a `task`
+    // command is never counted as a running service in the header.
+    kind: r.kind === 'service' ? 'service' : 'task',
+    cwd: r.cwd ?? null,
+    sortOrder: Number(r.sort_order ?? 0),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
 export function rowToTask(r: any): Task {
   return {
     id: r.id,
@@ -32,6 +48,12 @@ export function rowToTask(r: any): Task {
     description: r.description ?? null,
     repoId: r.repo_id ?? null,
     parentId: r.parent_id ?? null,
+    // Pre-migration-12 rows (and any row a driver forgot to place) read as
+    // their own single-task group rather than as a null group.
+    groupId: r.group_id ?? r.id,
+    groupPath: r.group_path ?? '/',
+    groupName: r.group_name ?? null,
+    groupColor: r.group_color == null ? null : Number(r.group_color),
     status: r.status,
     source: r.source,
     sourceRef: r.source_ref ?? null,

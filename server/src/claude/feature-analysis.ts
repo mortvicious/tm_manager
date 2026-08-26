@@ -44,6 +44,8 @@ function runHeadless(opts: {
   jsonSchema: string;
   runId: string;
   timeoutMs: number;
+  /** what this child is doing, for the restart guard's refusal message */
+  label: string;
 }): Promise<HeadlessResult> {
   const args = [
     '-p',
@@ -83,7 +85,7 @@ function runHeadless(opts: {
     child.stdin?.end();
     // One run row, several child processes — the Kill button always points at
     // whichever one is currently burning.
-    trackHeadlessChild(opts.runId, child);
+    trackHeadlessChild(opts.runId, child, opts.label);
   });
 }
 
@@ -97,6 +99,7 @@ async function runWithFallback(opts: {
   jsonSchema: string;
   runId: string;
   timeoutMs: number;
+  label: string;
 }): Promise<HeadlessResult & { model: string }> {
   let model = fableUnavailable && /fable/i.test(opts.model) ? 'claude-opus-5' : opts.model;
   let effort: string | null = model === 'claude-opus-5' && model !== opts.model ? 'xhigh' : null;
@@ -248,6 +251,7 @@ export async function startFeatureAnalysis(
           jsonSchema: PLAN_JSON_SCHEMA,
           runId: run.id,
           timeoutMs: CALL_TIMEOUT_MS,
+          label: `feature planning: ${feature.title}`,
         });
         stats = addStats(stats, usageOf(planRes.envelope));
         sessionId = planRes.envelope?.session_id ?? sessionId;
@@ -284,6 +288,7 @@ export async function startFeatureAnalysis(
           }),
           jsonSchema: PLAN_REVIEW_JSON_SCHEMA,
           runId: run.id,
+          label: `plan review: ${feature.title}`,
           timeoutMs: CALL_TIMEOUT_MS,
         });
         stats = addStats(stats, usageOf(reviewRes.envelope));

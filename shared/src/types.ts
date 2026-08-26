@@ -18,6 +18,64 @@ export const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', '
 // Dropdown suggestions; agent.model / task.model accept any model id string.
 export const MODEL_OPTIONS = ['claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'];
 
+/**
+ * One-click bundles of the three per-task overrides (model / effort /
+ * adversarial review), offered on the new-task form and the task panel so the
+ * common cases are one click instead of three dropdowns.
+ *
+ * `review: null` means "leave it to the `review.enabled` setting" — the same
+ * value the dropdown's "default (config)" option writes.
+ */
+export interface TaskPreset {
+  id: 'small' | 'routine' | 'complex';
+  label: string;
+  /** what the preset resolves to, shown next to the label */
+  hint: string;
+  model: string;
+  effort: EffortLevel;
+  review: boolean | null;
+}
+
+export const TASK_PRESETS: TaskPreset[] = [
+  // Small and Routine both skip adversarial review — the work is short enough
+  // that a review round costs more than it catches. Only Complex pins it on.
+  // The hint spells out review only when it is ON; "no review" is the norm for
+  // the two cheap presets and would just be noise on every button.
+  {
+    id: 'small',
+    label: 'Small',
+    hint: 'opus 5 · medium',
+    model: 'claude-opus-5',
+    effort: 'medium',
+    review: false,
+  },
+  {
+    id: 'routine',
+    label: 'Routine',
+    hint: 'opus 5 · high',
+    model: 'claude-opus-5',
+    effort: 'high',
+    review: false,
+  },
+  {
+    id: 'complex',
+    label: 'Complex',
+    hint: 'fable 5 · high · review',
+    model: 'claude-fable-5',
+    effort: 'high',
+    review: true,
+  },
+];
+
+/** The preset a set of override values corresponds to, or undefined ("custom"). */
+export function matchTaskPreset(v: {
+  model: string | null;
+  effort: EffortLevel | null;
+  review: boolean | null;
+}): TaskPreset | undefined {
+  return TASK_PRESETS.find((p) => p.model === v.model && p.effort === v.effort && p.review === v.review);
+}
+
 export interface Repo {
   id: string;
   name: string;
@@ -28,12 +86,110 @@ export interface Repo {
   createdAt: string;
 }
 
+/**
+ * A saved shell command a repo can run on demand ("pnpm start:dev"), stored
+ * per repo and executed in a real PTY exactly like an agent session.
+ * `service` = long-running (dev server, watcher) — those are what the header
+ * running-indicator counts; `task` = runs, prints, exits.
+ */
+export type CommandKind = 'task' | 'service';
+
+export interface RepoCommand {
+  id: string;
+  repoId: string;
+  /** human label shown in the launcher */
+  name: string;
+  /** the command line; parsed into argv server-side, NEVER handed to a shell */
+  command: string;
+  kind: CommandKind;
+  /** subdirectory of the repo to run in (relative, inside the repo); null = repo root */
+  cwd: string | null;
+  /** launcher order within the repo, ascending */
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CommandRunStatus = 'running' | 'exited' | 'killed';
+
+/**
+ * One execution of a RepoCommand. Deliberately in-memory only (never a
+ * `tm_runs` row): a PTY dies with the server, so a persisted "running" command
+ * could only ever be a lie after a restart — and boot recovery must keep
+ * treating every `tm_runs` row as an agent.
+ */
+export interface CommandRun {
+  /** also the PTY session id — attach at /ws/terminal/:id */
+  id: string;
+  /** null once the definition was edited/deleted while the run was alive */
+  commandId: string | null;
+  repoId: string | null;
+  /** snapshotted so a finished run still renders after its repo/command is gone */
+  repoName: string;
+  name: string;
+  command: string;
+  kind: CommandKind;
+  cwd: string;
+  status: CommandRunStatus;
+  pid: number | null;
+  exitCode: number | null;
+  startedAt: string;
+  endedAt: string | null;
+}
+
+/** One `package.json` script the repo scanner found. */
+export interface ScannedScript {
+  /** script name as written in package.json */
+  name: string;
+  /** its body, for the tooltip */
+  script: string;
+  /** package directory relative to the repo root ('' = root) */
+  cwd: string;
+  /** package.json `name` of the workspace the script belongs to */
+  packageName: string;
+  /** ready-to-save command line, e.g. "pnpm run start:dev" */
+  suggested: string;
+  /** guessed from the script name/body — a dev server is a `service` */
+  kind: CommandKind;
+}
+
+export interface RepoScripts {
+  /** pnpm / yarn / npm / bun, detected from packageManager or the lockfile */
+  packageManager: string;
+  scripts: ScannedScript[];
+  /** why the list is empty / partial (no package.json, unreadable, capped) */
+  note: string | null;
+}
+
 export interface Task {
   id: string;
   title: string;
   description: string | null;
   repoId: string | null;
   parentId: string | null;
+  /**
+   * Root ancestor of this task's tree — the task GROUP id. A task with no
+   * parent is its own group (`groupId === id`), so this is never null and
+   * every task belongs to exactly one group.
+   */
+  groupId: string;
+  /**
+   * Materialized path to the first parent: ancestor ids root-first, slash
+   * delimited with a leading AND trailing slash. `'/'` for a root task,
+   * `'/rootId/'` for its child, `'/rootId/midId/'` for a grandchild.
+   */
+  groupPath: string;
+  /**
+   * Human name for the group this task ROOTS. Meaningful only on a root
+   * (`id === groupId`); null falls back to the root task's title. Cleared
+   * automatically when a task stops being a root.
+   */
+  groupName: string | null;
+  /**
+   * Colour slot (1..GROUP_COLOR_COUNT) for the group this task ROOTS, same
+   * root-only rule as `groupName`. null = the slot derived from `groupId`.
+   */
+  groupColor: number | null;
   status: TaskStatus;
   source: TaskSource;
   sourceRef: string | null;
@@ -59,6 +215,47 @@ export interface Task {
   error: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** How many distinct colours the board can tint groups with (`--tm-group-1..N`). */
+export const GROUP_COLOR_COUNT = 7;
+
+/**
+ * The colour slot a group is drawn in: the root's explicit `groupColor` when
+ * set, otherwise a stable slot hashed from the group id (FNV-1a) so the same
+ * group keeps the same colour across reloads and machines without storing it.
+ */
+export function groupColorSlot(root: Pick<Task, 'groupId' | 'groupColor'> | undefined, groupId?: string): number {
+  const explicit = root?.groupColor;
+  if (explicit != null && Number.isInteger(explicit) && explicit >= 1 && explicit <= GROUP_COLOR_COUNT) return explicit;
+  const id = root?.groupId ?? groupId ?? '';
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return (h % GROUP_COLOR_COUNT) + 1;
+}
+
+/** Ancestor ids of a task, root first (empty for a root task). */
+export function groupAncestors(t: Pick<Task, 'groupPath'>): string[] {
+  return t.groupPath.split('/').filter(Boolean);
+}
+
+/** How deep a task sits under its group root (0 = the root itself). */
+export function groupDepth(t: Pick<Task, 'groupPath'>): number {
+  return groupAncestors(t).length;
+}
+
+/** Does this task root its own group? Only a root carries `groupName`. */
+export function isGroupRoot(t: Pick<Task, 'id' | 'groupId'>): boolean {
+  return t.id === t.groupId;
+}
+
+/** Display name of the group `root` heads — its explicit name, else its title. */
+export function groupLabel(root: Pick<Task, 'title' | 'groupName'> | undefined, fallback = 'group'): string {
+  if (!root) return fallback;
+  return root.groupName?.trim() || root.title;
 }
 
 export type RunMode = 'worker' | 'analyze';
@@ -195,6 +392,8 @@ export interface AppSettings {
   'agent.allowEnqueue': boolean;
   /** max follow-up tasks ONE worker session may file via the agent API (403 after) */
   'agent.taskCreationCap': number;
+  /** tint each task group with its own colour on the Board */
+  'board.groupColors': boolean;
   /** run an adversarial review of each worker's change before it lands in review */
   'review.enabled': boolean;
   /** reviewer model; falls back to Opus 5 xhigh when unavailable */
@@ -253,6 +452,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'agent.allowEnqueue': false,
   'agent.taskCreationCap': 15,
   'agent.allowedTools': [],
+  'board.groupColors': true,
   'review.enabled': true,
   'review.model': 'claude-fable-5',
   'review.maxRounds': 2,
@@ -374,6 +574,8 @@ export type AuditKind =
   | 'feature.edited'
   | 'feature.analyzed'
   | 'repo.changed'
+  | 'command.changed'
+  | 'command.run'
   | 'config.changed'
   | 'orchestrator.toggle'
   | 'schedule.overflow-claim'
@@ -444,8 +646,16 @@ export type TerminalClientMsg =
 // /ws/events
 export interface OrchestratorStatus {
   enabled: boolean;
+  /** live non-idle worker PTYs — the concurrency numerator */
   running: number;
   concurrency: number;
+  /**
+   * Headless `claude -p` agents alive right now (analysis, adversarial review,
+   * feature planning). They own no PTY, so they are invisible to `running` —
+   * but a restart kills them just the same, which is why the restart guard
+   * counts them too. A server predating this field simply omits it.
+   */
+  headless: number;
 }
 
 /**
@@ -476,4 +686,7 @@ export type ServerEvent =
   | { type: 'feature.updated'; feature: Feature }
   | { type: 'feature.deleted'; featureId: string }
   | { type: 'event.appended'; event: AuditEvent }
+  | { type: 'command.updated'; command: RepoCommand }
+  | { type: 'command.deleted'; commandId: string }
+  | { type: 'command.run'; run: CommandRun }
   | { type: 'orchestrator.status'; status: OrchestratorStatus };

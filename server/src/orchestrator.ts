@@ -5,6 +5,7 @@ import type { AppSettings, Run, Task } from '@tm/shared';
 import type { ActionResult, OrchestratorApi } from './app-types.ts';
 import { DEFAULT_PROCEED, buildWorkerInvocation } from './claude/worker.ts';
 import { killAnalysis } from './claude/analyze.ts';
+import { liveHeadless } from './claude/headless.ts';
 import { reviewWorkerChange } from './claude/review.ts';
 import { summarizeRun, summarizeTranscript } from './claude/stats.ts';
 import { needsFallbackModel, sessionUsagePct } from './claude/usage.ts';
@@ -118,6 +119,9 @@ export class Orchestrator implements OrchestratorApi {
       // session idles, which would overstate the count (review M2)
       running: this.sessions.liveCount(),
       concurrency: settings['orchestrator.concurrency'],
+      // Headless agents have no PTY, so liveCount() cannot see them; the
+      // restart guard needs them counted (docs/commands.md).
+      headless: liveHeadless().length,
     };
   }
 
@@ -315,6 +319,10 @@ export class Orchestrator implements OrchestratorApi {
       });
       broadcast({ type: 'run.started', run: withPid ?? run });
       broadcast({ type: 'task.updated', task });
+      // The status was only broadcast on toggle and on EXIT, so the header's
+      // "running n/2" (and the restart guard that reads it) stayed stale for a
+      // whole session after a spawn.
+      broadcast({ type: 'orchestrator.status', status: await this.status() });
       return true;
     } catch (err) {
       await this.storage.updateRun(run.id, { status: 'exited', endedAt: new Date().toISOString() });

@@ -3,6 +3,7 @@ import type { UsageSnapshot, UsageWindow } from '@tm/shared';
 import { NavLink } from 'react-router-dom';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
+import { CommandsLauncher } from './Commands.tsx';
 import { EmulatorLauncher } from './Emulator.tsx';
 import { IconBoard, IconBook, IconConfig, IconFeature, IconMoon, IconQueue, IconRepo, IconSun, IconTerminal } from './Icons.tsx';
 
@@ -141,8 +142,9 @@ function UsagePill() {
 }
 
 function ServerControl() {
-  const { connected, bootedAt, orch } = useApp();
+  const { connected, bootedAt, orch, commandRuns } = useApp();
   const [restarting, setRestarting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const uptime = (() => {
     if (!bootedAt) return '';
     const s = Math.max(0, Math.floor((Date.now() - new Date(bootedAt).getTime()) / 1000));
@@ -150,24 +152,40 @@ function ServerControl() {
     const m = Math.floor((s % 3600) / 60);
     return h > 0 ? `${h}h ${m}m` : `${m}m`;
   })();
+  // Restarting kills every agent: workers lose their sessions and boot recovery
+  // fails their tasks, and a headless analysis/review/plan dies mid-run. So the
+  // button is CLOSED while any agent is working — the server refuses it too
+  // (409), this is just the honest label. `headless` is absent on a server that
+  // predates the field, which reads as "none" rather than blocking forever.
+  const live = commandRuns.filter((r) => r.status === 'running').length;
+  const headless = orch.headless ?? 0;
+  const busyAgents = orch.running + headless;
+  const blocked = busyAgents > 0;
   const restart = async () => {
-    const n = orch.running;
+    if (blocked) return;
     if (
       !confirm(
-        n > 0
-          ? `${n} worker(s) are running and will be interrupted (their tasks marked failed — retry after). Restart the server?`
+        live > 0
+          ? `Restart the task-manager server? ${live} running command(s) will be stopped.`
           : 'Restart the task-manager server?',
       )
     )
       return;
     setRestarting(true);
+    setErr(null);
     try {
       await api.restartServer();
-    } catch {
-      // the request may drop as the server exits — that's expected
+    } catch (e) {
+      // A refusal (an agent started between render and click) is real feedback;
+      // a dropped socket as the server exits reads the same way and clears on
+      // reconnect, so both are shown rather than swallowed.
+      setErr((e as Error).message);
     }
     // the events WS drops → `connected` goes false → reconnect flips it back
-    setTimeout(() => setRestarting(false), 8000);
+    setTimeout(() => {
+      setRestarting(false);
+      setErr(null);
+    }, 8000);
   };
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
@@ -186,14 +204,30 @@ function ServerControl() {
         />
         {restarting ? 'restarting…' : connected ? `up ${uptime}` : 'offline'}
       </span>
-      <button className="btn ghost" title="Restart the task-manager server" disabled={restarting} onClick={restart}>
-        {restarting ? 'Restarting…' : 'Restart server'}
+      <button
+        className="btn ghost"
+        title={
+          blocked
+            ? `${busyAgents} agent(s) are working (${orch.running} session(s), ${headless} headless) — restarting would kill them and fail their tasks. Stop them first.`
+            : live > 0
+              ? `Restart the task-manager server (${live} running command(s) will be stopped)`
+              : 'Restart the task-manager server'
+        }
+        disabled={restarting || blocked}
+        onClick={restart}
+      >
+        {restarting ? 'Restarting…' : blocked ? 'Agents working' : 'Restart server'}
       </button>
+      {err && (
+        <span className="warn-text mono" title={err} style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {err}
+        </span>
+      )}
     </span>
   );
 }
 
-export function Layout({ children }: { children: ReactNode }) {
+export function Layout({ children, onOpenTerminal }: { children: ReactNode; onOpenTerminal: (runId: string) => void }) {
   const { orch } = useApp();
   const nav = [
     { to: '/', label: 'Dashboard', icon: <IconQueue /> },
@@ -220,12 +254,21 @@ export function Layout({ children }: { children: ReactNode }) {
       </aside>
       <header className="header">
         <OrchestratorSwitch />
-        <span className="runcount">
+        <span
+          className="runcount"
+          title={
+            (orch.headless ?? 0) > 0
+              ? `${orch.running} of ${orch.concurrency} worker slots in use · ${orch.headless} headless agent(s) (analysis / review / feature plan) — those run outside the worker budget`
+              : `${orch.running} of ${orch.concurrency} worker slots in use`
+          }
+        >
           running {orch.running}/{orch.concurrency}
+          {(orch.headless ?? 0) > 0 ? ` · +${orch.headless}` : ''}
         </span>
         <UsagePill />
         <span className="spacer" />
         <ServerControl />
+        <CommandsLauncher onOpenTerminal={onOpenTerminal} />
         <EmulatorLauncher />
         <ThemeToggle />
       </header>

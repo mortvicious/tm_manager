@@ -17,20 +17,21 @@ export function App() {
   const [openTerminal, setOpenTerminal] = useState<string | null>(null);
 
   return (
-    <Layout>
+    <Layout onOpenTerminal={setOpenTerminal}>
       <Routes>
         <Route path="/" element={<DashboardPage onOpenTask={setOpenTask} />} />
         <Route path="/board" element={<BoardPage onOpenTask={setOpenTask} onOpenTerminal={setOpenTerminal} />} />
         <Route path="/queue" element={<QueuePage onOpenTask={setOpenTask} onOpenTerminal={setOpenTerminal} />} />
         <Route path="/features" element={<FeaturesPage />} />
         <Route path="/features/:id" element={<FeaturePage onOpenTask={setOpenTask} />} />
-        <Route path="/repos" element={<ReposPage />} />
+        <Route path="/repos" element={<ReposPage onOpenTerminal={setOpenTerminal} />} />
         <Route path="/config" element={<ConfigPage />} />
         <Route path="/handbook" element={<HandbookPage />} />
       </Routes>
       {openTask && (
         <TaskSlideOver
           taskId={openTask}
+          onOpenTask={setOpenTask}
           onClose={() => setOpenTask(null)}
           onOpenTerminal={(runId) => {
             // Slide-over closes: its overlay sits above the terminal drawer (review R7).

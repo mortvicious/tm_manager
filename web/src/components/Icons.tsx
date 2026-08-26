@@ -129,3 +129,22 @@ export const IconExternal = () => (
     <path d="M18 14v5a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V7.5A1.5 1.5 0 0 1 5 6h5" />
   </svg>
 );
+
+export const IconBolt = () => (
+  <svg {...p}>
+    <path d="M13 2L4 14h7l-1 8 9-12h-7z" />
+  </svg>
+);
+
+export const IconTrash = () => (
+  <svg {...p}>
+    <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />
+  </svg>
+);
+
+export const IconPencil = () => (
+  <svg {...p}>
+    <path d="M4 20h4L19 9a2.5 2.5 0 0 0-3.5-3.5L4.5 16.5z" />
+    <path d="M14.5 6.5 17.5 9.5" />
+  </svg>
+);

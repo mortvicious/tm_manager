@@ -10,7 +10,15 @@ npm start          # → http://localhost:5175
 ```
 
 1. **Repos** → add a local path (`~/Development/my-app`) with a role note ("backend", "frontend").
-2. **Board** → **+ New task** — title, description, repo. Model/effort overrides are optional; leave them on *auto (router)*.
+2. **Board** → **+ New task** — title, description, repo. Model/effort overrides are optional; leave them on *auto (router)*, or click a **Preset** to set model, effort and adversarial review in one go:
+
+   | Preset | Model | Effort | Adversarial review |
+   |---|---|---|---|
+   | **Small** | `claude-opus-5` | medium | off |
+   | **Routine** | `claude-opus-5` | high | off |
+   | **Complex** | `claude-fable-5` | high | on |
+
+   The three dropdowns underneath stay editable — the presets are a shortcut, not a mode. Change one and the row simply stops highlighting a preset. The same row is on the task panel, so an existing task can be re-tuned the same way (then **Save changes**).
 3. Either **Run now** (immediate) from the task panel, or **Enqueue** and flip the header switch to **Queue running** — the orchestrator picks tasks up automatically, max 2 at a time.
 
 ## Where your data lives (persistence)
@@ -57,6 +65,20 @@ Plain **Send follow-up** does the same continuation by default (Config → *Resu
 
 The button is disabled when the task has never produced a session, or the session's transcript is gone (deleted, or from a different repo). Usage is never counted twice: a resumed run reports only what it spends on top of what it inherited.
 
+## Repo commands — dev servers and scripts
+
+A repo can carry saved command lines: `pnpm run start:dev` in neko-vite, `yarn run start:dev` in neko-nest, `pnpm run update-translations` when you need it. **Repos** → the ⚡ button on a repo row opens its drawer.
+
+- **Scan scripts** lists every `package.json` script in the repo (workspace packages included) in a dropdown — pick one, **Add**, done. The package manager is detected from `packageManager` or the lockfile.
+- Each command is **one-shot** or a **service**. A service is a dev server or watcher: it keeps running, and the ⚡ button in the header shows a live dot and how many are up. A one-shot prints and exits, so running it opens its terminal straight away.
+- The header ⚡ popover is the everyday launcher: what is running (with **stop** and **open terminal**), plus a repo picker and its commands.
+- Commands run in a real terminal, exactly like an agent session — attach and type into them.
+- Optional **subdir** runs the command in a subdirectory of the repo (`packages/api`); it must stay inside the repo.
+
+They are **not** run through a shell, so `&&`, `|`, `>` and friends are refused with a message saying so — put the pipeline in a `package.json` script and call that. Quoted ones (`node -e 'a > b'`) are fine. The binary is looked up in the repo's `node_modules/.bin` before your `PATH`, so repo-local tools work without a global install.
+
+Services die when the server stops or restarts — deliberately, so their ports are released.
+
 ## Model routing
 
 Per task: **override wins** (set at creation or in the task panel). Otherwise:
@@ -101,7 +123,15 @@ Three ways to see less: the **sort** selector (last touched / newest filed / old
 
 ## Categories, filtering & grouping
 
-Every task can carry a free-text **category** ("UI", "Estimator", "Auth"…). You set one in the create form or the task panel; **agents assign them too** — the Analyze run labels each task by domain, and workers can categorize tasks they file. The Board header filters by repo, source (human / agent / sentry / analyze / feature), and category, and groups by status, category, or repo.
+Every task can carry a free-text **category** ("UI", "Estimator", "Auth"…). You set one in the create form or the task panel; **agents assign them too** — the Analyze run labels each task by domain, and workers can categorize tasks they file. The Board header filters by repo, source (human / agent / sentry / analyze / feature), category and group, and groups by status, category, repo, or task group.
+
+## Task groups
+
+Split a task and the pieces stay together: a task plus everything split out of it (at any depth) is a **group**. Every task knows its root and its path to it, so the Board draws a group as one bordered block — its name, how many of its tasks are in that section, `of N` when the rest are elsewhere — and clicking that header filters the whole board to the group. `group: task group` gives each tree its own section instead.
+
+Open the **root** task to give the group a **name** (otherwise it is called after the root's title) and a **colour**. Any other member shows the path back to the root as a breadcrumb — click an ancestor to jump to it. Groups are structural: deleting the root splits the group (each child becomes a root of its own), and moving a task under another parent takes its whole subtree with it.
+
+Colours are on by default and can be turned off in **Config → Board → Group colours** — blocks, names and counts stay, only the tinting goes.
 
 ## Reviewing & fixing
 
@@ -125,10 +155,12 @@ The task panel has a **Follow-up** field: send an instruction to steer a live ag
 | Terminal keep-alive | minutes a finished/exited terminal stays attachable before it is evicted (default 30, **0 = forever**). Proceed still works after eviction — it reopens the session from disk |
 | Tasks an agent may file | how many follow-up tasks one worker session can file through the agent API before it's refused and told to finish its turn (default 15, 1–100) |
 | Feature plan re-analysis rounds | a blocker verdict on a feature's plan feeds the findings into a fresh analysis, up to N rounds (0 = review the plan once, never re-plan) |
+| Group colours | tint each task group with its own colour on the Board (default on); off leaves the neutral blocks, grouping itself is unaffected |
 | Sentry | org/project/token + target repo; **Sync issues now** pulls unresolved issues (14d) as tasks — idempotent, never duplicates. Token needs `event:read` + `project:read` scopes (a sourcemap-upload token 403s). EU orgs: API base `https://de.sentry.io` |
 
 ## Troubleshooting
 
+- **Restart server says "Agents working"** — a restart kills every agent and their tasks land in `failed`, so it is blocked while any is live. That counts terminals *and* the invisible ones: an analysis, an adversarial review, a feature plan being written (the running pill shows them as `+n`). Stop or finish them (or **Cancel** the tasks) and the button comes back. Running dev servers never block it; they are just stopped first.
 - **Task failed with "server restarted"** — the server went down mid-run; boot recovery killed the orphaned agent. Hit **Proceed** to continue the same session where it stopped, or **Retry** to start over.
 - **Agent died at 100% usage / lost connection** — the run exits and the task lands in `failed` (or `review`). **Proceed** picks the same session back up once you have headroom again; nothing it learned is lost.
 - **Task stuck running, no output growth** — open its terminal; it's probably a permission or trust prompt (should also show *needs attention*). Answer it inline. The workspace-trust dialog appears once per repo.

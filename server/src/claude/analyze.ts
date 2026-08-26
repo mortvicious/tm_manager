@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { z } from 'zod';
 import type { Repo, Task } from '@tm/shared';
 import { broadcast } from '../events.ts';
+import { registerHeadless } from './headless.ts';
 import type { Storage } from '../storage/types.ts';
 
 // Structured output contract for the analysis agent.
@@ -269,7 +270,7 @@ export async function startAnalysis(
   child.stdin?.on('error', () => {});
   child.stdin?.write(buildPrompt(repo, tasks));
   child.stdin?.end();
-  trackHeadlessChild(run.id, child);
+  trackHeadlessChild(run.id, child, `analysis of ${repo.name}`);
   await storage.updateRun(run.id, { pid: child.pid ?? null });
 
   return { runId: run.id };
@@ -281,11 +282,14 @@ export async function startAnalysis(
 // single Kill button honest.
 const analyzeChildren = new Map<string, ReturnType<typeof execFile>>();
 
-export function trackHeadlessChild(runId: string, child: ReturnType<typeof execFile>): void {
+export function trackHeadlessChild(runId: string, child: ReturnType<typeof execFile>, label = 'analysis'): void {
   analyzeChildren.set(runId, child);
   child.on('exit', () => {
     if (analyzeChildren.get(runId) === child) analyzeChildren.delete(runId);
   });
+  // Also joins the pool the restart guard reads: a headless agent has no PTY,
+  // so nothing else would notice it is working (docs/commands.md).
+  registerHeadless(child, label);
 }
 
 export function killAnalysis(runId: string): boolean {
