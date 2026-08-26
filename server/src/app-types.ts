@@ -1,4 +1,4 @@
-import type { Task } from '@tm/shared';
+import type { Task, TaskStatus } from '@tm/shared';
 
 export type ActionResult = { task: Task } | { error: string; code: number };
 
@@ -11,7 +11,21 @@ export interface OrchestratorApi {
     message: string,
     actor?: string,
     mode?: 'auto' | 'resume' | 'fresh',
+    purpose?: 'work' | 'publish',
   ): Promise<ActionResult>;
+  /** Commit + push a reviewed task's work, in the agent's own session
+   *  (docs/publish.md). */
+  publish(taskId: string, actor?: string): Promise<ActionResult>;
+  /** Land a finished publish turn on `published` / back on `review`, decided
+   *  by git rather than by what the agent reported. */
+  settlePublish(
+    taskId: string,
+    from: TaskStatus[],
+    actor: string,
+    delivery?: 'session' | 'direct',
+  ): Promise<Task | null>;
+  /** Is this run the publish turn? */
+  isPublishRun(runId: string): boolean;
   /** Reopen the task's previous claude session and carry on ("proceed"). */
   proceed(taskId: string, message?: string | null, actor?: string): Promise<ActionResult>;
   /** Session id "proceed" would continue, or null when there is none. */

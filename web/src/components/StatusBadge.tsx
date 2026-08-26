@@ -3,6 +3,7 @@ import type { TaskStatus } from '@tm/shared';
 const cls: Partial<Record<TaskStatus, string>> = {
   running: 's-running',
   queued: 's-queued',
+  published: 's-published',
   done: 's-done',
   review: 's-review',
   blocked: 's-blocked',

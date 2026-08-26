@@ -11,6 +11,7 @@ import type {
   AppSettings,
   AuditEvent,
   CommandRun,
+  Dispatch,
   Feature,
   OrchestratorStatus,
   Proposal,
@@ -30,6 +31,8 @@ interface AppState {
   /** what each live run is doing right now, keyed by run id (live runs only) */
   activity: Record<string, RunActivity>;
   proposals: Proposal[];
+  /** agent-to-agent messages between related tasks (docs/dispatch.md) */
+  dispatches: Dispatch[];
   features: Feature[];
   /** saved per-repo command definitions (docs/commands.md) */
   commands: RepoCommand[];
@@ -62,6 +65,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [runs, setRuns] = useState<Run[]>([]);
   const [activity, setActivity] = useState<Record<string, RunActivity>>({});
   const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [dispatches, setDispatches] = useState<Dispatch[]>([]);
   const [features, setFeatures] = useState<Feature[]>([]);
   const [commands, setCommands] = useState<RepoCommand[]>([]);
   const [commandRuns, setCommandRuns] = useState<CommandRun[]>([]);
@@ -86,6 +90,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .then((list) => setActivity(Object.fromEntries(list.map((a) => [a.runId, a]))))
       .catch(() => {});
     api.listProposals().then(setProposals).catch(() => {});
+    api.listDispatches().then(setDispatches).catch(() => {});
     api.listFeatures().then(setFeatures).catch(() => {});
     api.listCommands().then(setCommands).catch(() => {});
     api.listCommandRuns().then(setCommandRuns).catch(() => {});
@@ -174,6 +179,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
               return next;
             });
             break;
+          case 'dispatch.updated':
+            setDispatches((cur) => {
+              const i = cur.findIndex((d) => d.id === e.dispatch.id);
+              if (i === -1) return [e.dispatch, ...cur];
+              const next = cur.slice();
+              next[i] = e.dispatch;
+              return next;
+            });
+            break;
           case 'feature.updated':
             setFeatures((cur) => {
               const i = cur.findIndex((f) => f.id === e.feature.id);
@@ -256,6 +270,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         runs,
         activity,
         proposals,
+        dispatches,
         features,
         commands,
         commandRuns,

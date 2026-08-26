@@ -95,7 +95,13 @@ export function registerInternalRoutes(
 
     if (run.taskId && run.mode === 'worker') {
       const settings = await storage.getSettings();
-      const to = settings['orchestrator.autoComplete'] ? 'done' : 'review';
+      // A publish turn always lands in `review` first; settlePublish below
+      // then moves it to `published` if git agrees the work really is pushed.
+      const publishRun = orchestrator.isPublishRun(id);
+      const pre = await storage.getTask(run.taskId);
+      // auto-publish overrides auto-complete: the task must pass THROUGH
+      // review so the publish turn has something to pick up.
+      const to = !publishRun && settings['orchestrator.autoComplete'] && !pre?.autoPublish ? 'done' : 'review';
       const patch = info.lastAssistantText ? { resultSummary: info.lastAssistantText.slice(0, 4000) } : undefined;
       const task = await storage.transitionTask(run.taskId, ['running'], to, 'hook', patch);
       if (task) {
@@ -124,9 +130,18 @@ export function registerInternalRoutes(
         await orchestrator.resolveCompletion(task, 'hook');
         broadcast({ type: 'orchestrator.status', status: await orchestrator.status() });
         orchestrator.maybeSchedule();
-        // Adversarial review of the change, off the hook path (don't block the
-        // curl; the worker's turn is already done).
-        void orchestrator.reviewCompletedRun(run.taskId);
+        // All three land off the hook path — the worker's turn is already done
+        // and the curl must not wait on git or on another agent.
+        if (publishRun) {
+          // the agent said it pushed; git decides whether it did
+          void orchestrator.settlePublish(run.taskId, ['review'], 'hook');
+        } else if (task.autoPublish) {
+          // "allow auto-publish on end": no human gate, and no adversarial
+          // review round either — straight from finished to shipped.
+          void orchestrator.publish(run.taskId, 'system');
+        } else {
+          void orchestrator.reviewCompletedRun(run.taskId);
+        }
       }
     }
     return { ok: true };

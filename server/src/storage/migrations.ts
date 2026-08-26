@@ -223,4 +223,35 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS tm_commands_repo_idx ON tm_commands(repo_id)`,
     ],
   },
+  {
+    id: 14,
+    // Auto-publish (docs/publish.md): when the worker finishes, the same agent
+    // session commits and pushes instead of parking the task in `review`.
+    // A constant DEFAULT is the one form of NOT NULL that ALTER ADD COLUMN
+    // accepts in BOTH dialects, so existing rows read as "off".
+    statements: [`ALTER TABLE tm_tasks ADD COLUMN auto_publish INTEGER NOT NULL DEFAULT 0`],
+  },
+  {
+    id: 15,
+    // Dispatches (docs/dispatch.md): a message from one task's agent session
+    // to a related task's session, delivered by resuming the target's own
+    // claude session instead of creating a new task. No FKs on purpose — like
+    // tm_events, a dispatch outlives the deletion of either task (delivery to
+    // a deleted target settles it as failed, with the reason).
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_dispatches (
+        id TEXT PRIMARY KEY,
+        from_task_id TEXT NOT NULL,
+        from_run_id TEXT,
+        to_task_id TEXT NOT NULL,
+        message TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        note TEXT,
+        created_at TEXT NOT NULL,
+        delivered_at TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_dispatches_to_idx ON tm_dispatches(to_task_id, status)`,
+      `CREATE INDEX IF NOT EXISTS tm_dispatches_from_idx ON tm_dispatches(from_task_id)`,
+    ],
+  },
 ];

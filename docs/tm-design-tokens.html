@@ -111,6 +111,7 @@
   --tm-status-running: var(--tm-teal-5);
   --tm-status-review: var(--tm-amber-5);
   --tm-status-done: var(--tm-green-5);
+  --tm-status-published: var(--tm-blue-5);
   --tm-status-failed: var(--tm-red-5);
   --tm-status-attention: var(--tm-violet-5);
   /* one hue per task group; `groupColorSlot` picks the slot (1..7) */
@@ -121,8 +122,12 @@
   --tm-group-5: var(--tm-green-5);
   --tm-group-6: var(--tm-orange-5);
   --tm-group-7: var(--tm-lime-5);
-  /* how much of the hue a group surface carries */
+  /* how much of a hue any tinted surface carries (group blocks, preset buttons) */
   --tm-group-tint: 14%;
+  /* one hue per task preset (docs/decisions.md); ascending cost, never alarm */
+  --tm-preset-small: var(--tm-green-5);
+  --tm-preset-routine: var(--tm-blue-5);
+  --tm-preset-complex: var(--tm-violet-5);
   --tm-shadow-sm: 0 1px 2px rgba(0,0,0,.5);
   --tm-shadow-md: 0 4px 16px rgba(0,0,0,.45);
   --tm-shadow-lg: 0 12px 40px rgba(0,0,0,.55);
@@ -149,6 +154,7 @@
   --tm-status-running: var(--tm-teal-7);
   --tm-status-review: var(--tm-amber-7);
   --tm-status-done: var(--tm-green-7);
+  --tm-status-published: var(--tm-blue-7);
   --tm-status-failed: var(--tm-red-7);
   --tm-status-attention: var(--tm-violet-7);
   --tm-group-1: var(--tm-violet-7);
@@ -159,6 +165,9 @@
   --tm-group-6: var(--tm-orange-7);
   --tm-group-7: var(--tm-lime-7);
   --tm-group-tint: 9%;
+  --tm-preset-small: var(--tm-green-7);
+  --tm-preset-routine: var(--tm-blue-7);
+  --tm-preset-complex: var(--tm-violet-7);
   --tm-shadow-sm: 0 1px 2px rgba(20,22,25,.07);
   --tm-shadow-md: 0 4px 16px rgba(20,22,25,.09);
   --tm-shadow-lg: 0 12px 40px rgba(20,22,25,.14);
@@ -473,6 +482,7 @@ h2 {
 .stage[data-s="running"]   .badge { color: var(--tm-status-running); }
 .stage[data-s="review"]    .badge { color: var(--tm-status-review); }
 .stage[data-s="done"]      .badge { color: var(--tm-status-done); }
+.stage[data-s="published"] .badge { color: var(--tm-status-published); }
 .stage[data-s="failed"]    .badge { color: var(--tm-status-failed); }
 .stage[data-s="attention"] .badge { color: var(--tm-status-attention); }
 
@@ -776,6 +786,7 @@ footer .mono { font-family: var(--tm-font-mono); }
   <span class="k">--tm-bg</span><span class="v">:            #0c0e10;</span>   <span class="c">/* graphite 10 */</span>
   <span class="k">--tm-status-running</span><span class="v">: #2dd4bf;</span>   <span class="c">/* worker attached, streaming */</span>
   <span class="k">--tm-status-review</span><span class="v">:  #f5b83d;</span>   <span class="c">/* first Stop hook fired */</span>
+  <span class="k">--tm-status-published</span><span class="v">: #60a5fa;</span> <span class="c">/* committed + pushed by the agent */</span>
   <span class="k">--tm-font-mono</span><span class="v">:      "JetBrains Mono";</span>
 <span class="v">}</span><span class="cursor" aria-hidden="true"></span></pre>
       </div>
@@ -822,6 +833,11 @@ footer .mono { font-family: var(--tm-font-mono); }
           <span class="badge">review</span>
           <p>First Stop hook fired. A human decides what happens next.</p>
           <span class="var">--tm-status-review</span>
+        </div>
+        <div class="stage" data-s="published">
+          <span class="badge">published</span>
+          <p>The agent committed and pushed its own work; git confirmed it.</p>
+          <span class="var">--tm-status-published</span>
         </div>
         <div class="stage" data-s="done">
           <span class="badge">done</span>

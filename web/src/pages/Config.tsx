@@ -480,6 +480,31 @@ export function ConfigPage() {
       </div>
 
       <div className="panel cfg-group">
+        <h3>Terminal</h3>
+        <div className="cfg-row">
+          <div>
+            <div>Click outside the terminal</div>
+            <div className="hint">
+              compact shrinks the open terminal to a footer bar (session stays attached — the chevron
+              reopens it); close detaches the drawer; nothing leaves it open
+            </div>
+          </div>
+          {/* `?? 'compact'` so a server that predates this setting renders the real
+              default and the key stays out of the save diff until touched */}
+          <select
+            className="field"
+            style={{ width: 200 }}
+            value={cfg['terminal.clickOutside'] ?? 'compact'}
+            onChange={(e) => set('terminal.clickOutside', e.target.value as AppSettings['terminal.clickOutside'])}
+          >
+            <option value="compact">compact (default)</option>
+            <option value="close">close</option>
+            <option value="nothing">nothing</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="panel cfg-group">
         <h3>Storage</h3>
         <div className="cfg-row">
           <div>

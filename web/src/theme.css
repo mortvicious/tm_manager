@@ -104,6 +104,7 @@
   --tm-status-running: var(--tm-teal-5);
   --tm-status-review: var(--tm-amber-5);
   --tm-status-done: var(--tm-green-5);
+  --tm-status-published: var(--tm-blue-5);
   --tm-status-failed: var(--tm-red-5);
   --tm-status-attention: var(--tm-violet-5);
   /* one hue per task group; `groupColorSlot` picks the slot (1..7) */
@@ -114,8 +115,12 @@
   --tm-group-5: var(--tm-green-5);
   --tm-group-6: var(--tm-orange-5);
   --tm-group-7: var(--tm-lime-5);
-  /* how much of the hue a group surface carries */
+  /* how much of a hue any tinted surface carries (group blocks, preset buttons) */
   --tm-group-tint: 14%;
+  /* one hue per task preset (docs/decisions.md); ascending cost, never alarm */
+  --tm-preset-small: var(--tm-green-5);
+  --tm-preset-routine: var(--tm-blue-5);
+  --tm-preset-complex: var(--tm-violet-5);
   --tm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
   --tm-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
   --tm-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
@@ -146,6 +151,7 @@
   --tm-status-running: var(--tm-teal-7);
   --tm-status-review: var(--tm-amber-7);
   --tm-status-done: var(--tm-green-7);
+  --tm-status-published: var(--tm-blue-7);
   --tm-status-failed: var(--tm-red-7);
   --tm-status-attention: var(--tm-violet-7);
   --tm-group-1: var(--tm-violet-7);
@@ -156,6 +162,9 @@
   --tm-group-6: var(--tm-orange-7);
   --tm-group-7: var(--tm-lime-7);
   --tm-group-tint: 9%;
+  --tm-preset-small: var(--tm-green-7);
+  --tm-preset-routine: var(--tm-blue-7);
+  --tm-preset-complex: var(--tm-violet-7);
   --tm-shadow-sm: 0 1px 2px rgba(20, 22, 25, 0.07);
   --tm-shadow-md: 0 4px 16px rgba(20, 22, 25, 0.09);
   --tm-shadow-lg: 0 12px 40px rgba(20, 22, 25, 0.14);
@@ -489,6 +498,10 @@ select.field:focus {
   color: var(--tm-status-done);
 }
 
+.badge.s-published {
+  color: var(--tm-status-published);
+}
+
 .badge.s-failed {
   color: var(--tm-status-failed);
 }
@@ -577,6 +590,151 @@ select.field:focus {
   top: 0;
   color: var(--tm-text-faint);
   font-family: var(--tm-font-mono);
+}
+
+/* ---------- dispatches (docs/dispatch.md) ----------
+   Agent-to-agent messages, drawn as a compact accented strip under the
+   RECEIVING task's row: visibly attached to the task, visibly not a task. */
+
+.dispatch-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px var(--tm-space-4) 7px 44px;
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.dispatch-strip:last-child {
+  border-bottom: none;
+}
+
+/* the strip reads as part of the row above it, not a row of its own */
+.task-row:has(+ .dispatch-strip) {
+  border-bottom: none;
+}
+
+/* the slide-over panel hosts its own strip — no row borders/indent there */
+.panel > .dispatch-strip {
+  padding: var(--tm-space-1) 0;
+  border-bottom: none;
+}
+
+.dispatch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  min-width: 0;
+  padding: 1px var(--tm-space-2);
+  border-left: 2px solid var(--tm-border-strong);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+}
+
+.dispatch-row.pending {
+  border-left-color: var(--tm-accent);
+  color: var(--tm-text);
+}
+
+.dispatch-row.failed {
+  border-left-color: var(--tm-status-failed);
+}
+
+.dispatch-row.cancelled {
+  opacity: 0.55;
+}
+
+.dispatch-row .dispatch-dir {
+  color: var(--tm-accent);
+  font-family: var(--tm-font-mono);
+  font-weight: 600;
+  flex: none;
+}
+
+.dispatch-row .dispatch-peer {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--tm-accent);
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: none;
+}
+
+.dispatch-row .dispatch-peer:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.dispatch-row .dispatch-peer:disabled {
+  cursor: default;
+}
+
+.dispatch-row .dispatch-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the task panel shows the whole message, not a one-line teaser */
+.dispatch-row.full .dispatch-msg {
+  white-space: pre-wrap;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.dispatch-row.full {
+  align-items: flex-start;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.dispatch-row .dispatch-status {
+  flex: none;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--tm-text-faint);
+}
+
+.dispatch-row.pending .dispatch-status {
+  color: var(--tm-accent);
+  animation: pulse 2s infinite;
+}
+
+.dispatch-row.failed .dispatch-status {
+  color: var(--tm-status-failed);
+}
+
+.dispatch-row .dispatch-cancel {
+  background: none;
+  border: none;
+  padding: 0 var(--tm-space-1);
+  font: inherit;
+  color: var(--tm-text-faint);
+  cursor: pointer;
+  flex: none;
+}
+
+.dispatch-row .dispatch-cancel:hover {
+  color: var(--tm-status-failed);
+}
+
+.dispatch-more {
+  padding-left: var(--tm-space-3);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+/* the sender side: an accented chip on the row that dispatched */
+.chip.dispatch-chip {
+  color: var(--tm-accent);
+  border-color: var(--tm-accent-subtle);
 }
 
 /* ---------- task groups (docs/grouping.md) ----------
@@ -683,6 +841,22 @@ select.field:focus {
 .chip.group-chip {
   color: var(--tm-group, var(--tm-text-muted));
   border-color: color-mix(in srgb, var(--tm-group, var(--tm-border)) 45%, var(--tm-border));
+}
+
+/* preset tag on a task row: which of the three named model/effort/review
+   bundles this task carries, in that preset's hue */
+.chip.preset-chip {
+  gap: 6px;
+  color: var(--tm-preset, var(--tm-text-muted));
+  border-color: color-mix(in srgb, var(--tm-preset, var(--tm-border)) 45%, var(--tm-border));
+}
+
+/* same dot as the status badge carries, in the preset's hue */
+.chip.preset-chip .preset-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 /* the live activity line — deliberately the quietest text on the row: it is
@@ -1051,27 +1225,47 @@ table.tbl tr:last-child td {
   grid-column: 1 / -1;
 }
 
-/* preset row: one-click model/effort/review bundles above the three dropdowns */
-.preset-row {
+/* one-click option rows: the model/effort/review presets above the three
+   dropdowns, and the create form's start mode (draft / queue / run now) */
+.preset-row,
+.start-row {
   display: flex;
   flex-wrap: wrap;
   gap: var(--tm-space-2);
 }
 
-.btn.preset-btn {
+.btn.preset-btn,
+.btn.start-btn {
   flex-direction: column;
   align-items: flex-start;
   gap: 1px;
   padding: 5px 12px;
 }
 
-.btn.preset-btn.on {
-  border-color: var(--tm-accent);
-  background: var(--tm-accent-subtle);
-  color: var(--tm-accent);
+/* one hue per preset — `presetClass()` picks the class, the class picks the
+   token, so the picker button and the board chip are the same colour */
+.preset-small {
+  --tm-preset: var(--tm-preset-small);
 }
 
-.preset-hint {
+.preset-routine {
+  --tm-preset: var(--tm-preset-routine);
+}
+
+.preset-complex {
+  --tm-preset: var(--tm-preset-complex);
+}
+
+/* `--tm-preset` is unset on the start row, so it falls back to the accent */
+.btn.preset-btn.on,
+.btn.start-btn.on {
+  border-color: var(--tm-preset, var(--tm-accent));
+  background: color-mix(in srgb, var(--tm-preset, var(--tm-accent)) var(--tm-group-tint), transparent);
+  color: var(--tm-preset, var(--tm-accent));
+}
+
+.preset-hint,
+.start-hint {
   font-family: var(--tm-font-mono);
   font-size: var(--tm-text-xs);
   font-weight: 400;
@@ -1079,7 +1273,9 @@ table.tbl tr:last-child td {
 }
 
 .btn.preset-btn.on .preset-hint,
-.btn.preset-btn:hover .preset-hint {
+.btn.preset-btn:hover .preset-hint,
+.btn.start-btn.on .start-hint,
+.btn.start-btn:hover .start-hint {
   color: inherit;
 }
 
@@ -1105,9 +1301,14 @@ table.tbl tr:last-child td {
   padding: 7px 0;
 }
 
-.cfg-row .hint {
+/* sub-label under a control — config rows and form fields both use it */
+.hint {
   color: var(--tm-text-faint);
   font-size: var(--tm-text-xs);
+}
+
+.form-grid .hint {
+  margin-top: var(--tm-space-1);
 }
 
 .warn-text {
@@ -1147,6 +1348,82 @@ table.tbl tr:last-child td {
   flex: 1;
   min-height: 0;
   padding: 6px 2px 14px 8px;
+}
+
+/* Compacted drawer: a full-width footer line; the terminal stays mounted
+   (WS + xterm buffer alive) but hidden, so expanding is instant. */
+.term-drawer.compact {
+  left: 0;
+  height: auto;
+}
+
+.term-drawer.compact .term-head,
+.term-drawer.compact .term-body {
+  display: none;
+}
+
+.term-compact {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  padding: var(--tm-space-1) var(--tm-space-3);
+  cursor: pointer;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-gray-4);
+  background: color-mix(in srgb, var(--tm-terminal-bg) 60%, var(--tm-gray-8));
+}
+
+.term-compact:hover {
+  background: color-mix(in srgb, var(--tm-terminal-bg) 40%, var(--tm-gray-8));
+}
+
+.term-compact-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.term-compact-dot.running {
+  background: var(--tm-status-running);
+}
+
+.term-compact-dot.review {
+  background: var(--tm-status-review);
+}
+
+.term-compact-dot.off {
+  background: var(--tm-gray-6);
+}
+
+.term-compact-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.term-compact-name,
+.term-compact-activity {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.term-compact-name {
+  color: var(--tm-gray-2);
+}
+
+.term-compact-activity {
+  color: var(--tm-gray-5);
+}
+
+.term-chevron {
+  display: inline-flex;
+}
+
+.term-chevron.up {
+  transform: rotate(180deg);
 }
 
 /* ---------- handbook (rendered markdown) ---------- */

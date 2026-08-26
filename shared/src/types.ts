@@ -6,9 +6,18 @@ export type TaskStatus =
   | 'running'
   | 'blocked'
   | 'review'
+  /** committed and pushed by the agent that did the work (docs/publish.md) */
+  | 'published'
   | 'done'
   | 'failed'
   | 'cancelled';
+
+/**
+ * Statuses that end a task's life. `published` joins `done` here: everything
+ * that waits on a task (a split parent, a feature phase gate) must treat a
+ * pushed task as settled, not as still-open work.
+ */
+export const TERMINAL_TASK_STATUSES: TaskStatus[] = ['published', 'done', 'failed', 'cancelled'];
 
 export type TaskSource = 'manual' | 'sentry' | 'auto' | 'feature';
 
@@ -210,6 +219,13 @@ export interface Task {
   resultSummary: string | null;
   /** per-task adversarial review override: null = use review.enabled setting */
   review: boolean | null;
+  /**
+   * Skip the human review gate: when the worker finishes, the same agent
+   * session commits and pushes the work and the task lands in `published`
+   * (docs/publish.md). Also skips the adversarial review round — the point of
+   * the flag is "no gate between finishing and shipping".
+   */
+  autoPublish: boolean;
   /** adversarial review of the worker's change (Fable, or Opus xhigh fallback) */
   reviewSummary: string | null;
   error: string | null;
@@ -329,6 +345,38 @@ export interface UsageSnapshot {
   accountAgeMs: number | null;
 }
 
+// ---- Dispatches (docs/dispatch.md) ----
+
+export type DispatchStatus = 'pending' | 'delivered' | 'failed' | 'cancelled';
+
+/**
+ * A message from one task's agent session to a RELATED task's agent session,
+ * delivered by reopening the target's own claude session (`claude --resume`) —
+ * no new task row, no fresh agent. The cheap coordination primitive: "backend
+ * shipped, here's the contract, implement" goes to the frontend task's
+ * existing agent instead of spawning task number three.
+ *
+ * `pending` until the target session is free (the orchestrator delivers on its
+ * scheduling ticks); `delivered` once the resumed turn was actually started.
+ * No FK constraints — like audit events, a dispatch outlives task deletion
+ * (delivery to a deleted target settles it as `failed`).
+ */
+export interface Dispatch {
+  id: string;
+  /** task whose session sent it */
+  fromTaskId: string;
+  /** run that sent it (attribution; caps key off this) */
+  fromRunId: string | null;
+  /** task whose session receives it */
+  toTaskId: string;
+  message: string;
+  status: DispatchStatus;
+  /** why it failed / was downgraded — delivery details for the human */
+  note: string | null;
+  createdAt: string;
+  deliveredAt: string | null;
+}
+
 export type ProposalKind = 'rewrite' | 'split' | 'new_task' | 'solution_options';
 export type ProposalStatus = 'pending' | 'accepted' | 'rejected';
 
@@ -361,6 +409,9 @@ export interface Proposal {
   status: ProposalStatus;
   createdAt: string;
 }
+
+/** What a click outside the terminal drawer does. */
+export type TerminalClickOutside = 'close' | 'compact' | 'nothing';
 
 // Runtime-tunable settings stored in tm_config (JSON values under these keys).
 export interface AppSettings {
@@ -408,6 +459,8 @@ export interface AppSettings {
   'pty.scrollbackBytes': number;
   /** how long a finished (idle) or exited PTY stays attachable, in minutes; 0 = forever */
   'pty.sessionTtlMinutes': number;
+  /** click outside the open terminal drawer: compact to a footer bar, close it, or ignore */
+  'terminal.clickOutside': TerminalClickOutside;
   /** follow-ups continue the previous claude session (`--resume`) when one is
    *  still on disk, instead of respawning a fresh agent that lost its context */
   'agent.resumeSessions': boolean;
@@ -464,6 +517,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // 0 = never evict on age (user request 2026-08-25); the MAX_LIVE_SESSIONS
   // eviction still reclaims the oldest unwatched session under cap pressure.
   'pty.sessionTtlMinutes': 30,
+  'terminal.clickOutside': 'compact',
   'agent.resumeSessions': true,
   'sentry.dsn': '',
   'sentry.authToken': '',
@@ -561,6 +615,8 @@ export type AuditKind =
   | 'task.transition'
   | 'task.edited'
   | 'task.follow-up'
+  | 'task.dispatch'
+  | 'task.publish'
   | 'run.reviewed'
   | 'task.deleted'
   | 'run.started'
@@ -683,6 +739,7 @@ export type ServerEvent =
   | { type: 'run.needs-attention'; run: Run }
   | { type: 'run.activity'; activity: RunActivity }
   | { type: 'proposal.created'; proposal: Proposal }
+  | { type: 'dispatch.updated'; dispatch: Dispatch }
   | { type: 'feature.updated'; feature: Feature }
   | { type: 'feature.deleted'; featureId: string }
   | { type: 'event.appended'; event: AuditEvent }

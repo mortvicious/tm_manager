@@ -19,7 +19,10 @@ npm start          # → http://localhost:5175
    | **Complex** | `claude-fable-5` | high | on |
 
    The three dropdowns underneath stay editable — the presets are a shortcut, not a mode. Change one and the row simply stops highlighting a preset. The same row is on the task panel, so an existing task can be re-tuned the same way (then **Save changes**).
-3. Either **Run now** (immediate) from the task panel, or **Enqueue** and flip the header switch to **Queue running** — the orchestrator picks tasks up automatically, max 2 at a time.
+
+   The preset a task ends up with is shown back on the board as a coloured chip: **Small** green, **Routine** blue, **Complex** violet. A task whose model/effort/review match no preset simply has no chip.
+3. **On create** decides what happens the moment you press the button: **Draft** files it and nothing more, **Queue** marks it ready for the orchestrator, **Run now** spawns an agent immediately. The last two need a repo, so they stay disabled until you pick one, and the button renames itself to match.
+4. You can also start a filed task later: **Run now** (immediate) from the task panel or the ▶ on its board row, or **Enqueue** and flip the header switch to **Queue running** — the orchestrator picks tasks up automatically, max 2 at a time.
 
 ## Where your data lives (persistence)
 
@@ -37,12 +40,15 @@ Switching to hosted Postgres (Supabase works — paste its **session** connectio
 
 ```
 draft → queued → running → review → done
-                    ↓          ↑ (Retry/Enqueue)
+                    ↓          │  ↑ (Retry/Enqueue)
+                    │          └→ published   (Publish: commit + push)
                  failed / cancelled
         blocked (split parent, auto-resolves)
 ```
 
-- **review** — the agent finished its turn (Stop hook fired). Read the result summary, open the terminal to talk to the agent if needed, then **Mark done** (which also closes its terminal) or re-enqueue.
+- **review** — the agent finished its turn (Stop hook fired). Read the result summary, open the terminal to talk to the agent if needed, then **Publish** (commit + push, below), **Mark done** (which also closes its terminal), or re-enqueue.
+- **published** — the work is on the remote. **Publish** reopens the task's own claude session and asks *it* to `git add`, `git commit` and `git push`, so the commit message is written by the agent that made the change and the git output lands in the terminal you were already watching. It is not taken on trust: afterwards the server checks git itself, and the task only reaches `published` when the tree is clean, an upstream exists and nothing is left unpushed — otherwise it drops back to **review** with the reason on the task (e.g. *"publish did not complete: 1 commit(s) not pushed to origin/main"*). Publish is on the task panel and as a quick action on the board row; the button is offered on tasks in review only.
+- **Auto-publish on end** — a per-task switch on the new-task form (and the task panel). With it on, a finished worker goes straight to publishing: no human review gate **and** no adversarial review round. The board marks such tasks with a blue *auto-publish* chip. Full flow and failure modes: `docs/publish.md`.
 - **done via autoComplete** — flip *Auto-complete tasks* in Config if you want first-turn-end to mean done. Default is review, because an agent's turn can end with a question.
 - **blocked** — a parent whose split-children are still working. Resolves to review automatically when every child is done/cancelled; any failed child keeps it blocked with the error shown. **Unblock** is the manual escape.
 - **needs attention** (violet badge) — the hidden terminal is waiting on a prompt (permission, trust dialog). Open the terminal and answer it.
@@ -140,6 +146,10 @@ When a worker finishes, its change is adversarially reviewed (Fable, or Opus 5 x
 ## Follow-ups & files
 
 The task panel has a **Follow-up** field: send an instruction to steer a live agent (it goes straight into the session) or to re-run a finished task with the previous summary as context. When a task asks an agent to produce a file (a report, gathered notes, a dataset), the agent saves it to its `TM_ARTIFACTS_DIR` and it appears in the panel's **Files** section for download.
+
+## Dispatches — agents messaging agents
+
+When two tasks are coordinating (a frontend task filed a backend task for a missing API field, say), the second round doesn't need a third task: the backend agent **dispatches** its "shipped, here's the contract" message straight to the frontend task, and the server delivers it by reopening that task's own claude session — same terminal, same memory. On the Board an incoming dispatch shows as a compact accented line under the receiving task (pulsing while **pending**, i.e. waiting for that agent to be free); the sender carries a `⇢ n pending` chip, and a `dispatches:` filter appears in the board bar once any exist. The task panel's **Dispatches** section shows the full messages in both directions. You can cancel a dispatch with ✕ any time before it is delivered. Delivery works even while the queue is stopped — it continues an existing conversation, like your own follow-ups do. Agents are capped at 5 dispatches per session and 8 between any two tasks, so a runaway back-and-forth always ends up in front of you instead of looping.
 
 ## Config reference
 

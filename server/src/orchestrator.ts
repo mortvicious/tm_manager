@@ -1,9 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AppSettings, Run, Task } from '@tm/shared';
+import type { AppSettings, Dispatch, Run, Task, TaskStatus } from '@tm/shared';
 import type { ActionResult, OrchestratorApi } from './app-types.ts';
-import { DEFAULT_PROCEED, buildWorkerInvocation } from './claude/worker.ts';
+import { DEFAULT_PROCEED, PUBLISH_INSTRUCTION, buildDispatchTurn, buildWorkerInvocation } from './claude/worker.ts';
+import { publishRepo, verifyPublished } from './git.ts';
 import { killAnalysis } from './claude/analyze.ts';
 import { liveHeadless } from './claude/headless.ts';
 import { reviewWorkerChange } from './claude/review.ts';
@@ -19,6 +20,12 @@ export class Orchestrator implements OrchestratorApi {
   private rescheduleRequested = false;
   /** per-task adversarial-review round counter (work→review→work loop). */
   private reviewRounds = new Map<string, number>();
+  /** runs whose turn is a PUBLISH turn (docs/publish.md): their Stop must land
+   *  the task in `published`, not in the human review queue. */
+  private publishRuns = new Set<string>();
+  /** single-flight guard for dispatch delivery (docs/dispatch.md) — the route
+   *  and the scheduler may both ask for a sweep at once. */
+  private deliveringDispatches = false;
 
   constructor(
     private storage: Storage,
@@ -145,7 +152,13 @@ export class Orchestrator implements OrchestratorApi {
         do {
           this.rescheduleRequested = false;
           const settings = await this.storage.getSettings();
-          if (!settings['orchestrator.enabled']) return;
+          if (!settings['orchestrator.enabled']) {
+            // The queue is stopped, but dispatch delivery is a continuation of
+            // sessions that already exist — it runs regardless (user decision
+            // 2026-08-27), like a human follow-up would.
+            await this.deliverDispatches();
+            return;
+          }
           const cap = settings['orchestrator.concurrency'];
           while (this.activeWorkers() < cap) {
             const task = await this.storage.claimNextQueuedTask('orchestrator');
@@ -170,6 +183,10 @@ export class Orchestrator implements OrchestratorApi {
             const started = await this.startWorker(task);
             if (!started) break;
           }
+          // Dispatch delivery rides the same ticks as claiming: every task
+          // that finishes a turn calls maybeSchedule, so a target going idle
+          // gets its queued dispatches without a dedicated pump.
+          await this.deliverDispatches();
         } while (this.rescheduleRequested);
       } catch (err) {
         console.error('orchestrator schedule error:', err);
@@ -194,6 +211,103 @@ export class Orchestrator implements OrchestratorApi {
     const runningTasks = await this.storage.listTasks({ status: 'running' });
     const consumed = new Set(runningTasks.map((t) => t.createdByRun).filter(Boolean));
     return liveRuns.map((r) => r.id).filter((id) => !consumed.has(id));
+  }
+
+  /** Any live non-idle worker session currently editing this repo? */
+  private async repoBusy(repoId: string): Promise<boolean> {
+    const running = await this.storage.listRuns({ status: 'running', mode: 'worker' });
+    return running.some((r) => {
+      if (r.repoId !== repoId) return false;
+      const s = this.sessions.get(r.id);
+      return s !== undefined && s.exit === null && !s.idle;
+    });
+  }
+
+  /**
+   * Dispatch delivery (docs/dispatch.md): reopen each target task's own claude
+   * session (the normal followUp/resume machinery) with the messages other
+   * task sessions queued for it. All pending dispatches for one target go out
+   * in ONE resumed turn, oldest first. A target that cannot take a turn right
+   * now — mid-turn, queued, blocked, its repo busy, or the concurrency cap
+   * reached — is simply held for a later tick; only a target that can never
+   * receive (deleted, repo-less) settles as failed. Rides maybeSchedule, so
+   * every finished turn is also a delivery opportunity.
+   */
+  async deliverDispatches(): Promise<void> {
+    if (this.deliveringDispatches) return;
+    this.deliveringDispatches = true;
+    try {
+      // Deliberately NOT gated on orchestrator.enabled (user decision
+      // 2026-08-27): a dispatch continues an existing conversation, exactly
+      // like a human follow-up, so it goes out even while the queue is stopped.
+      const settings = await this.storage.getSettings();
+      const pending = await this.storage.listDispatches({ status: 'pending' });
+      if (pending.length === 0) return;
+
+      // newest-first from storage → reverse for oldest-first, grouped by target
+      const byTarget = new Map<string, Dispatch[]>();
+      for (const d of [...pending].reverse()) {
+        const list = byTarget.get(d.toTaskId);
+        if (list) list.push(d);
+        else byTarget.set(d.toTaskId, [d]);
+      }
+
+      for (const [taskId, list] of byTarget) {
+        const settle = async (status: 'delivered' | 'failed', note: string | null) => {
+          for (const d of list) {
+            const updated = await this.storage.settleDispatch(d.id, status, note);
+            if (!updated) continue;
+            broadcast({ type: 'dispatch.updated', dispatch: updated });
+            await this.storage.appendEvent({
+              kind: 'task.dispatch',
+              actor: 'orchestrator',
+              taskId: updated.toTaskId,
+              data: { phase: status, dispatchId: d.id, fromTaskId: updated.fromTaskId, note },
+            });
+          }
+        };
+
+        const target = await this.storage.getTask(taskId);
+        if (!target) {
+          await settle('failed', 'target task no longer exists');
+          continue;
+        }
+        if (!target.repoId) {
+          await settle('failed', 'target task has no repo');
+          continue;
+        }
+        // Hold (retry later): mid-turn / about to start / waiting on children.
+        if (['running', 'queued', 'blocked'].includes(target.status)) continue;
+        const targetRuns = await this.storage.listRuns({ taskId, mode: 'worker' });
+        // A draft that never ran must NOT be started by a dispatch — that
+        // would let an agent bypass the enqueue gate (file a draft, dispatch
+        // to it). It becomes deliverable once a human/queue runs it.
+        if (target.status === 'draft' && targetRuns.length === 0) continue;
+        const busy = targetRuns.some((r) => {
+          const s = this.sessions.get(r.id);
+          return s !== undefined && s.exit === null && !s.idle;
+        });
+        if (busy) continue;
+        // Never resume an agent into a repo another agent is actively editing.
+        if (await this.repoBusy(target.repoId)) continue;
+        // Delivery starts a real agent turn — it respects worker concurrency.
+        if (this.sessions.liveCount() >= settings['orchestrator.concurrency']) break;
+
+        const items: { fromTitle: string; fromTaskId: string; message: string }[] = [];
+        for (const d of list) {
+          const from = await this.storage.getTask(d.fromTaskId);
+          items.push({ fromTitle: from?.title ?? '(deleted task)', fromTaskId: d.fromTaskId, message: d.message });
+        }
+        const res = await this.followUp(taskId, buildDispatchTurn(items), 'dispatch');
+        if ('error' in res) continue; // raced with a claim/human action — hold and retry
+        await settle('delivered', null);
+      }
+    } catch (err) {
+      // delivery must never take the scheduler down with it
+      console.error('dispatch delivery failed:', err);
+    } finally {
+      this.deliveringDispatches = false;
+    }
   }
 
   /**
@@ -243,8 +357,15 @@ export class Orchestrator implements OrchestratorApi {
     }
   }
 
-  /** Spawns the PTY for a task already in `running`. Reverts the claim on failure. */
-  private async startWorker(task: Task, followUp?: string, resumeFrom?: Run | null): Promise<boolean> {
+  /** Spawns the PTY for a task already in `running`. Reverts the claim on failure.
+   *  `purpose: 'publish'` marks the run as the commit-and-push turn so its Stop
+   *  is settled against git instead of parking the task in review. */
+  private async startWorker(
+    task: Task,
+    followUp?: string,
+    resumeFrom?: Run | null,
+    purpose: 'work' | 'publish' = 'work',
+  ): Promise<boolean> {
     // Claim-loop twin of the runNow guard (review R3b): a task enqueued from
     // review may still have its previous session alive.
     if (await this.hasLiveSession(task.id)) {
@@ -283,6 +404,7 @@ export class Orchestrator implements OrchestratorApi {
       resumedFrom: resumeFrom?.id ?? null,
       statsBaseline: baseline,
     });
+    if (purpose === 'publish') this.publishRuns.add(run.id);
     try {
       const artifactsDir = path.join(artifactsRoot, task.id);
       fs.mkdirSync(artifactsDir, { recursive: true });
@@ -325,6 +447,7 @@ export class Orchestrator implements OrchestratorApi {
       broadcast({ type: 'orchestrator.status', status: await this.status() });
       return true;
     } catch (err) {
+      this.publishRuns.delete(run.id);
       await this.storage.updateRun(run.id, { status: 'exited', endedAt: new Date().toISOString() });
       // Transient capacity exhaustion reverts to queued; anything else fails
       // terminally (no-auto-retry decision; impl review F3 carve-out).
@@ -379,6 +502,7 @@ export class Orchestrator implements OrchestratorApi {
     message: string,
     actor = 'human',
     mode: 'auto' | 'resume' | 'fresh' = 'auto',
+    purpose: 'work' | 'publish' = 'work',
   ): Promise<ActionResult> {
     const cur = await this.storage.getTask(taskId);
     if (!cur) return { error: 'task not found', code: 404 };
@@ -421,8 +545,9 @@ export class Orchestrator implements OrchestratorApi {
     const task = await this.storage.transitionTask(
       taskId,
       // 'running' included: we may have just killed an idle session whose task
-      // was left in 'running' (e.g. a failed live-injection).
-      ['draft', 'queued', 'running', 'review', 'done', 'failed', 'cancelled'],
+      // was left in 'running' (e.g. a failed live-injection). 'published' too:
+      // shipping a task does not end the conversation with its agent.
+      ['draft', 'queued', 'running', 'review', 'published', 'done', 'failed', 'cancelled'],
       'running',
       actor,
       { error: null },
@@ -436,10 +561,11 @@ export class Orchestrator implements OrchestratorApi {
       data: {
         delivery: resumeFrom ? 'resume' : 'respawn',
         resumedFrom: resumeFrom?.id ?? null,
+        purpose,
         chars: message.length,
       },
     });
-    const ok = await this.startWorker(task, message, resumeFrom);
+    const ok = await this.startWorker(task, message, resumeFrom, purpose);
     if (!ok) {
       const latest = await this.storage.getTask(taskId);
       return { error: latest?.error ?? 'failed to start worker', code: 500 };
@@ -462,6 +588,110 @@ export class Orchestrator implements OrchestratorApi {
     const task = await this.storage.getTask(taskId);
     if (!task?.repoId) return null;
     return (await this.findResumableRun(taskId, task.repoId))?.sessionId ?? null;
+  }
+
+  /** Is this run the publish turn? (Drives the Stop hook's landing status.) */
+  isPublishRun(runId: string): boolean {
+    return this.publishRuns.has(runId);
+  }
+
+  /**
+   * "Publish": ship the work of a task sitting in `review`.
+   *
+   * The commit and the push are made BY THE AGENT, in the same session — the
+   * same terminal — that did the work: we reopen its claude session
+   * (`claude --resume`) and hand it PUBLISH_INSTRUCTION, so the commit message
+   * is written by the only party that knows what changed and the git output
+   * shows up where the human was already watching. When no session is left to
+   * reopen (transcript pruned, or a task from before this flow existed) we fall
+   * back to committing and pushing in-process rather than stranding the task.
+   *
+   * Either way the landing status is decided by `verifyPublished`, never by
+   * the agent's own account of what it did.
+   */
+  async publish(taskId: string, actor = 'human'): Promise<ActionResult> {
+    const task = await this.storage.getTask(taskId);
+    if (!task) return { error: 'task not found', code: 404 };
+    if (!task.repoId) return { error: 'assign a repo before publishing this task', code: 409 };
+    const repo = await this.storage.getRepo(task.repoId);
+    if (!repo) return { error: 'task has no repo', code: 409 };
+    if (task.status !== 'review') {
+      return { error: `cannot publish from status '${task.status}' — publish is offered on a task in review`, code: 409 };
+    }
+    await this.storage.appendEvent({
+      kind: 'task.publish',
+      actor,
+      taskId,
+      repoId: repo.id,
+      data: { phase: 'start' },
+    });
+
+    const resumeFrom = await this.findResumableRun(taskId, task.repoId);
+    if (resumeFrom) return this.followUp(taskId, PUBLISH_INSTRUCTION, actor, 'resume', 'publish');
+
+    // Fallback path. A session we cannot resume may still be ALIVE (it has no
+    // session id yet); running git under a working agent would commit a
+    // half-finished tree, so refuse rather than race it.
+    if (await this.hasLiveSession(taskId)) {
+      return { error: 'the agent session is still live — wait for it to finish, then publish', code: 409 };
+    }
+    const res = await publishRepo(this.storage, repo, actor);
+    if (!res.ok) {
+      const patched = await this.storage.updateTask(taskId, { error: `publish failed: ${res.error}` });
+      if (patched) broadcast({ type: 'task.updated', task: patched });
+      await this.storage.appendEvent({
+        kind: 'task.publish',
+        actor,
+        taskId,
+        repoId: repo.id,
+        data: { phase: 'failed', delivery: 'direct', error: res.error.slice(0, 300) },
+      });
+      return { error: res.error, code: res.code };
+    }
+    const settled = await this.settlePublish(taskId, ['review'], actor, 'direct');
+    if (!settled) return { error: 'task left review while publishing — check its status', code: 409 };
+    if (settled.status !== 'published') return { error: settled.error ?? 'publish did not complete', code: 409 };
+    return { task: settled };
+  }
+
+  /**
+   * Decide what a publish attempt actually achieved, from git rather than from
+   * the agent: everything committed and pushed → `published`; anything left →
+   * back to `review` with the reason on the task, so the human sees exactly
+   * what is missing instead of a task that claims to be shipped.
+   */
+  async settlePublish(
+    taskId: string,
+    from: TaskStatus[],
+    actor: string,
+    delivery: 'session' | 'direct' = 'session',
+  ): Promise<Task | null> {
+    const task = await this.storage.getTask(taskId);
+    if (!task) return null;
+    const repo = task.repoId ? await this.storage.getRepo(task.repoId) : null;
+    const check = repo
+      ? await verifyPublished(repo)
+      : { ok: false, reason: 'task has no repo', branch: null, head: null };
+    const updated = await this.storage.transitionTask(taskId, from, check.ok ? 'published' : 'review', actor, {
+      error: check.ok ? null : `publish did not complete: ${check.reason}`,
+    });
+    if (!updated) return null;
+    broadcast({ type: 'task.updated', task: updated });
+    await this.storage.appendEvent({
+      kind: 'task.publish',
+      actor,
+      taskId,
+      repoId: repo?.id ?? null,
+      data: {
+        phase: check.ok ? 'published' : 'incomplete',
+        delivery,
+        reason: check.reason,
+        branch: check.branch,
+        head: check.head,
+      },
+    });
+    if (check.ok) await this.resolveCompletion(updated, actor);
+    return updated;
   }
 
   /**
@@ -571,6 +801,8 @@ export class Orchestrator implements OrchestratorApi {
 
   /** PTY exited. Hook-driven completion (Phase 4) usually resolved the task already. */
   private async handleExit(runId: string, exitCode: number): Promise<void> {
+    // Consumed here whatever happens next: this run is over either way.
+    const wasPublish = this.publishRuns.delete(runId);
     const run = await this.storage.getRun(runId);
     if (!run) return;
     if (run.status === 'running') {
@@ -590,7 +822,7 @@ export class Orchestrator implements OrchestratorApi {
         await this.storage.updateRun(runId, { stats: summary.stats });
         if (forStats.taskId && summary.lastAssistantText) {
           const t = await this.storage.getTask(forStats.taskId);
-          if (t && !t.resultSummary && ['review', 'done'].includes(t.status)) {
+          if (t && !t.resultSummary && ['review', 'published', 'done'].includes(t.status)) {
             const patched = await this.storage.updateTask(t.id, {
               resultSummary: summary.lastAssistantText.slice(0, 4000),
             });
@@ -636,6 +868,16 @@ export class Orchestrator implements OrchestratorApi {
       const fresh = await this.storage.getRun(runId);
       const latest = (await this.storage.listRuns({ taskId: run.taskId }))[0];
       if (fresh?.status === 'killed' || (latest && latest.id !== runId)) {
+        broadcast({ type: 'orchestrator.status', status: await this.status() });
+        this.maybeSchedule();
+        return;
+      }
+      // A publish turn that died is settled by git, not by its exit code: it
+      // may well have pushed before the terminal went away. `published` when
+      // it did, `review` (with the reason) when it did not — never `failed`,
+      // which would bury work that is already merged-in-progress.
+      if (wasPublish) {
+        await this.settlePublish(run.taskId, ['running'], 'system');
         broadcast({ type: 'orchestrator.status', status: await this.status() });
         this.maybeSchedule();
         return;

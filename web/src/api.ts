@@ -3,6 +3,7 @@ import type {
   AppSettings,
   AuditEvent,
   CommandRun,
+  Dispatch,
   Feature,
   FeaturePlan,
   OrchestratorStatus,
@@ -35,20 +36,23 @@ export type TaskWrite = Partial<
     | 'effort'
     | 'category'
     | 'review'
+    | 'autoPublish'
     | 'groupName'
     | 'groupColor'
   >
 >;
 
 /**
- * A server that predates the task-group migration sends tasks without the
- * group columns; read such a task as its own single-task group so a rebuilt
- * SPA still renders against a server that has not restarted yet.
+ * A server that predates the task-group or auto-publish migration sends tasks
+ * without those columns; read such a task as its own single-task group with
+ * auto-publish off, so a rebuilt SPA still renders against a server that has
+ * not restarted yet.
  */
 export function normalizeTask(t: Task): Task {
-  if (t.groupId && t.groupPath) return t;
+  if (t.groupId && t.groupPath && t.autoPublish !== undefined) return t;
   return {
     ...t,
+    autoPublish: t.autoPublish ?? false,
     groupId: t.groupId ?? t.id,
     groupPath: t.groupPath ?? '/',
     groupName: t.groupName ?? null,
@@ -109,8 +113,10 @@ export const api = {
   updateTask: (id: string, b: TaskWrite) =>
     req<Task>('PATCH', `/api/tasks/${id}`, b).then(normalizeTask),
   deleteTask: (id: string) => req<{ ok: true }>('DELETE', `/api/tasks/${id}`),
-  taskAction: (id: string, action: 'enqueue' | 'run-now' | 'cancel' | 'retry' | 'unblock' | 'complete') =>
-    req<Task>('POST', `/api/tasks/${id}/${action}`),
+  taskAction: (
+    id: string,
+    action: 'enqueue' | 'run-now' | 'cancel' | 'retry' | 'unblock' | 'complete' | 'publish',
+  ) => req<Task>('POST', `/api/tasks/${id}/${action}`),
   stopAgent: (id: string) => req<{ ok: true; closed: number }>('POST', `/api/tasks/${id}/stop-agent`),
   followUp: (id: string, message: string) => req<Task>('POST', `/api/tasks/${id}/follow-up`, { message }),
   applyReview: (id: string) => req<Task>('POST', `/api/tasks/${id}/apply-review`),
@@ -128,6 +134,10 @@ export const api = {
   },
   deleteTaskFile: (id: string, name: string) =>
     req<{ ok: true }>('DELETE', `/api/tasks/${id}/files/${encodeURIComponent(name)}`),
+
+  listDispatches: (taskId?: string) =>
+    req<Dispatch[]>('GET', `/api/dispatches${taskId ? `?taskId=${taskId}` : ''}`),
+  cancelDispatch: (id: string) => req<Dispatch>('POST', `/api/dispatches/${id}/cancel`),
 
   listRuns: () => req<Run[]>('GET', '/api/runs'),
   runActivity: () => req<RunActivity[]>('GET', '/api/runs/activity'),

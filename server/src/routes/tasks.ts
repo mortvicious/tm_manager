@@ -23,6 +23,9 @@ const taskBody = z
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullish(),
     category: z.string().min(1).max(60).nullish(),
     review: z.boolean().nullish(),
+    // "allow auto-publish on end": skip the review gate and commit+push when
+    // the worker finishes (docs/publish.md)
+    autoPublish: z.boolean().optional(),
     // group identity lives on the group's ROOT task (docs/grouping.md); the
     // route rejects both on a task that has a parent.
     groupName: z.string().min(1).max(80).nullish(),
@@ -196,6 +199,17 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     return task;
   });
 
+  // review → published: commit + push the work, in the agent's own session.
+  // Whether it lands is decided by git afterwards, so a "successful" POST can
+  // still answer 409 with what is still uncommitted/unpushed.
+  app.post('/api/tasks/:id/publish', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!app.orchestrator) return reply.code(503).send({ error: 'orchestrator not ready' });
+    const result = await app.orchestrator.publish(id);
+    if ('error' in result) return reply.code(result.code).send({ error: result.error });
+    return result.task;
+  });
+
   // Follow-up: steer a live agent or respawn with the instruction (drawer field).
   app.post('/api/tasks/:id/follow-up', async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -333,6 +347,28 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     const closed = await app.orchestrator.closeTaskSessions(id);
     if (closed === 0) return reply.code(409).send({ error: 'no live agent session for this task' });
     return { ok: true, closed };
+  });
+
+  // Dispatches (docs/dispatch.md): agent-to-agent messages between related
+  // tasks. Read for the board/panel; the only human mutation is cancelling one
+  // that has not been delivered yet.
+  app.get('/api/dispatches', async (req) => {
+    const q = req.query as { taskId?: string; status?: any };
+    return storage.listDispatches({ taskId: q.taskId, status: q.status });
+  });
+
+  app.post('/api/dispatches/:id/cancel', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const cancelled = await storage.settleDispatch(id, 'cancelled', 'cancelled by human');
+    if (!cancelled) return reply.code(409).send({ error: 'dispatch is not pending' });
+    broadcast({ type: 'dispatch.updated', dispatch: cancelled });
+    await storage.appendEvent({
+      kind: 'task.dispatch',
+      actor: 'human',
+      taskId: cancelled.toTaskId,
+      data: { phase: 'cancelled', dispatchId: id, fromTaskId: cancelled.fromTaskId },
+    });
+    return cancelled;
   });
 
   app.post('/api/tasks/:id/cancel', async (req, reply) => {

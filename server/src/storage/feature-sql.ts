@@ -6,7 +6,7 @@
 /**
  * Base claim gate. A task with no feature is unaffected. A feature task is
  * claimable only while its feature is RUNNING and every task in a LOWER phase
- * of that feature is settled (`done`/`cancelled`) — `failed` blocks on purpose,
+ * of that feature is settled (`published`/`done`/`cancelled`) — `failed` blocks on purpose,
  * because a failed task pauses the feature rather than advancing it. A DRAFT
  * that a worker filed inside the feature (source 'auto', never auto-queued) is
  * exempt: it is a human-triage item, not phase work, and would otherwise wedge
@@ -21,7 +21,7 @@ export const FEATURE_CLAIM_GATE = `(
       SELECT 1 FROM tm_tasks lo
       WHERE lo.feature_id = t.feature_id
         AND lo.feature_phase < t.feature_phase
-        AND lo.status NOT IN ('done', 'cancelled')
+        AND lo.status NOT IN ('published', 'done', 'cancelled')
         AND (lo.status <> 'draft' OR lo.source = 'feature')
     )
   )
@@ -46,7 +46,7 @@ export const FEATURE_OVERFLOW_GATE = `(
  * together or not at all.
  */
 export function isFeatureTaskBlocking(t: { status: string; source: string }): boolean {
-  if (t.status === 'done' || t.status === 'cancelled') return false;
+  if (t.status === 'published' || t.status === 'done' || t.status === 'cancelled') return false;
   if (t.status === 'draft' && t.source !== 'feature') return false;
   return true;
 }

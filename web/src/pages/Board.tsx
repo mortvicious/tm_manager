@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   EFFORT_LEVELS,
   MODEL_OPTIONS,
@@ -10,13 +10,33 @@ import {
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
+import { DispatchStrip } from '../components/DispatchStrip.tsx';
 import { IconChevron } from '../components/Icons.tsx';
-import { PresetPicker, reviewChoiceOf, reviewValueOf, type ReviewChoice } from '../components/PresetPicker.tsx';
+import {
+  PresetChip,
+  PresetPicker,
+  reviewChoiceOf,
+  reviewValueOf,
+  type ReviewChoice,
+} from '../components/PresetPicker.tsx';
 import { StatusBadge } from '../components/StatusBadge.tsx';
 import { TaskRow } from '../components/TaskRow.tsx';
 import { TimeAgo, isNew, useNow } from '../components/TimeAgo.tsx';
 
-const ORDER: TaskStatus[] = ['running', 'queued', 'blocked', 'review', 'draft', 'failed', 'done', 'cancelled'];
+const ORDER: TaskStatus[] = [
+  'running',
+  'queued',
+  'blocked',
+  'review',
+  'draft',
+  'failed',
+  'published',
+  'done',
+  'cancelled',
+];
+
+/** Finished work — folded away by default and hidden in essentials mode. */
+const HISTORY: TaskStatus[] = ['published', 'done', 'cancelled'];
 
 /** The "Active" strip: work that is either being done right now or waiting on the human. */
 const ACTIVE: TaskStatus[] = ['running', 'review'];
@@ -32,6 +52,29 @@ const byRecency = (key: 'createdAt' | 'updatedAt') => (a: Task, b: Task) => {
   return d !== 0 ? d : b.id.localeCompare(a.id);
 };
 
+/**
+ * What happens to the task the moment it is created. 'draft' is the historical
+ * behaviour (file it, decide later); the other two run the exact same action
+ * endpoints the board rows already expose, one POST after the create.
+ */
+type StartMode = 'draft' | 'queue' | 'run';
+
+const START_MODES: { id: StartMode; label: string; hint: string; title: string }[] = [
+  { id: 'draft', label: 'Draft', hint: 'file only', title: 'Create it and leave it in drafts' },
+  {
+    id: 'queue',
+    label: 'Queue',
+    hint: 'next free slot',
+    title: 'Create it and mark it ready — the orchestrator claims it when a slot frees up',
+  },
+  {
+    id: 'run',
+    label: 'Run now',
+    hint: 'spawn at once',
+    title: 'Create it and spawn an agent immediately, ahead of the queue',
+  },
+];
+
 function NewTaskForm({ onCreated }: { onCreated: () => void }) {
   const { repos } = useApp();
   const [open, setOpen] = useState(false);
@@ -42,6 +85,9 @@ function NewTaskForm({ onCreated }: { onCreated: () => void }) {
   const [effort, setEffort] = useState('');
   const [category, setCategory] = useState('');
   const [review, setReview] = useState<ReviewChoice>('default');
+  const [autoPublish, setAutoPublish] = useState(false);
+  const [start, setStart] = useState<StartMode>('draft');
+  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const { tasks } = useApp();
   const knownCategories = [...new Set(tasks.map((t) => t.category).filter(Boolean))] as string[];
@@ -54,10 +100,19 @@ function NewTaskForm({ onCreated }: { onCreated: () => void }) {
     );
   }
 
+  // Queue and Run need somewhere to run; without a repo the row would be
+  // created and then 409 on the second call, so the control is not offered.
+  const canStart = !!repoId;
+  const effectiveStart: StartMode = canStart ? start : 'draft';
+
   const submit = async () => {
+    // Two round-trips now, so a double click is a real duplicate risk.
+    if (busy) return;
+    setBusy(true);
     setErr(null);
+    let task: Task;
     try {
-      await api.createTask({
+      task = await api.createTask({
         title,
         description: description || null,
         repoId: repoId || null,
@@ -65,17 +120,38 @@ function NewTaskForm({ onCreated }: { onCreated: () => void }) {
         effort: (effort || null) as EffortLevel | null,
         category: category.trim() || null,
         review: reviewValueOf(review),
+        autoPublish,
       });
-      setTitle('');
-      setDescription('');
-      setModel('');
-      setEffort('');
-      setReview('default');
-      setOpen(false);
-      onCreated();
     } catch (e) {
       setErr((e as Error).message);
+      setBusy(false);
+      return;
     }
+    // The row exists from here on: clear the fields before anything else can
+    // fail, so a second Create cannot file the same task twice.
+    setTitle('');
+    setDescription('');
+    setModel('');
+    setEffort('');
+    setReview('default');
+    setAutoPublish(false);
+    if (effectiveStart !== 'draft') {
+      try {
+        await api.taskAction(task.id, effectiveStart === 'run' ? 'run-now' : 'enqueue');
+      } catch (e) {
+        // Created, but not started — say exactly that and stay open so the
+        // message is readable; the draft is already on the board behind it.
+        setErr(
+          `Created as a draft, but could not ${effectiveStart === 'run' ? 'run' : 'queue'} it: ${(e as Error).message}`,
+        );
+        setBusy(false);
+        onCreated();
+        return;
+      }
+    }
+    setBusy(false);
+    setOpen(false);
+    onCreated();
   };
 
   return (
@@ -91,7 +167,15 @@ function NewTaskForm({ onCreated }: { onCreated: () => void }) {
         </div>
         <div>
           <label className="label">Repo</label>
-          <select className="field" value={repoId} onChange={(e) => setRepoId(e.target.value)}>
+          <select
+            className="field"
+            value={repoId}
+            onChange={(e) => {
+              setRepoId(e.target.value);
+              // never leave "Run now" lit on a task that has nowhere to run
+              if (!e.target.value) setStart('draft');
+            }}
+          >
             <option value="">— none —</option>
             {repos.map((r) => (
               <option key={r.id} value={r.id}>
@@ -159,11 +243,46 @@ function NewTaskForm({ onCreated }: { onCreated: () => void }) {
             <option value="off">skip (small task)</option>
           </select>
         </div>
+        <div className="wide">
+          <label className="label">Auto-publish on end</label>
+          <select
+            className="field"
+            value={autoPublish ? 'on' : 'off'}
+            onChange={(e) => setAutoPublish(e.target.value === 'on')}
+          >
+            <option value="off">off — stop at review, publish by hand</option>
+            <option value="on">on — commit &amp; push when the agent finishes</option>
+          </select>
+          <div className="hint">
+            {autoPublish
+              ? 'Bypasses both gates: no adversarial review round and no human review — the agent commits and pushes in its own terminal, then the task lands in published.'
+              : 'The agent stops at review; the Publish button ships it.'}
+          </div>
+        </div>
+        <div className="wide">
+          <label className="label">On create</label>
+          <div className="start-row">
+            {START_MODES.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                className={`btn start-btn${effectiveStart === m.id ? ' on' : ''}`}
+                aria-pressed={effectiveStart === m.id}
+                disabled={m.id !== 'draft' && !canStart}
+                title={m.id !== 'draft' && !canStart ? 'Pick a repo first — a task needs one to run' : m.title}
+                onClick={() => setStart(m.id)}
+              >
+                {m.label}
+                <span className="start-hint">{m.hint}</span>
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
       {err && <div className="warn-text" style={{ marginTop: 8 }}>{err}</div>}
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-        <button className="btn primary" disabled={!title.trim()} onClick={submit}>
-          Create
+        <button className="btn primary" disabled={busy || !title.trim()} onClick={submit}>
+          {effectiveStart === 'run' ? 'Create & run' : effectiveStart === 'queue' ? 'Create & queue' : 'Create'}
         </button>
         <button className="btn" onClick={() => setOpen(false)}>
           Cancel
@@ -204,7 +323,7 @@ const provenanceOf = (t: Task): Exclude<Provenance, 'all'> => {
 
 const PREFS_KEY = 'tm.board';
 /** Terminal buckets start folded away — they are history, not work. */
-const DEFAULT_COLLAPSED = ['status:done', 'status:cancelled'];
+const DEFAULT_COLLAPSED = HISTORY.map((s) => `status:${s}`);
 
 interface Prefs {
   sort: SortKey;
@@ -295,7 +414,7 @@ export function BoardPage({
   onOpenTask: (id: string) => void;
   onOpenTerminal: (runId: string) => void;
 }) {
-  const { tasks, repos, runs, settings, refresh } = useApp();
+  const { tasks, repos, runs, settings, refresh, dispatches } = useApp();
   // default ON so the board is coloured before /api/config answers, matching
   // DEFAULT_SETTINGS['board.groupColors']
   const groupColors = settings?.['board.groupColors'] ?? true;
@@ -304,6 +423,7 @@ export function BoardPage({
   const [filterProv, setFilterProv] = useState<Provenance>('all');
   const [filterCat, setFilterCat] = useState('all');
   const [filterGroup, setFilterGroup] = useState('all');
+  const [filterDispatch, setFilterDispatch] = useState<'all' | 'with' | 'pending'>('all');
   const [groupBy, setGroupBy] = useState<GroupBy>('status');
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   const { sort, focus, showAllDrafts } = prefs;
@@ -330,6 +450,18 @@ export function BoardPage({
     [tasks],
   );
 
+  // Tasks touched by dispatches (docs/dispatch.md) — either side counts, so
+  // the filter surfaces the whole conversation, not just the receiving end.
+  const dispatchTouched = useMemo(() => {
+    const any = new Set<string>();
+    const pending = new Set<string>();
+    for (const d of dispatches) {
+      any.add(d.fromTaskId).add(d.toTaskId);
+      if (d.status === 'pending') pending.add(d.fromTaskId).add(d.toTaskId);
+    }
+    return { any, pending };
+  }, [dispatches]);
+
   const filtered = useMemo(
     () =>
       tasks.filter(
@@ -337,9 +469,11 @@ export function BoardPage({
           (filterRepo === 'all' || t.repoId === filterRepo) &&
           (filterProv === 'all' || provenanceOf(t) === filterProv) &&
           (filterCat === 'all' || (filterCat === 'none' ? !t.category : t.category === filterCat)) &&
-          (filterGroup === 'all' || t.groupId === filterGroup),
+          (filterGroup === 'all' || t.groupId === filterGroup) &&
+          (filterDispatch === 'all' ||
+            (filterDispatch === 'with' ? dispatchTouched.any.has(t.id) : dispatchTouched.pending.has(t.id))),
       ),
-    [tasks, filterRepo, filterProv, filterCat, filterGroup],
+    [tasks, filterRepo, filterProv, filterCat, filterGroup, filterDispatch, dispatchTouched],
   );
 
   // Every task tree on the board, keyed by root id: the name/colour to draw it
@@ -483,8 +617,11 @@ export function BoardPage({
     const field = ctx === 'drafts' ? 'createdAt' : ctx === 'recent' ? 'updatedAt' : sortField;
     const fresh = isNew(t.createdAt, now);
     const g = groupIndex.get(t.groupId);
+    const pendingOut = dispatches.filter((d) => d.fromTaskId === t.id && d.status === 'pending').length;
+    const hasIncoming = dispatches.some((d) => d.toTaskId === t.id);
     return (
-      <TaskRow key={t.id} task={t} onOpenTask={onOpenTask} onOpenTerminal={onOpenTerminal} fresh={fresh} depth={depth}>
+      <Fragment key={t.id}>
+      <TaskRow task={t} onOpenTask={onOpenTask} onOpenTerminal={onOpenTerminal} fresh={fresh} depth={depth}>
         {/* flat lists have no group header above them, so the tag carries it */}
         {!focus && ctx === 'recent' && g && g.size > 1 && (
           <span className="chip group-chip" style={groupStyle(t.groupId)} title={`group · ${g.size} tasks`}>
@@ -493,12 +630,30 @@ export function BoardPage({
         )}
         {!focus && (
           <>
+            <PresetChip model={t.model} effort={t.effort} review={t.review} />
             {t.category && ctx !== 'category' && (
               <span className="chip" style={{ color: 'var(--tm-accent)' }}>{t.category}</span>
             )}
             {t.featureId && (
               <span className="chip" style={{ color: 'var(--tm-accent)' }} title={`feature phase ${(t.featurePhase ?? 0) + 1}`}>
                 feat p{(t.featurePhase ?? 0) + 1}
+              </span>
+            )}
+            {t.autoPublish && (
+              <span
+                className="chip"
+                style={{ color: 'var(--tm-status-published)' }}
+                title="auto-publish on end — the agent commits and pushes when it finishes, skipping review"
+              >
+                auto-publish
+              </span>
+            )}
+            {pendingOut > 0 && (
+              <span
+                className="chip dispatch-chip"
+                title={`${pendingOut} dispatch${pendingOut === 1 ? '' : 'es'} sent by this task, awaiting delivery`}
+              >
+                ⇢ {pendingOut} pending
               </span>
             )}
             {t.createdByRun && <span className="chip" title="filed by an agent session">agent</span>}
@@ -517,6 +672,12 @@ export function BoardPage({
           />
         )}
       </TaskRow>
+      {/* incoming dispatches, compact under the receiving row; essentials
+          mode keeps only what still needs to happen */}
+      {hasIncoming && (
+        <DispatchStrip taskId={t.id} limit={3} pendingOnly={focus} onOpenTask={onOpenTask} />
+      )}
+      </Fragment>
     );
   };
 
@@ -588,6 +749,17 @@ export function BoardPage({
           ))}
           <option value="none">uncategorized</option>
         </select>
+        {dispatches.length > 0 && (
+          <select
+            className="field"
+            value={filterDispatch}
+            onChange={(e) => setFilterDispatch(e.target.value as 'all' | 'with' | 'pending')}
+          >
+            <option value="all">dispatches: any</option>
+            <option value="with">has dispatches</option>
+            <option value="pending">pending dispatches</option>
+          </select>
+        )}
         {namedGroups.length > 0 && (
           <select className="field" value={filterGroup} onChange={(e) => setFilterGroup(e.target.value)}>
             <option value="all">all groups</option>
@@ -658,7 +830,7 @@ export function BoardPage({
         // pinned at the top, once inside its category/repo.
         if (groupBy === 'status' && ((ACTIVE as string[]).includes(label) || label === 'draft')) return null;
         // essentials mode drops finished history entirely
-        if (focus && groupBy === 'status' && (label === 'done' || label === 'cancelled')) return null;
+        if (focus && groupBy === 'status' && (HISTORY as string[]).includes(label)) return null;
         const id = `${groupBy}:${label}`;
         // under `group: task group` the key is the group id — show its name
         const heading = groupBy === 'group' ? (groupIndex.get(label)?.label ?? label) : label;

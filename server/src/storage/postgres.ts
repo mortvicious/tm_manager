@@ -2,8 +2,10 @@ import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import {
   DEFAULT_SETTINGS,
+  TERMINAL_TASK_STATUSES,
   type AppSettings,
   type AuditEvent,
+  type Dispatch,
   type Feature,
   type FeatureStatus,
   type Proposal,
@@ -17,15 +19,17 @@ import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
 import { MOVE_SUBTREE_SQL, ROOT_PATH, moveSubtreeParams, pathContains, placement } from './group.ts';
 import { MIGRATIONS } from './migrations.ts';
-import { eventId, now, rowToCommand, rowToEvent, rowToFeature, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
+import { eventId, now, rowToCommand, rowToDispatch, rowToEvent, rowToFeature, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
 import type {
   ChildCounts,
   CommandPatch,
+  DispatchFilter,
   EventFilter,
   FeaturePatch,
   FeatureResolution,
   NewAuditEvent,
   NewCommand,
+  NewDispatch,
   NewFeature,
   NewProposal,
   NewRepo,
@@ -301,8 +305,8 @@ export class PostgresStorage implements Storage {
     const ts = now();
     const place = await this.placeWith(c, id, t.parentId);
     await c.query(
-      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
+      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, auto_publish, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
       [
         id,
         t.title,
@@ -319,6 +323,7 @@ export class PostgresStorage implements Storage {
         t.effort ?? null,
         t.category ?? null,
         t.review == null ? null : t.review ? 1 : 0,
+        t.autoPublish ? 1 : 0,
         t.createdByRun ?? null,
         t.spawnDepth ?? 0,
         t.featureId ?? null,
@@ -385,7 +390,7 @@ export class PostgresStorage implements Storage {
     // Only a group ROOT carries the group's name/colour.
     const isRoot = place.groupId === id;
     await c.query(
-      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, feature_id=$17, feature_phase=$18, result_summary=$19, review_summary=$20, error=$21, updated_at=$22 WHERE id=$23`,
+      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, auto_publish=$17, feature_id=$18, feature_phase=$19, result_summary=$20, review_summary=$21, error=$22, updated_at=$23 WHERE id=$24`,
       [
         next.title,
         next.description,
@@ -403,6 +408,7 @@ export class PostgresStorage implements Storage {
         next.effort,
         next.category,
         next.review == null ? null : next.review ? 1 : 0,
+        next.autoPublish ? 1 : 0,
         next.featureId,
         next.featurePhase,
         next.resultSummary,
@@ -515,7 +521,7 @@ export class PostgresStorage implements Storage {
       const rows = (await c.query(`SELECT status FROM tm_tasks WHERE parent_id = $1`, [parentId])).rows as {
         status: string;
       }[];
-      const unresolved = rows.filter((r) => !['done', 'cancelled', 'failed'].includes(r.status)).length;
+      const unresolved = rows.filter((r) => !TERMINAL_TASK_STATUSES.includes(r.status as Task['status'])).length;
       if (unresolved > 0) return null;
       const failed = rows.filter((r) => r.status === 'failed').length;
       if (failed > 0) {
@@ -559,7 +565,7 @@ export class PostgresStorage implements Storage {
     const total = rows.length;
     const done = rows.filter((r) => r.status === 'done').length;
     const failed = rows.filter((r) => r.status === 'failed').length;
-    const resolved = rows.filter((r) => ['done', 'cancelled', 'failed'].includes(r.status)).length;
+    const resolved = rows.filter((r) => TERMINAL_TASK_STATUSES.includes(r.status as Task['status'])).length;
     return { total, done, failed, unresolved: total - resolved };
   }
 
@@ -678,6 +684,66 @@ export class PostgresStorage implements Storage {
       ],
     );
     return this.getRun(id);
+  }
+
+  // ---- dispatches (docs/dispatch.md) ----
+
+  async listDispatches(f?: DispatchFilter): Promise<Dispatch[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (f?.taskId) {
+      where.push(`(from_task_id = ? OR to_task_id = ?)`);
+      params.push(f.taskId, f.taskId);
+    }
+    if (f?.toTaskId) {
+      where.push(`to_task_id = ?`);
+      params.push(f.toTaskId);
+    }
+    if (f?.status) {
+      where.push(`status = ?`);
+      params.push(f.status);
+    }
+    const sql = `SELECT * FROM tm_dispatches ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC, id DESC`;
+    return (await this.q(sql, params)).map(rowToDispatch);
+  }
+
+  async getDispatch(id: string): Promise<Dispatch | null> {
+    const r = await this.q(`SELECT * FROM tm_dispatches WHERE id = ?`, [id]);
+    return r[0] ? rowToDispatch(r[0]) : null;
+  }
+
+  async createDispatch(d: NewDispatch): Promise<Dispatch> {
+    const id = randomUUID();
+    await this.q(
+      `INSERT INTO tm_dispatches (id, from_task_id, from_run_id, to_task_id, message, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+      [id, d.fromTaskId, d.fromRunId ?? null, d.toTaskId, d.message, now()],
+    );
+    return (await this.getDispatch(id))!;
+  }
+
+  async settleDispatch(
+    id: string,
+    status: 'delivered' | 'failed' | 'cancelled',
+    note?: string | null,
+  ): Promise<Dispatch | null> {
+    const r = await this.q(
+      `UPDATE tm_dispatches SET status = ?, note = ?, delivered_at = ? WHERE id = ? AND status = 'pending' RETURNING *`,
+      [status, note ?? null, status === 'delivered' ? now() : null, id],
+    );
+    return r[0] ? rowToDispatch(r[0]) : null;
+  }
+
+  async countDispatchesByRun(runId: string): Promise<number> {
+    const r = await this.q(`SELECT COUNT(*) AS n FROM tm_dispatches WHERE from_run_id = ?`, [runId]);
+    return Number(r[0].n);
+  }
+
+  async countDispatchesBetween(taskA: string, taskB: string): Promise<number> {
+    const r = await this.q(
+      `SELECT COUNT(*) AS n FROM tm_dispatches WHERE (from_task_id = ? AND to_task_id = ?) OR (from_task_id = ? AND to_task_id = ?)`,
+      [taskA, taskB, taskB, taskA],
+    );
+    return Number(r[0].n);
   }
 
   // ---- proposals ----

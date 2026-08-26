@@ -2,6 +2,8 @@ import type {
   AppSettings,
   AuditEvent,
   AuditKind,
+  Dispatch,
+  DispatchStatus,
   Feature,
   FeaturePlan,
   FeatureReview,
@@ -82,6 +84,7 @@ export interface NewTask {
   effort?: Task['effort'];
   category?: string | null;
   review?: boolean | null;
+  autoPublish?: boolean;
   createdByRun?: string | null;
   spawnDepth?: number;
   featureId?: string | null;
@@ -127,6 +130,20 @@ export interface NewRun {
   /** cumulative transcript totals inherited from that session, subtracted from
    *  this run's raw sums so usage is never counted twice */
   statsBaseline?: RunStats | null;
+}
+
+export interface NewDispatch {
+  fromTaskId: string;
+  fromRunId?: string | null;
+  toTaskId: string;
+  message: string;
+}
+
+export interface DispatchFilter {
+  /** matches EITHER side (from or to) — the per-task panel view */
+  taskId?: string;
+  toTaskId?: string;
+  status?: DispatchStatus;
 }
 
 export interface NewProposal {
@@ -213,6 +230,28 @@ export interface Storage {
       Pick<Run, 'status' | 'pid' | 'exitCode' | 'needsAttention' | 'idle' | 'sessionId' | 'transcriptPath' | 'stats' | 'endedAt'>
     >,
   ): Promise<Run | null>;
+
+  // ---- dispatches (docs/dispatch.md) ----
+
+  /** Newest first. */
+  listDispatches(f?: DispatchFilter): Promise<Dispatch[]>;
+  getDispatch(id: string): Promise<Dispatch | null>;
+  createDispatch(d: NewDispatch): Promise<Dispatch>;
+  /**
+   * Conditional pending→terminal settle (delivered/failed/cancelled) — the
+   * single-flight delivery loop and the human cancel route both go through
+   * this, so a dispatch can never be settled twice. Returns null when it was
+   * no longer pending.
+   */
+  settleDispatch(
+    id: string,
+    status: 'delivered' | 'failed' | 'cancelled',
+    note?: string | null,
+  ): Promise<Dispatch | null>;
+  /** Lifetime dispatches sent by one run (per-run cap). */
+  countDispatchesByRun(runId: string): Promise<number>;
+  /** Lifetime dispatches between two tasks, both directions (ping-pong cap). */
+  countDispatchesBetween(taskA: string, taskB: string): Promise<number>;
 
   listProposals(f?: { status?: Proposal['status']; taskId?: string; repoId?: string }): Promise<Proposal[]>;
   getProposal(id: string): Promise<Proposal | null>;

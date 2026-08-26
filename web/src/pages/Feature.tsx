@@ -19,7 +19,8 @@ import { Markdown } from '../components/Markdown.tsx';
 // columns become the execution dashboard (cards are the real tasks, live over
 // /ws/events). Every style resolves to a --tm-* token via theme.css.
 
-const RESOLVED = ['done', 'cancelled'];
+// Mirrors isFeatureTaskBlocking on the server: a published task is settled.
+const RESOLVED = ['published', 'done', 'cancelled'];
 
 /** Deep clone that survives the structuredClone gaps in older Safari. */
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;

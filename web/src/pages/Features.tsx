@@ -106,7 +106,7 @@ export function FeaturesPage() {
 
   const counts = (featureId: string) => {
     const list = tasks.filter((t) => t.featureId === featureId);
-    const done = list.filter((t) => t.status === 'done' || t.status === 'cancelled').length;
+    const done = list.filter((t) => ['published', 'done', 'cancelled'].includes(t.status)).length;
     return { total: list.length, done };
   };
 

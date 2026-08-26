@@ -33,6 +33,19 @@ const createBody = z
 
 const QUEUED_AGENT_CEILING = 10;
 
+// Dispatch caps (docs/dispatch.md). Per-run bounds one turn's chatter; the
+// per-pair cap bounds A⇄B ping-pong across resumed turns (each resume is a NEW
+// run, so a per-run cap alone would never terminate an echo loop).
+const DISPATCH_RUN_CAP = 5;
+const DISPATCH_PAIR_CAP = 8;
+
+const dispatchBody = z
+  .object({
+    task: z.string().min(1),
+    message: z.string().min(1).max(20_000),
+  })
+  .strict();
+
 /** Per-run creation cap: `agent.taskCreationCap`, sanitised (a hand-edited or
  *  legacy config row must not disable the guard or make it unreachable). */
 function perRunCap(settings: AppSettings): number {
@@ -64,6 +77,9 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
     const repo = run.repoId ? await storage.getRepo(run.repoId) : null;
     const cap = perRunCap(await storage.getSettings());
     const filed = await storage.countTasksCreatedByRun(run.id);
+    const dispatched = await storage.countDispatchesByRun(run.id);
+    // the task whose session filed THIS task — the natural dispatch-back address
+    const creatorRun = task?.createdByRun ? await storage.getRun(task.createdByRun) : null;
     return {
       taskId: run.taskId,
       repoId: run.repoId,
@@ -72,6 +88,10 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
       taskCreationCap: cap,
       tasksCreated: filed,
       tasksRemaining: Math.max(0, cap - filed),
+      dispatchCap: DISPATCH_RUN_CAP,
+      dispatchesSent: dispatched,
+      dispatchesRemaining: Math.max(0, DISPATCH_RUN_CAP - dispatched),
+      filedByTaskId: creatorRun?.taskId ?? null,
       repos: repos.map((r) => ({ id: r.id, name: r.name, role: r.role })),
     };
   });
@@ -225,6 +245,99 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
     return { ok: true, category: updated.category };
   });
 
+  // Dispatch (docs/dispatch.md): hand a message to a RELATED task's existing
+  // agent session instead of creating a new task. Delivery reopens that task's
+  // own claude session (`--resume`) — a pending dispatch just means the target
+  // is busy and will get it when its session is free.
+  app.post('/api/agent/dispatch', async (req, reply) => {
+    const run = await authRun(req);
+    if (!run) return reply.code(403).send({ error: 'forbidden' });
+    const body = dispatchBody.parse(req.body);
+    const callerTask = run.taskId ? await storage.getTask(run.taskId) : null;
+    if (!callerTask) {
+      return reply.code(400).send({ error: 'this session has no task — only task workers can dispatch' });
+    }
+    const target = await storage.getTask(body.task);
+    if (!target) {
+      return reply.code(404).send({ error: 'no task with that id — dispatch targets are addressed by exact task id' });
+    }
+    if (target.id === callerTask.id) {
+      return reply.code(400).send({ error: 'that is your own task — do the work in this session instead' });
+    }
+
+    // Relationship gate: dispatch reaches only sessions this task is already
+    // coordinating with — tasks it filed (any of its runs), the task that
+    // filed it, or its own task tree. Everything else needs a human.
+    let related = target.createdByRun === run.id || target.groupId === callerTask.groupId;
+    if (!related && target.createdByRun) {
+      const targetCreator = await storage.getRun(target.createdByRun);
+      related = targetCreator?.taskId === callerTask.id;
+    }
+    if (!related && callerTask.createdByRun) {
+      const myCreator = await storage.getRun(callerTask.createdByRun);
+      related = myCreator?.taskId === target.id;
+    }
+    if (!related) {
+      return reply.code(403).send({
+        error:
+          'not a related task — you may dispatch only to tasks you created, the task that created yours, or tasks in your own group; file a task instead',
+      });
+    }
+
+    // Caps: hard stops, do not retry.
+    if ((await storage.countDispatchesByRun(run.id)) >= DISPATCH_RUN_CAP) {
+      return reply.code(403).send({
+        error: `dispatch cap (${DISPATCH_RUN_CAP}) reached for this session — stop dispatching and finish your turn`,
+      });
+    }
+    if ((await storage.countDispatchesBetween(callerTask.id, target.id)) >= DISPATCH_PAIR_CAP) {
+      return reply.code(403).send({
+        error: `dispatch cap (${DISPATCH_PAIR_CAP}) between these two tasks reached — finish your turn and leave the rest to the human`,
+      });
+    }
+
+    const actor = `agent:${run.id.slice(0, 8)}`;
+    const dispatch = await storage.createDispatch({
+      fromTaskId: callerTask.id,
+      fromRunId: run.id,
+      toTaskId: target.id,
+      message: body.message,
+    });
+    broadcast({ type: 'dispatch.updated', dispatch });
+    await storage.appendEvent({
+      kind: 'task.dispatch',
+      actor,
+      taskId: target.id,
+      runId: run.id,
+      repoId: target.repoId,
+      data: { phase: 'created', dispatchId: dispatch.id, fromTaskId: callerTask.id, chars: body.message.length },
+    });
+    // Immediate attempt (delivers right away when the target session is free —
+    // even with the queue stopped); otherwise it stays pending and the
+    // orchestrator retries on its ticks.
+    await orchestrator.deliverDispatches();
+    const fresh = (await storage.getDispatch(dispatch.id)) ?? dispatch;
+    return {
+      dispatch: { id: fresh.id, toTask: target.id, status: fresh.status },
+      note:
+        fresh.status === 'delivered'
+          ? 'delivered — the target session has been resumed with your message'
+          : fresh.status === 'pending'
+            ? 'queued — the target session is busy; it is delivered automatically when that agent is free. Do not wait for it: note it in your summary and finish your turn.'
+            : fresh.note,
+    };
+  });
+
+  // Poll a dispatch this run sent.
+  app.get('/api/agent/dispatches/:id', async (req, reply) => {
+    const run = await authRun(req);
+    if (!run) return reply.code(403).send({ error: 'forbidden' });
+    const { id } = req.params as { id: string };
+    const d = await storage.getDispatch(id);
+    if (!d || d.fromRunId !== run.id) return reply.code(404).send({ error: 'not found' });
+    return { id: d.id, status: d.status, note: d.note, deliveredAt: d.deliveredAt };
+  });
+
   // Read-only sibling context: the feature this run's task belongs to. Agents
   // do NOT create or mutate features in v1 (that is the autonomy doc's intake
   // question) — this exists so a worker can see the phases around it.
@@ -267,7 +380,7 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
     let task = await storage.getTask(id);
     if (!task || task.createdByRun !== run.id) return reply.code(404).send({ error: 'not found' });
 
-    const terminal = () => ['review', 'done', 'failed', 'cancelled'].includes(task!.status);
+    const terminal = () => ['review', 'published', 'done', 'failed', 'cancelled'].includes(task!.status);
     const wait = Math.min(Number(waitMs) || 0, 60_000);
     if (wait > 0 && !terminal()) {
       await new Promise<void>((resolve) => {

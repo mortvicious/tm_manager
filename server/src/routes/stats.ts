@@ -138,7 +138,9 @@ export function registerStatsRoutes(
       const claim = (e.data as any)?.claim;
       if (claim === 'overflow') totals.overflowClaims++;
       const day = perDayMap.get(dayKey(e.at));
-      if (day && to === 'done') {
+      // `published` is a completion too — it is `done` plus a push.
+      const completed = to === 'done' || to === 'published';
+      if (day && completed) {
         day.done++;
         totals.tasksDone++;
       }
@@ -149,7 +151,7 @@ export function registerStatsRoutes(
       const t = e.taskId ? taskById.get(e.taskId) : undefined;
       if (t?.repoId) {
         const repo = perRepoMap.get(t.repoId);
-        if (repo && to === 'done') repo.done++;
+        if (repo && completed) repo.done++;
         if (repo && to === 'failed') repo.failed++;
       }
     }

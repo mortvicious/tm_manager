@@ -12,7 +12,8 @@ import {
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
-import { IconAnalyze, IconPlay, IconTerminal, IconX } from './Icons.tsx';
+import { DispatchStrip } from './DispatchStrip.tsx';
+import { IconAnalyze, IconPlay, IconPublish, IconTerminal, IconX } from './Icons.tsx';
 import { Markdown } from './Markdown.tsx';
 import { PresetPicker, reviewChoiceOf, reviewValueOf, type ReviewChoice } from './PresetPicker.tsx';
 import { RunStatsChips } from './RunMeta.tsx';
@@ -117,7 +118,7 @@ export function TaskSlideOver({
   onOpenTask: (id: string) => void;
   onOpenTerminal: (runId: string) => void;
 }) {
-  const { tasks, repos, runs, proposals, refresh } = useApp();
+  const { tasks, repos, runs, proposals, dispatches, refresh } = useApp();
   const task = tasks.find((t) => t.id === taskId);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -128,6 +129,7 @@ export function TaskSlideOver({
   const [groupName, setGroupName] = useState<string>('');
   const [groupColor, setGroupColor] = useState<string>('');
   const [review, setReview] = useState<ReviewChoice>('default');
+  const [autoPublish, setAutoPublish] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [followUpMsg, setFollowUpMsg] = useState('');
   const [sendingFollowUp, setSendingFollowUp] = useState(false);
@@ -156,6 +158,7 @@ export function TaskSlideOver({
       setGroupName(task.groupName ?? '');
       setGroupColor(task.groupColor == null ? '' : String(task.groupColor));
       setReview(reviewChoiceOf(task.review));
+      setAutoPublish(task.autoPublish);
       setFollowUpMsg('');
     }
   }, [task?.id]);
@@ -202,6 +205,7 @@ export function TaskSlideOver({
     effort !== (task.effort ?? '') ||
     category !== (task.category ?? '') ||
     review !== reviewChoiceOf(task.review) ||
+    autoPublish !== task.autoPublish ||
     (isRoot &&
       (groupName !== (task.groupName ?? '') || groupColor !== (task.groupColor == null ? '' : String(task.groupColor))));
 
@@ -216,6 +220,7 @@ export function TaskSlideOver({
         effort: (effort || null) as EffortLevel | null,
         category: category.trim() || null,
         review: reviewValueOf(review),
+        autoPublish,
         ...(isRoot
           ? { groupName: groupName.trim() || null, groupColor: groupColor === '' ? null : Number(groupColor) }
           : {}),
@@ -226,7 +231,7 @@ export function TaskSlideOver({
     }
   };
 
-  const action = async (a: 'enqueue' | 'run-now' | 'cancel' | 'retry' | 'unblock' | 'complete') => {
+  const action = async (a: 'enqueue' | 'run-now' | 'cancel' | 'retry' | 'unblock' | 'complete' | 'publish') => {
     setErr(null);
     try {
       await api.taskAction(task.id, a);
@@ -423,6 +428,17 @@ export function TaskSlideOver({
               </select>
             </div>
             <div>
+              <label className="label">Auto-publish on end</label>
+              <select
+                className="field"
+                value={autoPublish ? 'on' : 'off'}
+                onChange={(e) => setAutoPublish(e.target.value === 'on')}
+              >
+                <option value="off">off — stop at review</option>
+                <option value="on">on — commit &amp; push at the end</option>
+              </select>
+            </div>
+            <div>
               <label className="label">Updated</label>
               <div className="mono muted" style={{ paddingTop: 6 }}>
                 {new Date(task.updatedAt).toLocaleString()}
@@ -491,7 +507,20 @@ export function TaskSlideOver({
               </button>
             )}
             {task.status === 'review' && (
-              <button className="btn primary" onClick={() => action('complete')}>
+              <button
+                className="btn primary"
+                title={
+                  resumeSession
+                    ? `Commit and push this work in session ${resumeSession.slice(0, 8)} — the same terminal the agent worked in`
+                    : 'Commit and push this work (no agent session left to reopen, so the server does it directly)'
+                }
+                onClick={() => action('publish')}
+              >
+                <IconPublish /> Publish
+              </button>
+            )}
+            {task.status === 'review' && (
+              <button className="btn" onClick={() => action('complete')}>
                 Mark done
               </button>
             )}
@@ -648,6 +677,15 @@ export function TaskSlideOver({
                 </div>
               ))}
             </div>
+          )}
+
+          {dispatches.some((d) => d.fromTaskId === task.id || d.toTaskId === task.id) && (
+            <>
+              <div className="section-head">Dispatches</div>
+              <div className="panel" style={{ padding: '6px 10px' }}>
+                <DispatchStrip taskId={task.id} direction="both" full onOpenTask={onOpenTask} />
+              </div>
+            </>
           )}
 
           {taskProposals.length > 0 && (

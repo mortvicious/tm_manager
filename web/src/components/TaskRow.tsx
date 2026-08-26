@@ -2,7 +2,7 @@ import { useEffect, useState, type CSSProperties, type MouseEvent, type ReactNod
 import type { Task, TaskStatus } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
-import { IconCheck, IconPlay, IconTerminal } from './Icons.tsx';
+import { IconCheck, IconPlay, IconPublish, IconTerminal } from './Icons.tsx';
 
 // Mirrors the server guards (server/src/routes/tasks.ts + orchestrator.runNow)
 // so a disabled quick action gives the same answer a 409 would have.
@@ -43,9 +43,10 @@ function QuickBtn({
 
 /**
  * One task line with its quick actions: terminal on the left (attaches to the
- * task's live session, else its most recent one), run-now + mark-as-ready
- * (mark-done for a task in review) on the right. `children` renders between
- * the title and the actions (chips, status badge, age).
+ * task's live session, else its most recent one), then publish (review only),
+ * run-now and mark-as-ready (mark-done for a task in review) on the right.
+ * `children` renders between the title and the actions (chips, status badge,
+ * age).
  */
 export function TaskRow({
   task,
@@ -116,6 +117,11 @@ export function TaskRow({
         : live
           ? LIVE_MSG
           : 'Run now';
+  // Publish is offered only where the server accepts it: a task in review,
+  // with somewhere to push from.
+  const publishLabel = !task.repoId
+    ? 'Assign a repo before publishing this task'
+    : 'Publish — commit and push this work in the agent\'s own terminal';
   const readyLabel = markDone
     ? 'Mark done'
     : !task.repoId
@@ -170,6 +176,15 @@ export function TaskRow({
         </span>
       )}
       <span className="row-actions">
+        {markDone && (
+          <QuickBtn
+            label={publishLabel}
+            disabled={busy || !task.repoId}
+            onClick={(e) => act(e, () => api.taskAction(task.id, 'publish'))}
+          >
+            <IconPublish />
+          </QuickBtn>
+        )}
         <QuickBtn
           label={runLabel}
           disabled={busy || !canRun}

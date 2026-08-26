@@ -1,4 +1,4 @@
-import type { Feature, FeaturePlan, FeatureReview, Proposal, Repo, RepoCommand, Run, Task } from '@tm/shared';
+import type { Dispatch, Feature, FeaturePlan, FeatureReview, Proposal, Repo, RepoCommand, Run, Task } from '@tm/shared';
 
 // One malformed JSON cell must not break every list query (review F4).
 function safeParse<T>(raw: unknown, fallback: T): T {
@@ -67,6 +67,7 @@ export function rowToTask(r: any): Task {
     featurePhase: r.feature_phase == null ? null : Number(r.feature_phase),
     resultSummary: r.result_summary ?? null,
     review: r.review == null ? null : !!Number(r.review),
+    autoPublish: !!Number(r.auto_publish ?? 0),
     reviewSummary: r.review_summary ?? null,
     error: r.error ?? null,
     createdAt: r.created_at,
@@ -110,6 +111,20 @@ export function rowToFeature(r: any): Feature {
     error: r.error ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+  };
+}
+
+export function rowToDispatch(r: any): Dispatch {
+  return {
+    id: r.id,
+    fromTaskId: r.from_task_id,
+    fromRunId: r.from_run_id ?? null,
+    toTaskId: r.to_task_id,
+    message: r.message,
+    status: r.status,
+    note: r.note ?? null,
+    createdAt: r.created_at,
+    deliveredAt: r.delivered_at ?? null,
   };
 }
 

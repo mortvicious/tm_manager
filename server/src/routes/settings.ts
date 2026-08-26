@@ -39,6 +39,7 @@ const settingsSchema = z
     // 0 = keep finished terminals forever (bounded by MAX_LIVE_SESSIONS); a
     // week is the practical upper bound for a local tool.
     'pty.sessionTtlMinutes': z.number().int().min(0).max(10_080),
+    'terminal.clickOutside': z.enum(['close', 'compact', 'nothing']),
     'pty.scrollbackBytes': z
       .number()
       .int()

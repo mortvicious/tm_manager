@@ -148,3 +148,12 @@ export const IconPencil = () => (
     <path d="M14.5 6.5 17.5 9.5" />
   </svg>
 );
+
+/** Publish: push the work up and out (commit + git push). */
+export const IconPublish = () => (
+  <svg {...p}>
+    <path d="M12 20V6" />
+    <path d="M6 12l6-6 6 6" />
+    <path d="M5 3h14" />
+  </svg>
+);

@@ -4,8 +4,10 @@ import path from 'node:path';
 import fs from 'node:fs';
 import {
   DEFAULT_SETTINGS,
+  TERMINAL_TASK_STATUSES,
   type AppSettings,
   type AuditEvent,
+  type Dispatch,
   type Feature,
   type FeatureStatus,
   type Proposal,
@@ -19,15 +21,17 @@ import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
 import { MOVE_SUBTREE_SQL, ROOT_PATH, moveSubtreeParams, pathContains, placement } from './group.ts';
 import { MIGRATIONS } from './migrations.ts';
-import { eventId, now, rowToCommand, rowToEvent, rowToFeature, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
+import { eventId, now, rowToCommand, rowToDispatch, rowToEvent, rowToFeature, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
 import type {
   ChildCounts,
   CommandPatch,
+  DispatchFilter,
   EventFilter,
   FeaturePatch,
   FeatureResolution,
   NewAuditEvent,
   NewCommand,
+  NewDispatch,
   NewFeature,
   NewProposal,
   NewRepo,
@@ -299,8 +303,8 @@ export class SqliteStorage implements Storage {
     const place = this.placeSync(id, t.parentId);
     this.db
       .prepare(
-        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, auto_publish, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -318,6 +322,7 @@ export class SqliteStorage implements Storage {
         t.effort ?? null,
         t.category ?? null,
         t.review == null ? null : t.review ? 1 : 0,
+        t.autoPublish ? 1 : 0,
         t.createdByRun ?? null,
         t.spawnDepth ?? 0,
         t.featureId ?? null,
@@ -383,7 +388,7 @@ export class SqliteStorage implements Storage {
     const isRoot = place.groupId === id;
     this.db
       .prepare(
-        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, error=?, updated_at=? WHERE id=?`,
+        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, auto_publish=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, error=?, updated_at=? WHERE id=?`,
       )
       .run(
         next.title,
@@ -402,6 +407,7 @@ export class SqliteStorage implements Storage {
         next.effort,
         next.category,
         next.review == null ? null : next.review ? 1 : 0,
+        next.autoPublish ? 1 : 0,
         next.featureId,
         next.featurePhase,
         next.resultSummary,
@@ -518,7 +524,7 @@ export class SqliteStorage implements Storage {
       const rows = this.db.prepare(`SELECT status FROM tm_tasks WHERE parent_id = ?`).all(child.parent_id) as {
         status: string;
       }[];
-      const unresolved = rows.filter((r) => !['done', 'cancelled', 'failed'].includes(r.status)).length;
+      const unresolved = rows.filter((r) => !TERMINAL_TASK_STATUSES.includes(r.status as Task['status'])).length;
       if (unresolved > 0) return null;
       const failed = rows.filter((r) => r.status === 'failed').length;
       if (failed > 0) {
@@ -561,7 +567,7 @@ export class SqliteStorage implements Storage {
     const total = rows.length;
     const done = rows.filter((r) => r.status === 'done').length;
     const failed = rows.filter((r) => r.status === 'failed').length;
-    const resolved = rows.filter((r) => ['done', 'cancelled', 'failed'].includes(r.status)).length;
+    const resolved = rows.filter((r) => TERMINAL_TASK_STATUSES.includes(r.status as Task['status'])).length;
     return { total, done, failed, unresolved: total - resolved };
   }
 
@@ -687,6 +693,71 @@ export class SqliteStorage implements Storage {
         id,
       );
     return this.getRun(id);
+  }
+
+  // ---- dispatches (docs/dispatch.md) ----
+
+  async listDispatches(f?: DispatchFilter): Promise<Dispatch[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (f?.taskId) {
+      where.push(`(from_task_id = ? OR to_task_id = ?)`);
+      params.push(f.taskId, f.taskId);
+    }
+    if (f?.toTaskId) {
+      where.push(`to_task_id = ?`);
+      params.push(f.toTaskId);
+    }
+    if (f?.status) {
+      where.push(`status = ?`);
+      params.push(f.status);
+    }
+    const sql = `SELECT * FROM tm_dispatches ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC, id DESC`;
+    return (this.db.prepare(sql).all(...params) as any[]).map(rowToDispatch);
+  }
+
+  async getDispatch(id: string): Promise<Dispatch | null> {
+    const r = this.db.prepare(`SELECT * FROM tm_dispatches WHERE id = ?`).get(id);
+    return r ? rowToDispatch(r) : null;
+  }
+
+  async createDispatch(d: NewDispatch): Promise<Dispatch> {
+    const id = randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO tm_dispatches (id, from_task_id, from_run_id, to_task_id, message, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+      )
+      .run(id, d.fromTaskId, d.fromRunId ?? null, d.toTaskId, d.message, now());
+    return (await this.getDispatch(id))!;
+  }
+
+  async settleDispatch(
+    id: string,
+    status: 'delivered' | 'failed' | 'cancelled',
+    note?: string | null,
+  ): Promise<Dispatch | null> {
+    const r = this.db
+      .prepare(
+        `UPDATE tm_dispatches SET status = ?, note = ?, delivered_at = ? WHERE id = ? AND status = 'pending' RETURNING *`,
+      )
+      .get(status, note ?? null, status === 'delivered' ? now() : null, id);
+    return r ? rowToDispatch(r) : null;
+  }
+
+  async countDispatchesByRun(runId: string): Promise<number> {
+    const r = this.db.prepare(`SELECT COUNT(*) AS n FROM tm_dispatches WHERE from_run_id = ?`).get(runId) as {
+      n: number;
+    };
+    return Number(r.n);
+  }
+
+  async countDispatchesBetween(taskA: string, taskB: string): Promise<number> {
+    const r = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM tm_dispatches WHERE (from_task_id = ? AND to_task_id = ?) OR (from_task_id = ? AND to_task_id = ?)`,
+      )
+      .get(taskA, taskB, taskB, taskA) as { n: number };
+    return Number(r.n);
   }
 
   // ---- proposals ----
