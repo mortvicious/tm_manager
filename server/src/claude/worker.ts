@@ -1,4 +1,5 @@
 import type { AppSettings, EffortLevel, Task } from '@tm/shared';
+import { needsFallbackModel } from './usage.ts';
 
 export interface WorkerInvocation {
   cmd: string;
@@ -6,23 +7,57 @@ export interface WorkerInvocation {
   env: Record<string, string>;
 }
 
+/**
+ * Built-in tools a worker session is given. `--tools` filters the tool SCHEMAS
+ * the model is sent, which is what the fixed preamble is mostly made of —
+ * unlike `--allowedTools`, which is only a permission gate and costs the same
+ * context either way (docs/token-budget.md). Anything left out here is not
+ * re-sent on every turn: interactive-only tools (AskUserQuestion — nobody is
+ * watching a hidden terminal), planning tools (workers never run in plan mode),
+ * artifact/cron/remote-session tooling and the workflow orchestrator.
+ * `Skill` and `ToolSearch` stay so a worker can still reach a project skill or
+ * load an MCP schema on demand.
+ */
+const WORKER_TOOLS = [
+  // shell — also the publish turn's only tool (git add/commit/push)
+  'Bash',
+  'BashOutput',
+  'KillShell',
+  // files
+  'Read',
+  'Write',
+  'Edit',
+  'NotebookEdit',
+  'Glob',
+  'Grep',
+  // delegation — the standing rules ask for it, so it must be present
+  'Agent',
+  'TodoWrite',
+  'WebFetch',
+  'WebSearch',
+  'Skill',
+  'ToolSearch',
+];
+
 // Standing instructions appended to every worker prompt (user-mandated caps).
+// Kept deliberately tight: this block is re-sent on every turn of the session,
+// so a paragraph here is paid for dozens of times (docs/token-budget.md).
 const STANDING_RULES = [
-  'Work autonomously on the task above.',
-  'Do not spawn more than 3 subagents in this session, and avoid parallel agent fan-outs.',
-  'The directory $TM_ARTIFACTS_DIR is this task\'s shared file space: the user may have placed input',
-  'files there for you (screenshots, data) — read them if relevant; and if the task asks you to produce',
-  'a file (a report, dataset, gathered notes), save it there so it appears in the task panel.',
-  'You can file follow-up tasks and coordinate cross-repo work through the Task Manager API:',
-  'fetch `curl -s -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/instructions"` for the how-to',
-  '(create tasks, target other repos by role, poll a task you filed, dispatch messages). Use it',
-  "instead of doing out-of-scope work yourself; never work around the API's refusals.",
-  'When a related task already exists (one you filed, or the one that filed yours), DISPATCH your',
-  'message to its session via the API instead of creating another task — dispatch reuses the',
-  'existing agent conversation rather than spawning a new one.',
-  'When you are finished, print a short summary of what you changed and how you verified it.',
-  'Your change will then be adversarially reviewed before the user sees it, so make it correct and',
-  'self-consistent: verify it compiles/passes and handle the edge cases a reviewer would probe.',
+  'Work autonomously. Before you edit anything, write a short plan — what you will change, in which',
+  'files, and how you will verify it. Nobody approves it: write it, then execute it in the same turn.',
+  'Delegate repo exploration and multi-file reading to a subagent and act on its summary: a',
+  "subagent's reading is discarded when it returns, while anything you read yourself is re-sent on",
+  'every later turn. Up to 3 subagents per session, one at a time, and no parallel agent fan-outs.',
+  "$TM_ARTIFACTS_DIR is this task's shared file space: read any input files the user left there, and",
+  'save deliverables (a report, dataset, gathered notes) there so they appear in the task panel.',
+  'Route follow-up and cross-repo work through the Task Manager API instead of doing it yourself —',
+  '`curl -s -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/instructions"` explains how; never',
+  'work around its refusals. When a related task already exists (one you filed, or the one that filed',
+  'yours), DISPATCH to its session instead of creating another task — dispatch reuses that agent',
+  'conversation rather than spawning a new one.',
+  'Finish with a short summary of what you changed and how you verified it. Your change is then',
+  'adversarially reviewed before the user sees it, so make it correct and self-consistent: verify it',
+  'compiles/passes and handle the edge cases a reviewer would probe.',
 ].join(' ');
 
 /** Sent when the human hits "proceed" without typing anything. */
@@ -55,14 +90,16 @@ export const PUBLISH_INSTRUCTION = [
 ].join('\n');
 
 // A resumed session keeps its original prompt, so this only re-anchors the caps
-// in case the conversation was compacted along the way.
+// in case the conversation was compacted along the way. Keep it in lockstep with
+// STANDING_RULES — a resumed turn that restates an older wording silently
+// overrides the fresh prompt for the rest of the session.
 const RESUME_REMINDER = [
-  'This is the same session as before — everything you already did and learned still applies.',
-  'The standing rules from the start of this session remain in force: work autonomously, do not',
-  'spawn more than 3 subagents and avoid parallel agent fan-outs, save deliverables into',
-  '$TM_ARTIFACTS_DIR, file follow-up/cross-repo work through the Task Manager API instead of doing',
-  'it yourself (dispatch to an existing related task\'s session rather than creating a new task),',
-  'and finish with a short summary of what you changed and how you verified it.',
+  'Same session as before — everything you did and learned still applies. Standing rules hold: work',
+  'autonomously; plan briefly before you edit; delegate exploration to a subagent instead of reading',
+  'files turn by turn (up to 3 subagents per session, one at a time, no parallel fan-outs); save',
+  'deliverables in $TM_ARTIFACTS_DIR; route follow-up/cross-repo work through the Task Manager API,',
+  "dispatching to a related task's session rather than creating a new task; finish with a short",
+  'summary of what you changed and how you verified it.',
 ].join(' ');
 
 /**
@@ -125,7 +162,12 @@ export function buildWorkerInvocation(opts: {
   const hookCurl = (path: string) =>
     `curl -s --max-time 5 -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" --data-binary @- "$TM_CALLBACK_URL${path}" >/dev/null 2>&1 || true`;
 
+  // Also the cheapest place to shrink the fixed preamble: bundled skills are
+  // ~40 skill descriptions a worker never invokes (/design, /schedule,
+  // statusline-setup…). Project skills (.claude/skills in the target repo) are
+  // NOT affected by this flag, so a repo can still ship its own.
   const hookSettings = {
+    disableBundledSkills: true,
     hooks: {
       // SessionStart reports session_id/transcript_path immediately so live
       // stats can stream mid-run instead of waiting for the first Stop.
@@ -153,18 +195,63 @@ export function buildWorkerInvocation(opts: {
   } else {
     args.push('--permission-mode', permissionMode);
   }
+  // Tool SCHEMAS the session is sent. `--tools`/`--allowedTools` are variadic in
+  // the CLI, so they MUST use the `--flag=value` form: pushed as two argv
+  // elements the parser swallows the following argument — which here is the
+  // prompt itself.
+  args.push(`--tools=${WORKER_TOOLS.join(',')}`);
+  // Browser/MCP tooling (worth ~2.6k of preamble — docs/token-budget.md) is
+  // withheld only when THIS invocation can prove it is not needed, and it is
+  // never *taken away*:
+  //
+  //  - `--no-chrome` is applied to FRESH sessions only. A resumed turn cannot
+  //    see what the earlier turns of its session were told to do — a follow-up
+  //    two turns ago may have said "take a screenshot to verify", and the
+  //    session was killed mid-way (the audit found 66 of 100 runs end killed)
+  //    before a plain Proceed or a second review round resumed it with no
+  //    keyword of its own. Gating a resume on its own text alone revokes the
+  //    MCP server mid-work, which is a regression, not a saving. Monotone
+  //    beats a persisted flag here: chrome-on is the safe direction, so the
+  //    rule needs no extra state to be correct.
+  //  - a fresh session is gated on its whole prompt — title, description, the
+  //    follow-up instruction when a respawn carries one, and the previous
+  //    run's summary that goes with it — not just the title, so a respawned
+  //    follow-up asking for browser work keeps its tools.
+  //
+  // Keyword set is the model router's `needsFallbackModel` (word-boundary
+  // anchored, so "browserslist" does not match — review F11 in usage.ts). A
+  // browser turn is left on the user's own Chrome configuration and never
+  // forced on with `--chrome`: that flag makes the session wait on the
+  // extension, and a hidden PTY with no browser attached never gets its first
+  // turn back.
+  const browserText =
+    [task.description, opts.followUp, opts.followUp ? task.resultSummary : null]
+      .filter(Boolean)
+      .join('\n') || null;
+  if (!opts.resumeSessionId && !needsFallbackModel(task.title, browserText)) {
+    args.push('--no-chrome');
+  }
+
+  // Permission allowlist — orthogonal to --tools (that one decides which
+  // schemas are sent, this one which calls are permitted). Left empty by
+  // default: an allowlist that is too narrow makes a hidden terminal stall on a
+  // permission prompt nobody can answer.
   const allowed = settings['agent.allowedTools'];
-  if (allowed.length > 0) args.push('--allowedTools', allowed.join(' '));
+  if (allowed.length > 0) args.push(`--allowedTools=${allowed.join(' ')}`);
 
   // A resumed session already holds the task, the rules and everything it did
   // before — restating them would only bury the new instruction.
+  // Exception: the publish turn is deliberately narrower than the standing
+  // rules (no code, no subagents, git output as the closing report), so the
+  // reminder goes ABOVE it — the last thing the agent reads on that turn has
+  // to be the narrow instruction, not "plan, delegate, summarise".
+  const isPublishTurn = opts.followUp === PUBLISH_INSTRUCTION;
+  const resumeBody = opts.followUp ?? DEFAULT_PROCEED;
   const prompt = opts.resumeSessionId
     ? [
         `# Continuing task: ${task.title}`,
         '',
-        opts.followUp ?? DEFAULT_PROCEED,
-        '',
-        RESUME_REMINDER,
+        ...(isPublishTurn ? [RESUME_REMINDER, '', resumeBody] : [resumeBody, '', RESUME_REMINDER]),
       ].join('\n')
     : [
         `# Task: ${task.title}`,

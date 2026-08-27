@@ -109,7 +109,8 @@ All styling resolves to existing `--tm-*` tokens (`--tm-accent`,
 
 ## Worker prompting
 
-`STANDING_RULES` and `RESUME_REMINDER` (`claude/worker.ts`) tell every worker
+`STANDING_RULES` and `RESUME_REMINDER` (`claude/worker.ts`, documented in full
+in `docs/worker-prompt.md`) tell every worker
 to dispatch to an existing related task instead of creating a duplicate;
 `docs/agent-instructions.md` (served at `/api/agent/instructions`) carries the
 curl how-to, the "write contracts, not references to your own conversation"
