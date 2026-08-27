@@ -6,6 +6,7 @@ import type {
   Dispatch,
   Feature,
   FeaturePlan,
+  HostStatus,
   OrchestratorStatus,
   Proposal,
   Repo,
@@ -81,9 +82,19 @@ async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
 
 export const api = {
   session: () => req<{ token: string }>('GET', '/api/session'),
-  health: () => req<{ ok: boolean; driver: string; bootedAt: string }>('GET', '/api/health'),
+  health: () => req<{ ok: boolean; driver: string; bootedAt: string; supervised?: boolean }>('GET', '/api/health'),
   // Refused with 409 while agents are working; `force` is the explicit override.
   restartServer: (force = false) => req<{ ok: true; restarting: true }>('POST', '/api/server/restart', { force }),
+
+  // The front door (docs/host.md). These do NOT go through /api: they are
+  // answered by the process that supervises the API, which is the whole point —
+  // it is still there when /api is not. `npm run dev:web` on its own has no
+  // front door behind it, so every one of these can legitimately fail; the
+  // caller treats that as "no host" rather than as an error.
+  hostStatus: () => req<HostStatus>('GET', '/host/status'),
+  hostStart: () => req<HostStatus & { ok: boolean; already?: boolean; error?: string }>('POST', '/host/start', {}),
+  hostStop: (force = false) => req<HostStatus & { ok: boolean }>('POST', '/host/stop', { force }),
+  hostRestart: (force = false) => req<HostStatus & { ok: boolean }>('POST', '/host/restart', { force }),
 
   listRepos: () => req<Repo[]>('GET', '/api/repos'),
   createRepo: (b: { name?: string; path: string; role?: string | null; previewUrl?: string | null }) =>

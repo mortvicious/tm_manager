@@ -157,3 +157,12 @@ export const IconPublish = () => (
     <path d="M5 3h14" />
   </svg>
 );
+
+/** Mobile shell: the tab bar's fifth slot and the header's overflow. */
+export const IconMore = () => (
+  <svg {...p} fill="currentColor" stroke="none">
+    <circle cx="5" cy="12" r="1.7" />
+    <circle cx="12" cy="12" r="1.7" />
+    <circle cx="19" cy="12" r="1.7" />
+  </svg>
+);

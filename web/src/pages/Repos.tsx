@@ -47,7 +47,7 @@ function GitCell({ repoId }: { repoId: string }) {
     }
   };
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+    <div className="git-cell" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
         <span className="chip">{git.branch}</span>
         {git.dirty > 0 && (
@@ -226,7 +226,7 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
     <div>
       <h1 className="page-title">Repos</h1>
       <div className="panel" style={{ padding: 14, maxWidth: 720, marginBottom: 18 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1.2fr auto', gap: 10, alignItems: 'end' }}>
+        <div className="repo-add-grid">
           <div>
             <label className="label">Local path</label>
             <input
@@ -269,7 +269,7 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
         </div>
       ) : (
         <div className="panel tbl-scroll">
-          <table className="tbl repos-tbl">
+          <table className="tbl repos-tbl stack-tbl">
             <thead>
               <tr>
                 <th>Repo</th>
@@ -297,14 +297,18 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                           <PreviewCell repoId={r.id} value={r.previewUrl} onSaved={refresh} />
                         </div>
                       </td>
-                      <td>{r.role ? <span className="chip">{r.role}</span> : <span className="muted">—</span>}</td>
-                      <td className="mono">{count(r.id)}</td>
-                      <td>
+                      <td data-label="Role">
+                        {r.role ? <span className="chip">{r.role}</span> : <span className="muted">—</span>}
+                      </td>
+                      <td className="mono" data-label="Tasks">
+                        {count(r.id)}
+                      </td>
+                      <td data-label="Git">
                         <GitCell repoId={r.id} />
                       </td>
                       {/* One actions cluster: commands (behind their own menu),
                           then the two repo-level buttons. */}
-                      <td>
+                      <td className="row-actions-cell">
                         <span className="repo-actions">
                           <RepoCommandsMenu
                             repoId={r.id}

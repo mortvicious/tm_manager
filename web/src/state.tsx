@@ -13,6 +13,7 @@ import type {
   CommandRun,
   Dispatch,
   Feature,
+  HostStatus,
   OrchestratorStatus,
   Proposal,
   Repo,
@@ -47,7 +48,15 @@ interface AppState {
   token: string | null;
   connected: boolean;
   bootedAt: string | null;
+  /**
+   * The front door's view of the API (docs/host.md), or null when the page is
+   * not being served through one (`npm run dev:web` alone, or an old install).
+   * This is the only status that survives the API being down, because the
+   * process that answers it is not the API.
+   */
+  host: HostStatus | null;
   refresh: () => Promise<void>;
+  refreshHost: () => Promise<void>;
   setOrch: (o: OrchestratorStatus) => void;
 }
 
@@ -75,6 +84,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [bootedAt, setBootedAt] = useState<string | null>(null);
+  const [host, setHost] = useState<HostStatus | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   const refresh = useCallback(async () => {
@@ -98,11 +108,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api.getConfig().then(setSettings).catch(() => {});
   }, []);
 
+  /**
+   * Bootstrap, with retry. The events socket is gated on the token, so a page
+   * that loaded while the API was down used to sit there forever: the one-shot
+   * fetch failed, no socket was ever opened, and nothing re-polled — only a
+   * reload recovered. Now that the page outlives the server it is served
+   * beside (docs/host.md), "load first, server later" is an ordinary sequence.
+   */
   useEffect(() => {
-    refresh().catch(() => {});
-    api.session().then((s) => setToken(s.token)).catch(() => {});
-    api.health().then((h) => setBootedAt(h.bootedAt)).catch(() => {});
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const attempt = async () => {
+      if (cancelled) return;
+      let s: { token: string };
+      try {
+        s = await api.session();
+      } catch {
+        timer = setTimeout(attempt, 2500);
+        return;
+      }
+      if (cancelled) return;
+      setToken(s.token); // the socket effect below picks it up
+      refresh().catch(() => {});
+      api.health().then((h) => setBootedAt(h.bootedAt)).catch(() => {});
+    };
+    void attempt();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [refresh]);
+
+  const refreshHost = useCallback(async () => {
+    try {
+      setHost(await api.hostStatus());
+    } catch {
+      setHost(null); // no front door in front of this page — hide its controls
+    }
+  }, []);
+
+  // Polled only while we are out of touch: with the socket up, the header has
+  // nothing to ask the front door that the API is not already telling it.
+  useEffect(() => {
+    void refreshHost();
+    if (connected) return;
+    const t = setInterval(() => void refreshHost(), 3000);
+    return () => clearInterval(t);
+  }, [connected, refreshHost]);
 
   // Live updates over /ws/events with quiet retry. Waits for the session
   // token — the events socket is token-gated like the terminal.
@@ -280,7 +332,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         token,
         connected,
         bootedAt,
+        host,
         refresh,
+        refreshHost,
         setOrch,
       }}
     >

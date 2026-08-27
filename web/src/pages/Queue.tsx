@@ -36,7 +36,7 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
         <div className="empty panel">No live sessions.</div>
       ) : (
         <div className="panel">
-          <table className="tbl">
+          <table className="tbl stack-tbl">
             <thead>
               <tr>
                 <th>Task</th>
@@ -50,6 +50,7 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
               {active.map((r) => (
                 <tr key={r.id}>
                   <td
+                    data-label="Task"
                     style={{ fontWeight: 600, cursor: r.taskId ? 'pointer' : undefined }}
                     onClick={() => r.taskId && onOpenTask(r.taskId)}
                   >
@@ -60,11 +61,11 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
                       </span>
                     )}
                   </td>
-                  <td>
+                  <td data-label="Mode">
                     <span className="chip">{r.mode}</span>{' '}
                     {r.model && <span className="chip">{r.model.replace('claude-', '')}</span>}
                   </td>
-                  <td>
+                  <td data-label="Elapsed">
                     <Elapsed since={r.startedAt} />
                     {r.stats && (
                       <span className="mono muted" style={{ marginLeft: 8 }}>
@@ -72,8 +73,10 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
                       </span>
                     )}
                   </td>
-                  <td className="mono muted">{r.pid ?? '—'}</td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  <td className="mono muted" data-label="PID">
+                    {r.pid ?? '—'}
+                  </td>
+                  <td className="row-actions-cell" style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                     {r.mode === 'worker' && (
                       <>
                         <button className="btn" onClick={() => onOpenTerminal(r.id)}>

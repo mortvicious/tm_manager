@@ -5,7 +5,31 @@ import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { CommandsLauncher } from './Commands.tsx';
 import { EmulatorLauncher } from './Emulator.tsx';
-import { IconBoard, IconBook, IconConfig, IconFeature, IconMoon, IconQueue, IconRepo, IconSun, IconTerminal } from './Icons.tsx';
+import { useLocation } from 'react-router-dom';
+import { IconBoard, IconBook, IconConfig, IconFeature, IconMoon, IconMore, IconQueue, IconRepo, IconSun, IconTerminal } from './Icons.tsx';
+
+/** The one breakpoint. Mirrors `--tm-mobile-max` in theme.css — keep in step. */
+const MOBILE_QUERY = '(max-width: 768px)';
+
+/**
+ * Presentational only: the mobile shell is a different arrangement of the SAME
+ * components, and a header control cannot be in two parents at once without
+ * being mounted twice (two emulators, two usage pollers). So the breakpoint is
+ * read in JS and the tree is built once, for one shape.
+ */
+export function useIsMobile() {
+  const [mobile, setMobile] = useState(() =>
+    typeof window === 'undefined' ? false : window.matchMedia(MOBILE_QUERY).matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(MOBILE_QUERY);
+    const on = () => setMobile(mq.matches);
+    mq.addEventListener('change', on);
+    on();
+    return () => mq.removeEventListener('change', on);
+  }, []);
+  return mobile;
+}
 
 function ThemeToggle() {
   const [theme, setTheme] = useState(document.documentElement.dataset.theme ?? 'dark');
@@ -142,8 +166,9 @@ function UsagePill() {
 }
 
 function ServerControl() {
-  const { connected, bootedAt, orch, commandRuns } = useApp();
+  const { connected, bootedAt, orch, commandRuns, host, refreshHost } = useApp();
   const [restarting, setRestarting] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const uptime = (() => {
     if (!bootedAt) return '';
@@ -161,6 +186,30 @@ function ServerControl() {
   const headless = orch.headless ?? 0;
   const busyAgents = orch.running + headless;
   const blocked = busyAgents > 0;
+  // Two different "not connected"s, and the difference is what the button
+  // should offer. The front door is a separate process (docs/host.md), so when
+  // it answers, ITS reading of the API is authoritative: `stopped` means the
+  // server is genuinely not running and can be started, where a bare dropped
+  // socket only means we are out of touch and should keep retrying.
+  const stopped = host !== null && !host.api.up;
+  const canStart = stopped && !blocked;
+  const downReason = host?.api.lastError
+    ? `last error: ${host.api.lastError}`
+    : host?.api.lastExit
+      ? `exited ${host.api.lastExit.signal ?? host.api.lastExit.code} at ${new Date(host.api.lastExit.at).toLocaleTimeString()}`
+      : 'not running';
+  const start = async () => {
+    setStarting(true);
+    setErr(null);
+    try {
+      const r = await api.hostStart();
+      if (!r.ok) setErr(r.error ?? 'the API did not come up');
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+    setStarting(false);
+    void refreshHost();
+  };
   const restart = async () => {
     if (blocked) return;
     if (
@@ -185,13 +234,20 @@ function ServerControl() {
     setTimeout(() => {
       setRestarting(false);
       setErr(null);
+      void refreshHost();
     }, 8000);
   };
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
       <span
         className="runcount"
-        title={connected ? `server up ${uptime}` : 'reconnecting to server…'}
+        title={
+          connected
+            ? `server up ${uptime}`
+            : stopped
+              ? `the API server is not running (${downReason}) — this page is served by the front door on :${host!.host.port}`
+              : 'reconnecting to server…'
+        }
         style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
       >
         <span
@@ -199,25 +255,48 @@ function ServerControl() {
             width: 7,
             height: 7,
             borderRadius: '50%',
-            background: restarting || !connected ? 'var(--tm-status-review)' : 'var(--tm-status-done)',
+            background:
+              stopped && !starting
+                ? 'var(--tm-status-failed)'
+                : restarting || starting || !connected
+                  ? 'var(--tm-status-review)'
+                  : 'var(--tm-status-done)',
           }}
         />
-        {restarting ? 'restarting…' : connected ? `up ${uptime}` : 'offline'}
+        {starting ? 'starting…' : restarting ? 'restarting…' : connected ? `up ${uptime}` : stopped ? 'stopped' : 'offline'}
       </span>
-      <button
-        className="btn ghost"
-        title={
-          blocked
-            ? `${busyAgents} agent(s) are working (${orch.running} session(s), ${headless} headless) — restarting would kill them and fail their tasks. Stop them first.`
-            : live > 0
-              ? `Restart the task-manager server (${live} running command(s) will be stopped)`
-              : 'Restart the task-manager server'
-        }
-        disabled={restarting || blocked}
-        onClick={restart}
-      >
-        {restarting ? 'Restarting…' : blocked ? 'Agents working' : 'Restart server'}
-      </button>
+      {stopped ? (
+        // The page is still here because the front door is serving it, so this
+        // is the one control that can put the server back — a restart button
+        // pointed at a dead API has nothing to talk to.
+        <button
+          className="btn ghost"
+          title={
+            blocked
+              ? `${busyAgents} agent(s) are recorded as working — refresh once the API is back before starting it.`
+              : `Start the task-manager API on :${host!.api.port}`
+          }
+          disabled={starting || !canStart}
+          onClick={start}
+        >
+          {starting ? 'Starting…' : 'Start server'}
+        </button>
+      ) : (
+        <button
+          className="btn ghost"
+          title={
+            blocked
+              ? `${busyAgents} agent(s) are working (${orch.running} session(s), ${headless} headless) — restarting would kill them and fail their tasks. Stop them first.`
+              : live > 0
+                ? `Restart the task-manager server (${live} running command(s) will be stopped)`
+                : 'Restart the task-manager server'
+          }
+          disabled={restarting || blocked}
+          onClick={restart}
+        >
+          {restarting ? 'Restarting…' : blocked ? 'Agents working' : 'Restart server'}
+        </button>
+      )}
       {err && (
         <span className="warn-text mono" title={err} style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {err}
@@ -227,52 +306,171 @@ function ServerControl() {
   );
 }
 
-export function Layout({ children, onOpenTerminal }: { children: ReactNode; onOpenTerminal: (runId: string) => void }) {
+interface NavItem {
+  to: string;
+  label: string;
+  icon: ReactNode;
+  /** Gets one of the tab bar's four slots; the rest live behind More. */
+  primary?: boolean;
+}
+
+const NAV: NavItem[] = [
+  { to: '/', label: 'Dashboard', icon: <IconQueue />, primary: true },
+  { to: '/board', label: 'Board', icon: <IconBoard />, primary: true },
+  { to: '/queue', label: 'Queue', icon: <IconTerminal />, primary: true },
+  { to: '/features', label: 'Features', icon: <IconFeature />, primary: true },
+  { to: '/repos', label: 'Repos', icon: <IconRepo /> },
+  { to: '/config', label: 'Config', icon: <IconConfig /> },
+  { to: '/handbook', label: 'Handbook', icon: <IconBook /> },
+];
+
+function navClass({ isActive }: { isActive: boolean }) {
+  return `nav-link ${isActive ? 'active' : ''}`;
+}
+
+/** The address this page was actually served from — it is the one a phone needs. */
+function servedFrom() {
+  return window.location.host;
+}
+
+function RunCount() {
   const { orch } = useApp();
-  const nav = [
-    { to: '/', label: 'Dashboard', icon: <IconQueue /> },
-    { to: '/board', label: 'Board', icon: <IconBoard /> },
-    { to: '/queue', label: 'Queue', icon: <IconTerminal /> },
-    { to: '/features', label: 'Features', icon: <IconFeature /> },
-    { to: '/repos', label: 'Repos', icon: <IconRepo /> },
-    { to: '/config', label: 'Config', icon: <IconConfig /> },
-    { to: '/handbook', label: 'Handbook', icon: <IconBook /> },
-  ];
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="tm">tm_</span>manager
-          <span className="sub">tasks · agents · terminals</span>
+    <span
+      className="runcount"
+      title={
+        (orch.headless ?? 0) > 0
+          ? `${orch.running} of ${orch.concurrency} worker slots in use · ${orch.headless} headless agent(s) (analysis / review / feature plan) — those run outside the worker budget`
+          : `${orch.running} of ${orch.concurrency} worker slots in use`
+      }
+    >
+      running {orch.running}/{orch.concurrency}
+      {(orch.headless ?? 0) > 0 ? ` · +${orch.headless}` : ''}
+    </span>
+  );
+}
+
+/**
+ * The mobile More sheet. It carries the whole nav (so the four tab slots are a
+ * shortcut, never the only way to a route) plus every header control the
+ * compact top bar could not hold. Those controls are mounted HERE and nowhere
+ * else while the viewport is mobile.
+ */
+function MoreSheet({ onClose, onOpenTerminal }: { onClose: () => void; onOpenTerminal: (runId: string) => void }) {
+  // Escape closes it like the slide-over; a phone keyboard has one too.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <>
+      <div className="overlay sheet-overlay" onClick={onClose} />
+      <div className="more-sheet" role="dialog" aria-label="Menu">
+        <div className="sheet-grip" />
+        <div className="sheet-nav">
+          {NAV.map((n) => (
+            <NavLink key={n.to} to={n.to} end={n.to === '/'} className={navClass} onClick={onClose}>
+              {n.icon} {n.label}
+            </NavLink>
+          ))}
         </div>
-        {nav.map((n) => (
-          <NavLink key={n.to} to={n.to} end={n.to === '/'} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-            {n.icon} {n.label}
-          </NavLink>
-        ))}
-        <div className="sidebar-foot">127.0.0.1:5175</div>
-      </aside>
+        <div className="sheet-tools">
+          <UsagePill />
+          <ServerControl />
+          <div className="sheet-tool-row">
+            <CommandsLauncher onOpenTerminal={onOpenTerminal} />
+            <ThemeToggle />
+          </div>
+        </div>
+        <div className="sheet-foot mono">{servedFrom()}</div>
+      </div>
+    </>
+  );
+}
+
+function TabBar({ onMore, moreOpen }: { onMore: () => void; moreOpen: boolean }) {
+  return (
+    <nav className="tabbar" aria-label="Primary">
+      {NAV.filter((n) => n.primary).map((n) => (
+        <NavLink key={n.to} to={n.to} end={n.to === '/'} className={navClass}>
+          {n.icon}
+          <span>{n.label}</span>
+        </NavLink>
+      ))}
+      <button type="button" className={`nav-link ${moreOpen ? 'active' : ''}`} aria-expanded={moreOpen} onClick={onMore}>
+        <IconMore />
+        <span>More</span>
+      </button>
+    </nav>
+  );
+}
+
+export function Layout({ children, onOpenTerminal }: { children: ReactNode; onOpenTerminal: (runId: string) => void }) {
+  const mobile = useIsMobile();
+  const [moreOpen, setMoreOpen] = useState(false);
+  const { pathname } = useLocation();
+  // A sheet left open across a breakpoint change or a navigation would sit over
+  // a layout that no longer has a tab bar under it.
+  useEffect(() => setMoreOpen(false), [mobile, pathname]);
+  // The sheet owns the scroll while it is up, or the page scrolls behind it.
+  useEffect(() => {
+    if (!moreOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [moreOpen]);
+
+  return (
+    <div className={`app${mobile ? ' mobile' : ''}`}>
+      {!mobile && (
+        <aside className="sidebar">
+          <div className="brand">
+            <span className="tm">tm_</span>manager
+            <span className="sub">tasks · agents · terminals</span>
+          </div>
+          {NAV.map((n) => (
+            <NavLink key={n.to} to={n.to} end={n.to === '/'} className={navClass}>
+              {n.icon} {n.label}
+            </NavLink>
+          ))}
+          <div className="sidebar-foot">{servedFrom()}</div>
+        </aside>
+      )}
       <header className="header">
+        {mobile && (
+          <span className="brand-mini">
+            <span className="tm">tm_</span>manager
+          </span>
+        )}
         <OrchestratorSwitch />
-        <span
-          className="runcount"
-          title={
-            (orch.headless ?? 0) > 0
-              ? `${orch.running} of ${orch.concurrency} worker slots in use · ${orch.headless} headless agent(s) (analysis / review / feature plan) — those run outside the worker budget`
-              : `${orch.running} of ${orch.concurrency} worker slots in use`
-          }
-        >
-          running {orch.running}/{orch.concurrency}
-          {(orch.headless ?? 0) > 0 ? ` · +${orch.headless}` : ''}
-        </span>
-        <UsagePill />
+        <RunCount />
+        {!mobile && <UsagePill />}
         <span className="spacer" />
-        <ServerControl />
-        <CommandsLauncher onOpenTerminal={onOpenTerminal} />
-        <EmulatorLauncher />
-        <ThemeToggle />
+        {mobile ? (
+          <button
+            type="button"
+            className={`btn ghost tools-btn${moreOpen ? ' on' : ''}`}
+            title="Menu"
+            aria-expanded={moreOpen}
+            onClick={() => setMoreOpen((v) => !v)}
+          >
+            <IconMore />
+          </button>
+        ) : (
+          <>
+            <ServerControl />
+            <CommandsLauncher onOpenTerminal={onOpenTerminal} />
+            <EmulatorLauncher />
+            <ThemeToggle />
+          </>
+        )}
       </header>
       <main className="main">{children}</main>
+      {mobile && <TabBar moreOpen={moreOpen} onMore={() => setMoreOpen((v) => !v)} />}
+      {mobile && moreOpen && <MoreSheet onClose={() => setMoreOpen(false)} onOpenTerminal={onOpenTerminal} />}
     </div>
   );
 }

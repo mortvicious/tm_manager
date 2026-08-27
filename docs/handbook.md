@@ -6,8 +6,15 @@ A local control panel that turns your task list into running Claude Code agents.
 
 ```bash
 npm install        # one time (postinstall fixes node-pty's exec bit)
-npm start          # → http://localhost:5175
+npm run build      # `npm start` serves the built SPA; it does not build it
+npm start          # → http://localhost:5176
 ```
+
+`npm start` runs two processes: the **front door** on :5176, which serves the
+page, and the **API** on :5175, which it starts and watches. That split is why
+the header's **Restart server** button can put the server back — the page is not
+being served by the thing it just restarted (`docs/host.md`). When the API is
+down the pill reads `stopped` and the button becomes **Start server**.
 
 1. **Repos** → add a local path (`~/Development/my-app`) with a role note ("backend", "frontend").
 2. **Board** → **+ New task** — title, description, repo. Model/effort overrides are optional; leave them on *auto (router)*, or click a **Preset** to set model, effort and adversarial review in one go:

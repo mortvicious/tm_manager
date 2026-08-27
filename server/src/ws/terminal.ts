@@ -2,17 +2,18 @@ import type { FastifyInstance } from 'fastify';
 import type { WebSocket } from 'ws';
 import type { TerminalClientMsg } from '@tm/shared';
 import { sessionToken } from '../auth.ts';
+import { isAllowedOriginHost } from '../net.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 
-/** Origin must be a loopback page: the app itself (any port — dev server included). */
+/**
+ * Origin must be a loopback page: the app itself (any port — dev server
+ * included). In LAN mode (opt-in, docs/mobile.md) a private LAN address counts
+ * too, because that is the origin a phone on the same Wi-Fi is served from;
+ * the per-boot token is still required either way.
+ */
 export function isAllowedOrigin(origin: string | undefined): boolean {
   if (!origin) return false; // browsers always send Origin on WS upgrades
-  try {
-    const u = new URL(origin);
-    return u.hostname === '127.0.0.1' || u.hostname === 'localhost';
-  } catch {
-    return false;
-  }
+  return isAllowedOriginHost(origin);
 }
 
 /**

@@ -747,3 +747,27 @@ export type ServerEvent =
   | { type: 'command.deleted'; commandId: string }
   | { type: 'command.run'; run: CommandRun }
   | { type: 'orchestrator.status'; status: OrchestratorStatus };
+
+/**
+ * What the front door (docs/host.md) reports about the API it is proxying.
+ * The front door is a SEPARATE process from the API: it serves the page and
+ * supervises the server, so it is the one thing still answering when the API
+ * is down — which is exactly when the UI needs to offer to start it.
+ */
+export interface HostStatus {
+  api: {
+    up: boolean;
+    /** false when the API was already listening and got adopted — we can proxy
+     *  to it and ask it to restart itself, but we cannot respawn it. */
+    managed: boolean;
+    pid: number | null;
+    port: number;
+    bootedAt: string | null;
+    /** how many times the supervisor has brought it back since ITS boot */
+    restarts: number;
+    desired: 'up' | 'down';
+    lastExit: { code: number | null; signal: string | null; at: string } | null;
+    lastError: string | null;
+  };
+  host: { port: number; dev: boolean; spaBuilt: boolean };
+}

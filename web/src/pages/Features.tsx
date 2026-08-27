@@ -143,7 +143,7 @@ export function FeaturesPage() {
 
       {rows.length > 0 && (
         <div className="panel" style={{ marginTop: 20 }}>
-          <table className="tbl">
+          <table className="tbl stack-tbl">
             <thead>
               <tr>
                 <th>Feature</th>
@@ -159,16 +159,22 @@ export function FeaturesPage() {
                 const c = counts(f.id);
                 return (
                   <tr key={f.id}>
-                    <td style={{ fontWeight: 600 }}>
+                    <td data-label="Feature" style={{ fontWeight: 600 }}>
                       <Link to={`/features/${f.id}`}>{f.title}</Link>
                     </td>
-                    <td className="muted">{repoName(f.repoId)}</td>
-                    <td>
+                    <td className="muted" data-label="Repo">
+                      {repoName(f.repoId)}
+                    </td>
+                    <td data-label="Status">
                       <FeatureBadge status={f.status} />
                     </td>
-                    <td className="mono">{f.analysis?.phases.length ?? '—'}</td>
-                    <td className="mono">{c.total ? `${c.done}/${c.total}` : '—'}</td>
-                    <td className="muted mono" style={{ fontSize: 'var(--tm-text-xs)' }}>
+                    <td className="mono" data-label="Phases">
+                      {f.analysis?.phases.length ?? '—'}
+                    </td>
+                    <td className="mono" data-label="Tasks">
+                      {c.total ? `${c.done}/${c.total}` : '—'}
+                    </td>
+                    <td className="muted mono" data-label="Updated" style={{ fontSize: 'var(--tm-text-xs)' }}>
                       {new Date(f.updatedAt).toLocaleString()}
                     </td>
                   </tr>

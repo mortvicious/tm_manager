@@ -53,7 +53,7 @@ function PlanCardEditor({
         value={card.exitCriteria.join('\n')}
         onChange={(e) => onChange({ exitCriteria: e.target.value.split('\n').map((s) => s.trim()).filter(Boolean) })}
       />
-      <div style={{ display: 'flex', gap: 6 }}>
+      <div className="plan-card-edit">
         <input
           className="field"
           style={{ flex: 1 }}

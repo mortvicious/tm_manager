@@ -9,9 +9,10 @@ A local web app ("task manager") that collects tasks for registered repos and au
 ## Commands
 
 - `npm install` — installs all workspaces (shared, server, web)
-- `npm run dev` — server (tsx watch, http://127.0.0.1:5175) + Vite dev server (http://localhost:5173, proxies /api and /ws)
+- `npm run dev` — front door (`tsx server/src/host.ts`, which spawns the API as a `tsx watch` child on http://127.0.0.1:5175) + Vite dev server (http://localhost:5173, proxies /api and /ws to the API, /host to the front door). Open 5173.
 - `npm run build` — builds the SPA (`web/dist`); the server has no build step
-- `npm start` — production mode: tsx runs the server, which serves `web/dist` at http://localhost:5175
+- `npm start` — production mode: the front door serves `web/dist` at http://localhost:5176 and proxies to the API it supervises on 5175
+- `npm run dev:server` / `npm run dev:web` / `npm run start:api` — each half alone; `start:api` is the old single-process behaviour
 - `npm run typecheck` — tsc --noEmit over both server and web (CI runs this plus `npm run build`)
 
 No test framework yet. Verify with curl against the REST API and the flows in `docs/design.md` § Verification.
@@ -28,7 +29,8 @@ npm-workspaces monorepo: `shared/` (TS types imported as source by both sides �
 - **Publish** (`docs/publish.md`): a task in `review` is shipped by reopening ITS OWN claude session (`claude --resume`) and telling it to `git add`/`commit`/`push` — same terminal, no new agent; a per-task `auto_publish` flag runs that turn automatically at the end of the work, bypassing both the human review gate and the adversarial review round. The landing status is decided by `verifyPublished()` reading git afterwards (clean tree, upstream exists, nothing ahead), never by what the agent reported — anything else drops the task back to `review` with the reason. `published` is terminal: keep `TERMINAL_TASK_STATUSES` (shared), `feature-sql.ts` and its JS twin in lockstep.
 - **Dispatch** (`docs/dispatch.md`): agent-to-agent messages between RELATED tasks (one it filed, the one that filed it, own group) — `POST /api/agent/dispatch` queues a message that the orchestrator delivers by resuming the target task's OWN claude session (`followUp` → `claude --resume`), so a backend⇄frontend exchange stays two sessions instead of minting new tasks. `tm_dispatches` is FK-less like `tm_events`; delivery holds while the target is busy, never starts a never-ran draft (enqueue-gate bypass), and runs even with the queue stopped. Caps: 5/run, 8 lifetime per task pair (both directions — the guard that ends ping-pong).
 - **Orchestrator** (`server/src/orchestrator.ts`): single-process, event-driven claim loop, max 2 concurrent workers. Boot recovery kills orphaned `claude` pids (after verifying the command line) before failing their tasks.
-- **Security**: server binds 127.0.0.1 only; WS upgrades validate Origin and require the per-boot session token. Never weaken these.
+- **Front door** (`server/src/host.ts`, `docs/host.md`): a SECOND process serves the SPA and reverse-proxies `/api` + `/ws` to the API while supervising it as a child (`/host/status|start|stop|restart`), so the page and the server no longer share a lifetime — the API can stop, crash or restart with the page still up and able to start it again. A proxy, not a second origin, deliberately: the SPA stays same-origin so no CORS layer exists and the `Host`-port equality check in `net.ts` (the DNS-rebinding guard) is untouched — `Host` is rewritten, `Origin` is passed through for the API to judge. `TM_SUPERVISED=1` makes the API's own restart route exit rather than detach a replacement; two supervisors racing for one port is the bug that flag prevents. `/host/stop|restart` never restate the agents-working rule — they forward `GET /api/server/restart-check` verbatim.
+- **Security**: server binds 127.0.0.1 only (the front door too, against its own port); WS upgrades validate Origin and require the per-boot session token. Never weaken these.
 
 ## Rules
 
