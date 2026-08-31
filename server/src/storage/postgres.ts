@@ -17,6 +17,7 @@ import {
 import { planCards } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
+import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_IDLE } from './queue-sql.ts';
 import { MOVE_SUBTREE_SQL, ROOT_PATH, moveSubtreeParams, pathContains, placement } from './group.ts';
 import { MIGRATIONS } from './migrations.ts';
 import { eventId, now, rowToCommand, rowToDispatch, rowToEvent, rowToFeature, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
@@ -390,7 +391,7 @@ export class PostgresStorage implements Storage {
     // Only a group ROOT carries the group's name/colour.
     const isRoot = place.groupId === id;
     await c.query(
-      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, auto_publish=$17, feature_id=$18, feature_phase=$19, result_summary=$20, review_summary=$21, error=$22, updated_at=$23 WHERE id=$24`,
+      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, auto_publish=$17, custom_queue_at=$18, feature_id=$19, feature_phase=$20, result_summary=$21, review_summary=$22, error=$23, updated_at=$24 WHERE id=$25`,
       [
         next.title,
         next.description,
@@ -409,6 +410,7 @@ export class PostgresStorage implements Storage {
         next.category,
         next.review == null ? null : next.review ? 1 : 0,
         next.autoPublish ? 1 : 0,
+        next.customQueueAt ?? null,
         next.featureId,
         next.featurePhase,
         next.resultSummary,
@@ -458,6 +460,7 @@ export class PostgresStorage implements Storage {
       const r = await c.query(
         `UPDATE tm_tasks SET status = 'running', updated_at = $1
          WHERE id = (SELECT t.id FROM tm_tasks t WHERE t.status = 'queued' AND t.repo_id IS NOT NULL
+                       AND t.custom_queue_at IS NULL
                        AND ${FEATURE_CLAIM_GATE}
                      ORDER BY t.priority DESC, t.created_at LIMIT 1)
          RETURNING *`,
@@ -471,6 +474,38 @@ export class PostgresStorage implements Storage {
         taskId: task.id,
         repoId: task.repoId,
         data: { from: 'queued', to: 'running', claim: 'base' },
+      }, sink);
+      return task;
+    });
+  }
+
+  async peekCustomQueue(): Promise<Task | null> {
+    const rows = await this.q(
+      `SELECT t.* FROM tm_tasks t WHERE ${CUSTOM_QUEUE_HEAD_WHERE} AND ${FEATURE_CLAIM_GATE} ${CUSTOM_QUEUE_HEAD_ORDER}`,
+    );
+    return rows[0] ? rowToTask(rows[0]) : null;
+  }
+
+  async claimNextCustomQueuedTask(actor: string): Promise<Task | null> {
+    // Twin of the sqlite driver: head selection + busy check in one statement.
+    return this.tx(async (c, sink) => {
+      const r = await c.query(
+        `UPDATE tm_tasks SET status = 'running', updated_at = $1
+         WHERE id = (SELECT t.id FROM tm_tasks t WHERE ${CUSTOM_QUEUE_HEAD_WHERE}
+                       AND ${FEATURE_CLAIM_GATE}
+                     ${CUSTOM_QUEUE_HEAD_ORDER})
+           AND ${CUSTOM_QUEUE_IDLE}
+         RETURNING *`,
+        [now()],
+      );
+      if (!r.rows[0]) return null;
+      const task = rowToTask(r.rows[0]);
+      await this.appendEventWith(c, {
+        kind: 'task.transition',
+        actor,
+        taskId: task.id,
+        repoId: task.repoId,
+        data: { from: 'queued', to: 'running', claim: 'custom-queue' },
       }, sink);
       return task;
     });
@@ -493,6 +528,8 @@ export class PostgresStorage implements Storage {
       sets.push('result_summary = ?');
       vals.push(patch.resultSummary ?? null);
     }
+    // Terminal status ends custom-queue membership (twin of the sqlite driver).
+    if (TERMINAL_TASK_STATUSES.includes(to)) sets.push('custom_queue_at = NULL');
     const placeholders = from.map(() => '?').join(', ');
     return this.tx(async (c, sink) => {
       const prevRes = await c.query(`SELECT status FROM tm_tasks WHERE id = $1`, [id]);
@@ -619,6 +656,7 @@ export class PostgresStorage implements Storage {
         `UPDATE tm_tasks SET status = 'running', updated_at = $1
          WHERE id = (SELECT t.id FROM tm_tasks t
                      WHERE t.status = 'queued' AND t.repo_id IS NOT NULL AND t.created_by_run IN (${placeholders})
+                       AND t.custom_queue_at IS NULL
                        AND ${FEATURE_OVERFLOW_GATE}
                      ORDER BY t.created_at LIMIT 1)
          RETURNING *`,

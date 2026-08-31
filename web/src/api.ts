@@ -50,10 +50,11 @@ export type TaskWrite = Partial<
  * not restarted yet.
  */
 export function normalizeTask(t: Task): Task {
-  if (t.groupId && t.groupPath && t.autoPublish !== undefined) return t;
+  if (t.groupId && t.groupPath && t.autoPublish !== undefined && t.customQueueAt !== undefined) return t;
   return {
     ...t,
     autoPublish: t.autoPublish ?? false,
+    customQueueAt: t.customQueueAt ?? null,
     groupId: t.groupId ?? t.id,
     groupPath: t.groupPath ?? '/',
     groupName: t.groupName ?? null,
@@ -126,7 +127,7 @@ export const api = {
   deleteTask: (id: string) => req<{ ok: true }>('DELETE', `/api/tasks/${id}`),
   taskAction: (
     id: string,
-    action: 'enqueue' | 'run-now' | 'cancel' | 'retry' | 'unblock' | 'complete' | 'publish',
+    action: 'enqueue' | 'run-now' | 'cancel' | 'retry' | 'unblock' | 'complete' | 'publish' | 'queue' | 'unqueue',
   ) => req<Task>('POST', `/api/tasks/${id}/${action}`),
   stopAgent: (id: string) => req<{ ok: true; closed: number }>('POST', `/api/tasks/${id}/stop-agent`),
   followUp: (id: string, message: string) => req<Task>('POST', `/api/tasks/${id}/follow-up`, { message }),

@@ -19,6 +19,7 @@ import {
 import { planCards } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
+import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_IDLE } from './queue-sql.ts';
 import { MOVE_SUBTREE_SQL, ROOT_PATH, moveSubtreeParams, pathContains, placement } from './group.ts';
 import { MIGRATIONS } from './migrations.ts';
 import { eventId, now, rowToCommand, rowToDispatch, rowToEvent, rowToFeature, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
@@ -388,7 +389,7 @@ export class SqliteStorage implements Storage {
     const isRoot = place.groupId === id;
     this.db
       .prepare(
-        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, auto_publish=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, error=?, updated_at=? WHERE id=?`,
+        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, auto_publish=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, error=?, updated_at=? WHERE id=?`,
       )
       .run(
         next.title,
@@ -408,6 +409,7 @@ export class SqliteStorage implements Storage {
         next.category,
         next.review == null ? null : next.review ? 1 : 0,
         next.autoPublish ? 1 : 0,
+        next.customQueueAt ?? null,
         next.featureId,
         next.featurePhase,
         next.resultSummary,
@@ -456,6 +458,7 @@ export class SqliteStorage implements Storage {
         .prepare(
           `UPDATE tm_tasks SET status = 'running', updated_at = ?
            WHERE id = (SELECT t.id FROM tm_tasks t WHERE t.status = 'queued' AND t.repo_id IS NOT NULL
+                         AND t.custom_queue_at IS NULL
                          AND ${FEATURE_CLAIM_GATE}
                        ORDER BY t.priority DESC, t.created_at LIMIT 1)
            RETURNING *`,
@@ -469,6 +472,42 @@ export class SqliteStorage implements Storage {
         taskId: task.id,
         repoId: task.repoId,
         data: { from: 'queued', to: 'running', claim: 'base' },
+      });
+      return task;
+    });
+  }
+
+  async peekCustomQueue(): Promise<Task | null> {
+    const r = this.db
+      .prepare(
+        `SELECT t.* FROM tm_tasks t WHERE ${CUSTOM_QUEUE_HEAD_WHERE} AND ${FEATURE_CLAIM_GATE} ${CUSTOM_QUEUE_HEAD_ORDER}`,
+      )
+      .get();
+    return r ? rowToTask(r) : null;
+  }
+
+  async claimNextCustomQueuedTask(actor: string): Promise<Task | null> {
+    // Head selection and the busy check live in ONE statement so a second
+    // member can never be claimed while the first is still `running`.
+    return this.inTxn((): Task | null => {
+      const r = this.db
+        .prepare(
+          `UPDATE tm_tasks SET status = 'running', updated_at = ?
+           WHERE id = (SELECT t.id FROM tm_tasks t WHERE ${CUSTOM_QUEUE_HEAD_WHERE}
+                         AND ${FEATURE_CLAIM_GATE}
+                       ${CUSTOM_QUEUE_HEAD_ORDER})
+             AND ${CUSTOM_QUEUE_IDLE}
+           RETURNING *`,
+        )
+        .get(now());
+      if (!r) return null;
+      const task = rowToTask(r);
+      this.appendEventSync({
+        kind: 'task.transition',
+        actor,
+        taskId: task.id,
+        repoId: task.repoId,
+        data: { from: 'queued', to: 'running', claim: 'custom-queue' },
       });
       return task;
     });
@@ -494,6 +533,10 @@ export class SqliteStorage implements Storage {
       sets.push('result_summary = ?');
       vals.push(patch.resultSummary ?? null);
     }
+    // A terminal status ends the task's custom-queue membership (docs/queue.md):
+    // a mark must never outlive the work, or a later follow-up into `review`
+    // would hold its repo's place in the queue again.
+    if (TERMINAL_TASK_STATUSES.includes(to)) sets.push('custom_queue_at = NULL');
     const placeholders = from.map(() => '?').join(', ');
     return this.inTxn((): Task | null => {
       const prev = this.db.prepare(`SELECT status FROM tm_tasks WHERE id = ?`).get(id) as
@@ -626,6 +669,7 @@ export class SqliteStorage implements Storage {
           `UPDATE tm_tasks SET status = 'running', updated_at = ?
            WHERE id = (SELECT t.id FROM tm_tasks t
                        WHERE t.status = 'queued' AND t.repo_id IS NOT NULL AND t.created_by_run IN (${placeholders})
+                         AND t.custom_queue_at IS NULL
                          AND ${FEATURE_OVERFLOW_GATE}
                        ORDER BY t.created_at LIMIT 1)
            RETURNING *`,

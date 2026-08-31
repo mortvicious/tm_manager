@@ -25,7 +25,21 @@ export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 // Dropdown suggestions; agent.model / task.model accept any model id string.
+// Claude-only on purpose: these back the CONFIG-level model settings
+// (agent/analysis/orchestrator/review/router.*), which all run through
+// `claude -p` or the hooked worker session — never offer a codex id here, only
+// a per-task override (TASK_PRESETS 'codexFree') opts a single task in.
 export const MODEL_OPTIONS = ['claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'];
+
+/**
+ * A task whose `model` names the OpenAI Codex CLI instead of a Claude model —
+ * `buildWorkerInvocation` (server/src/claude/worker.ts) branches on this to
+ * spawn `codex exec` instead of `claude`. Any `codex...` id counts, so a task
+ * can pin a specific Codex model (`codex-o4-mini`) without a second field.
+ */
+export function isCodexModel(model: string | null | undefined): boolean {
+  return !!model && model.startsWith('codex');
+}
 
 /**
  * One-click bundles of the three per-task overrides (model / effort /
@@ -36,7 +50,7 @@ export const MODEL_OPTIONS = ['claude-fable-5', 'claude-opus-5', 'claude-sonnet-
  * value the dropdown's "default (config)" option writes.
  */
 export interface TaskPreset {
-  id: 'small' | 'routine' | 'complex';
+  id: 'small' | 'routine' | 'complex' | 'codexFree';
   label: string;
   /** what the preset resolves to, shown next to the label */
   hint: string;
@@ -72,6 +86,19 @@ export const TASK_PRESETS: TaskPreset[] = [
     hint: 'fable 5 · high · review',
     model: 'claude-fable-5',
     effort: 'high',
+    review: true,
+  },
+  // Runs `codex exec` (OpenAI Codex CLI) instead of `claude` — see
+  // isCodexModel/buildWorkerInvocation. "free" = ChatGPT-account auth, not an
+  // OPENAI_API_KEY, so it costs nothing beyond the plan the user already pays
+  // for; review defaults ON because this path has no adversarial-review model
+  // parity checks yet and no completion hooks (exit code only).
+  {
+    id: 'codexFree',
+    label: 'Codex (free)',
+    hint: 'codex · free tier · review',
+    model: 'codex-free',
+    effort: 'medium',
     review: true,
   },
 ];
@@ -226,12 +253,27 @@ export interface Task {
    * the flag is "no gate between finishing and shipping".
    */
   autoPublish: boolean;
+  /**
+   * Membership in the custom queue (docs/queue.md): set when a human clicks
+   * "Add to queue", ISO time of that click = FIFO position. The custom queue
+   * runs independently of the global `orchestrator.enabled` switch, strictly
+   * ONE task at a time — so one repo works at once and tasks from the same
+   * repo wait. null = not in the custom queue (the global queue, if ever).
+   */
+  customQueueAt: string | null;
   /** adversarial review of the worker's change (Fable, or Opus xhigh fallback) */
   reviewSummary: string | null;
   error: string | null;
   createdAt: string;
   updatedAt: string;
 }
+
+/**
+ * Custom queue (docs/queue.md): statuses in which a member still owns its
+ * repo's working tree, so the next same-repo member must wait. Twin of the
+ * in-flight predicate in server/src/storage/queue-sql.ts — edit together.
+ */
+export const CUSTOM_QUEUE_IN_FLIGHT_STATUSES: readonly TaskStatus[] = ['running', 'review', 'blocked'];
 
 /** How many distinct colours the board can tint groups with (`--tm-group-1..N`). */
 export const GROUP_COLOR_COUNT = 7;
@@ -614,6 +656,8 @@ export type AuditKind =
   | 'task.created'
   | 'task.transition'
   | 'task.edited'
+  /** custom queue membership changed by a human (docs/queue.md) */
+  | 'task.queue'
   | 'task.follow-up'
   | 'task.dispatch'
   | 'task.publish'

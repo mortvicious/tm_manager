@@ -103,6 +103,18 @@ export function registerInternalRoutes(
       // review so the publish turn has something to pick up.
       const to = !publishRun && settings['orchestrator.autoComplete'] && !pre?.autoPublish ? 'done' : 'review';
       const patch = info.lastAssistantText ? { resultSummary: info.lastAssistantText.slice(0, 4000) } : undefined;
+      // Custom queue (docs/queue.md): the task is about to leave `running`,
+      // but a review fix round or the auto-publish turn may reopen it — hold
+      // the queue until whichever follow-on runs below has decided. The hold
+      // is released on EVERY exit from this block except the hand-off to a
+      // follow-on (which releases in its own finally), so a throw anywhere in
+      // between cannot leave the queue frozen (review R4); the orchestrator
+      // also expires holds on its own as a last resort.
+      const taskId = run.taskId;
+      orchestrator.holdCustomQueue(taskId);
+      const release = () => orchestrator.releaseCustomQueue(taskId);
+      let handedOff = false;
+      try {
       const task = await storage.transitionTask(run.taskId, ['running'], to, 'hook', patch);
       if (task) {
         broadcast({ type: 'task.updated', task });
@@ -132,16 +144,20 @@ export function registerInternalRoutes(
         orchestrator.maybeSchedule();
         // All three land off the hook path — the worker's turn is already done
         // and the curl must not wait on git or on another agent.
+        handedOff = true;
         if (publishRun) {
           // the agent said it pushed; git decides whether it did
-          void orchestrator.settlePublish(run.taskId, ['review'], 'hook');
+          void orchestrator.settlePublish(run.taskId, ['review'], 'hook').finally(release);
         } else if (task.autoPublish) {
           // "allow auto-publish on end": no human gate, and no adversarial
           // review round either — straight from finished to shipped.
-          void orchestrator.publish(run.taskId, 'system');
+          void orchestrator.publish(run.taskId, 'system').finally(release);
         } else {
-          void orchestrator.reviewCompletedRun(run.taskId);
+          void orchestrator.reviewCompletedRun(run.taskId).finally(release);
         }
+      }
+      } finally {
+        if (!handedOff) release();
       }
     }
     return { ok: true };

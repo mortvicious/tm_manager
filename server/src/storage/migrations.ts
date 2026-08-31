@@ -254,4 +254,11 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS tm_dispatches_from_idx ON tm_dispatches(from_task_id)`,
     ],
   },
+  {
+    id: 16,
+    // Custom queue (docs/queue.md): a nullable timestamp doubles as membership
+    // flag and FIFO position, so no default is needed and every existing row
+    // reads as "not in the custom queue".
+    statements: [`ALTER TABLE tm_tasks ADD COLUMN custom_queue_at TEXT`],
+  },
 ];

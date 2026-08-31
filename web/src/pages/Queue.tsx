@@ -4,13 +4,16 @@ import { useApp } from '../state.tsx';
 import { IconTerminal } from '../components/Icons.tsx';
 import { Elapsed } from '../components/RunMeta.tsx';
 import { TaskRow } from '../components/TaskRow.tsx';
+import { customQueueWaiting } from '../components/QueueMark.tsx';
 
 export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (runId: string) => void; onOpenTask: (id: string) => void }) {
   const { runs, tasks, refresh } = useApp();
   const [err, setErr] = useState<string | null>(null);
   const active = runs.filter((r) => r.status === 'running' && !r.idle);
   const idle = runs.filter((r) => r.status === 'running' && r.idle);
-  const queued = tasks.filter((t) => t.status === 'queued');
+  // Custom queue (docs/queue.md) first, in run order; the rest is the global queue.
+  const custom = customQueueWaiting(tasks);
+  const queued = tasks.filter((t) => t.status === 'queued' && !t.customQueueAt);
   const taskOf = (taskId: string | null) => tasks.find((t) => t.id === taskId);
 
   const kill = async (id: string) => {
@@ -133,11 +136,33 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
         </>
       )}
 
+      {custom.length > 0 && (
+        <>
+          <div className="section-head">
+            Queue <span className="count">{custom.length}</span>
+            <span className="muted" style={{ marginLeft: 8, fontWeight: 400 }}>
+              one task at a time, runs even while the global queue is stopped
+            </span>
+          </div>
+          <div className="panel">
+            {custom.map((t) => (
+              <TaskRow
+                key={t.id}
+                task={t}
+                onOpenTask={onOpenTask}
+                onOpenTerminal={onOpenTerminal}
+                depth={t.parentId ? 1 : 0}
+              />
+            ))}
+          </div>
+        </>
+      )}
+
       <div className="section-head">
-        Queued <span className="count">{queued.length}</span>
+        Global queue <span className="count">{queued.length}</span>
       </div>
       {queued.length === 0 ? (
-        <div className="empty panel">Queue is empty.</div>
+        <div className="empty panel">Global queue is empty.</div>
       ) : (
         <div className="panel">
           {queued.map((t) => (

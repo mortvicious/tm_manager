@@ -195,6 +195,16 @@ export interface Storage {
   deleteTask(id: string): Promise<void>;
   /** Atomic queued→running claim (repo-less tasks are never claimed); null when queue is empty. */
   claimNextQueuedTask(actor: string): Promise<Task | null>;
+  /**
+   * Custom queue (docs/queue.md). `peekCustomQueue` is the head the next
+   * claim WOULD take (FIFO by `customQueueAt`, feature gate applied) — the
+   * orchestrator checks the head's repo for foreign sessions before claiming.
+   * `claimNextCustomQueuedTask` claims that head in one statement, and only
+   * while NO custom-queue member is `running`: the queue is strictly serial.
+   * Both drivers share the SQL verbatim (storage/queue-sql.ts).
+   */
+  peekCustomQueue(): Promise<Task | null>;
+  claimNextCustomQueuedTask(actor: string): Promise<Task | null>;
   /** Conditional transition: applies only when current status is in `from`; null otherwise. */
   transitionTask(
     id: string,

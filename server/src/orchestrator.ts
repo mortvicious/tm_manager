@@ -15,6 +15,9 @@ import { MAX_LIVE_SESSIONS, pidLooksLikeOurs, type SessionManager } from './pty/
 import { artifactsRoot } from './config.ts';
 import type { Storage } from './storage/types.ts';
 
+/** Upper bound on how long a custom-queue hold may outlive its follow-on (docs/queue.md). */
+const CUSTOM_QUEUE_HOLD_TTL_MS = 30 * 60_000;
+
 export class Orchestrator implements OrchestratorApi {
   private scheduling = false;
   private rescheduleRequested = false;
@@ -26,6 +29,20 @@ export class Orchestrator implements OrchestratorApi {
   /** single-flight guard for dispatch delivery (docs/dispatch.md) — the route
    *  and the scheduler may both ask for a sweep at once. */
   private deliveringDispatches = false;
+  /**
+   * Custom queue (docs/queue.md): tasks whose turn just ended and whose
+   * follow-on (adversarial review round, auto-publish turn) has not decided yet
+   * whether to resume them. While a MEMBER of the custom queue is held here
+   * the queue claims nothing — `review` is not `running`, so without this the
+   * next member would start in the gap before the fix round reopens the
+   * previous one. Non-members may be held too; the pump ignores them.
+   * Value = when the hold was taken: a hold only counts while its task is a
+   * member sitting in `review` (the one status a follow-on reopens from) and
+   * is younger than CUSTOM_QUEUE_HOLD_TTL_MS — a leaked hold (route threw,
+   * request aborted) expires with a logged warning instead of freezing the
+   * queue until the next restart (review R4).
+   */
+  private customQueueHold = new Map<string, number>();
 
   constructor(
     private storage: Storage,
@@ -85,7 +102,8 @@ export class Orchestrator implements OrchestratorApi {
     for (const run of orphans) {
       // Across a restart, pid reuse is realistic — only kill pids whose
       // command is actually claude (strict pattern, review M8).
-      if (run.pid && pidLooksLikeOurs(run.pid, /claude/)) {
+      // `codex exec` workers (the Codex preset) are ours as well.
+      if (run.pid && pidLooksLikeOurs(run.pid, /claude|codex/)) {
         try {
           process.kill(run.pid, 'SIGTERM');
         } catch {
@@ -152,6 +170,10 @@ export class Orchestrator implements OrchestratorApi {
         do {
           this.rescheduleRequested = false;
           const settings = await this.storage.getSettings();
+          const cap = settings['orchestrator.concurrency'];
+          // The custom queue (docs/queue.md) is independent of the global
+          // switch: it runs while the queue is stopped, one task at a time.
+          await this.pumpCustomQueue(cap);
           if (!settings['orchestrator.enabled']) {
             // The queue is stopped, but dispatch delivery is a continuation of
             // sessions that already exist — it runs regardless (user decision
@@ -159,7 +181,6 @@ export class Orchestrator implements OrchestratorApi {
             await this.deliverDispatches();
             return;
           }
-          const cap = settings['orchestrator.concurrency'];
           while (this.activeWorkers() < cap) {
             const task = await this.storage.claimNextQueuedTask('orchestrator');
             if (!task) break;
@@ -198,6 +219,59 @@ export class Orchestrator implements OrchestratorApi {
 
   private activeWorkers(): number {
     return this.sessions.liveCount();
+  }
+
+  /**
+   * Custom queue (docs/queue.md): strictly serial, FIFO by the moment the
+   * human added each task, and independent of `orchestrator.enabled`. Claims
+   * at most ONE task per pass, and only when (a) a worker slot is free,
+   * (b) no member is `running` (enforced inside the claim SQL), (c) no member
+   * is held between a finished turn and its review/publish follow-on, and
+   * (d) the head's repo has no other live session working in it — a run-now
+   * or dispatch turn in that repo makes the head WAIT, never skip: the order
+   * the human set is the order that runs.
+   */
+  private async pumpCustomQueue(cap: number): Promise<void> {
+    if (this.activeWorkers() >= cap) return;
+    if (this.sessions.totalLiveCount() >= MAX_LIVE_SESSIONS) return;
+    const head = await this.storage.peekCustomQueue();
+    if (!head) return;
+    if (await this.customQueueHeld()) return;
+    if (head.repoId && (await this.repoBusy(head.repoId))) return;
+    const task = await this.storage.claimNextCustomQueuedTask('orchestrator');
+    if (!task) return; // a member is running (or the head changed underneath us)
+    await this.startWorker(task);
+  }
+
+  /** Is any custom-queue MEMBER parked between a finished turn and its follow-on? */
+  private async customQueueHeld(): Promise<boolean> {
+    const nowMs = Date.now();
+    for (const [id, since] of this.customQueueHold) {
+      const t = await this.storage.getTask(id);
+      // Deleted, not a member, or already past the gap (running again, shipped,
+      // done): nothing to wait for — drop the entry rather than keep reading it.
+      if (!t || !t.customQueueAt || t.status !== 'review') {
+        this.customQueueHold.delete(id);
+        continue;
+      }
+      if (nowMs - since > CUSTOM_QUEUE_HOLD_TTL_MS) {
+        console.warn(`custom queue: hold on task ${id} expired after ${CUSTOM_QUEUE_HOLD_TTL_MS / 60_000} min — releasing`);
+        this.customQueueHold.delete(id);
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /** Park a task whose turn just ended until its follow-on has resolved (see customQueueHold). */
+  holdCustomQueue(taskId: string): void {
+    this.customQueueHold.set(taskId, Date.now());
+  }
+
+  releaseCustomQueue(taskId: string): void {
+    if (!this.customQueueHold.delete(taskId)) return;
+    this.maybeSchedule(); // the queue may have been waiting on exactly this
   }
 
   /** Live non-idle creator runs with no currently-running created task (R1:

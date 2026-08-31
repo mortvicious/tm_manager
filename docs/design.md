@@ -31,7 +31,10 @@ server/src/
   config.ts             loads/creates server/data/config.json (storage driver choice lives here, not in DB)
   storage/{types,sqlite,postgres,migrations}.ts
   pty/session-manager.ts
-  claude/worker.ts      claude invocation builder (args array, hooks settings JSON)
+  claude/worker.ts      claude invocation builder (args array, hooks settings JSON); also builds `codex exec`
+                         when task.model is a codex id (isCodexModel, shared/src/types.ts) — no hooks on that
+                         path, completion rides the same hookless-exit fallback in orchestrator.ts handleExit
+                         (docs/decisions.md 2026-08-28)
   claude/analyze.ts     headless -p runner + proposal apply
   claude/feature-plan.ts      feature plan contract: zod + json-schema, prompts, standing-caps injection (pure)
   claude/feature-analysis.ts  feature pipeline: plan run → adversarial plan review → bounded re-analysis
@@ -48,7 +51,7 @@ Deps (minimal): fastify, @fastify/websocket, @fastify/static, better-sqlite3 ^13
 
 - `tm_config(key PK, value TEXT)` — runtime-tunable settings as JSON values
 - `tm_repos(id, name, path /*absolute, ~ expanded*/, role /*"backend"/"frontend" note*/, preview_url /*nullable http(s) dev-server URL for the mobile emulator*/, created_at)`
-- `tm_tasks(id, title, description, repo_id, parent_id, group_id, group_path, group_name, group_color, status, source /*manual|sentry|auto*/, source_ref, priority, auto_publish /*commit+push instead of stopping at review*/, result_summary, error, created_at, updated_at)`
+- `tm_tasks(id, title, description, repo_id, parent_id, group_id, group_path, group_name, group_color, status, source /*manual|sentry|auto*/, source_ref, priority, auto_publish /*commit+push instead of stopping at review*/, custom_queue_at /*nullable: set = member of the custom queue, value = FIFO position (docs/queue.md)*/, result_summary, error, created_at, updated_at)`
   - status: `draft | queued | running | blocked | review | published | done | failed | cancelled`
   - terminal statuses (`TERMINAL_TASK_STATUSES`): `published | done | failed | cancelled` — the one list both drivers read for split-parent and feature-phase resolution
   - source: `manual | sentry | auto | feature`
@@ -66,7 +69,8 @@ Scrollback is NOT stored in DB (in-memory ring buffer per session).
 `config.json`: `{ "storage": { "driver": "sqlite" | "postgres", "sqlite": {"file": "data/taskman.db"}, "postgres": {"connectionString": "postgres://…"} } }` — switching = edit driver + paste conn string. No configurable prefix (hardcoded `tm_`).
 
 Interface: async CRUD methods per entity **plus first-class composite methods instead of a generic `transaction(fn)`** (better-sqlite3's `.transaction()` is sync-only; an async facade would commit before awaited work runs — adversarial-review blocker B1):
-- `claimNextQueuedTask()` — `UPDATE … SET status='running' WHERE id=(SELECT id FROM tm_tasks WHERE status='queued' ORDER BY priority DESC, created_at LIMIT 1) RETURNING *`; in better-sqlite3 run via `stmt.get()` (`.run()` discards RETURNING). If PTY spawn then throws → revert task to `queued`.
+- `claimNextQueuedTask()` — `UPDATE … SET status='running' WHERE id=(SELECT id FROM tm_tasks WHERE status='queued' AND custom_queue_at IS NULL ORDER BY priority DESC, created_at LIMIT 1) RETURNING *`; in better-sqlite3 run via `stmt.get()` (`.run()` discards RETURNING). If PTY spawn then throws → revert task to `queued`.
+- `peekCustomQueue()` / `claimNextCustomQueuedTask()` — the custom queue (`docs/queue.md`): head = oldest `custom_queue_at` among queued members (feature gate applied); the claim adds `AND NOT EXISTS (running member)` in the same statement so the queue is strictly serial. SQL fragments shared verbatim by both drivers in `storage/queue-sql.ts`.
 - `acceptProposal(id, chosenOption?)` — atomic per driver (sync `db.transaction()` / pg `BEGIN..COMMIT` on one client): rewrite→patch task; split→create `queued` children (`source:'auto'`, `parent_id`) + parent→`blocked`; new_task→`draft` task; solution_options→append chosen approach to description.
 - `approveFeature(id)` / `resolveFeatureCompletion(featureId)` / `cancelFeature(id)` — the Feature composites: materialise the approved plan as `draft` tasks (standing caps injected server-side), then pump phases (pause on any failure, enqueue the lowest unresolved phase, roll up to `review` when nothing is left). Phase eligibility is one shared SQL fragment spliced into `claimNextQueuedTask` in both drivers, with a JS twin used by the pump — see `storage/feature-sql.ts`.
 - `resolveChildCompletion(childId)` — recompute parent: all children done (cancelled counts as resolved) → parent `queued`-again? No: parent → `review`; any failed → parent stays `blocked` with error surfaced. Manual **Unblock** / **Fail parent** actions exist in UI (review finding M5 — no dead-end states).
@@ -100,7 +104,7 @@ Interactive session (hard requirement: real usable terminal), completion via hoo
 
 ## Orchestrator
 
-Singleton; `orchestrator.enabled` persisted in `tm_config`. Event-driven `maybeSchedule()` (on start/enqueue/exit/stop-hook + 10s safety tick): claim tasks while activeWorkers < 2. Boot recovery (M4): for each `running` run row, verify pid's command line is `claude`, kill it, then mark task `failed('server restarted')` — never leave orphaned agents editing repos. Start/Stop = stop picking new tasks (live sessions continue); separate "Stop & kill all". Untouched by Features except for claim eligibility: a task with `feature_id` is claimable only while its feature is `running` and every task in a lower phase is resolved. `resolveCompletion(task)` (formerly `resolveParent`) re-evaluates both the split parent and the feature phase gate whenever a task reaches a terminal status.
+Singleton; `orchestrator.enabled` persisted in `tm_config`. Event-driven `maybeSchedule()` (on start/enqueue/exit/stop-hook + 10s safety tick): first `pumpCustomQueue()` — the custom queue (`docs/queue.md`) claims at most one member per pass, only while no member is `running`/held and the head's repo is free, and does so even with `orchestrator.enabled` off — then, only when enabled, claim global tasks while activeWorkers < 2. Boot recovery (M4): for each `running` run row, verify pid's command line is `claude` (or `codex`, the Codex preset), kill it, then mark task `failed('server restarted')` — never leave orphaned agents editing repos. Start/Stop = stop picking new tasks (live sessions continue); separate "Stop & kill all". Untouched by Features except for claim eligibility: a task with `feature_id` is claimable only while its feature is `running` and every task in a lower phase is resolved. `resolveCompletion(task)` (formerly `resolveParent`) re-evaluates both the split parent and the feature phase gate whenever a task reaches a terminal status.
 
 ## Analyze
 
@@ -110,7 +114,7 @@ Headless, per repo/task selection: `execFile('claude', ['-p','--model','claude-o
 
 ## API
 
-REST `/api`: repos CRUD; tasks CRUD + `/enqueue|run-now|cancel|retry|unblock|complete|follow-up|proceed|apply-review|stop-agent` + `GET /tasks/:id/resumable`; runs list + `/kill` + `GET /runs/activity` (current live-narration line per live run — the snapshot behind the Board's activity captions); `/analyze {repoId, taskIds?}`; proposals list + `/accept|reject`; features CRUD + `/analyze|plan|approve|start|pause|resume|cancel|complete`; dispatches list + `/cancel` (agent side: `POST /api/agent/dispatch`, `GET /api/agent/dispatches/:id` — `docs/dispatch.md`); config get/put; orchestrator get + `/start|stop|stop-and-kill`; `/usage` (session + weekly + weekly-fable windows, each `{pct,source,resetsAt,tokens,budget}` — real account figures from the CLI's `~/.claude.json` cache, local-transcript estimate as fallback); internal `/internal/runs/:id/{stop,session-end,needs-attention}`; `/health`.
+REST `/api`: repos CRUD; tasks CRUD + `/enqueue|run-now|cancel|retry|unblock|complete|follow-up|proceed|apply-review|stop-agent` + `/queue|unqueue` (custom queue, `docs/queue.md`) + `GET /tasks/:id/resumable`; runs list + `/kill` + `GET /runs/activity` (current live-narration line per live run — the snapshot behind the Board's activity captions); `/analyze {repoId, taskIds?}`; proposals list + `/accept|reject`; features CRUD + `/analyze|plan|approve|start|pause|resume|cancel|complete`; dispatches list + `/cancel` (agent side: `POST /api/agent/dispatch`, `GET /api/agent/dispatches/:id` — `docs/dispatch.md`); config get/put; orchestrator get + `/start|stop|stop-and-kill`; `/usage` (session + weekly + weekly-fable windows, each `{pct,source,resetsAt,tokens,budget}` — real account figures from the CLI's `~/.claude.json` cache, local-transcript estimate as fallback); internal `/internal/runs/:id/{stop,session-end,needs-attention}`; `/health`.
 WS: `/ws/terminal/:runId?token=…` (history/data/exit ↔ input/resize, base64-in-JSON) and `/ws/events` (task.updated, run.started/exited, run.needs-attention, run.activity, proposal.created, dispatch.updated, feature.updated/deleted, orchestrator.status) — frontend fully event-driven, no polling.
 
 ## Frontend

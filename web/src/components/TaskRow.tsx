@@ -2,7 +2,8 @@ import { useEffect, useState, type CSSProperties, type MouseEvent, type ReactNod
 import type { Task, TaskStatus } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
-import { IconCheck, IconPlay, IconPublish, IconTerminal } from './Icons.tsx';
+import { IconCheck, IconPlay, IconPublish, IconQueue, IconTerminal, IconX } from './Icons.tsx';
+import { QueueMark } from './QueueMark.tsx';
 
 // Mirrors the server guards (server/src/routes/tasks.ts + orchestrator.runNow)
 // so a disabled quick action gives the same answer a 409 would have.
@@ -10,6 +11,9 @@ const CAN_RUN: TaskStatus[] = ['draft', 'queued', 'review', 'failed', 'cancelled
 // 'review' is absent on purpose: there the check means "mark done" (complete),
 // which is what the slide-over's primary button does for a task in review.
 const CAN_READY: TaskStatus[] = ['draft', 'failed', 'cancelled'];
+// Custom queue (docs/queue.md): the same enqueue guards, plus a task already
+// queued for the GLOBAL queue may move over.
+const CAN_QUEUE: TaskStatus[] = ['draft', 'failed', 'cancelled', 'review', 'queued'];
 const LIVE_MSG = 'Previous session is still live — open its terminal or kill it first';
 
 /** Icon button in a row. The title lives on the wrapper: `.btn:disabled` sets
@@ -66,7 +70,7 @@ export function TaskRow({
   depth?: number;
   children?: ReactNode;
 }) {
-  const { runs, activity, refresh } = useApp();
+  const { runs, tasks, activity, refresh } = useApp();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -107,6 +111,21 @@ export function TaskRow({
   const markDone = task.status === 'review';
   const canRun = !!task.repoId && CAN_RUN.includes(task.status) && !live;
   const canReady = markDone || (!!task.repoId && CAN_READY.includes(task.status) && !live);
+  // A waiting member's queue button turns into "remove"; a running member
+  // keeps its slot until its turn ends (cancel is the way to stop it).
+  const inQueue = !!task.customQueueAt && task.status === 'queued';
+  const canQueue = inQueue || (!!task.repoId && CAN_QUEUE.includes(task.status) && !live);
+  const queueLabel = inQueue
+    ? 'Remove from queue'
+    : !task.repoId
+      ? 'Assign a repo before queueing this task'
+      : task.status === 'running'
+        ? 'Already running'
+        : !CAN_QUEUE.includes(task.status)
+          ? `Cannot add to the queue from '${task.status}'`
+          : live
+            ? LIVE_MSG
+            : 'Add to queue — runs one task at a time, independent of the global queue';
 
   const runLabel = !task.repoId
     ? 'Assign a repo before running this task'
@@ -159,6 +178,7 @@ export function TaskRow({
         style={depth > 1 ? ({ '--tm-depth': depth } as CSSProperties) : undefined}
       >
         <span className="title">{task.title}</span>
+        <QueueMark task={task} tasks={tasks} />
         {liveLine?.text && (
           <span
             className={`row-activity ${liveLine.kind}`}
@@ -176,6 +196,14 @@ export function TaskRow({
         </span>
       )}
       <span className="row-actions">
+        <QuickBtn
+          label={queueLabel}
+          className={inQueue ? 'queued' : undefined}
+          disabled={busy || !canQueue}
+          onClick={(e) => act(e, () => api.taskAction(task.id, inQueue ? 'unqueue' : 'queue'))}
+        >
+          {inQueue ? <IconX /> : <IconQueue />}
+        </QuickBtn>
         {markDone && (
           <QuickBtn
             label={publishLabel}

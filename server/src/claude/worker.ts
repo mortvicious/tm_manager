@@ -1,4 +1,4 @@
-import type { AppSettings, EffortLevel, Task } from '@tm/shared';
+import { isCodexModel, type AppSettings, type EffortLevel, type Task } from '@tm/shared';
 import { needsFallbackModel } from './usage.ts';
 
 export interface WorkerInvocation {
@@ -103,6 +103,32 @@ const RESUME_REMINDER = [
 ].join(' ');
 
 /**
+ * The prompt text itself — CLI-agnostic, so both the `claude` and `codex`
+ * branches of buildWorkerInvocation build it the same way. `resumeSessionId`
+ * only changes which header/reminder wraps it; it never implies `--resume`
+ * (codex never sets it — see isCodexModel branch below).
+ */
+function buildWorkerPrompt(opts: { task: Task; followUp?: string; resumeSessionId?: string }): string {
+  const { task } = opts;
+  const isPublishTurn = opts.followUp === PUBLISH_INSTRUCTION;
+  const resumeBody = opts.followUp ?? DEFAULT_PROCEED;
+  return opts.resumeSessionId
+    ? [
+        `# Continuing task: ${task.title}`,
+        '',
+        ...(isPublishTurn ? [RESUME_REMINDER, '', resumeBody] : [resumeBody, '', RESUME_REMINDER]),
+      ].join('\n')
+    : [
+        `# Task: ${task.title}`,
+        task.description ? `\n${task.description}` : '',
+        opts.followUp
+          ? `\n\n## Previous run summary\n${task.resultSummary ?? '(none recorded)'}\n\n## Follow-up instruction from the user\n${opts.followUp}`
+          : '',
+        `\n\n${STANDING_RULES}`,
+      ].join('');
+}
+
+/**
  * The prompt of a resumed turn that delivers queued dispatches (docs/dispatch.md):
  * messages other task sessions sent to THIS task's session while it was busy or
  * between turns. All pending dispatches for the target are delivered in one
@@ -129,12 +155,26 @@ export function buildDispatchTurn(
 }
 
 /**
- * Builds the interactive `claude` invocation for a worker PTY.
- * Args array only — never a shell string (quoting hazard, review m8).
- * Completion/attention detection comes from lifecycle hooks injected via
- * --settings: they curl back to our internal routes with the per-boot token.
- * `$TM_*` placeholders are expanded by the hook's shell from the PTY env, so
- * the settings JSON itself is static per run.
+ * Builds the worker invocation for a hidden PTY — `claude` (default) or
+ * `codex exec` when the task's model names Codex (isCodexModel). Args array
+ * only — never a shell string (quoting hazard, review m8).
+ *
+ * Claude path: completion/attention detection comes from lifecycle hooks
+ * injected via --settings, which curl back to our internal routes with the
+ * per-boot token. `$TM_*` placeholders are expanded by the hook's shell from
+ * the PTY env, so the settings JSON itself is static per run.
+ *
+ * Codex path: `codex exec` has no hook-injection mechanism like --settings,
+ * so there is no Stop/Notification-equivalent wired up. Completion instead
+ * rides the SAME fallback the claude path already has for a hookless exit
+ * (orchestrator.ts handleExit: exit 0 → review, nonzero → failed) — `codex
+ * exec` runs one turn to completion and exits on its own, so that fallback
+ * IS the primary signal here, not a backstop. Session resume is likewise not
+ * implemented: nothing populates Run.sessionId for a codex run, so
+ * findResumableRun never matches one and follow-ups/publish on a codex task
+ * fall back to their existing "no resumable session" paths (fresh spawn /
+ * direct-git publish) automatically — resumeSessionId is accepted here only
+ * so the shared prompt-header logic still works, never turned into a CLI flag.
  */
 export function buildWorkerInvocation(opts: {
   task: Task;
@@ -154,6 +194,34 @@ export function buildWorkerInvocation(opts: {
 }): WorkerInvocation {
   const { task, settings } = opts;
   const model = task.model ?? settings['agent.model'];
+  const env = {
+    TM_RUN_ID: opts.runId,
+    TM_TOKEN: opts.token,
+    TM_CALLBACK_URL: opts.callbackUrl,
+    TM_ARTIFACTS_DIR: opts.artifactsDir,
+  };
+
+  if (isCodexModel(model)) {
+    const prompt = buildWorkerPrompt({ task, followUp: opts.followUp, resumeSessionId: opts.resumeSessionId });
+    // `-c model_reasoning_effort` has no Codex-CLI-wide free/paid distinction
+    // worth encoding yet, so effort is not forwarded — "free" is entirely a
+    // property of how `codex login` was authenticated (ChatGPT account vs an
+    // OPENAI_API_KEY), which is outside this process's control.
+    // `codex exec` has no `--ask-for-approval` (that flag only exists on the
+    // interactive TUI, confirmed against v0.150.1's `codex exec --help` — it
+    // errors as an unexpected argument) — exec already runs with approval
+    // policy "never" by default since there is no one to prompt, so
+    // --sandbox workspace-write alone is the exec/sandbox twin of
+    // --dangerously-skip-permissions (same reasoning as the Claude
+    // Notification hook existing at all: a hidden run cannot answer a prompt).
+    const args = ['exec', '--sandbox', 'workspace-write', '--skip-git-repo-check'];
+    // codex-free vs a pinned codex-<model> id (e.g. codex-gpt-5.1-codex-mini)
+    const pinnedModel = model === 'codex-free' ? null : model.replace(/^codex-/, '');
+    if (pinnedModel) args.push('--model', pinnedModel);
+    args.push(prompt);
+    return { cmd: 'codex', args, env };
+  }
+
   const effort: EffortLevel = task.effort ?? settings['agent.effort'];
   const permissionMode = settings['agent.permissionMode'];
 
@@ -245,32 +313,8 @@ export function buildWorkerInvocation(opts: {
   // rules (no code, no subagents, git output as the closing report), so the
   // reminder goes ABOVE it — the last thing the agent reads on that turn has
   // to be the narrow instruction, not "plan, delegate, summarise".
-  const isPublishTurn = opts.followUp === PUBLISH_INSTRUCTION;
-  const resumeBody = opts.followUp ?? DEFAULT_PROCEED;
-  const prompt = opts.resumeSessionId
-    ? [
-        `# Continuing task: ${task.title}`,
-        '',
-        ...(isPublishTurn ? [RESUME_REMINDER, '', resumeBody] : [resumeBody, '', RESUME_REMINDER]),
-      ].join('\n')
-    : [
-        `# Task: ${task.title}`,
-        task.description ? `\n${task.description}` : '',
-        opts.followUp
-          ? `\n\n## Previous run summary\n${task.resultSummary ?? '(none recorded)'}\n\n## Follow-up instruction from the user\n${opts.followUp}`
-          : '',
-        `\n\n${STANDING_RULES}`,
-      ].join('');
+  const prompt = buildWorkerPrompt({ task, followUp: opts.followUp, resumeSessionId: opts.resumeSessionId });
   args.push(prompt);
 
-  return {
-    cmd: 'claude',
-    args,
-    env: {
-      TM_RUN_ID: opts.runId,
-      TM_TOKEN: opts.token,
-      TM_CALLBACK_URL: opts.callbackUrl,
-      TM_ARTIFACTS_DIR: opts.artifactsDir,
-    },
-  };
+  return { cmd: 'claude', args, env };
 }

@@ -150,12 +150,87 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     if (await app.orchestrator?.hasLiveSession(id)) {
       return { code: 409 as const, error: 'previous session is still live — open its terminal or kill it first' };
     }
+    // Enqueue/retry mean the GLOBAL queue: leaving the custom queue is part of
+    // the transition, cleared FIRST so the custom pump cannot claim the row in
+    // between (a stale timestamp would also put a retried task at the head).
+    // Only once the status is known to be accepted, though — a refused call
+    // must not quietly move a waiting member into the global queue (review R3).
+    if (!from.includes(cur.status)) return { code: 409 as const, error: `cannot enqueue from status '${cur.status}'` };
+    if (cur.customQueueAt && !(await storage.updateTask(id, { customQueueAt: null }))) {
+      return { code: 404 as const, error: 'task not found' };
+    }
     const task = await storage.transitionTask(id, from, 'queued', 'human', { error: null });
-    if (!task) return { code: 409 as const, error: `cannot enqueue from status '${cur.status}'` };
+    if (!task) {
+      // Lost a race with a status change since the check above: put the mark
+      // back (a member that is now e.g. running keeps its slot semantics).
+      if (cur.customQueueAt) {
+        const restored = await storage.updateTask(id, { customQueueAt: cur.customQueueAt });
+        if (restored) broadcast({ type: 'task.updated', task: restored });
+      }
+      return { code: 409 as const, error: `cannot enqueue from status '${cur.status}'` };
+    }
     broadcast({ type: 'task.updated', task });
     app.orchestrator?.maybeSchedule();
     return { task };
   };
+
+  // Custom queue (docs/queue.md): "Add to queue" — independent of the global
+  // orchestrator switch, strictly one task at a time, FIFO by this click. A
+  // task already `queued` for the global queue simply moves over; anything
+  // else takes the same enqueue transition (and the same guards).
+  app.post('/api/tasks/:id/queue', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const cur = await storage.getTask(id);
+    if (!cur) return reply.code(404).send({ error: 'task not found' });
+    if (!cur.repoId) return reply.code(409).send({ error: 'assign a repo before queueing this task' });
+    if (cur.status === 'queued' && cur.customQueueAt) return reply.code(409).send({ error: 'already in the queue' });
+    if (cur.status !== 'queued' && !enqueueFrom.includes(cur.status)) {
+      return reply.code(409).send({ error: `cannot add to the queue from status '${cur.status}'` });
+    }
+    if (await app.orchestrator?.hasLiveSession(id)) {
+      return reply.code(409).send({ error: 'previous session is still live — open its terminal or kill it first' });
+    }
+    // Membership FIRST, then the status transition: a row that is `queued`
+    // without the mark belongs to the global claim loop, which must never see
+    // this one even for an instant.
+    const marked = await storage.updateTask(id, { customQueueAt: new Date().toISOString() });
+    if (!marked) return reply.code(404).send({ error: 'task not found' });
+    let task = marked;
+    if (cur.status !== 'queued') {
+      const moved = await storage.transitionTask(id, enqueueFrom, 'queued', 'human', { error: null });
+      if (!moved) {
+        await storage.updateTask(id, { customQueueAt: null });
+        return reply.code(409).send({ error: `cannot add to the queue from status '${cur.status}'` });
+      }
+      task = moved;
+    }
+    await storage.appendEvent({ kind: 'task.queue', actor: 'human', taskId: id, repoId: task.repoId, data: { queue: 'custom', action: 'add' } });
+    broadcast({ type: 'task.updated', task });
+    app.orchestrator?.maybeSchedule();
+    return task;
+  });
+
+  // "Remove from queue": a waiting member is cancelled exactly like a global
+  // queue removal; a member that already ran just drops its mark.
+  app.post('/api/tasks/:id/unqueue', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const cur = await storage.getTask(id);
+    if (!cur) return reply.code(404).send({ error: 'task not found' });
+    if (!cur.customQueueAt) return reply.code(409).send({ error: 'task is not in the queue' });
+    let task = await storage.updateTask(id, { customQueueAt: null });
+    if (!task) return reply.code(404).send({ error: 'task not found' });
+    if (task.status === 'queued') {
+      const dequeued = await storage.transitionTask(id, ['queued'], 'cancelled', 'human');
+      if (dequeued) {
+        task = dequeued;
+        await app.orchestrator?.resolveCompletion(dequeued);
+      }
+    }
+    await storage.appendEvent({ kind: 'task.queue', actor: 'human', taskId: id, repoId: task.repoId, data: { queue: 'custom', action: 'remove' } });
+    broadcast({ type: 'task.updated', task });
+    app.orchestrator?.maybeSchedule(); // a running member keeps running; the queue itself may move on
+    return task;
+  });
 
   app.post('/api/tasks/:id/enqueue', async (req, reply) => {
     const { id } = req.params as { id: string };

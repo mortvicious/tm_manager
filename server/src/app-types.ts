@@ -4,6 +4,11 @@ export type ActionResult = { task: Task } | { error: string; code: number };
 
 export interface OrchestratorApi {
   maybeSchedule(): void;
+  /** Custom queue (docs/queue.md): park a task between a finished turn and its
+   *  review/publish follow-on so the strictly-serial queue does not start the
+   *  next member in that gap; release wakes the scheduler. */
+  holdCustomQueue(taskId: string): void;
+  releaseCustomQueue(taskId: string): void;
   runNow(taskId: string, actor?: string): Promise<ActionResult>;
   cancel(taskId: string, actor?: string): Promise<ActionResult>;
   followUp(

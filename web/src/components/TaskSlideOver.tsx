@@ -13,7 +13,7 @@ import {
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { DispatchStrip } from './DispatchStrip.tsx';
-import { IconAnalyze, IconPlay, IconPublish, IconTerminal, IconX } from './Icons.tsx';
+import { IconAnalyze, IconPlay, IconPublish, IconQueue, IconTerminal, IconX } from './Icons.tsx';
 import { Markdown } from './Markdown.tsx';
 import { PresetPicker, reviewChoiceOf, reviewValueOf, type ReviewChoice } from './PresetPicker.tsx';
 import { RunStatsChips } from './RunMeta.tsx';
@@ -231,7 +231,9 @@ export function TaskSlideOver({
     }
   };
 
-  const action = async (a: 'enqueue' | 'run-now' | 'cancel' | 'retry' | 'unblock' | 'complete' | 'publish') => {
+  const action = async (
+    a: 'enqueue' | 'run-now' | 'cancel' | 'retry' | 'unblock' | 'complete' | 'publish' | 'queue' | 'unqueue',
+  ) => {
     setErr(null);
     try {
       await api.taskAction(task.id, a);
@@ -491,6 +493,22 @@ export function TaskSlideOver({
                 Enqueue
               </button>
             )}
+            {/* custom queue (docs/queue.md): runs even with the global queue stopped, one task at a time */}
+            {(['draft', 'review', 'failed', 'cancelled'].includes(task.status) ||
+              (task.status === 'queued' && !task.customQueueAt)) && (
+              <button
+                className="btn queue-btn"
+                title="Add to the queue — runs one task at a time, independent of the global queue"
+                onClick={() => action('queue')}
+              >
+                <IconQueue /> Add to queue
+              </button>
+            )}
+            {task.status === 'queued' && task.customQueueAt && (
+              <button className="btn danger" onClick={() => action('unqueue')}>
+                Remove from queue
+              </button>
+            )}
             {['draft', 'queued', 'review', 'failed', 'cancelled'].includes(task.status) && (
               <button className="btn primary" onClick={() => action('run-now')}>
                 <IconPlay /> Run now
@@ -501,7 +519,7 @@ export function TaskSlideOver({
                 Cancel
               </button>
             )}
-            {task.status === 'queued' && (
+            {task.status === 'queued' && !task.customQueueAt && (
               <button className="btn danger" onClick={() => action('cancel')}>
                 Remove from queue
               </button>

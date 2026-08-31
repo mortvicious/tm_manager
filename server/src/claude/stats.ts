@@ -9,6 +9,11 @@ const PRICING: Record<string, [number, number, number, number]> = {
   'claude-fable-5': [15, 75, 18.75, 1.5],
   'claude-sonnet-5': [3, 15, 3.75, 0.3],
   'claude-haiku-4-5': [1, 5, 1.25, 0.1],
+  // Codex runs never populate RunStats (no transcript-parsing hooks — see
+  // isCodexModel/buildWorkerInvocation), so this never actually prices
+  // anything today; it's here so a future codex transcript parser doesn't
+  // silently get billed at opus rates.
+  'codex': [0, 0, 0, 0],
 };
 
 const CONTEXT_WINDOW = 200_000;

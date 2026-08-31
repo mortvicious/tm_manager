@@ -131,6 +131,7 @@
   --tm-preset-small: var(--tm-green-5);
   --tm-preset-routine: var(--tm-blue-5);
   --tm-preset-complex: var(--tm-violet-5);
+  --tm-preset-codexFree: var(--tm-orange-5);
   --tm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
   --tm-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
   --tm-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
@@ -175,6 +176,7 @@
   --tm-preset-small: var(--tm-green-7);
   --tm-preset-routine: var(--tm-blue-7);
   --tm-preset-complex: var(--tm-violet-7);
+  --tm-preset-codexFree: var(--tm-orange-7);
   --tm-shadow-sm: 0 1px 2px rgba(20, 22, 25, 0.07);
   --tm-shadow-md: 0 4px 16px rgba(20, 22, 25, 0.09);
   --tm-shadow-lg: 0 12px 40px rgba(20, 22, 25, 0.14);
@@ -747,6 +749,45 @@ select.field:focus {
   border-color: var(--tm-accent-subtle);
 }
 
+/* custom queue sign (docs/queue.md): "queue #n" while a member waits its
+   turn, a pulsing "queue" while it holds the queue's single slot */
+.chip.queue-chip {
+  gap: 6px;
+  color: var(--tm-accent);
+  border-color: var(--tm-accent-subtle);
+  background: color-mix(in srgb, var(--tm-accent-subtle) 35%, var(--tm-bg-inset));
+  font-weight: 600;
+}
+
+.chip.queue-chip.working {
+  color: var(--tm-status-running);
+}
+
+.chip.queue-chip.holding {
+  color: var(--tm-status-review);
+}
+
+.chip.queue-chip .waiting {
+  color: var(--tm-text-muted);
+  font-weight: 400;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip.queue-chip .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.6s var(--tm-ease-in-out) infinite;
+}
+
+.btn.queue-btn {
+  color: var(--tm-accent);
+}
+
 /* ---------- task groups (docs/grouping.md) ----------
    A group is one task tree. --tm-group is set inline per block from the
    group's colour slot; with group colours off it is simply absent and every
@@ -931,6 +972,15 @@ select.field:focus {
 /* the check means "mark done" on a task in review, not "enqueue" */
 .task-row .quick.affirm:hover {
   color: var(--tm-status-done);
+}
+
+/* custom queue (docs/queue.md): the "remove" variant of the queue quick action */
+.task-row .quick.queued {
+  color: var(--tm-accent);
+}
+
+.task-row .quick.queued:hover {
+  color: var(--tm-status-failed);
 }
 
 .task-row .row-actions {
@@ -1264,6 +1314,10 @@ table.tbl tr:last-child td {
 
 .preset-complex {
   --tm-preset: var(--tm-preset-complex);
+}
+
+.preset-codexFree {
+  --tm-preset: var(--tm-preset-codexFree);
 }
 
 /* `--tm-preset` is unset on the start row, so it falls back to the accent */

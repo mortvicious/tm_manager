@@ -29,7 +29,7 @@ down the pill reads `stopped` and the button becomes **Start server**.
 
    The preset a task ends up with is shown back on the board as a coloured chip: **Small** green, **Routine** blue, **Complex** violet. A task whose model/effort/review match no preset simply has no chip.
 3. **On create** decides what happens the moment you press the button: **Draft** files it and nothing more, **Queue** marks it ready for the orchestrator, **Run now** spawns an agent immediately. The last two need a repo, so they stay disabled until you pick one, and the button renames itself to match.
-4. You can also start a filed task later: **Run now** (immediate) from the task panel or the ▶ on its board row, or **Enqueue** and flip the header switch to **Queue running** — the orchestrator picks tasks up automatically, max 2 at a time.
+4. You can also start a filed task later: **Run now** (immediate) from the task panel or the ▶ on its board row, or **Enqueue** and flip the header switch to **Queue running** — the orchestrator picks tasks up automatically, max 2 at a time. Or **Add to queue** (the ≡ on the row, or the button in the panel): that queue runs on its own even while the header switch is off, strictly one task at a time in the order you added them — the row shows `queue #n` until its turn comes. A finished task that is still in **review** keeps holding its repo's place, so the next queued task from the *same* repo waits for you to Publish or Mark done it (the row says `waiting for …`); for a sequence that should run through unattended, turn on **auto-publish** on those tasks.
 
 ## Where your data lives (persistence)
 

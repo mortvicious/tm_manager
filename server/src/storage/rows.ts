@@ -68,6 +68,7 @@ export function rowToTask(r: any): Task {
     resultSummary: r.result_summary ?? null,
     review: r.review == null ? null : !!Number(r.review),
     autoPublish: !!Number(r.auto_publish ?? 0),
+    customQueueAt: r.custom_queue_at ?? null,
     reviewSummary: r.review_summary ?? null,
     error: r.error ?? null,
     createdAt: r.created_at,
