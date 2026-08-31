@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { liveWindow, readAccountUsage } from './account-usage.ts';
+import type { UsageSnapshot, UsageWindow } from '@tm/shared';
+import { liveWindow, readAccountUsage, type AccountWindow } from './account-usage.ts';
+import type { Storage } from '../storage/types.ts';
 
 // Estimates subscription usage from local claude session transcripts:
 // tokens recorded in ~/.claude/projects/**/*.jsonl, summed over the three
@@ -190,4 +192,52 @@ const OPUS_KEYWORDS =
 
 export function needsFallbackModel(title: string, description: string | null): boolean {
   return OPUS_KEYWORDS.test(`${title} ${description ?? ''}`);
+}
+
+// ---- the header/pill snapshot -------------------------------------------
+//
+// Lives here rather than inside GET /api/usage because it now has two callers:
+// the route and the Telegram bot's /status (docs/telegram.md). The bot calls
+// service functions in-process — never its own HTTP API — so the answer the
+// phone gets and the answer the header gets are the same code, not two
+// wordings of it.
+
+const round1 = (n: number) => Math.round(n * 10) / 10;
+
+/**
+ * Real account utilization wins; the transcript estimate is the fallback for
+ * a window the CLI never cached or whose reset time has already passed.
+ */
+function toUsageWindow(account: AccountWindow | null, tokens: number, budget: number): UsageWindow {
+  const live = liveWindow(account);
+  if (live) {
+    return { pct: round1(live.percent), source: 'account', resetsAt: live.resetsAt, tokens: null, budget: null };
+  }
+  return { pct: round1(pctOf(tokens, budget)), source: 'estimate', resetsAt: null, tokens, budget };
+}
+
+export async function usageSnapshot(storage: Storage): Promise<UsageSnapshot> {
+  const s = await storage.getSettings();
+  const u = await estimateUsage();
+  const acct = readAccountUsage();
+  const fiveHour = toUsageWindow(acct?.session ?? null, u.fiveHourTokens, s['router.budget5hTokens']);
+  const week = toUsageWindow(acct?.weekly ?? null, u.weekTokens, s['router.budgetWeekTokens']);
+  const weekFable = toUsageWindow(acct?.weeklyFable ?? null, u.weekFableTokens, s['router.budgetWeekFableTokens']);
+  // Routing compares against the session/5h window only — the weekly figures
+  // are reporting, not an input to model selection.
+  const belowThreshold = fiveHour.pct < s['router.usageThresholdPct'];
+  return {
+    pct: fiveHour.pct,
+    threshold: s['router.usageThresholdPct'],
+    routedModel: s['router.enabled']
+      ? belowThreshold
+        ? s['router.primaryModel']
+        : s['router.fallbackModel']
+      : s['agent.model'],
+    fiveHour,
+    week,
+    weekFable,
+    // Only meaningful when at least one window actually used the account data.
+    accountAgeMs: [fiveHour, week, weekFable].some((w) => w.source === 'account') && acct ? acct.ageMs : null,
+  };
 }

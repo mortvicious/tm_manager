@@ -23,6 +23,13 @@ export class Orchestrator implements OrchestratorApi {
   private rescheduleRequested = false;
   /** per-task adversarial-review round counter (work→review→work loop). */
   private reviewRounds = new Map<string, number>();
+  /**
+   * Tasks whose adversarial review round is in flight RIGHT NOW. The Telegram
+   * notifier consults this to hold its bare "in review" ping while a verdict
+   * is still minutes away — the alternative (predicting from settings) would
+   * silence entry paths that never run a review (docs/telegram.md).
+   */
+  private readonly pendingReviews = new Set<string>();
   /** runs whose turn is a PUBLISH turn (docs/publish.md): their Stop must land
    *  the task in `published`, not in the human review queue. */
   private publishRuns = new Set<string>();
@@ -977,6 +984,9 @@ export class Orchestrator implements OrchestratorApi {
    * task and broadcasts. Never throws into the caller.
    */
   async reviewCompletedRun(taskId: string): Promise<void> {
+    // Set synchronously on call (the hook route fires this void, milliseconds
+    // after the running → review transition), cleared however the round ends.
+    this.pendingReviews.add(taskId);
     try {
       const task = await this.storage.getTask(taskId);
       if (!task || !task.repoId) return;
@@ -1031,7 +1041,14 @@ export class Orchestrator implements OrchestratorApi {
       }
     } catch (err) {
       console.error('adversarial review failed:', err);
+    } finally {
+      this.pendingReviews.delete(taskId);
     }
+  }
+
+  /** Is an adversarial review round in flight for this task right now? */
+  isReviewPending(taskId: string): boolean {
+    return this.pendingReviews.has(taskId);
   }
 
   /**

@@ -516,6 +516,14 @@ export interface AppSettings {
   'sentry.repoId': string;
   /** Sentry tag key whose value becomes the task category (blank = use issue level) */
   'sentry.categoryTag': string;
+  /**
+   * Telegram long-polling cursor (docs/telegram.md) — bot STATE, not a knob.
+   * It lives here because tm_config is the only key/value table there is, and
+   * the offset has to survive a restart or every pending update replays.
+   * Deliberately absent from the PUT /api/config schema: the settings page
+   * sends only keys it changed, so nothing in the UI can clobber it.
+   */
+  'telegram.updateOffset': number;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -568,6 +576,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'sentry.apiBase': 'https://sentry.io',
   'sentry.repoId': '',
   'sentry.categoryTag': '',
+  'telegram.updateOffset': 0,
 };
 
 // ---- Features (big request → analysis → reviewed plan → approved tasks) ----
@@ -682,9 +691,17 @@ export type AuditKind =
   | 'schedule.spawn-fail'
   | 'boot.recovery'
   | 'agent.create'
-  | 'sentry.sync';
+  | 'sentry.sync'
+  /** a command the Telegram bot handled for the allowlisted owner */
+  | 'telegram.command'
+  /** periodic SUMMARY of updates the single-user gate dropped — deliberately
+   *  not one row per update, or anyone who knows the bot's name could write to
+   *  this table at will (docs/telegram.md) */
+  | 'telegram.rejected'
+  /** bot lifecycle: started (with the boot-discard count) / stopped */
+  | 'telegram.bot';
 
-/** actor: human | hook | orchestrator | system | analyze | agent:<runId8> */
+/** actor: human | hook | orchestrator | system | analyze | telegram | agent:<runId8> */
 export interface AuditEvent {
   id: string; // time-sortable (ms hex prefix + random)
   at: string;

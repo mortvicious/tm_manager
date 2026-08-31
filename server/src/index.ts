@@ -29,6 +29,7 @@ import { registerRunRoutes } from './routes/runs.ts';
 import { registerSettingsRoutes } from './routes/settings.ts';
 import { registerStatsRoutes } from './routes/stats.ts';
 import { registerTaskRoutes } from './routes/tasks.ts';
+import { TelegramBot } from './telegram/bot.ts';
 import { registerEventsWs } from './ws/events.ts';
 import { registerTerminalWs } from './ws/terminal.ts';
 
@@ -193,6 +194,10 @@ app.post('/api/server/restart', async (req, reply) => {
   // Headless agents only ever exist here on the force path — same reasoning.
   commandRunner.stopAll();
   stopAllHeadless();
+  // Abort the in-flight long poll NOW so the socket is not still open when the
+  // teardown below runs; that teardown awaits the same (idempotent) stop, so
+  // the last audit row still lands before storage.close().
+  void telegram.stop();
   reply.send({ ok: true, restarting: true });
   setTimeout(async () => {
     // Under the front door there is already a supervisor watching this pid:
@@ -213,6 +218,7 @@ app.post('/api/server/restart', async (req, reply) => {
     // one must not turn a restart into a permanent stop.
     await Promise.race([
       (async () => {
+        await telegram.stop();
         await app.close();
         await storage.close();
       })().catch(() => {}),
@@ -255,6 +261,12 @@ registerStatsRoutes(app, storage, sessions, orchestrator);
 registerTerminalWs(app, [sessions, commandSessions]);
 registerEventsWs(app);
 
+// The Telegram bot (docs/telegram.md) reaches OUT — it registers no route and
+// opens no port, so it is not part of the Fastify surface at all. Started
+// after the routes so a command that lands in the first second finds a fully
+// wired server; start() never throws and never blocks on the network.
+const telegram = new TelegramBot(cfg.telegram, storage, orchestrator);
+
 // Serve the built SPA when present (production mode). When it is absent this
 // used to register nothing at all, so `/` answered Fastify's default 404 JSON
 // and the browser showed a blank-looking error on a server that was working
@@ -293,6 +305,9 @@ const stop = async () => {
   // do NOT die with us — they would keep spending tokens for nobody.
   commandRunner.stopAll();
   stopAllHeadless();
+  // Awaited, unlike the others: the bot has an in-flight long poll to abort and
+  // a last audit row to write, and both need the storage still open.
+  await telegram.stop();
   await app.close();
   await storage.close();
   process.exit(0);
@@ -350,6 +365,7 @@ if (!servingSpa) {
       `    Development: use \`npm run dev\` (or dev:lan) and open the Vite port 5173 instead.`,
   );
 }
+telegram.start();
 if (!supervised) {
   console.log(
     `  note: \`npm start\` runs the front door on :${cfg.host.port}, which serves the UI and proxies here,\n` +
