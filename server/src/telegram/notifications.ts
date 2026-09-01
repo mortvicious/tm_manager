@@ -69,7 +69,7 @@ export function taskReviewKeyboard(taskId: string): InlineKeyboardMarkup {
       [
         { text: '✅ Mark done', callback_data: encodeAction({ kind: 'task.done', id: taskId }) },
         { text: '🚀 Publish', callback_data: encodeAction({ kind: 'task.publish', id: taskId }) },
-        { text: '▶ Proceed', callback_data: encodeAction({ kind: 'task.proceed', id: taskId }) },
+        { text: '💬 Proceed', callback_data: encodeAction({ kind: 'task.proceed', id: taskId }) },
       ],
     ],
   };

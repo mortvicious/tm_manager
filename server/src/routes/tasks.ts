@@ -1,11 +1,23 @@
 import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
-import { GROUP_COLOR_COUNT, type TaskStatus } from '@tm/shared';
+import { GROUP_COLOR_COUNT } from '@tm/shared';
 import { z } from 'zod';
 import { artifactsRoot } from '../config.ts';
 import { broadcast } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
+import {
+  ENQUEUE_FROM,
+  RETRY_FROM,
+  cancelTask,
+  completeTask,
+  createTask,
+  editTask,
+  enqueueTask,
+  queueAddTask,
+  queueRemoveTask,
+  unblockTask,
+} from '../task-actions.ts';
 
 // Status, error and resultSummary are machine-owned: transitions happen only via
 // the action endpoints and internal hook routes, never through a generic PATCH.
@@ -36,6 +48,11 @@ const taskBody = z
 const taskPatch = taskBody.partial().strict();
 
 export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
+  // The shared action layer (server/src/task-actions.ts) — the same functions
+  // the Telegram bot calls, with 'human' as the actor here. `app.orchestrator`
+  // is read at CALL time, not captured: routes are registered before it exists.
+  const deps = () => ({ storage, orchestrator: app.orchestrator });
+
   app.get('/api/tasks', async (req) => {
     const q = req.query as { status?: any; repoId?: string; parentId?: string; groupId?: string };
     return storage.listTasks({ status: q.status, repoId: q.repoId, parentId: q.parentId, groupId: q.groupId });
@@ -60,52 +77,15 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
 
   app.post('/api/tasks', async (req) => {
     const body = taskBody.parse(req.body);
-    const task = await storage.createTask(body, 'human');
-    broadcast({ type: 'task.updated', task });
-    return task;
+    return createTask(deps(), body, 'human');
   });
 
   app.patch('/api/tasks/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const body = taskPatch.parse(req.body);
-    if (body.parentId === id) return reply.code(400).send({ error: 'a task cannot be its own parent' });
-    const cur = await storage.getTask(id);
-    if (!cur) return reply.code(404).send({ error: 'task not found' });
-    // Naming/colouring is a property of the GROUP, so it is only accepted on
-    // the group's root — otherwise two members could claim different names.
-    const namesGroup = body.groupName !== undefined || body.groupColor !== undefined;
-    const parentAfter = body.parentId === undefined ? cur.parentId : (body.parentId ?? null);
-    if (namesGroup && parentAfter) {
-      return reply
-        .code(400)
-        .send({ error: 'only the root task of a group can be named or coloured — patch the root instead' });
-    }
-    const moving = body.parentId !== undefined && (body.parentId ?? null) !== cur.parentId;
-    if (moving && body.parentId) {
-      const parent = await storage.getTask(body.parentId);
-      if (!parent) return reply.code(400).send({ error: 'parent task not found' });
-      if (parent.groupPath.split('/').includes(id)) {
-        return reply.code(400).send({ error: 'a task cannot be moved under its own descendant' });
-      }
-    }
-    const task = await storage.updateTask(id, body);
-    if (!task) return reply.code(404).send({ error: 'task not found' });
-    await storage.appendEvent({
-      kind: 'task.edited',
-      actor: 'human',
-      taskId: id,
-      repoId: task.repoId,
-      data: { fields: Object.keys(body), ...(moving ? { groupId: task.groupId } : {}) },
-    });
-    broadcast({ type: 'task.updated', task });
-    // A move re-groups the whole subtree; those rows changed too, so clients
-    // that are not about to refresh still see the new grouping.
-    if (moving) {
-      for (const t of await storage.listTasks({ groupId: task.groupId })) {
-        if (t.id !== task.id) broadcast({ type: 'task.updated', task: t });
-      }
-    }
-    return task;
+    const r = await editTask(deps(), id, body, 'human');
+    if ('error' in r) return reply.code(r.code).send({ error: r.error });
+    return r.task;
   });
 
   app.delete('/api/tasks/:id', async (req, reply) => {
@@ -134,124 +114,39 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     return { ok: true };
   });
 
-  // blocked is deliberately NOT enqueueable: split parents leave blocked only
-  // via child resolution or the explicit unblock action (design MAJOR-2).
-  const enqueueFrom: TaskStatus[] = ['draft', 'failed', 'cancelled', 'review'];
-
-  const enqueue = async (
-    id: string,
-    from: TaskStatus[],
-  ): Promise<{ task: import('@tm/shared').Task } | { code: 404 | 409; error: string }> => {
-    const cur = await storage.getTask(id);
-    if (!cur) return { code: 404 as const, error: 'task not found' };
-    if (!cur.repoId) return { code: 409 as const, error: 'assign a repo before running this task' };
-    // Enqueue-from-review while the previous session is alive would make the
-    // claim loop double-spawn into the repo (review R3b).
-    if (await app.orchestrator?.hasLiveSession(id)) {
-      return { code: 409 as const, error: 'previous session is still live — open its terminal or kill it first' };
-    }
-    // Enqueue/retry mean the GLOBAL queue: leaving the custom queue is part of
-    // the transition, cleared FIRST so the custom pump cannot claim the row in
-    // between (a stale timestamp would also put a retried task at the head).
-    // Only once the status is known to be accepted, though — a refused call
-    // must not quietly move a waiting member into the global queue (review R3).
-    if (!from.includes(cur.status)) return { code: 409 as const, error: `cannot enqueue from status '${cur.status}'` };
-    if (cur.customQueueAt && !(await storage.updateTask(id, { customQueueAt: null }))) {
-      return { code: 404 as const, error: 'task not found' };
-    }
-    const task = await storage.transitionTask(id, from, 'queued', 'human', { error: null });
-    if (!task) {
-      // Lost a race with a status change since the check above: put the mark
-      // back (a member that is now e.g. running keeps its slot semantics).
-      if (cur.customQueueAt) {
-        const restored = await storage.updateTask(id, { customQueueAt: cur.customQueueAt });
-        if (restored) broadcast({ type: 'task.updated', task: restored });
-      }
-      return { code: 409 as const, error: `cannot enqueue from status '${cur.status}'` };
-    }
-    broadcast({ type: 'task.updated', task });
-    app.orchestrator?.maybeSchedule();
-    return { task };
-  };
-
-  // Custom queue (docs/queue.md): "Add to queue" — independent of the global
-  // orchestrator switch, strictly one task at a time, FIFO by this click. A
-  // task already `queued` for the global queue simply moves over; anything
-  // else takes the same enqueue transition (and the same guards).
   app.post('/api/tasks/:id/queue', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const cur = await storage.getTask(id);
-    if (!cur) return reply.code(404).send({ error: 'task not found' });
-    if (!cur.repoId) return reply.code(409).send({ error: 'assign a repo before queueing this task' });
-    if (cur.status === 'queued' && cur.customQueueAt) return reply.code(409).send({ error: 'already in the queue' });
-    if (cur.status !== 'queued' && !enqueueFrom.includes(cur.status)) {
-      return reply.code(409).send({ error: `cannot add to the queue from status '${cur.status}'` });
-    }
-    if (await app.orchestrator?.hasLiveSession(id)) {
-      return reply.code(409).send({ error: 'previous session is still live — open its terminal or kill it first' });
-    }
-    // Membership FIRST, then the status transition: a row that is `queued`
-    // without the mark belongs to the global claim loop, which must never see
-    // this one even for an instant.
-    const marked = await storage.updateTask(id, { customQueueAt: new Date().toISOString() });
-    if (!marked) return reply.code(404).send({ error: 'task not found' });
-    let task = marked;
-    if (cur.status !== 'queued') {
-      const moved = await storage.transitionTask(id, enqueueFrom, 'queued', 'human', { error: null });
-      if (!moved) {
-        await storage.updateTask(id, { customQueueAt: null });
-        return reply.code(409).send({ error: `cannot add to the queue from status '${cur.status}'` });
-      }
-      task = moved;
-    }
-    await storage.appendEvent({ kind: 'task.queue', actor: 'human', taskId: id, repoId: task.repoId, data: { queue: 'custom', action: 'add' } });
-    broadcast({ type: 'task.updated', task });
-    app.orchestrator?.maybeSchedule();
-    return task;
+    const r = await queueAddTask(deps(), id, 'human');
+    if ('error' in r) return reply.code(r.code).send({ error: r.error });
+    return r.task;
   });
 
-  // "Remove from queue": a waiting member is cancelled exactly like a global
-  // queue removal; a member that already ran just drops its mark.
   app.post('/api/tasks/:id/unqueue', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const cur = await storage.getTask(id);
-    if (!cur) return reply.code(404).send({ error: 'task not found' });
-    if (!cur.customQueueAt) return reply.code(409).send({ error: 'task is not in the queue' });
-    let task = await storage.updateTask(id, { customQueueAt: null });
-    if (!task) return reply.code(404).send({ error: 'task not found' });
-    if (task.status === 'queued') {
-      const dequeued = await storage.transitionTask(id, ['queued'], 'cancelled', 'human');
-      if (dequeued) {
-        task = dequeued;
-        await app.orchestrator?.resolveCompletion(dequeued);
-      }
-    }
-    await storage.appendEvent({ kind: 'task.queue', actor: 'human', taskId: id, repoId: task.repoId, data: { queue: 'custom', action: 'remove' } });
-    broadcast({ type: 'task.updated', task });
-    app.orchestrator?.maybeSchedule(); // a running member keeps running; the queue itself may move on
-    return task;
+    const r = await queueRemoveTask(deps(), id, 'human');
+    if ('error' in r) return reply.code(r.code).send({ error: r.error });
+    return r.task;
   });
 
   app.post('/api/tasks/:id/enqueue', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const r = await enqueue(id, enqueueFrom);
+    const r = await enqueueTask(deps(), id, ENQUEUE_FROM, 'human');
     if ('error' in r) return reply.code(r.code).send({ error: r.error });
     return r.task;
   });
 
   app.post('/api/tasks/:id/retry', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const r = await enqueue(id, ['failed', 'cancelled']);
+    const r = await enqueueTask(deps(), id, RETRY_FROM, 'human');
     if ('error' in r) return reply.code(r.code).send({ error: r.error });
     return r.task;
   });
 
   app.post('/api/tasks/:id/unblock', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const task = await storage.transitionTask(id, ['blocked'], 'review', 'human', { error: null });
-    if (!task) return reply.code(409).send({ error: 'task is not blocked' });
-    broadcast({ type: 'task.updated', task });
-    return task;
+    const r = await unblockTask(deps(), id, 'human');
+    if ('error' in r) return reply.code(r.code).send({ error: r.error });
+    return r.task;
   });
 
   app.post('/api/tasks/:id/run-now', async (req, reply) => {
@@ -262,16 +157,11 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     return result.task;
   });
 
-  // review → done: the only sanctioned human "complete" transition (R13).
-  // Completing also closes the task's idle terminal — done means done.
   app.post('/api/tasks/:id/complete', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const task = await storage.transitionTask(id, ['review'], 'done', 'human');
-    if (!task) return reply.code(409).send({ error: 'task is not in review' });
-    broadcast({ type: 'task.updated', task });
-    await app.orchestrator?.closeTaskSessions(id);
-    await app.orchestrator?.resolveCompletion(task); // done child may unblock a split parent
-    return task;
+    const r = await completeTask(deps(), id, 'human');
+    if ('error' in r) return reply.code(r.code).send({ error: r.error });
+    return r.task;
   });
 
   // review → published: commit + push the work, in the agent's own session.
@@ -448,16 +338,8 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
 
   app.post('/api/tasks/:id/cancel', async (req, reply) => {
     const { id } = req.params as { id: string };
-    // Queued tasks can be de-queued without the orchestrator (R12).
-    const dequeued = await storage.transitionTask(id, ['queued'], 'cancelled', 'human');
-    if (dequeued) {
-      broadcast({ type: 'task.updated', task: dequeued });
-      await app.orchestrator?.resolveCompletion(dequeued); // cancelled child resolves its parent (F2)
-      return dequeued;
-    }
-    if (!app.orchestrator) return reply.code(503).send({ error: 'orchestrator not ready' });
-    const result = await app.orchestrator.cancel(id);
-    if ('error' in result) return reply.code(result.code).send({ error: result.error });
-    return result.task;
+    const r = await cancelTask(deps(), id, 'human');
+    if ('error' in r) return reply.code(r.code).send({ error: r.error });
+    return r.task;
   });
 }

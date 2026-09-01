@@ -185,6 +185,31 @@ export function chunkMessage(text: string, max = MAX_MESSAGE_CHARS): string[] {
   return out;
 }
 
+/**
+ * What a command handler or a flow step hands back: the HTML to send, and
+ * optionally the inline keyboard that rides its last chunk. A bare string is
+ * the common case and stays legal everywhere a `Reply` is accepted.
+ */
+export interface Reply {
+  html: string;
+  keyboard?: InlineKeyboardMarkup;
+  /**
+   * Whether the WRITE behind this reply succeeded. Absent means "nothing was
+   * written, or it worked" — the audit trail reads `ok !== false`. A refusal
+   * ("cannot enqueue from status 'running'") is a perfectly good sentence to
+   * send AND a failed action, and conflating the two is how `tm_events` ends up
+   * answering "did /publish publish?" differently depending on whether the
+   * owner typed the command or tapped the button.
+   */
+  ok?: boolean;
+}
+
+export type ReplyLike = string | Reply;
+
+export function toReply(r: ReplyLike): Reply {
+  return typeof r === 'string' ? { html: r } : r;
+}
+
 export interface CallOptions {
   /** per-request ceiling; the long poll passes its own, much larger. */
   timeoutMs?: number;

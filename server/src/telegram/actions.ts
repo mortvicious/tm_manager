@@ -1,6 +1,23 @@
+import type { Task } from '@tm/shared';
+import type { ActionResult } from '../app-types.ts';
+import { startFeatureAnalysis } from '../claude/feature-analysis.ts';
 import { broadcast } from '../events.ts';
 import type { Orchestrator } from '../orchestrator.ts';
-import type { Storage } from '../storage/types.ts';
+import type { NewTask, Storage } from '../storage/types.ts';
+import {
+  ENQUEUE_FROM,
+  RETRY_FROM,
+  cancelTask as svcCancelTask,
+  completeTask as svcCompleteTask,
+  createTask as svcCreateTask,
+  editTask as svcEditTask,
+  enqueueTask as svcEnqueueTask,
+  queueAddTask as svcQueueAdd,
+  queueRemoveTask as svcQueueRemove,
+  unblockTask as svcUnblock,
+  type TaskEdit,
+} from '../task-actions.ts';
+import { short } from './ids.ts';
 
 // The action layer both the notification buttons and the command handlers
 // (task 3) share — one implementation per action, mirroring what the REST
@@ -23,14 +40,135 @@ export interface ActionOutcome {
 const fail = (text: string): ActionOutcome => ({ ok: false, text });
 const done = (text: string): ActionOutcome => ({ ok: true, text });
 
+/**
+ * Everything below delegates to server/src/task-actions.ts — the SAME
+ * functions the REST routes call, with 'telegram' as the actor instead of
+ * 'human'. This file's job is only to turn an `ActionResult` into the sentence
+ * a chat message wants; the transition, the broadcast and the audit row are
+ * the service's, so the phone and the browser cannot drift apart.
+ */
+function outcome(r: ActionResult, say: (t: Task) => string): ActionOutcome {
+  return 'error' in r ? fail(r.error) : done(say(r.task));
+}
+
 /** review → done, the same move as POST /api/tasks/:id/complete. */
 export async function completeTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
-  const task = await deps.storage.transitionTask(taskId, ['review'], 'done', actor);
-  if (!task) return fail('task is not in review (already handled?)');
-  broadcast({ type: 'task.updated', task });
-  await deps.orchestrator.closeTaskSessions(taskId, actor);
-  await deps.orchestrator.resolveCompletion(task, actor);
-  return done(`“${task.title}” marked done.`);
+  const r = await svcCompleteTask(deps, taskId, actor);
+  if ('error' in r) return fail(r.error === 'task is not in review' ? 'task is not in review (already handled?)' : r.error);
+  return done(`“${r.task.title}” marked done.`);
+}
+
+/** POST /api/tasks/:id/enqueue — into the GLOBAL queue. */
+export async function enqueueTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  return outcome(await svcEnqueueTask(deps, taskId, ENQUEUE_FROM, actor), (t) => `“${t.title}” is queued.`);
+}
+
+/** POST /api/tasks/:id/retry — the same move, from failed/cancelled only. */
+export async function retryTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  return outcome(await svcEnqueueTask(deps, taskId, RETRY_FROM, actor), (t) => `“${t.title}” is queued for a retry.`);
+}
+
+/** POST /api/tasks/:id/run-now — jump the queue, spawn an agent now. */
+export async function runNowTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  return outcome(await deps.orchestrator.runNow(taskId, actor), (t) => `“${t.title}” is running.`);
+}
+
+/** POST /api/tasks/:id/cancel — de-queue, or kill the session and cancel. */
+export async function cancelTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  return outcome(await svcCancelTask(deps, taskId, actor), (t) => `“${t.title}” cancelled.`);
+}
+
+/** POST /api/tasks/:id/unblock — blocked → review. */
+export async function unblockTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  return outcome(await svcUnblock(deps, taskId, actor), (t) => `“${t.title}” is back in review.`);
+}
+
+/** POST /api/tasks/:id/queue — the serial custom queue (docs/queue.md). */
+export async function queueAdd(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  return outcome(await svcQueueAdd(deps, taskId, actor), (t) => `“${t.title}” added to the custom queue.`);
+}
+
+/** POST /api/tasks/:id/unqueue. */
+export async function queueRemove(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  return outcome(await svcQueueRemove(deps, taskId, actor), (t) => `“${t.title}” removed from the custom queue.`);
+}
+
+/** POST /api/tasks — the end of the /new flow. */
+export async function createTask(deps: ActionDeps, input: NewTask, actor: string): Promise<Task> {
+  return svcCreateTask(deps, input, actor);
+}
+
+/** PATCH /api/tasks/:id — the end of an /edit step. */
+export async function editTask(
+  deps: ActionDeps,
+  taskId: string,
+  patch: TaskEdit,
+  actor: string,
+): Promise<ActionOutcome> {
+  return outcome(await svcEditTask(deps, taskId, patch, actor), (t) => `“${t.title}” updated.`);
+}
+
+/**
+ * POST /api/runs/:id/kill. The guard is the route's: a run that is not live
+ * cannot be killed, and a live row whose session is already gone says so
+ * rather than reporting a kill that did not happen.
+ */
+export async function killRun(deps: ActionDeps, runId: string, actor: string): Promise<ActionOutcome> {
+  const run = await deps.storage.getRun(runId);
+  if (!run) return fail('run not found');
+  if (run.status !== 'running') return fail(`run is not live (it is ${run.status})`);
+  const killed = await deps.orchestrator.killRun(runId, actor);
+  if (!killed) return fail('session already gone');
+  return done(`Run ${short(runId)} killed.`);
+}
+
+/**
+ * POST /api/orchestrator/start|stop. `setEnabled` writes the setting, the
+ * audit row and the broadcast itself — /on and /off are one call each.
+ */
+export async function setQueueEnabled(deps: ActionDeps, enabled: boolean, actor: string): Promise<ActionOutcome> {
+  const before = await deps.orchestrator.status();
+  if (before.enabled === enabled) return done(`The queue is already ${enabled ? 'running' : 'stopped'}.`);
+  await deps.orchestrator.setEnabled(enabled, actor);
+  return done(
+    enabled
+      ? 'Queue started — picking tasks again.'
+      : 'Queue stopped — no new tasks will be picked. Live sessions keep running (/kill ends one).',
+  );
+}
+
+/**
+ * The /feature intake: create the feature and immediately start the headless
+ * analysis, because on a phone the two are never separate acts. Mirrors
+ * POST /api/features + POST /api/features/:id/analyze, including the
+ * transition-as-a-lock and the revert when the spawn throws.
+ */
+export async function createAndAnalyzeFeature(
+  deps: ActionDeps,
+  input: { repoId: string; title: string; request: string },
+  actor: string,
+): Promise<ActionOutcome> {
+  const repo = await deps.storage.getRepo(input.repoId);
+  if (!repo) return fail('repo not found');
+  if (!input.request.trim()) return fail('the request is empty');
+  const feature = await deps.storage.createFeature(input, actor);
+  broadcast({ type: 'feature.updated', feature });
+  const analyzing = await deps.storage.transitionFeature(feature.id, ['draft'], 'analyzing', actor, { error: null });
+  if (!analyzing) return fail(`created ${short(feature.id)}, but it could not start analysing`);
+  broadcast({ type: 'feature.updated', feature: analyzing });
+  try {
+    await startFeatureAnalysis({ storage: deps.storage }, analyzing, repo, {});
+  } catch (e) {
+    const reverted = await deps.storage.transitionFeature(feature.id, ['analyzing'], 'failed', 'system', {
+      error: `could not start the analysis: ${(e as Error).message}`,
+    });
+    if (reverted) broadcast({ type: 'feature.updated', feature: reverted });
+    return fail(`could not start the analysis: ${(e as Error).message}`);
+  }
+  return done(
+    `Feature “${feature.title}” (${short(feature.id)}) is being analysed — ` +
+      `the plan comes back here with an Approve button.`,
+  );
 }
 
 /** review → published via the task's own session (POST /api/tasks/:id/publish). */
@@ -38,6 +176,25 @@ export async function publishTask(deps: ActionDeps, taskId: string, actor: strin
   const result = await deps.orchestrator.publish(taskId, actor);
   if ('error' in result) return fail(result.error);
   return done(`Publish turn started for “${result.task.title}” — you'll get the landing status.`);
+}
+
+/**
+ * POST /api/tasks/:id/follow-up — the web drawer's "Send follow-up" field.
+ * Mode 'auto' is the difference that matters: it resumes when there IS a
+ * session and otherwise spawns a FRESH worker carrying the message in its
+ * prompt, where `proceed` (mode 'resume') refuses. Without this the bot had no
+ * way to instruct a task whose transcript had been pruned — `/run` starts an
+ * agent off the description and discards whatever the human typed.
+ */
+export async function followUpTask(
+  deps: ActionDeps,
+  taskId: string,
+  message: string,
+  actor: string,
+): Promise<ActionOutcome> {
+  const result = await deps.orchestrator.followUp(taskId, message, actor, 'auto');
+  if ('error' in result) return fail(result.error);
+  return done(`“${result.task.title}” picked up your instruction in a fresh session.`);
 }
 
 /** Resume the task's previous claude session (POST /api/tasks/:id/proceed). */
@@ -111,18 +268,34 @@ export type ButtonAction =
   | { kind: 'task.done'; id: string }
   | { kind: 'task.publish'; id: string }
   | { kind: 'task.proceed'; id: string }
+  | { kind: 'task.enqueue'; id: string }
+  | { kind: 'task.run'; id: string }
+  | { kind: 'task.cancel'; id: string }
+  | { kind: 'task.retry'; id: string }
+  | { kind: 'task.unblock'; id: string }
+  | { kind: 'task.queueAdd'; id: string }
+  | { kind: 'task.queueRemove'; id: string }
   /** `option` set = "accept, choosing THIS solution option" (0-based) */
   | { kind: 'proposal.accept'; id: string; option?: number }
   | { kind: 'proposal.reject'; id: string }
-  | { kind: 'feature.approve'; id: string };
+  | { kind: 'feature.approve'; id: string }
+  | { kind: 'run.kill'; id: string };
 
 const WIRE: Record<ButtonAction['kind'], string> = {
   'task.done': 't:done',
   'task.publish': 't:pub',
   'task.proceed': 't:go',
+  'task.enqueue': 't:enq',
+  'task.run': 't:run',
+  'task.cancel': 't:can',
+  'task.retry': 't:rty',
+  'task.unblock': 't:unb',
+  'task.queueAdd': 't:qadd',
+  'task.queueRemove': 't:qrm',
   'proposal.accept': 'p:acc',
   'proposal.reject': 'p:rej',
   'feature.approve': 'f:ok',
+  'run.kill': 'r:kill',
 };
 const FROM_WIRE = new Map(Object.entries(WIRE).map(([k, v]) => [v, k as ButtonAction['kind']]));
 
@@ -154,6 +327,22 @@ export function runButtonAction(deps: ActionDeps, a: ButtonAction, actor: string
       return publishTask(deps, a.id, actor);
     case 'task.proceed':
       return proceedTask(deps, a.id, actor);
+    case 'task.enqueue':
+      return enqueueTask(deps, a.id, actor);
+    case 'task.run':
+      return runNowTask(deps, a.id, actor);
+    case 'task.cancel':
+      return cancelTask(deps, a.id, actor);
+    case 'task.retry':
+      return retryTask(deps, a.id, actor);
+    case 'task.unblock':
+      return unblockTask(deps, a.id, actor);
+    case 'task.queueAdd':
+      return queueAdd(deps, a.id, actor);
+    case 'task.queueRemove':
+      return queueRemove(deps, a.id, actor);
+    case 'run.kill':
+      return killRun(deps, a.id, actor);
     case 'proposal.accept':
       return acceptProposal(deps, a.id, actor, a.option);
     case 'proposal.reject':

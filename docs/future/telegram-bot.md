@@ -62,10 +62,9 @@ Coalesce bursts (one message per task per 5s), respect Telegram's 4096-char cap 
 
 ### Reports — long text as HTML, readable in Telegram
 
-Anything longer than a few lines is not a chat message; it is an **HTML report** delivered two ways from the same source:
+Anything longer than a few lines is not a chat message; it is a **self-contained HTML report** sent with `sendDocument` — the `.html` file opens in Telegram itself (in-app viewer / built-in browser) and in any browser. Inline CSS resolved from the `--tm-*` token values, dark default, zero external assets, mobile viewport. The chat message alongside the file carries the Russian summary lines, so the gist is readable without opening anything.
 
-1. **`sendDocument`** — the `.html` file, self-contained (inline CSS resolved from the `--tm-*` token values, dark default), opens in any browser.
-2. **Telegraph** — the same content posted through the `telegra.ph` API (`createPage`; one anonymous account token created on first use and stored in config), sent as a link that opens natively as Instant View. Keep the markup inside Telegraph's supported subset (`p h3 h4 b i a ul ol li blockquote code pre hr`) so one document serves both.
+**Telegraph was considered and rejected (2026-09-01, user decision): Telegraph pages are public URLs, and these reports contain private work detail.** Nothing leaves the machine except the Telegram file upload itself. The upside of dropping it: the markup is no longer constrained to Telegraph's tag subset — full HTML/CSS is available.
 
 Report shape, top to bottom:
 
@@ -83,5 +82,5 @@ Scopes: period (`24h`/`7d`), one task (its full run history), one feature (phase
 2. **Notifications** — event-bus subscriber, coalescing, chunking, mute config, action buttons.
 3. **Full command coverage** — every action in the table, conversational flows, inline keyboards, preset/agent-param selection.
 4. **Red button** — `/killall` with confirm window, `/off`, `/restart`, what-was-killed answer, rate limit, audit.
-5. **Reports** — HTML generator, Telegraph publisher, `sendDocument`, `/report` scopes, daily digest.
+5. **Reports** — HTML generator, `sendDocument` (no Telegraph — public), `/report` scopes, daily digest.
 6. **Workbook** — `docs/telegram.md`: BotFather → token → find your user id → config → enable → verify; `setMyCommands`; privacy mode; the Mac-as-server checklist (`caffeinate`/`pmset`, `launchd` KeepAlive, FileVault caveat); troubleshooting; `decisions.md` entry.

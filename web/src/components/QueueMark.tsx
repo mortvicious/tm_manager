@@ -1,4 +1,4 @@
-import { CUSTOM_QUEUE_IN_FLIGHT_STATUSES, type Task } from '@tm/shared';
+import { CUSTOM_QUEUE_IN_FLIGHT_STATUSES, customQueueWaiting, type Task } from '@tm/shared';
 
 /**
  * Members of the custom queue (docs/queue.md) that are still waiting, in the
@@ -6,12 +6,12 @@ import { CUSTOM_QUEUE_IN_FLIGHT_STATUSES, type Task } from '@tm/shared';
  * the same way (storage/queue-sql.ts), so the position shown is the position
  * the orchestrator will honour — except that a member whose repo has another
  * member in flight is skipped over until that one is resolved (see below).
+ *
+ * The implementation moved to `@tm/shared` so the Telegram bot's `/task` and
+ * `/queue` compute the SAME ordinal; re-exported here because the board and
+ * the Queue page have always imported it from this module.
  */
-export function customQueueWaiting(tasks: Task[]): Task[] {
-  return tasks
-    .filter((t) => t.status === 'queued' && !!t.customQueueAt)
-    .sort((a, b) => a.customQueueAt!.localeCompare(b.customQueueAt!) || a.createdAt.localeCompare(b.createdAt));
-}
+export { customQueueWaiting };
 
 /** The same-repo member this waiting member is blocked behind, if any. */
 export function customQueueBlocker(task: Task, tasks: Task[]): Task | undefined {

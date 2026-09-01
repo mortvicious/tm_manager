@@ -2,8 +2,18 @@ import { saveTelegramNotify, type TelegramConfig } from '../config.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { Storage } from '../storage/types.ts';
 import { parseActionData, runButtonAction, type ActionOutcome } from './actions.ts';
-import { TelegramApi, TelegramApiError, escapeHtml } from './api.ts';
+import { TelegramApi, TelegramApiError, escapeHtml, toReply, type Reply } from './api.ts';
 import { commandSpecs, findCommand, parseCommand, unknownCommandReply } from './commands.ts';
+import {
+  FlowStore,
+  handleFlowButton,
+  handleFlowText,
+  offerDraft,
+  parseFlowData,
+  startProceed,
+  type Flow,
+  type FlowButton,
+} from './flows.ts';
 import { TelegramNotifier } from './notifications.ts';
 import { formatClock, type GateCounters } from './status.ts';
 import type { InlineKeyboardMarkup, TelegramCallbackQuery, TelegramUpdate } from './types.ts';
@@ -41,8 +51,24 @@ const REJECT_AUDIT_INTERVAL_MS = 10 * 60_000;
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/** Every row this module writes carries it; the gate guarantees one human. */
+const ACTOR = 'telegram';
+
 /** BotFather's shape: `<numeric bot id>:<secret>`. */
 const TOKEN_RE = /^\d+:[A-Za-z0-9_-]{20,}$/;
+
+/**
+ * The line that announces a flow this command threw away. Empty when nothing
+ * was dropped, and empty for a pending draft OFFER: that is a proposal the bot
+ * made about a stray message, not work the human was part-way through, and it
+ * created nothing — announcing its loss would put noise in front of every
+ * command typed after a stray message.
+ */
+function dropNote(dropped: Flow | null): string {
+  return dropped && dropped.kind !== 'draft'
+    ? `<i>(dropped the unfinished /${escapeHtml(dropped.kind)})</i>\n\n`
+    : '';
+}
 
 /** Unix seconds the update describes, or null when it carries no usable time. */
 function updateTimestamp(u: TelegramUpdate): number | null {
@@ -88,6 +114,12 @@ export class TelegramBot {
   private fatal = false;
 
   private readonly notifier: TelegramNotifier;
+  /**
+   * The single conversational flow (docs/telegram.md § Conversations). One
+   * user means one flow; it lives in memory and dies with the process, which
+   * is the same rule the boot-discard filter enforces for updates.
+   */
+  private readonly flows = new FlowStore();
 
   constructor(
     private readonly cfg: TelegramConfig,
@@ -276,7 +308,7 @@ export class TelegramBot {
       else fresh.push(u);
     }
     await this.sendBootMessage();
-    for (const u of fresh) await this.dispatch(u);
+    for (const u of fresh) await this.safeDispatch(u);
   }
 
   private async pollLoop(): Promise<void> {
@@ -318,8 +350,34 @@ export class TelegramBot {
           this.counters.discardedLate++;
           continue;
         }
-        await this.dispatch(u);
+        await this.safeDispatch(u);
       }
+    }
+  }
+
+  /**
+   * The last line of defence around update handling. Every path inside
+   * `dispatch()` guards itself, but "every path" is a claim that has to stay
+   * true as paths are added — and it did not: the `task.proceed` button branch
+   * shipped without one, and a `SQLITE_BUSY` on the `getTask` behind it would
+   * have propagated out of `dispatch` → `pollLoop` → `run()` into `start()`'s
+   * `.catch`, which only logs. `running` stays true, nothing restarts the
+   * loop, and the bot goes silent until the server is restarted — with no
+   * message to the phone.
+   *
+   * So the guard lives at the loop instead, where it covers the paths that do
+   * not exist yet. The offset has already been advanced and persisted, so the
+   * update is not retried; one broken update must not cost the next one.
+   */
+  private async safeDispatch(u: TelegramUpdate): Promise<void> {
+    try {
+      await this.dispatch(u);
+    } catch (e) {
+      console.error('telegram: dispatch failed:', errText(e));
+      await this.audit('telegram.command', { command: null, ok: false, error: errText(e) });
+      // Best-effort: say something rather than swallowing the update in
+      // silence. `send()` never throws, so this cannot re-enter the failure.
+      await this.send(this.cfg.allowedUserId, `⚠ Something went wrong handling that: ${escapeHtml(errText(e))}`);
     }
   }
 
@@ -377,10 +435,7 @@ export class TelegramBot {
       return;
     }
     if (!parsed) {
-      // Free text is deliberately inert in this build: docs/telegram.md keeps
-      // "a bare message becomes a draft task" behind an explicit confirm.
-      await this.audit('telegram.command', { command: null, ignored: 'free text' });
-      await this.send(msg.chat.id, 'Not a command. Send /help for the list.');
+      await this.handleFreeText(msg.chat.id, msg.text);
       return;
     }
     if (parsed.to && this.username && parsed.to.toLowerCase() !== this.username.toLowerCase()) {
@@ -394,35 +449,111 @@ export class TelegramBot {
       await this.send(msg.chat.id, unknownCommandReply(parsed.name));
       return;
     }
-    let reply: string;
+    // A command ALWAYS wins over a half-finished conversation: typing /status
+    // in the middle of /new is a person changing their mind, not the title of
+    // a task. Dropped rather than stacked, and said out loud so the abandoned
+    // flow is never a surprise.
+    const live = this.flows.get();
+    const keepsFlow = cmd.command === 'help' || cmd.command === 'status';
+    // `dropped` is what this command ACTUALLY threw away — null when there was
+    // no flow, and null for the read-only commands that leave one running.
+    // Reading the store again after the handler cannot answer that: the clear
+    // has happened and any flow found afterwards is the new one.
+    const dropped = live && !keepsFlow ? live : null;
+    if (dropped) this.flows.clear();
+
+    let reply: Reply;
     try {
-      reply = await cmd.handler({
-        storage: this.storage,
-        orchestrator: this.orchestrator,
-        counters: this.counters,
-        bootedAt: this.bootedAt,
-        notify: this.cfg.notify,
-        persistNotify: () => {
-          try {
-            saveTelegramNotify(this.cfg.notify);
-            return null;
-          } catch (e) {
-            return errText(e);
-          }
-        },
-        args: parsed.args,
-        message: msg,
-      });
+      reply = toReply(
+        await cmd.handler({
+          storage: this.storage,
+          orchestrator: this.orchestrator,
+          counters: this.counters,
+          bootedAt: this.bootedAt,
+          notify: this.cfg.notify,
+          persistNotify: () => {
+            try {
+              saveTelegramNotify(this.cfg.notify);
+              return null;
+            } catch (e) {
+              return errText(e);
+            }
+          },
+          flows: this.flows,
+          actor: ACTOR,
+          args: parsed.args,
+          message: msg,
+        }),
+      );
     } catch (e) {
       console.error(`telegram: /${parsed.name} failed:`, errText(e));
       await this.audit('telegram.command', { command: parsed.name, ok: false, error: errText(e) });
-      await this.send(msg.chat.id, `⚠ <b>/${escapeHtml(parsed.name)}</b> failed: ${escapeHtml(errText(e))}`);
+      // The drop already happened, above, before the handler ran — so the
+      // failure path owes the same note as the success path. Without it a
+      // half-finished /new dropped by a command that then threw vanishes with
+      // no mention, which is precisely the surprise the note exists to prevent.
+      await this.send(
+        msg.chat.id,
+        dropNote(dropped) + `⚠ <b>/${escapeHtml(parsed.name)}</b> failed: ${escapeHtml(errText(e))}`,
+      );
       return;
     }
     // Audited BEFORE the send: the row records that the server acted, which is
     // true even if Telegram then refuses to deliver the answer.
-    await this.audit('telegram.command', { command: parsed.name, ok: true, args: parsed.args || null });
-    await this.send(msg.chat.id, reply);
+    // `reply.ok` is the WRITE's outcome. A handler that answers
+    // "⚠ cannot enqueue from status 'running'" returned normally but performed
+    // nothing, and the same refusal pressed as a BUTTON already audits
+    // ok: false — one surface must not disagree with the other about whether
+    // /publish published.
+    await this.audit('telegram.command', {
+      command: parsed.name,
+      ok: reply.ok !== false,
+      args: parsed.args || null,
+    });
+    await this.send(msg.chat.id, dropNote(dropped) + reply.html, reply.keyboard);
+  }
+
+  /**
+   * A message that is not a command. Either it answers the step a flow is
+   * waiting on, or it is a bare thought — and a bare thought never becomes a
+   * task on its own: docs/telegram.md keeps that behind an explicit confirm
+   * button, because "I was thinking out loud" and "queue this" look identical
+   * in a chat window.
+   */
+  private async handleFreeText(chatId: number, text: string): Promise<void> {
+    const flow = this.flows.get();
+    let reply: { html: string; keyboard?: InlineKeyboardMarkup };
+    try {
+      const answered = await handleFlowText(this.flowDeps(), this.flows, text);
+      if (answered) {
+        // `answered.ok` is the WRITE's outcome, not "a step ran" — a refused
+        // edit still produces a perfectly good sentence, and the audit row
+        // must not call that a success.
+        await this.audit('telegram.command', {
+          command: `flow:${flow?.kind}:${flow?.step}`,
+          ok: answered.ok,
+        });
+        reply = answered.reply;
+      } else if (flow) {
+        // A flow is live but waiting for a BUTTON. Saying so beats swallowing
+        // what was typed into a field it was never meant for.
+        await this.audit('telegram.command', { command: null, ignored: 'flow expects a button' });
+        reply = { html: 'Use the buttons above, or ✕ Cancel to start over.' };
+      } else {
+        await this.audit('telegram.command', { command: null, ignored: 'free text' });
+        reply = offerDraft(this.flows, text);
+      }
+    } catch (e) {
+      console.error('telegram: flow step failed:', errText(e));
+      this.flows.clear();
+      await this.audit('telegram.command', { command: `flow:${flow?.kind}`, ok: false, error: errText(e) });
+      reply = { html: `⚠ That step failed: ${escapeHtml(errText(e))}` };
+    }
+    await this.send(chatId, reply.html, reply.keyboard);
+  }
+
+  private flowDeps() {
+    return { storage: this.storage, orchestrator: this.orchestrator, actor: ACTOR };
   }
 
   /**
@@ -443,15 +574,35 @@ export class TelegramBot {
       await this.countRejection(from?.id ?? null);
       return;
     }
+    // Wizard buttons first. They live in their own `w:` namespace precisely so
+    // a stale one can be REFUSED (the flow it belonged to is gone) instead of
+    // being misread as one of the stateless action buttons, which stay valid
+    // forever — a Publish button on a week-old notification still means one
+    // thing, a "pick this repo" button does not.
+    const flowButton = cb.data ? parseFlowData(cb.data) : null;
+    if (flowButton) {
+      await this.handleFlowPress(cb, flowButton);
+      return;
+    }
     const action = cb.data ? parseActionData(cb.data) : null;
     if (!action) {
       await this.audit('telegram.command', { command: 'button', ignored: 'unparseable callback data' });
       await this.answerCallback(cb.id, 'Unknown button');
       return;
     }
+    // Proceed is a conversation, not a one-tap action. `/proceed <id>` with no
+    // text deliberately asks what to do next rather than resuming with the
+    // generic "carry on from where you left off"; a button that did the latter
+    // would undo that rule from the other side, one tap at a time. So the
+    // button starts the same flow — and gets the same "is there a session to
+    // resume" pre-check.
+    if (action.kind === 'task.proceed') {
+      await this.startProceedFromButton(cb, action.id);
+      return;
+    }
     let outcome: ActionOutcome;
     try {
-      outcome = await runButtonAction({ storage: this.storage, orchestrator: this.orchestrator }, action, 'telegram');
+      outcome = await runButtonAction({ storage: this.storage, orchestrator: this.orchestrator }, action, ACTOR);
     } catch (e) {
       outcome = { ok: false, text: errText(e) };
     }
@@ -465,6 +616,73 @@ export class TelegramBot {
     });
     await this.answerCallback(cb.id, outcome.ok ? 'Done' : 'Failed');
     await this.send(this.cfg.allowedUserId, `${outcome.ok ? '✅' : '⚠'} ${escapeHtml(outcome.text)}`);
+  }
+
+  /**
+   * A wizard press. Same gate as any other button (handleCallback ran it
+   * already); the difference is that the flow, not the payload, decides what
+   * the press means — a press for a step the flow has moved past is stale and
+   * is refused rather than replayed.
+   */
+  private async handleFlowPress(cb: TelegramCallbackQuery, button: FlowButton): Promise<void> {
+    let press: Awaited<ReturnType<typeof handleFlowButton>>;
+    try {
+      press = await handleFlowButton(this.flowDeps(), this.flows, button);
+    } catch (e) {
+      console.error('telegram: flow button failed:', errText(e));
+      this.flows.clear();
+      press = { toast: 'Failed', reply: { html: `⚠ ${escapeHtml(errText(e))}` }, audit: `flow:${button.step}`, ok: false };
+    }
+    // Audited BEFORE the answers, like every other command.
+    await this.audit('telegram.command', {
+      command: `button:${press.audit}`,
+      value: button.value,
+      ok: press.ok,
+    });
+    await this.answerCallback(cb.id, press.toast);
+    if (press.reply) await this.send(this.cfg.allowedUserId, press.reply.html, press.reply.keyboard);
+  }
+
+  /**
+   * The 💬 Proceed button, on a `/task` card or a review notification: resolve
+   * the task, refuse when nothing is resumable, otherwise open the same
+   * reply-to conversation `/proceed <id>` opens. Whatever the human types next
+   * becomes the instruction.
+   */
+  private async startProceedFromButton(cb: TelegramCallbackQuery, taskId: string): Promise<void> {
+    let reply: Reply;
+    let ok = false;
+    // Guarded like every sibling path (`cmd.handler`, `handleFlowText`,
+    // `handleFlowButton`, `runButtonAction`): both calls below reach storage,
+    // and a throw here must cost this press, not the poll loop.
+    try {
+      const task = await this.storage.getTask(taskId);
+      if (!task) {
+        reply = { html: '⚠ That task is gone.' };
+      } else if ((await this.orchestrator.resumableSessionId(taskId)) === null) {
+        reply = {
+          html:
+            `⚠ “${escapeHtml(task.title)}” has no claude session to resume — ` +
+            `<code>/run ${taskId.slice(0, 8)}</code> starts a fresh agent instead.`,
+        };
+      } else {
+        // Starting a flow is a command-shaped act, so it drops whatever was in
+        // progress — and SAYS so, exactly as a typed /proceed would. Clearing
+        // bare was the silent-vanish this rule exists to prevent.
+        const dropped = this.flows.get();
+        this.flows.clear();
+        const resumable = true; // checked immediately above
+        const prompt = startProceed(this.flows, task.id, task.title, resumable);
+        reply = { ...prompt, html: dropNote(dropped) + prompt.html };
+        ok = true;
+      }
+    } catch (e) {
+      console.error('telegram: proceed button failed:', errText(e));
+      reply = { html: `⚠ Could not open that: ${escapeHtml(errText(e))}` };
+    }
+    await this.audit('telegram.command', { command: 'button:task.proceed', target: taskId, ok });
+    await this.answerCallback(cb.id, ok ? 'What next?' : 'Nothing to resume');
+    await this.send(this.cfg.allowedUserId, reply.html, reply.keyboard);
   }
 
   private async answerCallback(id: string, text?: string): Promise<void> {

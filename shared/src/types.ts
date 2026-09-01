@@ -275,6 +275,23 @@ export interface Task {
  */
 export const CUSTOM_QUEUE_IN_FLIGHT_STATUSES: readonly TaskStatus[] = ['running', 'review', 'blocked'];
 
+/**
+ * Members of the custom queue (docs/queue.md) that are still WAITING, in the
+ * order they will run: FIFO by the moment each was added. `transitionTask`
+ * clears `custom_queue_at` only on a terminal status, so a `running`, `review`
+ * or `blocked` member keeps its mark — by design, it still holds its repo's
+ * place — but it is no longer waiting and must not be counted in the position.
+ *
+ * Shared rather than duplicated: the board's `queue #n` chip and the Telegram
+ * bot's `/task` and `/queue` both derive their ordinal from this, so the two
+ * surfaces cannot tell the same task a different number.
+ */
+export function customQueueWaiting(tasks: Task[]): Task[] {
+  return tasks
+    .filter((t) => t.status === 'queued' && !!t.customQueueAt)
+    .sort((a, b) => a.customQueueAt!.localeCompare(b.customQueueAt!) || a.createdAt.localeCompare(b.createdAt));
+}
+
 /** How many distinct colours the board can tint groups with (`--tm-group-1..N`). */
 export const GROUP_COLOR_COUNT = 7;
 

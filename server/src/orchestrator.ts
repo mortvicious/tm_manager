@@ -837,8 +837,16 @@ export class Orchestrator implements OrchestratorApi {
     const task = await this.storage.transitionTask(taskId, ['running', 'queued'], 'cancelled', actor);
     if (!task) return { error: 'task is not running or queued', code: 409 };
     broadcast({ type: 'task.updated', task });
-    // cancelled counts as resolved for split parents (review F2)
-    await this.resolveCompletion(task, actor);
+    // cancelled counts as resolved for split parents (review F2).
+    //
+    // No actor, so the cascade stays 'system': the caller cancelled THIS task;
+    // the parent's unblock and the feature's next phase are consequences the
+    // orchestrator draws on its own. `task-actions.ts` de-queues a `queued`
+    // task without going through here and already omits the actor for exactly
+    // this reason — forwarding it here made one command (`/cancel`, or the
+    // web's Cancel) attribute the same automatic follow-on two different ways
+    // depending on whether the task happened to be running.
+    await this.resolveCompletion(task);
     this.maybeSchedule();
     return { task };
   }
@@ -873,7 +881,7 @@ export class Orchestrator implements OrchestratorApi {
         const task = await this.storage.transitionTask(run.taskId, ['running'], 'cancelled', actor);
         if (task) {
           broadcast({ type: 'task.updated', task });
-          await this.resolveCompletion(task, actor);
+          await this.resolveCompletion(task); // 'system', same rule as cancel()
         }
       }
     }
