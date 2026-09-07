@@ -4,12 +4,24 @@ import type { WebSocket } from 'ws';
 import type { TerminalServerMsg } from '@tm/shared';
 import { RingBuffer } from './ring-buffer.ts';
 
-/** Guard against pid reuse before an escalated SIGKILL (review F9): only kill
- *  a pid whose command still looks like a claude/node/shell process we spawned. */
+/**
+ * Guard against pid reuse before an escalated SIGKILL (review F9): only kill a
+ * pid whose command still looks like a claude/node/shell process we spawned.
+ *
+ * Matched against the **basename**, not the whole `comm`. On macOS `ps -o
+ * comm=` prints the full executable path, so testing the raw string means any
+ * binary that merely LIVES under a directory with a matching name passes —
+ * `/tmp/claude-501/…/some-daemon` would read as "ours" and be killed. That is
+ * a pid-reuse false positive of exactly the kind this function exists to
+ * prevent, and it was reproduced by the chat recovery harness. Basenames still
+ * match every real case (`claude`, `claude.exe`, `node`, `bash`), so this only
+ * ever narrows what may be signalled — the safe direction.
+ */
 export function pidLooksLikeOurs(pid: number, pattern: RegExp = /claude|node|zsh|bash|sh$/): boolean {
   try {
     const comm = execFileSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf8' }).trim();
-    return pattern.test(comm);
+    const base = comm.slice(comm.lastIndexOf('/') + 1);
+    return pattern.test(base);
   } catch {
     return false; // process gone
   }

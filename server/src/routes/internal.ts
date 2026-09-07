@@ -1,12 +1,33 @@
+import type { ReviewState } from '@tm/shared';
 import type { FastifyInstance } from 'fastify';
 import { summarizeRun } from '../claude/stats.ts';
 import { broadcast } from '../events.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 import type { Storage } from '../storage/types.ts';
+import { hookDecision } from '../questions.ts';
 
 // Lifecycle hook callbacks from inside worker claude sessions. The hook curl
 // forwards the hook's stdin JSON (session_id, transcript_path, ...) as body.
+/** Total size of `result_summary` after fix-round notes are appended. */
+const RESULT_SUMMARY_MAX = 12_000;
+const FIX_NOTE_MARK = '\n\n---\n**Fix round ';
+
+/**
+ * `original` + a "Fix round N" section. When the whole exceeds the cap, the
+ * OLDEST fix notes are dropped (never the original account of the work).
+ */
+export function appendFixNote(original: string, note: string, round: number): string {
+  const [base, ...notes] = original.split(FIX_NOTE_MARK);
+  const next = [...notes, `${round}:** ${note}`];
+  let out = base + next.map((n) => FIX_NOTE_MARK + n).join('');
+  while (out.length > RESULT_SUMMARY_MAX && next.length > 1) {
+    next.shift();
+    out = base + next.map((n) => FIX_NOTE_MARK + n).join('');
+  }
+  return out.slice(0, RESULT_SUMMARY_MAX);
+}
+
 export function registerInternalRoutes(
   app: FastifyInstance,
   storage: Storage,
@@ -92,6 +113,10 @@ export function registerInternalRoutes(
       const cleared = await storage.updateRun(id, { needsAttention: false });
       if (cleared) broadcast({ type: 'run.needs-attention', run: cleared });
     }
+    // The turn is over, so a question of this run that is still pending was
+    // abandoned (Esc in an attached terminal cancels the waiting hook) — the
+    // human must not keep being asked (docs/questions.md).
+    await orchestrator.questions.expireForRun(id, 'the agent finished its turn without the answer');
 
     if (run.taskId && run.mode === 'worker') {
       const settings = await storage.getSettings();
@@ -102,7 +127,26 @@ export function registerInternalRoutes(
       // auto-publish overrides auto-complete: the task must pass THROUGH
       // review so the publish turn has something to pick up.
       const to = !publishRun && settings['orchestrator.autoComplete'] && !pre?.autoPublish ? 'done' : 'review';
-      const patch = info.lastAssistantText ? { resultSummary: info.lastAssistantText.slice(0, 4000) } : undefined;
+      // Whether the reviewer WILL look at this landing, decided here so the
+      // row that says `review` also says `pending` — a surface that reads the
+      // status alone can never mistake an unreviewed change for a reviewed
+      // one. Everything else (publish turns, auto-publish, review off) is
+      // simply not auto-reviewed: null.
+      const willReview = !publishRun && !pre?.autoPublish && (pre?.review ?? settings['review.enabled']);
+      const patch: { resultSummary?: string; reviewState: ReviewState | null } = {
+        reviewState: willReview ? 'pending' : null,
+      };
+      if (info.lastAssistantText) {
+        const text = info.lastAssistantText.slice(0, 4000);
+        // A fix round's last message is "fixed 1 and 2" — appended under the
+        // original account of the work, never in its place, so the summary
+        // keeps saying what was built. Bounded: the oldest fix notes give
+        // way first, the original stays.
+        patch.resultSummary =
+          pre?.reviewState === 'fixing' && pre.resultSummary
+            ? appendFixNote(pre.resultSummary, text, pre.reviewRounds.length)
+            : text;
+      }
       // Custom queue (docs/queue.md): the task is about to leave `running`,
       // but a review fix round or the auto-publish turn may reopen it — hold
       // the queue until whichever follow-on runs below has decided. The hold
@@ -178,6 +222,28 @@ export function registerInternalRoutes(
     return { ok: true };
   });
 
+  // PreToolUse hook on AskUserQuestion (docs/questions.md): the agent's
+  // question, carried to the human. The hook POSTs its stdin (tool_input +
+  // tool_use_id) and holds for up to `waitMs`; the answer comes back as the
+  // hook's decision JSON, and a still-pending question answers `pending` so the
+  // hook's loop re-sends the same body — idempotent on tool_use_id, so the
+  // re-send finds its row rather than filing a second question.
+  app.post('/api/internal/runs/:id/question', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const run = await storage.getRun(id);
+    if (!run) return reply.code(404).send({ error: 'no such run' });
+    // An idle (finished) or dead run cannot be asking anything — a stale hook.
+    if (run.status !== 'running' || run.idle) {
+      return reply.code(409).send({ error: 'run is not working' });
+    }
+    const asked = await orchestrator.questions.ask(run, req.body);
+    if ('error' in asked) return reply.code(400).send({ error: asked.error });
+    const { waitMs } = req.query as { waitMs?: string };
+    const q = (await orchestrator.questions.wait(asked.question.id, Number(waitMs) || 0)) ?? asked.question;
+    if (q.status === 'pending') return { pending: true, id: q.id };
+    return hookDecision(q);
+  });
+
   // Notification hook: permission prompt / idle in a hidden terminal.
   app.post('/api/internal/runs/:id/needs-attention', async (req) => {
     const { id } = req.params as { id: string };
@@ -189,6 +255,10 @@ export function registerInternalRoutes(
     if (run && run.status === 'running' && !run.idle && !run.needsAttention) {
       const updated = await storage.updateRun(id, { needsAttention: true });
       if (updated) {
+        // Stamped BEFORE the row is announced: the activity watcher may report
+        // the very next transcript line within a second, and the tracker has
+        // to know the flag's time to tell "answered" from "still catching up".
+        orchestrator.attentionFlagged(id);
         await storage.appendEvent({ kind: 'run.attention', actor: 'hook', runId: id, taskId: updated.taskId });
         broadcast({ type: 'run.needs-attention', run: updated });
       }

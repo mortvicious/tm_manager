@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { EFFORT_LEVELS, MODEL_OPTIONS, type AppSettings } from '@tm/shared';
+import { DEFAULT_SETTINGS, EFFORT_LEVELS, MODEL_OPTIONS, type AppSettings } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 
@@ -64,6 +64,8 @@ export function ConfigPage() {
   const modelChoices = MODEL_OPTIONS.includes(cfg['agent.model'])
     ? MODEL_OPTIONS
     : [cfg['agent.model'], ...MODEL_OPTIONS];
+  const chatModel = cfg['chat.model'] ?? DEFAULT_SETTINGS['chat.model'];
+  const chatModelChoices = MODEL_OPTIONS.includes(chatModel) ? MODEL_OPTIONS : [chatModel, ...MODEL_OPTIONS];
 
   return (
     <div style={{ maxWidth: 720 }}>
@@ -223,6 +225,65 @@ export function ConfigPage() {
         </div>
         <div className="cfg-row">
           <div>
+            <div>Compact before resuming above (tokens)</div>
+            <div className="hint">
+              a session bigger than this is compacted (<span className="mono">/compact</span>, focused on the
+              task and the pending instruction) before the follow-up, instead of re-writing the whole
+              conversation to cache twice — measured at ~$15 a resume on a 400k session. The session keeps its
+              identity and its terminal; only the stale bytes go. If the compaction fails, the follow-up starts
+              a fresh agent handed the previous one's report and the files it changed (a publish turn resumes
+              anyway). 0 = never compact. Fires only between turns, never mid-run
+            </div>
+          </div>
+          {/* `?? DEFAULT_SETTINGS` so a server that predates this key renders
+              the real default instead of an empty number field. */}
+          <input
+            className="field"
+            style={{ width: 110 }}
+            type="number"
+            min={0}
+            max={1000000}
+            step={50000}
+            value={cfg['agent.resumeContextCap'] ?? DEFAULT_SETTINGS['agent.resumeContextCap']}
+            onChange={(e) => set('agent.resumeContextCap', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Auto wake-up on the usage limit</div>
+            <div className="hint">
+              a turn that ends because the 5h usage window is spent is parked with the window's reset time and
+              resumed automatically in <span className="mono">its own claude session</span> once the window
+              reopens — instead of waiting for someone to notice and hit Proceed. OFF = a spent window leaves the
+              task where it landed
+            </div>
+          </div>
+          <Toggle
+            on={cfg['agent.autoWake'] ?? DEFAULT_SETTINGS['agent.autoWake']}
+            onChange={(v) => set('agent.autoWake', v)}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Wake-up grace (seconds)</div>
+            <div className="hint">
+              extra wait past the stated reset time. The account's reset is a boundary, not a promise of capacity
+              at it, and a resume that arrives early pays the full context re-write for nothing
+            </div>
+          </div>
+          <input
+            className="field"
+            style={{ width: 110 }}
+            type="number"
+            min={0}
+            max={3600}
+            step={30}
+            value={cfg['agent.autoWakeGraceSec'] ?? DEFAULT_SETTINGS['agent.autoWakeGraceSec']}
+            onChange={(e) => set('agent.autoWakeGraceSec', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
             <div>Terminal keep-alive (minutes)</div>
             <div className="hint">
               how long a finished or exited terminal stays attachable before it's evicted. 0 = keep forever;
@@ -255,7 +316,8 @@ export function ConfigPage() {
             <div>Review→fix rounds</div>
             <div className="hint">
               feed blocker/major findings back to the worker to fix, up to N rounds, before the human review
-              queue (0 = review only, no auto-fix)
+              queue (0 = review only, no auto-fix). Each round resumes the warm agent session and triggers a
+              re-review, so 1 is the default — raise it only for a task you expect to argue with.
             </div>
           </div>
           <input
@@ -459,6 +521,69 @@ export function ConfigPage() {
             step={1000000}
             value={cfg['router.budgetWeekFableTokens']}
             onChange={(e) => set('router.budgetWeekFableTokens', Number(e.target.value))}
+          />
+        </div>
+      </div>
+
+      <div className="panel cfg-group">
+        <h3>Chat</h3>
+        <div className="cfg-row">
+          <div>
+            <div>Model</div>
+            <div className="hint">
+              default for a new chat (docs/chat.md); each chat can be switched afterwards
+            </div>
+          </div>
+          {/* `?? DEFAULT` on all three so a server that predates these keys
+              renders the real default and stays out of the save diff. */}
+          <select
+            className="field mono"
+            style={{ width: 220 }}
+            value={cfg['chat.model'] ?? DEFAULT_SETTINGS['chat.model']}
+            onChange={(e) => set('chat.model', e.target.value)}
+          >
+            {chatModelChoices.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Effort</div>
+            <div className="hint">reasoning effort for chat turns</div>
+          </div>
+          <select
+            className="field mono"
+            style={{ width: 220 }}
+            value={cfg['chat.effort'] ?? DEFAULT_SETTINGS['chat.effort']}
+            onChange={(e) => set('chat.effort', e.target.value as AppSettings['chat.effort'])}
+          >
+            {EFFORT_LEVELS.map((l) => (
+              <option key={l} value={l}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Concurrent turns</div>
+            <div className="hint">
+              across all chats — a chat is serial on its own; this is the fence against opening
+              several and sending to all of them. Separate from the worker concurrency: a chat turn
+              owns no task and must not take a worker slot
+            </div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={1}
+            max={5}
+            style={{ width: 90 }}
+            value={cfg['chat.concurrency'] ?? DEFAULT_SETTINGS['chat.concurrency']}
+            onChange={(e) => set('chat.concurrency', Number(e.target.value))}
           />
         </div>
       </div>

@@ -261,4 +261,122 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
     // reads as "not in the custom queue".
     statements: [`ALTER TABLE tm_tasks ADD COLUMN custom_queue_at TEXT`],
   },
+  {
+    id: 17,
+    // sha256 of the `git diff HEAD` the last adversarial review actually read.
+    // A Stop whose diff hashes the same has nothing new to review, so the
+    // headless reviewer is skipped entirely (docs/design.md § Adversarial
+    // review). NULL on every existing row = "never reviewed", which reviews.
+    statements: [`ALTER TABLE tm_tasks ADD COLUMN review_diff_hash TEXT`],
+  },
+  {
+    id: 18,
+    // Dispatch intent (docs/dispatch.md § Intent): `needs_action` may wake the
+    // target's session, `fyi` may not — it rides along on the next resume that
+    // happens for a real reason. Defaulting to 'needs_action' makes every
+    // existing row keep exactly the behaviour it was created under.
+    statements: [`ALTER TABLE tm_dispatches ADD COLUMN intent TEXT NOT NULL DEFAULT 'needs_action'`],
+  },
+  {
+    id: 19,
+    // Chat (docs/chat.md): a free-form conversation with claude in a repo's
+    // working directory, shared by the SPA and the phone. FK-less like
+    // tm_events and tm_dispatches — a chat's messages are deleted explicitly
+    // by deleteChat, and a repo that goes away leaves its chats readable
+    // rather than taking the transcript with it.
+    //
+    // `session_id` is claude's own, captured from the first turn's result
+    // envelope; NULL means "no turn has landed yet", which is what makes turn
+    // one the one that carries no --resume. `status` is the serialisation
+    // lock: beginChatTurn flips idle -> thinking conditionally, so two
+    // surfaces sending at once cannot put two children on one session.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_chats (
+        id TEXT PRIMARY KEY,
+        repo_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        model TEXT NOT NULL,
+        effort TEXT,
+        mode TEXT NOT NULL DEFAULT 'read',
+        session_id TEXT,
+        status TEXT NOT NULL DEFAULT 'idle',
+        error TEXT,
+        turns INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_message_at TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_chats_repo_idx ON tm_chats(repo_id)`,
+      `CREATE TABLE IF NOT EXISTS tm_chat_messages (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        text TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        error TEXT,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        duration_ms INTEGER,
+        created_at TEXT NOT NULL
+      )`,
+      // id is the time-sortable eventId(), so (chat_id, id) is the read order
+      // AND the pagination key — no created_at tiebreak needed inside a ms.
+      `CREATE INDEX IF NOT EXISTS tm_chat_messages_chat_idx ON tm_chat_messages(chat_id, id)`,
+    ],
+  },
+  {
+    id: 20,
+    // The pid of a chat's running turn (docs/chat.md § Crash recovery). A chat
+    // owns no tm_runs row, so the orchestrator's boot pid sweep cannot see its
+    // child — and the child is spawned detached, so a crash leaves it alive.
+    // NULL on every existing row, which reads correctly as "no turn running".
+    statements: [`ALTER TABLE tm_chats ADD COLUMN pid INTEGER`],
+  },
+  {
+    id: 21,
+    // When the 5h usage window has to reset before this task's own claude
+    // session can carry on (docs/wake.md). ISO time; the orchestrator resumes
+    // the task at it and clears the column. NULL on every existing row, which
+    // reads correctly as "not waiting on anything".
+    statements: [`ALTER TABLE tm_tasks ADD COLUMN wake_at TEXT`],
+  },
+  {
+    id: 22,
+    // Where the adversarial review of the task's current change stands, and
+    // every round it received (JSON array of ReviewRound). NULL reads as "not
+    // auto-reviewed" / "no rounds" on existing rows — the previous behaviour.
+    statements: [
+      `ALTER TABLE tm_tasks ADD COLUMN review_state TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN review_rounds TEXT`,
+    ],
+  },
+  {
+    id: 23,
+    // Questions (docs/questions.md): a worker's AskUserQuestion call, parked
+    // while its session waits inside the PreToolUse hook for a human answer.
+    // No FKs on purpose — like tm_events and tm_dispatches, the row is the
+    // record of what was asked and decided, and it outlives the task. JSON
+    // columns: `questions` (the CLI's own array, verbatim) and `answers`
+    // (keyed by question text, the shape the tool takes back).
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_questions (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        tool_use_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        questions TEXT NOT NULL,
+        answers TEXT,
+        answered_by TEXT,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        answered_at TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_questions_run_idx ON tm_questions(run_id, status)`,
+      `CREATE INDEX IF NOT EXISTS tm_questions_task_idx ON tm_questions(task_id, status)`,
+      // the hook re-sends its call every minute; one row per call, even when
+      // two re-sends overlap (curl's 75s timeout racing a slow server)
+      `CREATE UNIQUE INDEX IF NOT EXISTS tm_questions_tool_idx ON tm_questions(run_id, tool_use_id)`,
+    ],
+  },
 ];

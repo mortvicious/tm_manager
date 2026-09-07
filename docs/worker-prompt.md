@@ -25,6 +25,7 @@ a stale reminder silently overrides the new rules for the rest of the session.
 | `$TM_ARTIFACTS_DIR` | The task's shared file space — inputs from the user, deliverables back to the task panel. |
 | Task Manager API | File follow-up/cross-repo work instead of doing it yourself; never work around the API's refusals. |
 | Dispatch before create | A related task already exists → message its session (`docs/dispatch.md`), don't mint a duplicate task. |
+| **Ask on big decisions** | When a choice would materially change the outcome (architecture/library, ambiguous or conflicting requirement, destructive step, scope that could go two ways), ask with `AskUserQuestion` — it reaches the dashboard and the phone and the session waits (`docs/questions.md`). Small things: decide, never ask. |
 | Final summary | The orchestrator stores it as `result_summary`; the review round and the next run read it. |
 | Adversarial review warning | The change is reviewed before the human sees it, so it must compile and hold up. |
 
@@ -81,9 +82,15 @@ approval gate, no separate turn, a couple of sentences for a small task.
 
 Prompt text alone cannot fix these; they are structural:
 
-- No context ceiling / forced compaction on long runs.
-- `CONTEXT_WINDOW = 200_000` (`server/src/claude/stats.ts`) pins `contextPct` at
-  100 while real contexts reach 476k–910k.
+- ~~No context ceiling / forced compaction on long runs.~~ — done 2026-09-05,
+  as a RESUME-time gate rather than a ceiling: `agent.resumeContextCap`
+  compacts an over-cap session before reopening it, and never interferes
+  mid-run. See `docs/token-budget.md` § The fourth.
+- ~~`CONTEXT_WINDOW = 200_000` (`server/src/claude/stats.ts`) pins `contextPct`
+  at 100 while real contexts reach 476k–910k.~~ — `contextPct` still does, and
+  still means "≥100% of a 200k window"; the raw last-turn total it is computed
+  from is now stored next to it as `RunStats.contextTokens`, which is what the
+  resume gate reads.
 - `anomaly.costUsd` is read only by the stats dashboard route, never enforced.
 - The sticky `fableUnavailable` latch in `server/src/claude/review.ts`.
 - ~~The fixed ~52k preamble~~ — done 2026-08-27, see `docs/token-budget.md`.

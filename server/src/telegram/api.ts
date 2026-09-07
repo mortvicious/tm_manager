@@ -15,6 +15,20 @@ const API_ROOT = 'https://api.telegram.org';
 
 /** Telegram's hard per-message limit. Not a guess; sending more is a 400. */
 export const MAX_MESSAGE_CHARS = 4096;
+/** Telegram's cap on a media caption — a quarter of a message's. */
+export const MAX_CAPTION_CHARS = 1024;
+
+/**
+ * Telegram shows the filename verbatim and it lands on the phone's disk, so
+ * anything path-like or invisible is stripped rather than escaped. Report
+ * names are generated, not typed — this is a floor under a future caller that
+ * builds one out of a task title.
+ */
+function safeFilename(name: string): string {
+  const cleaned = name.replace(/[\u0000-\u001f\u007f/\\:*?"<>|]+/g, '-').replace(/^[.\s-]+/, '');
+  const base = cleaned.slice(0, 96) || 'report';
+  return base.toLowerCase().endsWith('.html') ? base : `${base}.html`;
+}
 
 /**
  * A Bot API call that came back `ok: false`, or an HTTP status Telegram itself
@@ -202,6 +216,19 @@ export interface Reply {
    * owner typed the command or tapped the button.
    */
   ok?: boolean;
+  /**
+   * An HTML report to upload alongside `html` (docs/telegram.md § Reports).
+   * When present the reply goes out as a `sendDocument` with `html` as its
+   * caption, not as a plain message — one notification, file and gist
+   * together.
+   */
+  document?: { filename: string; html: string };
+  /**
+   * Further messages to send after this one, each with its own keyboard — a
+   * keyboard belongs to one message, and a multi-part question is one
+   * message per part (docs/questions.md). Rare; most replies are one message.
+   */
+  extra?: Reply[];
 }
 
 export type ReplyLike = string | Reply;
@@ -231,6 +258,27 @@ export class TelegramApi {
   }
 
   async call<T>(method: string, params: Record<string, unknown> = {}, opts: CallOptions = {}): Promise<T> {
+    return this.request<T>(
+      method,
+      { headers: { 'content-type': 'application/json' }, body: JSON.stringify(params) },
+      opts,
+    );
+  }
+
+  /**
+   * One fetch, one abort scope, one error vocabulary — shared by the JSON
+   * `call()` above and the multipart `sendDocument()` below. The body and its
+   * content-type are the caller's business; everything after the response is
+   * not, because getting the timeout, the abort wiring and the redaction right
+   * once is the point.
+   */
+  private async request<T>(
+    method: string,
+    // `string | FormData`, not the DOM's `BodyInit`: this tsconfig has no DOM
+    // lib, and these two are the only bodies Telegram is ever sent.
+    init: { headers?: Record<string, string>; body: string | FormData },
+    opts: CallOptions = {},
+  ): Promise<T> {
     const { timeoutMs = 20_000, signal } = opts;
     // Composed by hand rather than with AbortSignal.any(): one controller that
     // both the timeout and the caller's stop signal can trip is easier to
@@ -247,8 +295,10 @@ export class TelegramApi {
     try {
       const res = await fetch(`${API_ROOT}/bot${this.token}/${method}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(params),
+        // No headers at all for multipart: `fetch` writes the content-type
+        // WITH the boundary it generated, and a hand-written one loses it.
+        ...(init.headers ? { headers: init.headers } : {}),
+        body: init.body,
         signal: ac.signal,
       });
       status = res.status;
@@ -302,6 +352,19 @@ export class TelegramApi {
   }
 
   /**
+   * The "…is typing" line. A chat turn (docs/chat.md) runs for tens of seconds
+   * with nothing on screen, and a phone with no feedback reads as a bot that
+   * died. Telegram clears the indicator after ~5s, so the caller re-sends it
+   * on a timer for as long as the turn lasts.
+   *
+   * Failures are swallowed by the caller, never retried: an indicator that did
+   * not appear must not cost the reply that follows it.
+   */
+  sendChatAction(chatId: number, action: 'typing', opts?: CallOptions): Promise<boolean> {
+    return this.call<boolean>('sendChatAction', { chat_id: chatId, action }, opts);
+  }
+
+  /**
    * Send `html`, chunked. Sequential on purpose: parallel sends arrive out of
    * order, and a 5-part report read backwards is worse than a slow one.
    * `link_preview_options` is off because a bare repo path or URL in a status
@@ -334,6 +397,41 @@ export class TelegramApi {
       );
     }
     return sent;
+  }
+
+  /**
+   * Upload `html` as a `.html` document (docs/telegram.md § Reports). Telegram
+   * renders it in its own in-app viewer, so a long report leaves the chat as a
+   * file instead of twenty chunked messages — and nothing about it is public,
+   * unlike a link to a hosted page.
+   *
+   * Multipart, so it cannot go through `call()`: that one hardcodes a JSON
+   * content-type. `FormData`/`Blob` are globals on Node 22, which is what the
+   * "no new dependency" rule of this module is protecting.
+   *
+   * `caption` is the Russian summary and rides WITH the file so the gist is
+   * readable without opening it. Telegram caps a caption at 1024 characters
+   * and refuses the whole upload past it, so an over-long summary is returned
+   * for the caller to send as its own message rather than silently truncated.
+   */
+  async sendDocument(
+    chatId: number,
+    doc: { filename: string; html: string },
+    caption?: string,
+    opts?: CallOptions,
+    keyboard?: InlineKeyboardMarkup,
+  ): Promise<{ message: TelegramMessage; overflow: string | null }> {
+    const fits = caption !== undefined && caption.length <= MAX_CAPTION_CHARS;
+    const form = new FormData();
+    form.set('chat_id', String(chatId));
+    form.set('document', new Blob([doc.html], { type: 'text/html' }), safeFilename(doc.filename));
+    if (fits && caption.trim()) {
+      form.set('caption', caption);
+      form.set('parse_mode', 'HTML');
+    }
+    if (keyboard) form.set('reply_markup', JSON.stringify(keyboard));
+    const message = await this.request<TelegramMessage>('sendDocument', { body: form }, opts);
+    return { message, overflow: !fits && caption?.trim() ? caption : null };
   }
 
   /**

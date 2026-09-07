@@ -244,6 +244,7 @@ export async function startAnalysis(
           cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
           costUsd: Math.round((envelope.total_cost_usd ?? 0) * 1000) / 1000,
           contextPct: 0,
+          contextTokens: 0,
         },
       });
     } catch (e) {
@@ -282,10 +283,37 @@ export async function startAnalysis(
 // single Kill button honest.
 const analyzeChildren = new Map<string, ReturnType<typeof execFile>>();
 
+/**
+ * Subscribers notified when a headless run's CHILD PROCESS actually exits.
+ *
+ * A PTY run announces its death on the event bus (`run.exited`, broadcast from
+ * `Orchestrator.handleExit`). A headless one has no PTY, so nothing on the bus
+ * ever says it is gone — the run row is updated by whatever awaited the child,
+ * which is not the same thing and is not observable as an event. Anything that
+ * needs to WAIT for a headless kill to land (the Telegram red button's
+ * "have exited" follow-up) has no other signal, so this is it: the one place
+ * that already knows, `trackHeadlessChild`'s own exit handler.
+ */
+const headlessExitListeners = new Set<(runId: string) => void>();
+
+export function onHeadlessRunExit(cb: (runId: string) => void): () => void {
+  headlessExitListeners.add(cb);
+  return () => headlessExitListeners.delete(cb);
+}
+
 export function trackHeadlessChild(runId: string, child: ReturnType<typeof execFile>, label = 'analysis'): void {
   analyzeChildren.set(runId, child);
   child.on('exit', () => {
     if (analyzeChildren.get(runId) === child) analyzeChildren.delete(runId);
+    // Listener throws are swallowed for the same reason broadcast() swallows
+    // them: a subscriber's bug must not break process bookkeeping.
+    for (const l of headlessExitListeners) {
+      try {
+        l(runId);
+      } catch {
+        /* ignore */
+      }
+    }
   });
   // Also joins the pool the restart guard reads: a headless agent has no PTY,
   // so nothing else would notice it is working (docs/commands.md).

@@ -10,8 +10,11 @@ import {
 import type {
   AppSettings,
   AuditEvent,
+  Chat,
+  ChatMessage,
   CommandRun,
   Dispatch,
+  Question,
   Feature,
   HostStatus,
   OrchestratorStatus,
@@ -34,7 +37,24 @@ interface AppState {
   proposals: Proposal[];
   /** agent-to-agent messages between related tasks (docs/dispatch.md) */
   dispatches: Dispatch[];
+  /** decisions worker agents are waiting on — pending only (docs/questions.md) */
+  questions: Question[];
+  /** bumped by the header chip: the modal drops what was dismissed and reopens */
+  questionNudge: number;
+  nudgeQuestions: () => void;
   features: Feature[];
+  /** free-form conversations with claude (docs/chat.md) */
+  chats: Chat[];
+  /**
+   * Transcripts, keyed by chat id — filled by `loadChat` and kept current by
+   * `chat.message` frames. Held HERE rather than in the page so a reply that
+   * lands while you are looking at another chat is already there when you
+   * come back, which is the whole point of the conversation being persistent.
+   * Only chats that have been opened are present; an absent key means "not
+   * loaded", which is why the page calls `loadChat` on mount.
+   */
+  chatMessages: Record<string, ChatMessage[]>;
+  loadChat: (id: string) => Promise<void>;
   /** saved per-repo command definitions (docs/commands.md) */
   commands: RepoCommand[];
   /** command executions this server knows about — running ones first-class,
@@ -75,7 +95,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activity, setActivity] = useState<Record<string, RunActivity>>({});
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [dispatches, setDispatches] = useState<Dispatch[]>([]);
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [questionNudge, setQuestionNudge] = useState(0);
+  const nudgeQuestions = useCallback(() => setQuestionNudge((n) => n + 1), []);
   const [features, setFeatures] = useState<Feature[]>([]);
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [chatMessages, setChatMessages] = useState<Record<string, ChatMessage[]>>({});
   const [commands, setCommands] = useState<RepoCommand[]>([]);
   const [commandRuns, setCommandRuns] = useState<CommandRun[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
@@ -101,7 +126,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .catch(() => {});
     api.listProposals().then(setProposals).catch(() => {});
     api.listDispatches().then(setDispatches).catch(() => {});
+    api.listQuestions().then(setQuestions).catch(() => {});
     api.listFeatures().then(setFeatures).catch(() => {});
+    api.listChats().then(setChats).catch(() => {});
     api.listCommands().then(setCommands).catch(() => {});
     api.listCommandRuns().then(setCommandRuns).catch(() => {});
     api.orchestrator().then(setOrch).catch(() => {});
@@ -138,6 +165,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
       clearTimeout(timer);
     };
   }, [refresh]);
+
+  /**
+   * Fetch one chat's transcript. Also refreshes the chat row, because the two
+   * come from the same endpoint and a page that opened a chat mid-turn needs
+   * its `thinking` status without waiting for the next broadcast.
+   */
+  const loadChat = useCallback(async (id: string) => {
+    // Seeded BEFORE the fetch, and that is the whole trick: the `chat.message`
+    // handler only appends to a key that exists, so without this a reply that
+    // landed while this request was in flight would be dropped by the handler
+    // AND missing from the response, and would not appear until the next load.
+    setChatMessages((cur) => (id in cur ? cur : { ...cur, [id]: [] }));
+    const { chat, messages } = await api.getChat(id);
+    setChats((cur) => {
+      const i = cur.findIndex((c) => c.id === chat.id);
+      if (i === -1) return [chat, ...cur];
+      const next = cur.slice();
+      next[i] = chat;
+      return next;
+    });
+    setChatMessages((cur) => {
+      const seen = new Set(messages.map((m) => m.id));
+      const extra = (cur[id] ?? []).filter((m) => !seen.has(m.id));
+      // Message ids are the time-sortable eventId(), so id order IS send
+      // order — no timestamp tiebreak needed to splice the two lists.
+      const merged = extra.length ? [...messages, ...extra].sort((a, b) => (a.id < b.id ? -1 : 1)) : messages;
+      return { ...cur, [id]: merged };
+    });
+  }, []);
 
   const refreshHost = useCallback(async () => {
     try {
@@ -229,6 +285,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
               const next = cur.slice();
               next[i] = e.proposal;
               return next;
+            });
+            break;
+          case 'chat.updated':
+            setChats((cur) => {
+              const i = cur.findIndex((c) => c.id === e.chat.id);
+              if (i === -1) return [e.chat, ...cur];
+              const next = cur.slice();
+              next[i] = e.chat;
+              return next;
+            });
+            break;
+          case 'chat.deleted':
+            setChats((cur) => cur.filter((c) => c.id !== e.chatId));
+            setChatMessages((cur) => {
+              if (!(e.chatId in cur)) return cur;
+              const next = { ...cur };
+              delete next[e.chatId];
+              return next;
+            });
+            break;
+          case 'chat.message':
+            setChatMessages((cur) => {
+              const list = cur[e.message.chatId];
+              // Not loaded = not being looked at; `loadChat` will fetch the
+              // whole transcript including this one. Appending to an absent
+              // key would build a one-message "transcript" the page then
+              // renders as if it were complete.
+              if (!list) return cur;
+              // The sender already has its own message from the POST's 202;
+              // the broadcast is the same row coming back.
+              if (list.some((m) => m.id === e.message.id)) return cur;
+              return { ...cur, [e.message.chatId]: [...list, e.message] };
+            });
+            break;
+          case 'question.updated':
+            // The slice is the PENDING set: an answered or expired question
+            // leaves it, so the modal and the chips read the slice directly.
+            setQuestions((cur) => {
+              const rest = cur.filter((q) => q.id !== e.question.id);
+              return e.question.status === 'pending' ? [e.question, ...rest] : rest;
             });
             break;
           case 'dispatch.updated':
@@ -323,7 +419,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         activity,
         proposals,
         dispatches,
+        questions,
+        questionNudge,
+        nudgeQuestions,
         features,
+        chats,
+        chatMessages,
+        loadChat,
         commands,
         commandRuns,
         auditEvents,

@@ -36,8 +36,8 @@ export interface TranscriptSummary {
 /**
  * Usage a RESUMED run is responsible for. Both runs share one transcript file,
  * so the raw sums include everything the earlier session spent — subtract the
- * baseline captured at resume time. contextPct is a last-turn measure, not a
- * total, so it passes through untouched.
+ * baseline captured at resume time. contextPct/contextTokens are a last-turn
+ * measure, not a total, so they pass through untouched.
  */
 export function netStats(raw: RunStats, baseline: RunStats | null): RunStats {
   if (!baseline) return raw;
@@ -49,6 +49,7 @@ export function netStats(raw: RunStats, baseline: RunStats | null): RunStats {
     cacheWriteTokens: pos(raw.cacheWriteTokens - baseline.cacheWriteTokens),
     costUsd: Math.round(pos(raw.costUsd - baseline.costUsd) * 1000) / 1000,
     contextPct: raw.contextPct,
+    contextTokens: raw.contextTokens,
   };
 }
 
@@ -134,6 +135,10 @@ export async function summarizeTranscript(
       cacheWriteTokens: cacheWrite,
       costUsd: Math.round(costUsd * 1000) / 1000,
       contextPct: Math.min(100, Math.round((lastTurnTotal / CONTEXT_WINDOW) * 1000) / 10),
+      // The same measure without the 200k divisor or the clamp — the resume
+      // gate compares against a token cap, and every real worker session is
+      // already past 100% by the time that decision matters.
+      contextTokens: lastTurnTotal,
     },
     lastAssistantText,
   };

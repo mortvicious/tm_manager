@@ -1,6 +1,8 @@
 # Telegram bot — working with the task manager from a phone
 
-Status: **planned, tasks filed 2026-08-31** (task group "Telegram bot" in the `17 - task-manager` repo). Analysis written 2026-08-31 (Claude, conversation with user). Supersedes the cloud half of [`autonomy-cloud-shadow.md`](autonomy-cloud-shadow.md): no server and no `claude` in the cloud.
+Status: **shipped 2026-09-03** — all six tasks of the group landed (bot module, notifications, full command coverage, the red button, reports, workbook). This file is the original analysis, kept verbatim below as the record of what was decided and why; the **as-built documentation is [`../telegram.md`](../telegram.md)**, which is also where the setup workbook lives (§ Connect: BotFather → your user id → config → verify → the Mac-as-a-server checklist). Analysis written 2026-08-31 (Claude, conversation with user). Supersedes the cloud half of [`autonomy-cloud-shadow.md`](autonomy-cloud-shadow.md): no server and no `claude` in the cloud.
+
+**Deltas from this analysis, as built** — the rest shipped as designed: Telegraph was dropped entirely (2026-09-01, user decision: public URLs, private work detail), so reports are self-contained HTML sent with `sendDocument` and nothing is published anywhere; the whole task lifecycle moved into a shared `server/src/task-actions.ts` called by both the REST routes and the bot rather than being reimplemented; and Tailscale is still deliberately not done.
 
 ## The decision
 

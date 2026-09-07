@@ -2,7 +2,12 @@ import type {
   AppSettings,
   AuditEvent,
   AuditKind,
+  Chat,
+  ChatMessage,
+  ChatMode,
+  ChatRole,
   Dispatch,
+  DispatchIntent,
   DispatchStatus,
   Feature,
   FeaturePlan,
@@ -10,6 +15,10 @@ import type {
   FeatureStatus,
   Proposal,
   ProposalPayload,
+  EffortLevel,
+  Question,
+  QuestionItem,
+  QuestionStatus,
   Repo,
   RepoCommand,
   Run,
@@ -46,6 +55,13 @@ export interface TaskFilter {
   /** every task in one tree — the root's id (docs/grouping.md) */
   groupId?: string;
   featureId?: string;
+  /**
+   * ISO lower bound on `updated_at`, inclusive — "what did this period touch"
+   * (docs/telegram.md § Reports). A period report asks the DB for its window
+   * rather than reading every row and filtering in JS, so the cost of a 24h
+   * report does not grow with the age of the install.
+   */
+  updatedSince?: string;
 }
 
 export interface NewRepo {
@@ -137,6 +153,57 @@ export interface NewDispatch {
   fromRunId?: string | null;
   toTaskId: string;
   message: string;
+  /** `fyi` never wakes an idle session (docs/dispatch.md § Intent) */
+  intent: DispatchIntent;
+}
+
+export interface NewChat {
+  repoId: string;
+  title: string;
+  model: string;
+  effort: EffortLevel | null;
+  mode: ChatMode;
+}
+
+/** Everything a human may change about a chat after it exists. */
+export interface ChatPatch {
+  title?: string;
+  model?: string;
+  effort?: EffortLevel | null;
+  mode?: ChatMode;
+}
+
+export interface NewChatMessage {
+  chatId: string;
+  role: ChatRole;
+  text: string;
+  actor: string;
+  error?: string | null;
+  costUsd?: number;
+  durationMs?: number | null;
+}
+
+/** How a turn ended, applied to the chat row in one write. */
+export interface ChatTurnResult {
+  /** cleared to NULL: the turn that owned this pid is over */
+  /** claude's session id from the result envelope; null leaves the stored one */
+  sessionId?: string | null;
+  /** null on success — set means the turn failed and the chat goes to `error` */
+  error: string | null;
+  costUsd: number;
+}
+
+export interface NewQuestion {
+  taskId: string;
+  runId: string;
+  toolUseId: string | null;
+  questions: QuestionItem[];
+}
+
+export interface QuestionFilter {
+  status?: QuestionStatus;
+  taskId?: string;
+  runId?: string;
 }
 
 export interface DispatchFilter {
@@ -144,6 +211,16 @@ export interface DispatchFilter {
   taskId?: string;
   toTaskId?: string;
   status?: DispatchStatus;
+  /** ISO lower bound on `created_at`, inclusive — the report window */
+  since?: string;
+}
+
+export interface RunFilter {
+  taskId?: string;
+  status?: RunStatus;
+  mode?: RunMode;
+  /** ISO lower bound on `started_at`, inclusive — the report window */
+  since?: string;
 }
 
 export interface NewProposal {
@@ -211,7 +288,7 @@ export interface Storage {
     from: TaskStatus[],
     to: TaskStatus,
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState'>>,
   ): Promise<Task | null>;
   /**
    * Atomic parent re-evaluation after a child reaches a terminal status.
@@ -222,7 +299,7 @@ export interface Storage {
   resolveChildCompletion(childId: string, parentDoneStatus: 'review' | 'done', actor: string): Promise<Task | null>;
   countChildren(parentId: string): Promise<ChildCounts>;
 
-  listRuns(f?: { taskId?: string; status?: RunStatus; mode?: RunMode }): Promise<Run[]>;
+  listRuns(f?: RunFilter): Promise<Run[]>;
   getRun(id: string): Promise<Run | null>;
   /** Resolve a run from its per-run token (agent API / hook auth, review R5). */
   getRunByToken(token: string): Promise<Run | null>;
@@ -262,6 +339,65 @@ export interface Storage {
   countDispatchesByRun(runId: string): Promise<number>;
   /** Lifetime dispatches between two tasks, both directions (ping-pong cap). */
   countDispatchesBetween(taskA: string, taskB: string): Promise<number>;
+
+  // ---- questions (docs/questions.md) ----
+
+  /** Newest first. */
+  listQuestions(f?: QuestionFilter): Promise<Question[]>;
+  getQuestion(id: string): Promise<Question | null>;
+  createQuestion(q: NewQuestion): Promise<Question>;
+  /**
+   * Conditional pending→answered — the SPA route and the Telegram press both
+   * go through this, so a question can never be answered twice. Returns null
+   * when it was no longer pending (already answered elsewhere, or expired).
+   */
+  answerQuestion(id: string, answers: Record<string, string>, actor: string): Promise<Question | null>;
+  /**
+   * Every pending question matching the filter → `expired` with `note`, in one
+   * statement; returns the rows it expired (possibly none). An empty filter
+   * expires ALL pending questions — the boot sweep.
+   */
+  expireQuestions(f: { runId?: string; taskId?: string }, note: string): Promise<Question[]>;
+
+  // ---- chats (docs/chat.md) ----
+
+  /** Newest activity first. */
+  listChats(repoId?: string): Promise<Chat[]>;
+  getChat(id: string): Promise<Chat | null>;
+  createChat(c: NewChat): Promise<Chat>;
+  updateChat(id: string, patch: ChatPatch): Promise<Chat | null>;
+  /** Deletes the chat AND its messages, transactionally — there is no FK to do
+   *  it for us (migration 19), and a transcript with no chat is unreachable. */
+  deleteChat(id: string): Promise<boolean>;
+  /** Oldest first, newest `limit` rows when given (the page renders bottom-up). */
+  listChatMessages(chatId: string, limit?: number): Promise<ChatMessage[]>;
+  appendChatMessage(m: NewChatMessage): Promise<ChatMessage>;
+  /**
+   * The serialisation lock. Flips `idle`/`error` → `thinking` and clears the
+   * previous error, in ONE conditional statement — a chat already `thinking`
+   * returns null and its caller refuses. This is what stops the browser and
+   * the phone from putting two `claude -p` children on one session id, and it
+   * is a composite method for the same reason every other one is: there is no
+   * generic `transaction(fn)` (see the note above).
+   */
+  beginChatTurn(id: string): Promise<Chat | null>;
+  /**
+   * Record (or clear) the pid of the turn running right now. Separate from
+   * `beginChatTurn` because the lock is taken BEFORE the child exists — and
+   * separate from a general patch so a crash between the two leaves a chat
+   * `thinking` with a null pid, which boot recovery reads as "nothing to
+   * kill", the safe half of the answer.
+   */
+  setChatPid(id: string, pid: number | null): Promise<void>;
+  /**
+   * The other half: `thinking` → `idle` (or `error`), recording the session id
+   * the turn captured, its cost, and bumping the turn counter on success.
+   * Unconditional on purpose — the turn that owns the lock is the only caller,
+   * and a boot that finds a stranded `thinking` row must be able to clear it.
+   */
+  finishChatTurn(id: string, r: ChatTurnResult): Promise<Chat | null>;
+  /** Live turns across all chats, for the `chat.concurrency` fence. */
+  countThinkingChats(): Promise<number>;
 
   listProposals(f?: { status?: Proposal['status']; taskId?: string; repoId?: string }): Promise<Proposal[]>;
   getProposal(id: string): Promise<Proposal | null>;

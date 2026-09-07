@@ -13,6 +13,7 @@ import {
   runNowTask,
 } from './actions.ts';
 import { escapeHtml, type Reply } from './api.ts';
+import { handleQuestionText, type QuestionDeps } from './questions.ts';
 import type { InlineKeyboardMarkup } from './types.ts';
 import { short } from './ids.ts';
 
@@ -33,7 +34,7 @@ import { short } from './ids.ts';
 /** A flow left untouched for this long is gone; the next message starts fresh. */
 export const FLOW_TIMEOUT_MS = 10 * 60_000;
 
-export type FlowKind = 'new' | 'edit' | 'feature' | 'proceed' | 'draft';
+export type FlowKind = 'new' | 'edit' | 'feature' | 'proceed' | 'draft' | 'question';
 
 interface FlowData {
   repoId?: string;
@@ -51,6 +52,9 @@ interface FlowData {
   request?: string;
   /** /proceed: false = no session to resume, so the answer starts a fresh one */
   resumable?: boolean;
+  /** a question's "Other…" press: which question, which part (docs/questions.md) */
+  questionId?: string;
+  questionIndex?: number;
 }
 
 export interface Flow {
@@ -78,6 +82,8 @@ export interface FlowDeps {
   storage: Storage;
   orchestrator: Orchestrator;
   actor: string;
+  /** the question surface (docs/questions.md); null in a harness without one */
+  questions?: QuestionDeps | null;
 }
 
 /** Fields /edit can set — the subset of the PATCH body worth a phone keyboard. */
@@ -381,6 +387,14 @@ export async function handleFlowText(deps: FlowDeps, flows: FlowStore, text: str
     const repos = await deps.storage.listRepos();
     flows.advance('repo', { request: body, title: splitText(body).title });
     return step({ html: '<b>New feature</b> — which repo?', keyboard: repoKeyboard(repos, flows.seq()) });
+  }
+  if (flow.kind === 'question' && flow.step === 'text') {
+    // The free-text answer an "Other…" press asked for. The flow is spent
+    // either way: a second thought is a new press, not a replacement.
+    flows.clear();
+    if (!deps.questions) return step({ html: 'Questions are unavailable on this bot.' }, false);
+    const reply = await handleQuestionText(deps.questions, flow.data.questionId ?? '', flow.data.questionIndex ?? 0, body);
+    return step(reply, reply.ok !== false);
   }
   if (flow.kind === 'proceed' && flow.step === 'text') {
     const taskId = flow.data.taskId!;

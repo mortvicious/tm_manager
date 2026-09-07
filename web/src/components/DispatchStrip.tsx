@@ -9,8 +9,16 @@ import { fmtAgo, useNow } from './TimeAgo.tsx';
  * agent-to-agent messages delivered by resuming the target's own session.
  * `direction 'in'` (the board strip) shows only what was sent TO this task;
  * `'both'` (the task panel) shows sent and received, direction-marked.
- * `full` renders whole messages instead of one ellipsised line.
+ * `full` (the task panel) renders each dispatch as a collapsible entry — one
+ * teaser line until chosen, the whole message when open — the same shape as
+ * the review rounds above it; the newest starts open.
  */
+
+/** first line of a message, ellipsised, for the collapsed teaser */
+function teaser(message: string): string {
+  const line = message.split('\n').find((l) => l.trim() !== '') ?? '';
+  return line.length > 120 ? `${line.slice(0, 119).trimEnd()}…` : line;
+}
 export function DispatchStrip({
   taskId,
   direction = 'in',
@@ -30,6 +38,8 @@ export function DispatchStrip({
 }) {
   const { dispatches, tasks, refresh } = useApp();
   const [busy, setBusy] = useState<string | null>(null);
+  // the one entry that is open in `full` mode; null = all collapsed
+  const [openId, setOpenId] = useState<string | null | undefined>(undefined);
   const now = useNow();
 
   const mine = dispatches
@@ -38,6 +48,8 @@ export function DispatchStrip({
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
   if (mine.length === 0) return null;
   const shown = limit ? mine.slice(0, limit) : mine;
+  // undefined = never touched: the newest is open by default
+  const open = openId === undefined ? shown[0]?.id ?? null : openId;
 
   const titleOf = (id: string) => tasks.find((t) => t.id === id)?.title ?? `${id.slice(0, 8)}… (deleted)`;
 
@@ -60,8 +72,19 @@ export function DispatchStrip({
       {shown.map((d) => {
         const incoming = d.toTaskId === taskId;
         const peer = incoming ? d.fromTaskId : d.toTaskId;
+        const isOpen = full && open === d.id;
         return (
-          <div key={d.id} className={`dispatch-row ${d.status} ${full ? 'full' : ''}`}>
+          <div key={d.id} className={`dispatch-row ${d.status} ${d.intent} ${full ? 'full' : ''} ${isOpen ? 'open' : ''}`}>
+            {full ? (
+              <button
+                className="dispatch-toggle"
+                aria-expanded={isOpen}
+                title={isOpen ? 'collapse' : 'show the whole message'}
+                onClick={() => setOpenId(isOpen ? null : d.id)}
+              >
+                <span className={`caret ${isOpen ? '' : 'closed'}`}>▾</span>
+              </button>
+            ) : null}
             <span className="dispatch-dir" title={incoming ? 'dispatched to this task' : 'dispatched by this task'}>
               {incoming ? '⇠' : '⇢'}
             </span>
@@ -73,10 +96,26 @@ export function DispatchStrip({
             >
               {titleOf(peer)}
             </button>
-            <span className="dispatch-msg" title={full ? undefined : d.message}>
-              {d.message}
+            <span className="dispatch-msg" title={full && !isOpen ? d.message : undefined}>
+              {full && !isOpen ? teaser(d.message) : d.message}
             </span>
-            <span className="dispatch-status" title={d.note ?? undefined}>
+            {d.intent === 'fyi' && (
+              <span
+                className="dispatch-intent"
+                title="FYI — this message never wakes the target session; it is handed over on the next turn that session takes anyway"
+              >
+                fyi
+              </span>
+            )}
+            <span
+              className="dispatch-status"
+              title={
+                d.note ??
+                (d.status === 'pending' && d.intent === 'fyi'
+                  ? 'waiting to ride along on the target session\u2019s next turn — it will not start one'
+                  : undefined)
+              }
+            >
               {d.status}
             </span>
             <span

@@ -8,7 +8,7 @@ import {
   type Task,
   type TaskStatus,
 } from '@tm/shared';
-import { NOTIFY_CLASSES, type TelegramNotifyConfig } from '../config.ts';
+import { NOTIFY_CLASSES, type TelegramDigestConfig, type TelegramNotifyConfig } from '../config.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { Storage } from '../storage/types.ts';
 import {
@@ -33,6 +33,22 @@ import {
   type ButtonAction,
 } from './actions.ts';
 import { escapeHtml, type Reply, type ReplyLike } from './api.ts';
+import { listQuestionsReplies, type QuestionDeps } from './questions.ts';
+import { reviewClause } from './notifications.ts';
+import type { DigestControl } from './digest.ts';
+import { buildReport, resolveReportScope } from './report.ts';
+import {
+  ConfirmStore,
+  RateLimiter,
+  WINDOW_NOTE,
+  CONFIRM_LABEL,
+  confirmKeyboard,
+  renderKillAllSurvey,
+  renderRestartCheck,
+  surveyKillAll,
+  type BotHooks,
+} from './emergency.ts';
+import { chatCommand, chatsCommand, endChatCommand, modeCommand, type ChatDeps } from './chat.ts';
 import { FlowStore, startEdit, startFeature, startNew, startProceed } from './flows.ts';
 import { resolveFeature, resolveLiveRun, resolveProposal, resolveRepo, resolveTask, short } from './ids.ts';
 import { collectStatus, formatClock, renderStatus, type GateCounters } from './status.ts';
@@ -52,8 +68,30 @@ export interface CommandContext {
   notify: TelegramNotifyConfig;
   /** write cfg.notify back to data/config.json; the error text on failure */
   persistNotify(): string | null;
+  /** the LIVE digest config — /digest mutates it in place (§ Reports) */
+  digest: TelegramDigestConfig;
+  /** the running scheduler, so /digest can re-arm and say truthfully when the
+   *  next one lands. Null in a context with no scheduler (a harness); the
+   *  reply then falls back to comparing the clock to the hour. */
+  digestControl: DigestControl | null;
+  /** write cfg.digest back to data/config.json; the error text on failure */
+  persistDigest(): string | null;
   /** the single conversational flow (docs/telegram.md § Conversations) */
   flows: FlowStore;
+  /** the ONE open confirm window for a destructive command (§ Emergency) */
+  confirms: ConfirmStore;
+  /** the fence in front of /killall and /restart */
+  limiter: RateLimiter;
+  /** what index.ts wired in: the restart guard and the front door's port.
+   *  Null in a context that has no server around it (a harness) — /restart
+   *  then says so rather than pretending. */
+  hooks: BotHooks | null;
+  /** the chat surface (docs/chat.md). Null in a context built without one —
+   *  /chat then says so rather than throwing. */
+  chatDeps: ChatDeps | null;
+  /** the question surface (docs/questions.md). Null in a context built
+   *  without one — /questions then says so rather than throwing. */
+  questions: QuestionDeps | null;
   /** what the audit trail records — always 'telegram' in production */
   actor: string;
   /** everything after the command word, trimmed; '' when there was none */
@@ -121,6 +159,28 @@ function say(r: ActionOutcome): Reply {
 
 const TASK_STATUSES = Object.keys(STATUS_ICON) as TaskStatus[];
 
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** One line on where the adversarial review stands (docs/design.md § Adversarial review). */
+function reviewStateLine(t: Task): string | null {
+  switch (t.reviewState) {
+    case 'pending':
+    case 'reviewing':
+      return '🔍 <b>auto-review</b> in progress';
+    case 'fixing':
+      return `🔧 <b>fixing</b> review findings (round ${t.reviewRounds.length})`;
+    case 'passed':
+    case 'flagged':
+    case 'error':
+    case 'skipped': {
+      const clause = reviewClause(t);
+      return clause ? `<b>Review</b> · ${escapeHtml(clause)}` : null;
+    }
+    default:
+      return null;
+  }
+}
+
 // ---- id-taking commands -------------------------------------------------
 
 /**
@@ -155,8 +215,9 @@ export const COMMANDS: BotCommand[] = [
       return [
         `<b>Task Manager</b> — the phone side of the board running on the Mac.`,
         ``,
-        `This bot talks to the server in-process: it can read and steer the queue,`,
-        `but it deliberately does not expose a terminal.`,
+        `This bot talks to the server in-process: it reads and steers the queue,`,
+        `and /chat holds a conversation with claude inside one of your repos.`,
+        `It still does not expose the agents' terminals — those stay on the Mac.`,
         ``,
         `Send /status for the current state, /help for the commands.`,
       ].join('\n');
@@ -174,6 +235,18 @@ export const COMMANDS: BotCommand[] = [
         ``,
         `<i>Ids are short: the first 4+ characters of the one /tasks prints is enough.</i>`,
       ].join('\n');
+    },
+  },
+  {
+    command: 'questions',
+    description: 'What the agents are waiting on you to decide',
+    async handler(ctx) {
+      if (!ctx.questions) return 'Questions are unavailable on this bot.';
+      const replies = await listQuestionsReplies(ctx.questions);
+      // One keyboard per message: the first goes back as the reply, the rest
+      // are sent by the caller through `extra`.
+      const [first, ...rest] = replies;
+      return { ...first, extra: rest };
     },
   },
   {
@@ -257,8 +330,12 @@ export const COMMANDS: BotCommand[] = [
       );
       if (t.customQueueAt) lines.push(await queueLine(ctx, t));
       if (t.featureId) lines.push(`🧩 feature <code>${short(t.featureId)}</code> · phase ${(t.featurePhase ?? 0) + 1}`);
-      if (t.resultSummary) lines.push(``, `<b>Result</b>`, escapeHtml(t.resultSummary));
-      if (t.reviewSummary) lines.push(``, `<b>Review</b>`, escapeHtml(t.reviewSummary));
+      if (t.resultSummary) lines.push(``, `<b>Result</b>`, escapeHtml(clip(t.resultSummary, 1500)));
+      const review = reviewStateLine(t);
+      if (review) lines.push(``, review);
+      const last = t.reviewRounds[t.reviewRounds.length - 1];
+      if (last?.summary) lines.push(escapeHtml(clip(last.summary, 1500)));
+      else if (t.reviewSummary) lines.push(escapeHtml(clip(t.reviewSummary, 1500)));
       if (t.error) lines.push(``, `⚠ ${escapeHtml(t.error)}`);
       lines.push(``, `Updated ${escapeHtml(formatClock(t.updatedAt))}`);
       return { html: lines.join('\n'), keyboard: taskActionKeyboard(t) };
@@ -327,6 +404,38 @@ export const COMMANDS: BotCommand[] = [
           ? await proceedTask(deps(ctx), found.value.id, ctx.actor, message)
           : await followUpTask(deps(ctx), found.value.id, message, ctx.actor),
       );
+    },
+  },
+  {
+    command: 'chat',
+    description: 'Chat with claude in a repo (docs/chat.md)',
+    async handler(ctx) {
+      if (!ctx.chatDeps) return { html: 'Chat is unavailable on this server.', ok: false };
+      return chatCommand(ctx.chatDeps, ctx.args, ctx.actor);
+    },
+  },
+  {
+    command: 'chats',
+    description: 'List the chats',
+    async handler(ctx) {
+      if (!ctx.chatDeps) return { html: 'Chat is unavailable on this server.', ok: false };
+      return chatsCommand(ctx.chatDeps);
+    },
+  },
+  {
+    command: 'endchat',
+    description: 'Leave chat mode',
+    async handler(ctx) {
+      if (!ctx.chatDeps) return { html: 'Chat is unavailable on this server.', ok: false };
+      return endChatCommand(ctx.chatDeps);
+    },
+  },
+  {
+    command: 'mode',
+    description: 'This chat: read-only or write',
+    async handler(ctx) {
+      if (!ctx.chatDeps) return { html: 'Chat is unavailable on this server.', ok: false };
+      return modeCommand(ctx.chatDeps, ctx.args, ctx.actor);
     },
   },
   {
@@ -458,6 +567,95 @@ export const COMMANDS: BotCommand[] = [
     },
   },
   {
+    command: 'killall',
+    description: '🛑 Stop everything — kill runs, cancel the queue, pause features',
+    async handler(ctx) {
+      // Rate-limited BEFORE the window is armed: refusing at the press would
+      // mean the owner read a list of what was about to die, tapped Confirm,
+      // and got a cooldown notice instead — the worst moment to be told no.
+      const allowed = ctx.limiter.check('/killall');
+      if (!allowed.ok) return { html: `⏳ ${escapeHtml(allowed.error)}`, ok: false };
+      const open = ctx.confirms.peek();
+      if (open) {
+        return {
+          html:
+            `⏳ A <b>${escapeHtml(CONFIRM_LABEL[open.kind])}</b> confirm is already open ` +
+            `(${Math.max(0, Math.ceil((open.expiresAt - Date.now()) / 1000))}s left). ` +
+            `Answer it, or wait for it to expire.`,
+          ok: false,
+        };
+      }
+      const survey = await surveyKillAll(deps(ctx));
+      if (survey.quiet) {
+        // Nothing to kill is an answer, not a confirm. Arming a window here
+        // would spend the one slot on a no-op and start the cooldown.
+        return 'Nothing to stop — the queue is off, nothing is running, nothing is queued.';
+      }
+      const armed = ctx.confirms.arm('killall');
+      if (!armed.ok) return { html: '⏳ A confirm window just opened elsewhere — try again.', ok: false };
+      return {
+        html: [renderKillAllSurvey(survey), '', WINDOW_NOTE].join('\n'),
+        keyboard: confirmKeyboard(armed.confirm, '🛑 Confirm KILL ALL'),
+      };
+    },
+  },
+  {
+    command: 'restart',
+    description: 'Restart the server through the front door (honours the guard)',
+    async handler(ctx) {
+      if (!ctx.hooks) {
+        return { html: '⚠ Restart is not available in this process (no front door wired).', ok: false };
+      }
+      const allowed = ctx.limiter.check('/restart');
+      if (!allowed.ok) return { html: `⏳ ${escapeHtml(allowed.error)}`, ok: false };
+      const open = ctx.confirms.peek();
+      if (open) {
+        return {
+          html:
+            `⏳ A <b>${escapeHtml(CONFIRM_LABEL[open.kind])}</b> confirm is already open ` +
+            `(${Math.max(0, Math.ceil((open.expiresAt - Date.now()) / 1000))}s left). ` +
+            `Answer it, or wait for it to expire.`,
+          ok: false,
+        };
+      }
+      // The SAME guard the route and the front door use — never a second copy
+      // of "are agents working?" (docs/host.md).
+      const check = await ctx.hooks.restartCheck();
+      const armed = ctx.confirms.arm(check.blocked ? 'restart-force' : 'restart');
+      if (!armed.ok) return { html: '⏳ A confirm window just opened elsewhere — try again.', ok: false };
+      if (check.blocked) {
+        return {
+          html: [
+            `⛔ <b>Restart refused</b> — ${escapeHtml(check.error ?? 'agents are working')}`,
+            ``,
+            renderRestartCheck(check),
+            ``,
+            `Forcing it kills every session mid-run; boot recovery sweeps them to <code>failed</code>.`,
+            `<b>/killall</b> is the clean way to empty the machine first.`,
+            ``,
+            WINDOW_NOTE,
+          ].join('\n'),
+          keyboard: confirmKeyboard(armed.confirm, '⚠️ Restart ANYWAY (force)'),
+          // The guard refused: the command performed nothing.
+          ok: false,
+        };
+      }
+      return {
+        html: [
+          `🔄 <b>Restart the server?</b>`,
+          ``,
+          `Nothing is working — the guard is clear.`,
+          renderRestartCheck(check),
+          ``,
+          `The front door (port ${ctx.hooks.hostPort}) will stop this process and start it again.`,
+          ``,
+          WINDOW_NOTE,
+        ].join('\n'),
+        keyboard: confirmKeyboard(armed.confirm, '🔄 Confirm restart'),
+      };
+    },
+  },
+  {
     command: 'kill',
     description: 'Kill a live run — /kill <run id>',
     async handler(ctx) {
@@ -535,7 +733,66 @@ export const COMMANDS: BotCommand[] = [
       return `All notifications <b>on</b>.${persistSuffix(ctx)}`;
     },
   },
+  {
+    command: 'report',
+    description: 'HTML report — /report 24h|7d|task <id>|feature <id>|group <id>',
+    async handler(ctx) {
+      const scope = await resolveReportScope(ctx.storage, ctx.args);
+      if (!scope.ok) return { html: `⚠ ${escapeHtml(scope.error)}`, ok: false };
+      const doc = await buildReport(ctx.storage, scope.value);
+      // The summary is the message; the file is the detail. If the summary is
+      // too long to be a caption, api.ts sends it as its own message rather
+      // than truncating it — the gist must survive either way.
+      return { html: doc.summary, document: doc };
+    },
+  },
+  {
+    command: 'digest',
+    description: 'Daily 24h report — /digest on|off [hour]',
+    async handler(ctx) {
+      const [verb, hourArg] = ctx.args.toLowerCase().split(/\s+/).filter(Boolean);
+      if (!verb) return renderDigest(ctx.digest, ctx.digestControl);
+      if (verb !== 'on' && verb !== 'off') {
+        return {
+          html: `Usage: <code>/digest on|off [hour]</code>\n\n${renderDigest(ctx.digest, ctx.digestControl)}`,
+          ok: false,
+        };
+      }
+      if (hourArg !== undefined) {
+        const hour = Number(hourArg);
+        if (!/^\d{1,2}$/.test(hourArg) || !Number.isInteger(hour) || hour < 0 || hour > 23) {
+          return { html: `⚠ hour must be an integer in 0..23 (local time), got <code>${escapeHtml(hourArg)}</code>`, ok: false };
+        }
+        ctx.digest.hour = hour;
+      }
+      ctx.digest.enabled = verb === 'on';
+      // Re-arm BEFORE rendering: the reply's "today"/"tomorrow" is read back
+      // out of the scheduler, so the scheduler has to have seen the change.
+      await ctx.digestControl?.rearm();
+      return `${renderDigest(ctx.digest, ctx.digestControl)}${persistDigestSuffix(ctx)}`;
+    },
+  },
 ];
+
+/** The digest's own state line — shared by `/digest` with and without args. */
+function renderDigest(d: TelegramDigestConfig, control: DigestControl | null, now = new Date()): string {
+  const at = `${String(d.hour).padStart(2, '0')}:00 local`;
+  // Say WHICH day the next one is, not just the hour: "lands at 23:00" typed
+  // at 07:00 and "lands at 09:00" typed at 22:00 are the same sentence and
+  // fifteen hours apart. The answer comes from the SCHEDULER, which knows
+  // whether today already went out and whether it was armed in time — the
+  // clock alone cannot tell, and a promise of "today" that then does not
+  // happen is worse than no promise.
+  const when = control ? control.nextRun(now) : now.getHours() < d.hour ? 'today' : 'tomorrow';
+  return d.enabled
+    ? `Daily digest: <b>on</b> — the 24h report lands at <b>${at}</b>, next one <b>${when}</b>.\nTurn it off with <code>/digest off</code>.`
+    : `Daily digest: <b>off</b>.\nTurn it on with <code>/digest on</code>, or <code>/digest on 9</code> to pick the hour (currently ${at}).`;
+}
+
+function persistDigestSuffix(ctx: CommandContext): string {
+  const err = ctx.persistDigest();
+  return err ? `\n⚠ Applied for this run, but not saved to config.json: ${escapeHtml(err)}` : '';
+}
 
 /**
  * Where a custom-queue member stands. The ordinal comes from the SHARED

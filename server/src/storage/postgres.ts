@@ -5,7 +5,10 @@ import {
   TERMINAL_TASK_STATUSES,
   type AppSettings,
   type AuditEvent,
+  type Chat,
+  type ChatMessage,
   type Dispatch,
+  type Question,
   type Feature,
   type FeatureStatus,
   type Proposal,
@@ -20,17 +23,38 @@ import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from
 import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_IDLE } from './queue-sql.ts';
 import { MOVE_SUBTREE_SQL, ROOT_PATH, moveSubtreeParams, pathContains, placement } from './group.ts';
 import { MIGRATIONS } from './migrations.ts';
-import { eventId, now, rowToCommand, rowToDispatch, rowToEvent, rowToFeature, rowToProposal, rowToRepo, rowToRun, rowToTask } from './rows.ts';
+import {
+  eventId,
+  now,
+  rowToChat,
+  rowToChatMessage,
+  rowToCommand,
+  rowToDispatch,
+  rowToQuestion,
+  rowToEvent,
+  rowToFeature,
+  rowToProposal,
+  rowToRepo,
+  rowToRun,
+  rowToTask,
+} from './rows.ts';
 import type {
+  ChatPatch,
+  ChatTurnResult,
   ChildCounts,
   CommandPatch,
   DispatchFilter,
+  RunFilter,
   EventFilter,
   FeaturePatch,
   FeatureResolution,
   NewAuditEvent,
+  NewChat,
+  NewChatMessage,
   NewCommand,
   NewDispatch,
+  NewQuestion,
+  QuestionFilter,
   NewFeature,
   NewProposal,
   NewRepo,
@@ -273,6 +297,10 @@ export class PostgresStorage implements Storage {
       where.push(`feature_id = ?`);
       params.push(f.featureId);
     }
+    if (f?.updatedSince) {
+      where.push(`updated_at >= ?`);
+      params.push(f.updatedSince);
+    }
     const sql = `SELECT * FROM tm_tasks ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY priority DESC, created_at`;
     return (await this.q(sql, params)).map(rowToTask);
   }
@@ -391,7 +419,7 @@ export class PostgresStorage implements Storage {
     // Only a group ROOT carries the group's name/colour.
     const isRoot = place.groupId === id;
     await c.query(
-      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, auto_publish=$17, custom_queue_at=$18, feature_id=$19, feature_phase=$20, result_summary=$21, review_summary=$22, error=$23, updated_at=$24 WHERE id=$25`,
+      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, auto_publish=$17, custom_queue_at=$18, feature_id=$19, feature_phase=$20, result_summary=$21, review_summary=$22, review_diff_hash=$23, review_state=$24, review_rounds=$25, wake_at=$26, error=$27, updated_at=$28 WHERE id=$29`,
       [
         next.title,
         next.description,
@@ -415,6 +443,10 @@ export class PostgresStorage implements Storage {
         next.featurePhase,
         next.resultSummary,
         next.reviewSummary,
+        next.reviewDiffHash ?? null,
+        next.reviewState ?? null,
+        JSON.stringify(next.reviewRounds ?? []),
+        next.wakeAt ?? null,
         next.error,
         next.updatedAt,
         id,
@@ -516,7 +548,7 @@ export class PostgresStorage implements Storage {
     from: Task['status'][],
     to: Task['status'],
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState'>>,
   ): Promise<Task | null> {
     const sets = ['status = ?', 'updated_at = ?'];
     const vals: unknown[] = [to, now()];
@@ -527,6 +559,10 @@ export class PostgresStorage implements Storage {
     if (patch && 'resultSummary' in patch) {
       sets.push('result_summary = ?');
       vals.push(patch.resultSummary ?? null);
+    }
+    if (patch && 'reviewState' in patch) {
+      sets.push('review_state = ?');
+      vals.push(patch.reviewState ?? null);
     }
     // Terminal status ends custom-queue membership (twin of the sqlite driver).
     if (TERMINAL_TASK_STATUSES.includes(to)) sets.push('custom_queue_at = NULL');
@@ -608,7 +644,7 @@ export class PostgresStorage implements Storage {
 
   // ---- runs ----
 
-  async listRuns(f?: { taskId?: string; status?: Run['status']; mode?: Run['mode'] }): Promise<Run[]> {
+  async listRuns(f?: RunFilter): Promise<Run[]> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (f?.taskId) {
@@ -622,6 +658,10 @@ export class PostgresStorage implements Storage {
     if (f?.mode) {
       where.push(`mode = ?`);
       params.push(f.mode);
+    }
+    if (f?.since) {
+      where.push(`started_at >= ?`);
+      params.push(f.since);
     }
     const sql = `SELECT * FROM tm_runs ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY started_at DESC, id DESC`;
     return (await this.q(sql, params)).map(rowToRun);
@@ -741,6 +781,10 @@ export class PostgresStorage implements Storage {
       where.push(`status = ?`);
       params.push(f.status);
     }
+    if (f?.since) {
+      where.push(`created_at >= ?`);
+      params.push(f.since);
+    }
     const sql = `SELECT * FROM tm_dispatches ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC, id DESC`;
     return (await this.q(sql, params)).map(rowToDispatch);
   }
@@ -753,8 +797,8 @@ export class PostgresStorage implements Storage {
   async createDispatch(d: NewDispatch): Promise<Dispatch> {
     const id = randomUUID();
     await this.q(
-      `INSERT INTO tm_dispatches (id, from_task_id, from_run_id, to_task_id, message, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
-      [id, d.fromTaskId, d.fromRunId ?? null, d.toTaskId, d.message, now()],
+      `INSERT INTO tm_dispatches (id, from_task_id, from_run_id, to_task_id, message, intent, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
+      [id, d.fromTaskId, d.fromRunId ?? null, d.toTaskId, d.message, d.intent, now()],
     );
     return (await this.getDispatch(id))!;
   }
@@ -781,6 +825,188 @@ export class PostgresStorage implements Storage {
       `SELECT COUNT(*) AS n FROM tm_dispatches WHERE (from_task_id = ? AND to_task_id = ?) OR (from_task_id = ? AND to_task_id = ?)`,
       [taskA, taskB, taskB, taskA],
     );
+    return Number(r[0].n);
+  }
+
+
+  // ---- questions (docs/questions.md) ----
+  // Same SQL as the SQLite driver, `?` and all — toPg() rewrites. Keep in step.
+
+  async listQuestions(f?: QuestionFilter): Promise<Question[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (f?.status) {
+      where.push(`status = ?`);
+      params.push(f.status);
+    }
+    if (f?.taskId) {
+      where.push(`task_id = ?`);
+      params.push(f.taskId);
+    }
+    if (f?.runId) {
+      where.push(`run_id = ?`);
+      params.push(f.runId);
+    }
+    const sql = `SELECT * FROM tm_questions ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC, id DESC`;
+    return (await this.q(sql, params)).map(rowToQuestion);
+  }
+
+  async getQuestion(id: string): Promise<Question | null> {
+    const r = await this.q(`SELECT * FROM tm_questions WHERE id = ?`, [id]);
+    return r[0] ? rowToQuestion(r[0]) : null;
+  }
+
+  async createQuestion(q: NewQuestion): Promise<Question> {
+    const id = randomUUID();
+    await this.q(
+      `INSERT INTO tm_questions (id, task_id, run_id, tool_use_id, status, questions, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+      [id, q.taskId, q.runId, q.toolUseId, JSON.stringify(q.questions), now()],
+    );
+    return (await this.getQuestion(id))!;
+  }
+
+  async answerQuestion(id: string, answers: Record<string, string>, actor: string): Promise<Question | null> {
+    const r = await this.q(
+      `UPDATE tm_questions SET status = 'answered', answers = ?, answered_by = ?, answered_at = ? WHERE id = ? AND status = 'pending' RETURNING *`,
+      [JSON.stringify(answers), actor, now(), id],
+    );
+    return r[0] ? rowToQuestion(r[0]) : null;
+  }
+
+  async expireQuestions(f: { runId?: string; taskId?: string }, note: string): Promise<Question[]> {
+    const where: string[] = [`status = 'pending'`];
+    const params: unknown[] = [note, now()];
+    if (f.runId) {
+      where.push(`run_id = ?`);
+      params.push(f.runId);
+    }
+    if (f.taskId) {
+      where.push(`task_id = ?`);
+      params.push(f.taskId);
+    }
+    const rows = await this.q(
+      `UPDATE tm_questions SET status = 'expired', note = ?, answered_at = ? WHERE ${where.join(' AND ')} RETURNING *`,
+      params,
+    );
+    return rows.map(rowToQuestion);
+  }
+
+  // ---- chats (docs/chat.md) ----
+  //
+  // Character-for-character the same SQL as the SQLite driver, `?` and all —
+  // toPg() rewrites the placeholders. Keep the two in step.
+
+  async listChats(repoId?: string): Promise<Chat[]> {
+    const where = repoId ? `WHERE repo_id = ?` : '';
+    const params = repoId ? [repoId] : [];
+    const sql = `SELECT * FROM tm_chats ${where} ORDER BY COALESCE(last_message_at, created_at) DESC, id DESC`;
+    return (await this.q(sql, params)).map(rowToChat);
+  }
+
+  async getChat(id: string): Promise<Chat | null> {
+    const r = await this.q(`SELECT * FROM tm_chats WHERE id = ?`, [id]);
+    return r[0] ? rowToChat(r[0]) : null;
+  }
+
+  async createChat(c: NewChat): Promise<Chat> {
+    const id = randomUUID();
+    const ts = now();
+    await this.q(
+      `INSERT INTO tm_chats (id, repo_id, title, model, effort, mode, status, turns, cost_usd, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, 0, ?, ?)`,
+      [id, c.repoId, c.title, c.model, c.effort ?? null, c.mode, ts, ts],
+    );
+    return (await this.getChat(id))!;
+  }
+
+  async updateChat(id: string, patch: ChatPatch): Promise<Chat | null> {
+    const cur = await this.getChat(id);
+    if (!cur) return null;
+    const next = {
+      title: patch.title ?? cur.title,
+      model: patch.model ?? cur.model,
+      effort: patch.effort === undefined ? cur.effort : patch.effort,
+      mode: patch.mode ?? cur.mode,
+    };
+    await this.q(`UPDATE tm_chats SET title = ?, model = ?, effort = ?, mode = ?, updated_at = ? WHERE id = ?`, [
+      next.title,
+      next.model,
+      next.effort,
+      next.mode,
+      now(),
+      id,
+    ]);
+    return this.getChat(id);
+  }
+
+  async deleteChat(id: string): Promise<boolean> {
+    return this.tx(async (c) => {
+      const r = await c.query(toPg(`DELETE FROM tm_chats WHERE id = ?`), [id]);
+      if (!r.rowCount) return false;
+      await c.query(toPg(`DELETE FROM tm_chat_messages WHERE chat_id = ?`), [id]);
+      return true;
+    });
+  }
+
+  async listChatMessages(chatId: string, limit?: number): Promise<ChatMessage[]> {
+    if (limit && limit > 0) {
+      const rows = await this.q(`SELECT * FROM tm_chat_messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?`, [
+        chatId,
+        limit,
+      ]);
+      return rows.reverse().map(rowToChatMessage);
+    }
+    return (await this.q(`SELECT * FROM tm_chat_messages WHERE chat_id = ? ORDER BY id ASC`, [chatId])).map(
+      rowToChatMessage,
+    );
+  }
+
+  async appendChatMessage(m: NewChatMessage): Promise<ChatMessage> {
+    const id = eventId();
+    const at = now();
+    return this.tx(async (c) => {
+      await c.query(
+        toPg(`INSERT INTO tm_chat_messages (id, chat_id, role, text, actor, error, cost_usd, duration_ms, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+        [id, m.chatId, m.role, m.text, m.actor, m.error ?? null, m.costUsd ?? 0, m.durationMs ?? null, at],
+      );
+      await c.query(toPg(`UPDATE tm_chats SET last_message_at = ?, updated_at = ? WHERE id = ?`), [at, at, m.chatId]);
+      const r = await c.query(toPg(`SELECT * FROM tm_chat_messages WHERE id = ?`), [id]);
+      return rowToChatMessage(r.rows[0]);
+    });
+  }
+
+  async beginChatTurn(id: string): Promise<Chat | null> {
+    const r = await this.q(
+      `UPDATE tm_chats SET status = 'thinking', error = NULL, updated_at = ?
+       WHERE id = ? AND status IN ('idle', 'error') RETURNING *`,
+      [now(), id],
+    );
+    return r[0] ? rowToChat(r[0]) : null;
+  }
+
+  async setChatPid(id: string, pid: number | null): Promise<void> {
+    await this.q(`UPDATE tm_chats SET pid = ? WHERE id = ?`, [pid, id]);
+  }
+
+  async finishChatTurn(id: string, res: ChatTurnResult): Promise<Chat | null> {
+    const r = await this.q(
+      `UPDATE tm_chats SET
+         status = ?,
+         error = ?,
+         session_id = COALESCE(?, session_id),
+         pid = NULL,
+         turns = turns + ?,
+         cost_usd = cost_usd + ?,
+         updated_at = ?
+       WHERE id = ? RETURNING *`,
+      [res.error ? 'error' : 'idle', res.error, res.sessionId ?? null, res.error ? 0 : 1, res.costUsd, now(), id],
+    );
+    return r[0] ? rowToChat(r[0]) : null;
+  }
+
+  async countThinkingChats(): Promise<number> {
+    const r = await this.q(`SELECT COUNT(*) AS n FROM tm_chats WHERE status = 'thinking'`);
     return Number(r[0].n);
   }
 

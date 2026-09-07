@@ -46,7 +46,49 @@ export interface TelegramConfig {
   pollTimeoutSec: number;
   /** Per-event-class push switches (docs/telegram.md § Notifications). */
   notify: TelegramNotifyConfig;
+  /** Daily 24h report (docs/telegram.md § Reports), toggled by /digest. */
+  digest: TelegramDigestConfig;
+  /** Chat mode from the phone (docs/chat.md § From the phone). */
+  chat: TelegramChatConfig;
 }
+
+/**
+ * Whether the phone may hold a chat, and whether that chat may WRITE.
+ *
+ * `allowWrite` is a boot-config key and defaults to false for one reason:
+ * until chat existed, docs/telegram.md § What the bot does not do could say
+ * flatly that the bot reaches no code-execution surface. A write-mode chat is
+ * exactly that surface, so turning it on is a decision made once, at the
+ * keyboard, in the file that already holds the bot token — not a button on
+ * the phone that a stolen unlocked handset could press. With it false the
+ * phone can still open and read chats; `/mode write` is refused and says why.
+ */
+export interface TelegramChatConfig {
+  enabled: boolean;
+  allowWrite: boolean;
+}
+
+/** Chat on, write off — the safe half of the feature, available by default. */
+export const DEFAULT_TELEGRAM_CHAT: TelegramChatConfig = { enabled: true, allowWrite: false };
+
+/**
+ * The daily digest: the same 24h report `/report` builds, pushed unasked once
+ * a day. `hour` is LOCAL wall-clock on the machine running the server — the
+ * Mac in docs/future/telegram-bot.md — because "send it at 9" means the hour
+ * the human wakes up, not a UTC offset they would have to compute.
+ *
+ * A sibling of `notify` rather than an eleventh notify class: /mute and
+ * /unmute flip every class at once, and muting event pushes for an afternoon
+ * must not silently cancel tomorrow's digest.
+ */
+export interface TelegramDigestConfig {
+  enabled: boolean;
+  /** 0..23, local time. */
+  hour: number;
+}
+
+/** Off, 09:00 local — also the fallback for a config missing the block. */
+export const DEFAULT_DIGEST: TelegramDigestConfig = { enabled: false, hour: 9 };
 
 /**
  * One boolean per pushed event class. All on by default; flipped by /mute,
@@ -113,6 +155,8 @@ const DEFAULT_CONFIG: BootConfig = {
       queue: true,
       boot: true,
     },
+    digest: { ...DEFAULT_DIGEST },
+    chat: { ...DEFAULT_TELEGRAM_CHAT },
   },
 };
 
@@ -170,6 +214,26 @@ export function loadBootConfig(): BootConfig {
   if (tg.notify !== undefined && (typeof tg.notify !== 'object' || tg.notify === null || Array.isArray(tg.notify))) {
     throw new Error(`data/config.json: telegram.notify must be an object`);
   }
+  if (tg.digest !== undefined && (typeof tg.digest !== 'object' || tg.digest === null || Array.isArray(tg.digest))) {
+    throw new Error(`data/config.json: telegram.digest must be an object`);
+  }
+  if (tg.digest?.enabled !== undefined && typeof tg.digest.enabled !== 'boolean') {
+    throw new Error(`data/config.json: telegram.digest.enabled must be a boolean`);
+  }
+  if (
+    tg.digest?.hour !== undefined &&
+    !(Number.isInteger(tg.digest.hour) && tg.digest.hour >= 0 && tg.digest.hour <= 23)
+  ) {
+    throw new Error(`data/config.json: telegram.digest.hour must be an integer in 0..23 (local wall-clock hour)`);
+  }
+  if (tg.chat !== undefined && (typeof tg.chat !== 'object' || tg.chat === null || Array.isArray(tg.chat))) {
+    throw new Error(`data/config.json: telegram.chat must be an object`);
+  }
+  for (const key of ['enabled', 'allowWrite'] as const) {
+    if (tg.chat?.[key] !== undefined && typeof tg.chat[key] !== 'boolean') {
+      throw new Error(`data/config.json: telegram.chat.${key} must be a boolean`);
+    }
+  }
   for (const cls of NOTIFY_CLASSES) {
     const v = tg.notify?.[cls];
     if (v !== undefined && typeof v !== 'boolean') {
@@ -220,6 +284,8 @@ export function loadBootConfig(): BootConfig {
       // Nested, so the shallow spread above would take a partial notify block
       // wholesale and drop every unmentioned class to undefined.
       notify: { ...DEFAULT_CONFIG.telegram.notify, ...(tg.notify ?? {}) },
+      digest: { ...DEFAULT_CONFIG.telegram.digest, ...(tg.digest ?? {}) },
+      chat: { ...DEFAULT_CONFIG.telegram.chat, ...(tg.chat ?? {}) },
     },
   };
 }
@@ -236,6 +302,20 @@ export function saveTelegramNotify(notify: TelegramNotifyConfig): void {
     throw new Error('data/config.json is not an object');
   }
   raw.telegram = { ...(raw.telegram ?? {}), notify: { ...notify } };
+  fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n');
+}
+
+/**
+ * Persist `/digest on|off [hour]`. Rewrites ONLY telegram.digest, for the same
+ * reason saveTelegramNotify rewrites only telegram.notify: the file is re-read
+ * and patched, so a hand-edit since boot survives a toggle typed on a phone.
+ */
+export function saveTelegramDigest(digest: TelegramDigestConfig): void {
+  const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new Error('data/config.json is not an object');
+  }
+  raw.telegram = { ...(raw.telegram ?? {}), digest: { ...digest } };
   fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n');
 }
 

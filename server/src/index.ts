@@ -18,7 +18,10 @@ import { broadcast } from './events.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { SessionManager } from './pty/session-manager.ts';
 import { createStorage } from './storage/index.ts';
+import { ChatService } from './chat/service.ts';
 import { registerAgentRoutes } from './routes/agent.ts';
+import { registerChatRoutes } from './routes/chat.ts';
+import { registerQuestionRoutes } from './routes/questions.ts';
 import { registerCommandRoutes } from './routes/commands.ts';
 import { registerFeatureRoutes } from './routes/features.ts';
 import { registerInternalRoutes } from './routes/internal.ts';
@@ -63,7 +66,20 @@ const commandSessions = new SessionManager(
 );
 const orchestrator = new Orchestrator(storage, sessions, `http://127.0.0.1:${cfg.port}`);
 const commandRunner = new CommandRunner(storage, commandSessions);
+// Chat (docs/chat.md): a free-form conversation with claude in a repo, shared
+// by the SPA and the phone. It owns no PTY and no run row — every turn is a
+// headless `claude -p --resume` child, registered with the same headless
+// registry the analysis and review runs use, so the restart guard and
+// /killall already cover it.
+const chats = new ChatService({ storage });
 await orchestrator.recoverOnBoot();
+// Chats left mid-turn by the previous process hold a lock nothing else will
+// release; their children died with that process.
+const strandedChats = await chats.recoverOnBoot();
+if (strandedChats.cleared) {
+  const killed = strandedChats.killed ? `, killed ${strandedChats.killed} orphaned claude process(es)` : '';
+  console.log(`chat: cleared ${strandedChats.cleared} turn(s) stranded by the last restart${killed}`);
+}
 
 // Live "what is it doing right now" line per running agent, tailed off the
 // session transcripts. Started after boot recovery so orphaned runs from the
@@ -86,6 +102,7 @@ const activity = new ActivityWatcher({
       .map((r) => ({ runId: r.id, taskId: r.taskId, transcriptPath: r.transcriptPath }));
   },
   emit: (a) => broadcast({ type: 'run.activity', activity: a }),
+  progressed: (runId, at) => void orchestrator.attentionProgress(runId, at).catch(() => {}),
 });
 activity.start();
 
@@ -258,6 +275,8 @@ registerCommandRoutes(app, storage, commandRunner);
 registerProposalRoutes(app, storage);
 registerFeatureRoutes(app, storage);
 registerStatsRoutes(app, storage, sessions, orchestrator);
+registerChatRoutes(app, chats);
+registerQuestionRoutes(app, orchestrator.questions);
 registerTerminalWs(app, [sessions, commandSessions]);
 registerEventsWs(app);
 
@@ -265,7 +284,26 @@ registerEventsWs(app);
 // opens no port, so it is not part of the Fastify surface at all. Started
 // after the routes so a command that lands in the first second finds a fully
 // wired server; start() never throws and never blocks on the network.
-const telegram = new TelegramBot(cfg.telegram, storage, orchestrator);
+// `restartGuard` is handed in rather than restated: /restart on the phone must
+// give the SAME verdict as the button in the header and as the front door, and
+// two copies of "are agents working?" is how two answers drift (see the guard's
+// own comment above). `hostPort` is the front door's, the only process that can
+// restart this one and still be supervising it afterwards.
+// `chats` is its own argument rather than a field of BotHooks: hooks are the
+// three things only index.ts can answer about the PROCESS, and the chat
+// service is a service the bot calls like it calls task-actions.ts.
+const telegram = new TelegramBot(
+  cfg.telegram,
+  storage,
+  orchestrator,
+  {
+    restartCheck: restartGuard,
+    hostPort: cfg.host.port,
+    supervised,
+  },
+  chats,
+  orchestrator.questions,
+);
 
 // Serve the built SPA when present (production mode). When it is absent this
 // used to register nothing at all, so `/` answered Fastify's default 404 JSON
@@ -305,6 +343,14 @@ const stop = async () => {
   // do NOT die with us — they would keep spending tokens for nobody.
   commandRunner.stopAll();
   stopAllHeadless();
+  // A resume gate (docs/token-budget.md § The fourth) sits between "task marked
+  // running" and "run row created", so a task inside one has nothing in
+  // `tm_runs` to recover from. `stopAllHeadless` above already signalled its
+  // compaction; this waits for the settle that follows, because closing storage
+  // underneath it strands the task `running` with no run — a state only Cancel
+  // can leave. Bounded, and `recoverOnBoot` sweeps it anyway for the crash and
+  // SIGKILL cases that cannot be waited on.
+  await orchestrator.drainResumeGates();
   // Awaited, unlike the others: the bot has an in-flight long poll to abort and
   // a last audit row to write, and both need the storage still open.
   await telegram.stop();

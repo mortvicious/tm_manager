@@ -530,6 +530,163 @@ select.field:focus {
   animation: pulse 0.9s var(--tm-ease-in-out) infinite;
 }
 
+/* synthetic readings on top of the real status (docs/design.md § Adversarial
+   review): the reviewer is reading the change / the agent is fixing its findings */
+.badge.s-autoreview {
+  color: var(--tm-status-review);
+}
+
+.badge.s-autoreview .dot,
+.badge.s-fixing .dot {
+  animation: pulse 1.6s var(--tm-ease-in-out) infinite;
+}
+
+/* ---------- adversarial review panel + collapsible entries ---------- */
+
+.review-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+}
+
+.review-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+}
+
+.chip.verdict {
+  font-family: var(--tm-font-mono);
+  border-color: currentColor;
+}
+
+.chip.verdict.v-clean {
+  color: var(--tm-status-done);
+}
+
+.chip.verdict.v-concerns {
+  color: var(--tm-status-review);
+}
+
+.chip.verdict.v-blocker,
+.chip.verdict.v-error {
+  color: var(--tm-status-failed);
+}
+
+.chip.verdict.v-pending {
+  color: var(--tm-status-review);
+  animation: pulse 1.6s var(--tm-ease-in-out) infinite;
+}
+
+.chip.verdict.v-muted {
+  color: var(--tm-text-faint);
+}
+
+.review-summary {
+  white-space: pre-wrap;
+  font-size: var(--tm-text-sm);
+  line-height: 1.5;
+}
+
+.review-summary.lead {
+  color: var(--tm-text);
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border-left: 2px solid var(--tm-border-strong);
+}
+
+.review-rounds {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.collapsible {
+  border-left: 2px solid var(--tm-border);
+}
+
+.collapsible.open {
+  border-left-color: var(--tm-border-strong);
+}
+
+.collapsible-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  width: 100%;
+  min-width: 0;
+  padding: 3px var(--tm-space-2);
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.collapsible-head:hover {
+  color: var(--tm-text);
+}
+
+.collapsible-head .caret {
+  display: inline-block;
+  color: var(--tm-text-faint);
+  transition: transform var(--tm-dur-fast) var(--tm-ease-in-out);
+}
+
+.collapsible-head .caret.closed {
+  transform: rotate(-90deg);
+}
+
+.collapsible-teaser {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collapsible-body {
+  padding: var(--tm-space-1) var(--tm-space-2) var(--tm-space-2) var(--tm-space-5);
+  font-size: var(--tm-text-sm);
+}
+
+.review-findings {
+  list-style: none;
+  margin: var(--tm-space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+}
+
+.review-findings li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--tm-space-2);
+}
+
+.review-findings .chip.sev {
+  flex: none;
+  font-family: var(--tm-font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.review-findings .sev-blocker .chip.sev {
+  color: var(--tm-status-failed);
+  border-color: currentColor;
+}
+
+.review-findings .sev-major .chip.sev {
+  color: var(--tm-status-review);
+  border-color: currentColor;
+}
+
+.review-findings .finding-text {
+  white-space: pre-wrap;
+}
+
 @keyframes pulse {
   50% {
     opacity: 0.3;
@@ -692,17 +849,58 @@ select.field:focus {
   white-space: nowrap;
 }
 
-/* the task panel shows the whole message, not a one-line teaser */
+/* The task panel: one collapsible entry per dispatch — a teaser line until
+   opened, the whole message (pre-wrapped, on its own row) when open. */
+.dispatch-row.full {
+  flex-wrap: wrap;
+  align-items: center;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  border-left-width: 2px;
+}
+
 .dispatch-row.full .dispatch-msg {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dispatch-row.full.open .dispatch-msg {
+  flex: 1 0 100%;
+  order: 10;
+  margin: var(--tm-space-1) 0 var(--tm-space-1) var(--tm-space-5);
   white-space: pre-wrap;
   overflow: visible;
   text-overflow: clip;
+  color: var(--tm-text);
+  font-size: var(--tm-text-sm);
+  line-height: 1.5;
 }
 
-.dispatch-row.full {
-  align-items: flex-start;
-  padding-top: 3px;
-  padding-bottom: 3px;
+.dispatch-row .dispatch-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--tm-text-faint);
+  cursor: pointer;
+  flex: none;
+  width: 14px;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.dispatch-row .dispatch-toggle:hover {
+  color: var(--tm-text);
+}
+
+.dispatch-row .dispatch-toggle .caret {
+  display: inline-block;
+  transition: transform var(--tm-dur-fast) var(--tm-ease-in-out);
+}
+
+.dispatch-row .dispatch-toggle .caret.closed {
+  transform: rotate(-90deg);
 }
 
 .dispatch-row .dispatch-status {
@@ -717,6 +915,26 @@ select.field:focus {
 .dispatch-row.pending .dispatch-status {
   color: var(--tm-accent);
   animation: pulse 2s infinite;
+}
+
+/* A pending `fyi` is not waiting on anyone — it rides along on the target's
+   next turn and never starts one (docs/dispatch.md § Intent). It reads as
+   quiet backlog, so it drops the "something is due here" pulse. */
+.dispatch-row.pending.fyi .dispatch-status {
+  color: var(--tm-text-faint);
+  animation: none;
+}
+
+.dispatch-row .dispatch-intent {
+  flex: none;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--tm-text-faint);
+  border: 1px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-sm);
+  padding: 0 var(--tm-space-1);
 }
 
 .dispatch-row.failed .dispatch-status {
@@ -2933,6 +3151,252 @@ tr.repo-open > td {
   overflow-wrap: anywhere;
 }
 
+/* ---- Chat (docs/chat.md) ------------------------------------------------ */
+/* A transcript, not a terminal: the turns are headless `claude -p --resume`
+   runs, so there is nothing to attach xterm to. Every value below resolves to
+   a --tm-* token; the only exception the sheet allows is xterm's own theme,
+   and there is no xterm here. */
+
+.chat-page {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: var(--tm-space-4);
+  align-items: start;
+}
+
+.chat-list {
+  min-width: 0;
+}
+
+.chat-new {
+  padding: var(--tm-space-3);
+  margin-bottom: var(--tm-space-4);
+}
+
+.chat-new-row {
+  display: flex;
+  gap: var(--tm-space-2);
+  align-items: center;
+}
+
+.chat-new-row select {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: var(--tm-radius-md);
+  border: 1px solid var(--tm-border);
+  background: var(--tm-bg-inset);
+}
+
+.chat-index {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-index-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--tm-space-3);
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--tm-border);
+  color: inherit;
+  cursor: pointer;
+  min-height: var(--tm-tap-dense);
+  transition: background var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.chat-index-row:last-child {
+  border-bottom: none;
+}
+
+.chat-index-row:hover {
+  background: var(--tm-bg-inset);
+}
+
+.chat-index-row.active {
+  background: var(--tm-accent-subtle);
+  box-shadow: inset 2px 0 0 var(--tm-accent);
+}
+
+.chat-index-title {
+  display: block;
+  font-weight: 600;
+  font-size: var(--tm-text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-index-meta {
+  display: block;
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+}
+
+.chat-pane {
+  display: flex;
+  flex-direction: column;
+  /* The log scrolls, the composer stays put — the page itself must not grow
+     with the conversation or the input walks off the bottom of the screen. */
+  height: calc(100vh - var(--tm-space-8));
+  min-height: 320px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.chat-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--tm-space-3);
+  padding: var(--tm-space-3) var(--tm-space-4);
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.chat-title {
+  font-family: var(--tm-font-display);
+  font-size: var(--tm-text-lg);
+}
+
+.chat-sub {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+}
+
+.chat-head-actions {
+  display: flex;
+  gap: var(--tm-space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.chat-head-actions select {
+  padding: 5px 8px;
+  border-radius: var(--tm-radius-md);
+  border: 1px solid var(--tm-border);
+  background: var(--tm-bg-inset);
+  font-size: var(--tm-text-xs);
+}
+
+.chat-mode-note {
+  padding: var(--tm-space-2) var(--tm-space-4);
+  background: var(--tm-bg-inset);
+  border-bottom: 1px solid var(--tm-border);
+  color: var(--tm-amber-5);
+  font-size: var(--tm-text-xs);
+}
+
+.chat-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--tm-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-4);
+}
+
+.chat-msg {
+  max-width: 88%;
+}
+
+.chat-msg.user {
+  align-self: flex-end;
+}
+
+.chat-meta {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+  margin-bottom: 2px;
+}
+
+.chat-msg.user .chat-meta {
+  text-align: right;
+}
+
+.chat-body {
+  padding: var(--tm-space-3);
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-bg-inset);
+  border: 1px solid var(--tm-border);
+  font-size: var(--tm-text-sm);
+  /* Model output is whitespace-significant far more often than chat text is. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-msg.user .chat-body {
+  background: var(--tm-accent-subtle);
+  border-color: var(--tm-accent);
+}
+
+.chat-code {
+  margin: var(--tm-space-2) 0;
+  padding: var(--tm-space-3);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg);
+  border: 1px solid var(--tm-border);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.chat-thinking {
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-sm);
+  font-style: italic;
+}
+
+.chat-composer {
+  display: flex;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-3) var(--tm-space-4);
+  border-top: 1px solid var(--tm-border);
+  align-items: flex-end;
+}
+
+.chat-composer textarea {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  padding: 8px 10px;
+  border-radius: var(--tm-radius-md);
+  border: 1px solid var(--tm-border);
+  background: var(--tm-bg-inset);
+  outline: none;
+  /* 1rem, so iOS does not zoom the viewport when the field takes focus. */
+  font-size: var(--tm-text-input);
+  transition: border-color var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.chat-composer textarea:focus {
+  border-color: var(--tm-accent);
+}
+
+.chat-composer textarea::placeholder {
+  color: var(--tm-text-faint);
+}
+
+@media (max-width: 768px) {
+  /* One column, and the index above the pane: on a phone you pick a
+     conversation and then live in it. */
+  .chat-page {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chat-pane {
+    height: calc(100vh - var(--tm-tabbar-h) - var(--tm-space-8));
+  }
+
+  .chat-msg {
+    max-width: 100%;
+  }
+}
+
 /* ---- the two rules that answer to the viewport rather than the shell ---- */
 
 @media (max-width: 430px) {
@@ -2952,4 +3416,169 @@ tr.repo-open > td {
   body {
     overscroll-behavior-y: contain;
   }
+}
+
+/* ---------- agent questions (docs/questions.md) ---------- */
+
+.qmodal-overlay {
+  z-index: 40;
+}
+
+.qmodal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(640px, 94vw);
+  max-height: 90vh;
+  background: var(--tm-bg-raised);
+  border: 1px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-lg);
+  box-shadow: var(--tm-shadow-lg);
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  animation: fade var(--tm-dur-base) var(--tm-ease-out);
+}
+
+.qmodal-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  padding: var(--tm-space-4) var(--tm-space-5);
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.qmodal-title {
+  font-family: var(--tm-font-display);
+  font-size: var(--tm-text-lg);
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qmodal-body {
+  overflow: auto;
+  padding: var(--tm-space-5);
+}
+
+.qform {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-5);
+}
+
+.qitem-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--tm-space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--tm-space-3);
+}
+
+.qitem-q {
+  font-size: var(--tm-text-md);
+  font-weight: 600;
+}
+
+.qitem-hint {
+  font-size: var(--tm-text-xs);
+}
+
+.qopts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+}
+
+.qopt {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--tm-space-3);
+  text-align: left;
+  padding: var(--tm-space-3);
+  border-radius: var(--tm-radius-md);
+  border: 1px solid var(--tm-border);
+  background: var(--tm-bg-inset);
+  color: var(--tm-text);
+  cursor: pointer;
+  font: inherit;
+  transition:
+    border-color var(--tm-dur-fast) var(--tm-ease-out),
+    background var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.qopt:hover {
+  border-color: var(--tm-border-strong);
+}
+
+.qopt.on {
+  border-color: var(--tm-accent);
+  background: var(--tm-accent-subtle);
+}
+
+.qmark {
+  flex: none;
+  width: var(--tm-text-sm);
+  height: var(--tm-text-sm);
+  margin-top: calc(var(--tm-space-1) / 2);
+  border-radius: 50%;
+  border: 1px solid var(--tm-border-strong);
+}
+
+.qmark.box {
+  border-radius: var(--tm-radius-sm);
+}
+
+.qopt.on .qmark {
+  border-color: var(--tm-accent);
+  background: var(--tm-accent);
+  box-shadow: inset 0 0 0 calc(var(--tm-space-1) - 1px) var(--tm-bg-inset);
+}
+
+.qopt-body {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--tm-space-1) / 2);
+  min-width: 0;
+}
+
+.qopt-label {
+  font-weight: 600;
+}
+
+.qopt-desc {
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-sm);
+}
+
+.qform-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tm-space-3);
+  flex-wrap: wrap;
+}
+
+.qpanel {
+  padding: var(--tm-space-4);
+  border: 1px solid var(--tm-status-attention);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-inset);
+}
+
+.qchip {
+  color: var(--tm-status-attention);
+  border-color: currentColor;
+}
+
+/* same mark as `.badge .dot` / `.badge.s-attention .dot` (precedent for the 6px and the 0.9s) */
+.qchip .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 0.9s var(--tm-ease-in-out) infinite;
 }

@@ -33,9 +33,24 @@ const settingsSchema = z
     'router.budget5hTokens': z.number().int().min(10_000),
     'router.budgetWeekTokens': z.number().int().min(10_000),
     'router.budgetWeekFableTokens': z.number().int().min(10_000),
+    // Chat (docs/chat.md). `telegram.activeChatId` is deliberately NOT here —
+    // it is bot state, like the update offset and the digest keys.
+    'chat.model': z.string().min(1),
+    'chat.effort': z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
+    'chat.concurrency': z.number().int().min(1).max(5),
     'agent.permissionMode': z.enum(['acceptEdits', 'auto', 'bypassPermissions']),
     'agent.allowedTools': z.array(z.string()),
     'agent.resumeSessions': z.boolean(),
+    // 0 = off (every resume is a plain `--resume`). Upper bound is the largest
+    // context window the CLI offers, so a cap above it could only mean "never",
+    // which 0 already says. No lower band is rejected: a deliberately tiny cap
+    // ("always compact first") is a legitimate choice, and the number field in
+    // the UI would have no way to express a hole in the range.
+    'agent.resumeContextCap': z.number().int().min(0).max(1_000_000),
+    'agent.autoWake': z.boolean(),
+    // Up to an hour of slack past the reset. The window is 5h, so a longer
+    // grace could outlive the capacity it waits for.
+    'agent.autoWakeGraceSec': z.number().int().min(0).max(3_600),
     // 0 = keep finished terminals forever (bounded by MAX_LIVE_SESSIONS); a
     // week is the practical upper bound for a local tool.
     'pty.sessionTtlMinutes': z.number().int().min(0).max(10_080),

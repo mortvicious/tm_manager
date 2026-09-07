@@ -18,6 +18,22 @@ import { Markdown } from './Markdown.tsx';
 import { PresetPicker, reviewChoiceOf, reviewValueOf, type ReviewChoice } from './PresetPicker.tsx';
 import { RunStatsChips } from './RunMeta.tsx';
 import { StatusBadge } from './StatusBadge.tsx';
+import { ReviewPanel } from './ReviewPanel.tsx';
+import { QuestionForm } from './QuestionModal.tsx';
+
+/**
+ * "at 18:40" for a wake-up still ahead, "now" for one already due — the wake
+ * sweep runs on its own cadence, so a passed deadline means "any moment", not
+ * "missed" (docs/wake.md).
+ */
+function fmtWake(iso: string): string {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return 'when the window resets';
+  if (at <= Date.now()) return 'now';
+  const d = new Date(at);
+  const clock = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? `at ${clock}` : `at ${d.toLocaleDateString()} ${clock}`;
+}
 
 function ProposalCard({ p, onDone }: { p: Proposal; onDone: () => void }) {
   const [busy, setBusy] = useState(false);
@@ -118,7 +134,7 @@ export function TaskSlideOver({
   onOpenTask: (id: string) => void;
   onOpenTerminal: (runId: string) => void;
 }) {
-  const { tasks, repos, runs, proposals, dispatches, refresh } = useApp();
+  const { tasks, repos, runs, proposals, dispatches, refresh, questions } = useApp();
   const task = tasks.find((t) => t.id === taskId);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -186,6 +202,11 @@ export function TaskSlideOver({
   }, [task?.id, runSig]);
 
   const latestRun = taskRuns[0];
+  // the question the agent is waiting on, if any (docs/questions.md)
+  const pendingQuestion = useMemo(
+    () => [...questions].filter((q) => q.taskId === taskId).sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0] ?? null,
+    [questions, taskId],
+  );
   const taskProposals = useMemo(() => proposals.filter((p) => p.taskId === taskId), [proposals, taskId]);
 
   if (!task) return null;
@@ -313,7 +334,12 @@ export function TaskSlideOver({
       <div className="slideover">
         <div className="slideover-head">
           <span className="mono muted">{task.id.slice(0, 8)}</span>
-          <StatusBadge status={task.status} attention={latestRun?.needsAttention && task.status === 'running'} />
+          <StatusBadge
+            status={task.status}
+            attention={latestRun?.needsAttention && task.status === 'running'}
+            question={!!pendingQuestion}
+            reviewState={task.reviewState}
+          />
           <span className="chip">{task.source}</span>
           {task.category && <span className="chip" style={{ color: 'var(--tm-accent)' }}>{task.category}</span>}
           {groupTasks.length > 1 && (
@@ -338,6 +364,12 @@ export function TaskSlideOver({
         </div>
         <div className="slideover-body">
           <GroupPath task={task} tasks={tasks} onOpen={onOpenTask} />
+          {pendingQuestion && (
+            <div className="qpanel">
+              <label className="label">The agent is asking you</label>
+              <QuestionForm question={pendingQuestion} />
+            </div>
+          )}
           <div>
             <label className="label">Title</label>
             <input className="field" value={title} onChange={(e) => setTitle(e.target.value)} />
@@ -484,8 +516,14 @@ export function TaskSlideOver({
               {task.error}
             </div>
           )}
-          {task.reviewSummary && <Markdown label="Adversarial review" text={task.reviewSummary} />}
-          {task.resultSummary && <Markdown label="Result summary" text={task.resultSummary} />}
+          {task.wakeAt && (
+            <div className="hint" style={{ color: 'var(--tm-accent)' }}>
+              waiting on the 5h usage window — this task's own session resumes automatically{' '}
+              {fmtWake(task.wakeAt)}
+            </div>
+          )}
+          <ReviewPanel task={task} />
+          {task.resultSummary && <Markdown label="Worker's summary" text={task.resultSummary} />}
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {['draft', 'review', 'blocked', 'failed', 'cancelled'].includes(task.status) && (

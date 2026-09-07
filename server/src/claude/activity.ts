@@ -161,6 +161,13 @@ export class ActivityWatcher {
       /** cheap in-memory gate so an idle server never touches the DB */
       hasLiveSessions: () => boolean;
       emit: (a: RunActivity) => void;
+      /**
+       * Every NEW assistant transcript line, even when its narration text
+       * repeats the previous one (`emit` is change-only). The orchestrator
+       * uses the line's own timestamp to retire a needs-attention flag the
+       * agent has visibly moved past.
+       */
+      progressed?: (runId: string, at: string) => void;
     },
   ) {}
 
@@ -236,6 +243,7 @@ export class ActivityWatcher {
         if (!this.tails.has(tail.runId)) continue;
         const parsed = await this.readTail(tail);
         if (!parsed) continue;
+        if (parsed.at) this.opts.progressed?.(tail.runId, parsed.at);
         if (tail.last?.text === parsed.text) continue; // unchanged — no traffic
         const activity: RunActivity = {
           runId: tail.runId,

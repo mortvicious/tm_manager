@@ -127,6 +127,7 @@ function usageOf(envelope: any): RunStats {
     cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
     costUsd: envelope?.total_cost_usd ?? 0,
     contextPct: 0,
+    contextTokens: 0,
   };
 }
 
@@ -138,6 +139,7 @@ function addStats(a: RunStats, b: RunStats): RunStats {
     cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
     costUsd: Math.round((a.costUsd + b.costUsd) * 1000) / 1000,
     contextPct: 0,
+    contextTokens: 0,
   };
 }
 
@@ -186,6 +188,7 @@ export async function startFeatureAnalysis(
       cacheWriteTokens: 0,
       costUsd: 0,
       contextPct: 0,
+      contextTokens: 0,
     };
     const finishRun = async (exitCode: number, sessionId?: string | null) => {
       await storage

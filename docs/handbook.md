@@ -23,7 +23,7 @@ down the pill reads `stopped` and the button becomes **Start server**.
    |---|---|---|---|
    | **Small** | `claude-opus-5` | medium | off |
    | **Routine** | `claude-opus-5` | high | off |
-   | **Complex** | `claude-fable-5` | high | on |
+   | **Complex** | `claude-fable-5-1` | high | on |
 
    The three dropdowns underneath stay editable — the presets are a shortcut, not a mode. Change one and the row simply stops highlighting a preset. The same row is on the task panel, so an existing task can be re-tuned the same way (then **Save changes**).
 
@@ -92,6 +92,19 @@ They are **not** run through a shell, so `&&`, `|`, `>` and friends are refused 
 
 Services die when the server stops or restarts — deliberately, so their ports are released.
 
+## Chat — asking, instead of tasking
+
+**Chat** in the sidebar (and `/chat` on Telegram) is a conversation with claude inside one of your repos. Full details: `docs/chat.md`.
+
+Use it for the half of the day that is not a task: *what changed in this file*, *does this endpoint still return the old shape*, *why did we do it this way*. Filing a task for a three-sentence answer costs a queue slot, a fresh session and a review round; a chat costs one turn.
+
+- A chat lives in **one repo** — that is its working directory.
+- It **remembers**. Every turn resumes the same `claude` session, so you can start a question on the laptop and finish it on your phone: it is one conversation, not two.
+- It is **read-only by default** — it can read and search the repo but not edit files or run commands. Switch a chat to **write** in its header when you want it to actually do something; a write chat runs with permissions skipped, exactly like your own terminal, which is why it is per-chat and says so in a banner. From the phone, write chats have to be enabled once in `server/data/config.json` (`telegram.chat.allowWrite`) — and that applies to *using* one, not just to switching it, so a chat you left in write mode on the laptop is still refused from the phone.
+- **One turn at a time** per chat, and 2 turns at a time across all of them (Config → Chat). A chat turn never takes a worker slot.
+- **Stop** cuts a turn short. A live chat turn blocks a server restart, like any other agent.
+- Chats are **not** agents: no task, no review, no publish. If a chat turns up work worth doing, file a task for it.
+
 ## Model routing
 
 Per task: **override wins** (set at creation or in the task panel). Otherwise:
@@ -156,7 +169,13 @@ The task panel has a **Follow-up** field: send an instruction to steer a live ag
 
 ## Dispatches — agents messaging agents
 
-When two tasks are coordinating (a frontend task filed a backend task for a missing API field, say), the second round doesn't need a third task: the backend agent **dispatches** its "shipped, here's the contract" message straight to the frontend task, and the server delivers it by reopening that task's own claude session — same terminal, same memory. On the Board an incoming dispatch shows as a compact accented line under the receiving task (pulsing while **pending**, i.e. waiting for that agent to be free); the sender carries a `⇢ n pending` chip, and a `dispatches:` filter appears in the board bar once any exist. The task panel's **Dispatches** section shows the full messages in both directions. You can cancel a dispatch with ✕ any time before it is delivered. Delivery works even while the queue is stopped — it continues an existing conversation, like your own follow-ups do. Agents are capped at 5 dispatches per session and 8 between any two tasks, so a runaway back-and-forth always ends up in front of you instead of looping.
+When two tasks are coordinating (a frontend task filed a backend task for a missing API field, say), the second round doesn't need a third task: the backend agent **dispatches** its "shipped, here's the contract" message straight to the frontend task, and the server delivers it by reopening that task's own claude session — same terminal, same memory. On the Board an incoming dispatch shows as a compact accented line under the receiving task (pulsing while **pending**, i.e. waiting for that agent to be free); the sender carries a `⇢ n pending` chip, and a `dispatches:` filter appears in the board bar once any exist. The task panel's **Dispatches** section shows the full messages in both directions. You can cancel a dispatch with ✕ any time before it is delivered. Delivery works even while the queue is stopped — it continues an existing conversation, like your own follow-ups do. Agents are capped at 2 dispatches per session and 3 between any two tasks, so a runaway back-and-forth always ends up in front of you instead of looping.
+
+Every dispatch says whether it needs the other agent to **do** something or is only telling it something. A `needs_action` one wakes that session as soon as it is free, as above. An **`fyi`** — marked with an `fyi` chip on the strip — never wakes anything: it waits, quietly, and gets handed to that agent at the start of the next turn it takes anyway (a review round, your Proceed, a real dispatch, publish). Its `pending` label deliberately doesn't pulse, because nothing is due; if the task has already finished for good the message is just recorded against it and settled. That is the point: reopening an agent's session costs about $15 in re-read conversation before it does anything, which is worth it for "implement this contract" and not for "FYI, I renamed the field".
+
+## Questions — when an agent asks you
+
+Some decisions are yours: which of two designs, what an ambiguous requirement means, whether a destructive step is wanted. A worker that hits one asks with Claude Code's own question tool, and instead of a dialog in a hidden terminal you get a **modal on whatever page you are on** — the task's title, the question, the options (with an **Other** line for your own words) — and the same question on your phone with the options as buttons. The agent's session waits inside that call until someone answers; the first answer from either surface wins and the other is told. The Board shows **asks you** on the task while it waits, the header shows a pulsing `❓ n questions` chip that reopens a modal you closed, and the task panel carries the same form under "The agent is asking you". If the run ends first (you cancel it, it crashes, the server restarts) the question expires and disappears everywhere. Agents are told to ask only when the choice would materially change the outcome and to decide small things themselves; if one is asking too much, that is feedback for the task description, not something to answer forever.
 
 ## Config reference
 
@@ -173,6 +192,8 @@ When two tasks are coordinating (a frontend task filed a backend task for a miss
 | Tasks an agent may file | how many follow-up tasks one worker session can file through the agent API before it's refused and told to finish its turn (default 15, 1–100) |
 | Feature plan re-analysis rounds | a blocker verdict on a feature's plan feeds the findings into a fresh analysis, up to N rounds (0 = review the plan once, never re-plan) |
 | Group colours | tint each task group with its own colour on the Board (default on); off leaves the neutral blocks, grouping itself is unaffected |
+| Chat model / effort | defaults for a new chat (`docs/chat.md`); each chat can be switched afterwards. Separate from the worker model on purpose — the cheap model for questions, the heavy one for work |
+| Chat concurrent turns | chat turns running at once across all chats (default 2). A chat is serial on its own; this is the fence against opening several and sending to all of them |
 | Sentry | org/project/token + target repo; **Sync issues now** pulls unresolved issues (14d) as tasks — idempotent, never duplicates. Token needs `event:read` + `project:read` scopes (a sourcemap-upload token 403s). EU orgs: API base `https://de.sentry.io` |
 
 ## Troubleshooting

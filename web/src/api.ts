@@ -2,8 +2,12 @@ import type {
   Anomaly,
   AppSettings,
   AuditEvent,
+  Chat,
+  ChatMessage,
+  ChatMode,
   CommandRun,
   Dispatch,
+  Question,
   Feature,
   FeaturePlan,
   HostStatus,
@@ -50,11 +54,20 @@ export type TaskWrite = Partial<
  * not restarted yet.
  */
 export function normalizeTask(t: Task): Task {
-  if (t.groupId && t.groupPath && t.autoPublish !== undefined && t.customQueueAt !== undefined) return t;
+  if (
+    t.groupId &&
+    t.groupPath &&
+    t.autoPublish !== undefined &&
+    t.customQueueAt !== undefined &&
+    Array.isArray(t.reviewRounds)
+  )
+    return t;
   return {
     ...t,
     autoPublish: t.autoPublish ?? false,
     customQueueAt: t.customQueueAt ?? null,
+    reviewState: t.reviewState ?? null,
+    reviewRounds: Array.isArray(t.reviewRounds) ? t.reviewRounds : [],
     groupId: t.groupId ?? t.id,
     groupPath: t.groupPath ?? '/',
     groupName: t.groupName ?? null,
@@ -150,6 +163,11 @@ export const api = {
   listDispatches: (taskId?: string) =>
     req<Dispatch[]>('GET', `/api/dispatches${taskId ? `?taskId=${taskId}` : ''}`),
   cancelDispatch: (id: string) => req<Dispatch>('POST', `/api/dispatches/${id}/cancel`),
+  // questions a worker handed to the human (docs/questions.md)
+  listQuestions: (status: 'pending' | 'answered' | 'expired' = 'pending') =>
+    req<Question[]>('GET', `/api/questions?status=${status}`),
+  answerQuestion: (id: string, answers: Record<string, string>) =>
+    req<Question>('POST', `/api/questions/${id}/answer`, { answers }),
 
   listRuns: () => req<Run[]>('GET', '/api/runs'),
   runActivity: () => req<RunActivity[]>('GET', '/api/runs/activity'),
@@ -176,6 +194,20 @@ export const api = {
     req<{ feature: Feature; tasks: Task[] }>('POST', `/api/features/${id}/approve`),
   featureAction: (id: string, action: 'start' | 'pause' | 'resume' | 'cancel' | 'complete') =>
     req<unknown>('POST', `/api/features/${id}/${action}`),
+
+  // Chat (docs/chat.md). `sendChatMessage` answers 202 on ACCEPTANCE — the
+  // reply itself arrives over /ws/events as a `chat.message`, because a turn
+  // outlives any reasonable HTTP timeout.
+  listChats: (repoId?: string) => req<Chat[]>('GET', `/api/chats${repoId ? `?repoId=${repoId}` : ''}`),
+  getChat: (id: string) => req<{ chat: Chat; messages: ChatMessage[] }>('GET', `/api/chats/${id}`),
+  createChat: (b: { repoId: string; title?: string; model?: string; effort?: string | null; mode?: ChatMode }) =>
+    req<Chat>('POST', '/api/chats', b),
+  updateChat: (id: string, b: { title?: string; model?: string; effort?: string | null; mode?: ChatMode }) =>
+    req<Chat>('PATCH', `/api/chats/${id}`, b),
+  deleteChat: (id: string) => req<{ ok: true }>('DELETE', `/api/chats/${id}`),
+  sendChatMessage: (id: string, text: string) =>
+    req<{ accepted: true; message: ChatMessage }>('POST', `/api/chats/${id}/messages`, { text }),
+  stopChat: (id: string) => req<{ stopped: boolean }>('POST', `/api/chats/${id}/stop`),
 
   getConfig: () => req<AppSettings>('GET', '/api/config'),
   putConfig: (b: Partial<AppSettings>) => req<AppSettings>('PUT', '/api/config', b),

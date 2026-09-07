@@ -1,11 +1,13 @@
-import type { AuditEvent, Feature, Proposal, ServerEvent, Task, UsageSnapshot, UsageWindow } from '@tm/shared';
+import type { Feature, Proposal, Question, ReviewState, ServerEvent, Task, UsageSnapshot, UsageWindow } from '@tm/shared';
 import { usageSnapshot } from '../claude/usage.ts';
 import type { TelegramNotifyConfig } from '../config.ts';
 import { onEvent } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 import { encodeAction } from './actions.ts';
 import { escapeHtml } from './api.ts';
+import { buildReport, type ReportDocument } from './report.ts';
 import type { InlineKeyboardMarkup } from './types.ts';
+import { questionMessages, settledNotice } from './questions.ts';
 
 // The push half of the bot (docs/telegram.md § Notifications): subscribes to
 // the same in-process broadcast() bus the /ws/events endpoint fans out to
@@ -17,8 +19,13 @@ import type { InlineKeyboardMarkup } from './types.ts';
 //   in seconds (the adversarial-review fix loop), and one mutation often emits
 //   several broadcasts. Every task-scoped notification waits COALESCE_MS and
 //   then re-reads the entity from storage; only what is STILL true gets sent.
-//   That re-check is also what keeps the fix loop quiet: `run.reviewed`
-//   followed by a follow-up back into `running` flushes into nothing.
+//   That re-check is also what keeps the fix loop quiet: a review landing
+//   followed by a fix round back into `running` flushes into nothing.
+// - **The row is the truth.** The "in review" ping waits for the task's own
+//   `reviewState` to settle (`docs/design.md` § Adversarial review) — an
+//   entry that still reads pending/reviewing is not announced, and the update
+//   that settles it is what triggers the ping. The attention ping is re-read
+//   against the LIVE RUN at flush, never against the event that raised it.
 // - **The bus is live-only.** Events fired while the bot is stopped are not
 //   replayed — the "back online" message plus /status are the catch-up story.
 // - **Config is read at flush time**, so /mute takes effect for messages
@@ -28,39 +35,71 @@ const COALESCE_MS = 5_000;
 const USAGE_POLL_MS = 60_000;
 /** Ascending; a crossing notifies once per window per threshold. */
 const USAGE_THRESHOLDS_PCT = [50, 80, 95];
-/**
- * While an adversarial review round is in flight the "in review" ping is
- * DEFERRED, not dropped: re-checked every minute until the verdict event
- * arrives (the normal end) or the cap says the round is not going to produce
- * one — then the bare ping goes out late rather than never.
- */
-const REVIEW_RETRY_MS = 60_000;
-const MAX_REVIEW_RETRIES = 30;
+/** The task's summary is quoted in the review ping — bounded so the message
+ *  (Telegram caps one at 4096 chars) always has room for the title and verdict. */
+const SUMMARY_CLIP = 1500;
 
 interface PendingTask {
   review?: boolean;
-  /** from the run.reviewed audit event — verdict + findings count */
-  reviewed?: { verdict: string; findings: number };
   failed?: boolean;
   blocked?: boolean;
   published?: boolean;
-  attention?: boolean;
-  /** deferrals already spent waiting out a pending review round */
-  retries?: number;
+  /** the run whose needs-attention flag was raised — re-read at flush */
+  attentionRun?: string;
 }
 
 export interface NotifierDeps {
   storage: Storage;
   notify: TelegramNotifyConfig;
-  /** live truth from the orchestrator — is a review round in flight? */
-  isReviewPending(taskId: string): boolean;
   send(html: string, keyboard?: InlineKeyboardMarkup): Promise<void>;
+  /**
+   * Upload a report with the text as its caption (docs/telegram.md § Reports).
+   * The feature-plan message uses it so an analyzed plan arrives as the same
+   * document `/report feature <id>` produces, rather than a second, divergent
+   * rendering of the same facts.
+   */
+  sendDocument(
+    doc: { filename: string; html: string },
+    caption?: string,
+    keyboard?: InlineKeyboardMarkup,
+  ): Promise<void>;
 }
 
 const short = (id: string) => id.slice(0, 8);
 
+const unsettled = (state: ReviewState | null | undefined): boolean => state === 'pending' || state === 'reviewing';
+
 function verdictBadge(verdict: string): string {
   return verdict === 'clean' ? '✓ clean' : verdict === 'blocker' ? '⛔ blocker' : `⚠ ${verdict}`;
+}
+
+/**
+ * The review verdict clause of the "in review" ping, from the task row: what
+ * the reviewer said about THIS change. Bare when the change was never
+ * auto-reviewed (publish landing, review off) — a stale badge next to live
+ * Publish buttons would invite shipping on it.
+ */
+export function reviewClause(task: Task): string | null {
+  const last = task.reviewRounds[task.reviewRounds.length - 1];
+  switch (task.reviewState) {
+    case 'passed': {
+      if (!last) return null;
+      const minors = last.findings.length;
+      const rounds = task.reviewRounds.length > 1 ? `, ${task.reviewRounds.length} rounds` : '';
+      return `✓ reviewed by ${last.model}${minors ? ` — ${minors} minor` : ' — clean'}${rounds}`;
+    }
+    case 'flagged': {
+      if (!last) return null;
+      const open = last.findings.filter((f) => f.severity !== 'minor').length;
+      return `${last.verdict === 'blocker' ? '⛔' : '⚠'} review flagged ${open} issue(s) (${last.model})`;
+    }
+    case 'error':
+      return '⚠ review could not run';
+    case 'skipped':
+      return 'nothing to review';
+    default:
+      return null;
+  }
 }
 
 export function taskReviewKeyboard(taskId: string): InlineKeyboardMarkup {
@@ -121,6 +160,8 @@ export class TelegramNotifier {
 
   /** last seen status per entity — the "is this a transition" memory */
   private readonly taskStatus = new Map<string, Task['status']>();
+  /** last seen review state per task — the "did the reviewer just settle" memory */
+  private readonly taskReview = new Map<string, ReviewState | null>();
   private readonly featureStatus = new Map<string, Feature['status']>();
 
   private readonly pendingTasks = new Map<string, PendingTask>();
@@ -146,7 +187,10 @@ export class TelegramNotifier {
       // edit while it sat in review since before boot) would read as a
       // transition and ping the phone about old news.
       const [tasks, features] = await Promise.all([this.deps.storage.listTasks(), this.deps.storage.listFeatures()]);
-      for (const t of tasks) this.taskStatus.set(t.id, t.status);
+      for (const t of tasks) {
+        this.taskStatus.set(t.id, t.status);
+        this.taskReview.set(t.id, t.reviewState);
+      }
       for (const f of features) this.featureStatus.set(f.id, f.status);
       this.hadWork = tasks.some((t) => t.status === 'queued' || t.status === 'running');
     } catch (e) {
@@ -187,15 +231,18 @@ export class TelegramNotifier {
         break;
       case 'task.deleted':
         this.taskStatus.delete(e.taskId);
+        this.taskReview.delete(e.taskId);
         break;
       case 'run.needs-attention':
-        if (e.run.taskId) this.mark(e.run.taskId, (p) => (p.attention = true));
+        // The same event announces the CLEAR (Stop, or the agent moving on
+        // after the prompt was answered) — only a raised flag is news.
+        if (e.run.taskId && e.run.needsAttention) {
+          const runId = e.run.id;
+          this.mark(e.run.taskId, (p) => (p.attentionRun = runId));
+        }
         break;
       case 'run.exited':
         this.scheduleQueueCheck();
-        break;
-      case 'event.appended':
-        this.onAudit(e.event);
         break;
       case 'proposal.created':
         this.onProposal(e.proposal);
@@ -206,64 +253,64 @@ export class TelegramNotifier {
       case 'feature.deleted':
         this.featureStatus.delete(e.featureId);
         break;
+      case 'question.updated':
+        // Not coalesced and not gated by the notify flags: an agent is
+        // BLOCKED on this until someone answers, and a question is never the
+        // kind of chatter /mute exists for (docs/questions.md).
+        await this.onQuestion(e.question);
+        break;
     }
+  }
+
+  private async onQuestion(q: Question): Promise<void> {
+    const task = await this.deps.storage.getTask(q.taskId);
+    if (q.status === 'pending') {
+      for (const m of questionMessages(q, task)) await this.deps.send(m.html, m.keyboard);
+      return;
+    }
+    const notice = settledNotice(q, task);
+    if (notice) await this.deps.send(notice);
   }
 
   private onTask(t: Task): void {
-    const prev = this.taskStatus.get(t.id);
+    const prevStatus = this.taskStatus.get(t.id);
+    const prevReview = this.taskReview.get(t.id);
     this.taskStatus.set(t.id, t.status);
+    this.taskReview.set(t.id, t.reviewState);
     if (t.status === 'queued' || t.status === 'running') this.hadWork = true;
     else this.scheduleQueueCheck();
-    if (prev === t.status) return; // a content edit, not a transition
+    const moved = prevStatus !== t.status;
+    const reviewMoved = prevReview !== t.reviewState;
+    if (!moved && !reviewMoved) return; // a content edit, not a transition
     switch (t.status) {
       case 'review':
-        this.mark(t.id, (p) => (p.review = true));
+        // Announced once the reviewer has spoken — or was never going to.
+        // An entry that reads pending/reviewing waits for the update that
+        // settles it; a fix round's re-entry (running → review, pending
+        // again) waits the same way, so the phone hears one verdict per
+        // change instead of one ping per bounce. The settling update is a
+        // review-state move on an unchanged status, hence the second arm.
+        if (unsettled(t.reviewState)) break;
+        if (moved || (reviewMoved && unsettled(prevReview))) this.mark(t.id, (p) => (p.review = true));
         break;
       case 'failed':
-        this.mark(t.id, (p) => (p.failed = true));
+        if (moved) this.mark(t.id, (p) => (p.failed = true));
         break;
       case 'blocked':
-        this.mark(t.id, (p) => (p.blocked = true));
+        if (moved) this.mark(t.id, (p) => (p.blocked = true));
         break;
       case 'published':
-        this.mark(t.id, (p) => (p.published = true));
+        if (moved) this.mark(t.id, (p) => (p.published = true));
         break;
     }
   }
 
-  private onAudit(ev: AuditEvent): void {
-    // The verdict + findings count live in the run.reviewed audit row, not on
-    // the task; the review transition itself happens minutes earlier (the
-    // adversarial run is async off the Stop hook).
-    if (ev.kind !== 'run.reviewed' || !ev.taskId) return;
-    const verdict = typeof ev.data?.verdict === 'string' ? ev.data.verdict : null;
-    const findings = typeof ev.data?.findings === 'number' ? ev.data.findings : 0;
-    if (!verdict) return;
-    this.mark(
-      ev.taskId,
-      (p) => {
-        p.review = true;
-        p.reviewed = { verdict, findings };
-      },
-      // The record may be parked on a minutes-long review-retry timer; the
-      // verdict must not wait that timer out. The extra flush is harmless if
-      // both fire — a flush on a taken record is a no-op.
-      { prompt: true },
-    );
-  }
-
   /** Merge into the task's pending record; the first mark starts the 5s clock. */
-  private mark(taskId: string, mutate: (p: PendingTask) => void, opts?: { prompt?: boolean }): void {
+  private mark(taskId: string, mutate: (p: PendingTask) => void): void {
     let p = this.pendingTasks.get(taskId);
     if (!p) {
       p = {};
       this.pendingTasks.set(taskId, p);
-      this.after(COALESCE_MS, () => this.flushTask(taskId));
-    } else if (opts?.prompt || p.retries) {
-      // `p.retries`: the record is parked on a minutes-long review-retry
-      // timer, and whatever just happened (a verdict, a new transition) must
-      // not wait it out. A duplicate timer is harmless — the first flush
-      // takes the record, the rest find nothing.
       this.after(COALESCE_MS, () => this.flushTask(taskId));
     }
     mutate(p);
@@ -293,32 +340,24 @@ export class TelegramNotifier {
     const lines: string[] = [];
     let keyboard: InlineKeyboardMarkup | undefined;
 
-    if (n.review && (p.review || p.reviewed) && task.status === 'review') {
-      // A bare entry ping while the adversarial round is still running would
-      // arrive verdict-less minutes before the verdict — and every fix-round
-      // re-entry would ping again. Defer until the round settles: the verdict
-      // arrives as run.reviewed (p.reviewed, prompt-flushed), a fix round
-      // moves the task back to running (the status re-check above goes
-      // silent), and only a round that produces NO verdict event at all runs
-      // the retries out and sends the bare ping late rather than never.
-      if (!p.reviewed && this.deps.isReviewPending(taskId) && (p.retries ?? 0) < MAX_REVIEW_RETRIES) {
-        p.retries = (p.retries ?? 0) + 1;
-        this.pendingTasks.set(taskId, p);
-        this.after(REVIEW_RETRY_MS, () => this.flushTask(taskId));
-        return;
-      }
-      const verdict = p.reviewed ? `${verdictBadge(p.reviewed.verdict)} — ${p.reviewed.findings} finding(s)` : null;
-      // No fallback to the reviewSummary badge here: on a re-entry (a failed
-      // publish landing, a re-run) it is the PREVIOUS round's verdict, and a
-      // stale "✓ clean" next to live Publish buttons invites shipping on it.
+    // Re-checked against the row: a review that went back into a fix round
+    // (running again) or is still being reviewed (the reviewer started after
+    // the mark) flushes into nothing — its settling update will mark again.
+    if (n.review && p.review && task.status === 'review' && !unsettled(task.reviewState)) {
+      const verdict = reviewClause(task);
       lines.push(`📋 ${title} is in <b>review</b>${verdict ? ` · ${escapeHtml(verdict)}` : ''}.`);
+      const last = task.reviewRounds[task.reviewRounds.length - 1];
       if (task.error) {
         // The failed-publish landing (docs/publish.md): settlePublish drops
         // the task back to review with the reason — the one line the Publish
         // button promised.
         lines.push(`⚠ ${escapeHtml(task.error)}`);
+      } else if ((task.reviewState === 'passed' || task.reviewState === 'flagged') && last?.summary) {
+        // The reviewer's overall reading of the work, not the worker's last
+        // "fixed 1 and 2" — the human's summary (docs/design.md § Adversarial review).
+        lines.push(escapeHtml(clip(last.summary, SUMMARY_CLIP)));
       } else if (task.resultSummary) {
-        lines.push(escapeHtml(task.resultSummary));
+        lines.push(escapeHtml(clip(task.resultSummary, SUMMARY_CLIP)));
       }
       keyboard = taskReviewKeyboard(task.id);
     }
@@ -331,8 +370,14 @@ export class TelegramNotifier {
     if (n.published && p.published && task.status === 'published') {
       lines.push(`🚀 ${title} was <b>published</b> — committed and pushed.`);
     }
-    if (n.attention && p.attention && task.status === 'running') {
-      lines.push(`✋ ${title} <b>needs attention</b> — the agent is waiting on a prompt in its hidden terminal.`);
+    if (n.attention && p.attentionRun && task.status === 'running') {
+      // The flag is cleared the moment the agent moves on (the prompt was
+      // answered in the terminal) and on Stop — only a run that STILL waits
+      // is worth a ping, so the run is re-read rather than trusted.
+      const run = await this.deps.storage.getRun(p.attentionRun);
+      if (run && run.status === 'running' && !run.idle && run.needsAttention) {
+        lines.push(`✋ ${title} <b>needs attention</b> — the agent is waiting on a prompt in its hidden terminal.`);
+      }
     }
     if (lines.length) await this.deps.send(lines.join('\n'), keyboard);
   }
@@ -387,12 +432,29 @@ export class TelegramNotifier {
         const tasks = plan?.phases.reduce((a, ph) => a + ph.tasks.filter((t) => !t.excluded).length, 0) ?? 0;
         const round = fresh.review?.rounds.at(-1);
         const verdict = round ? ` · plan review: ${escapeHtml(verdictBadge(round.verdict))} (${round.findings.length} finding(s))` : '';
-        await this.deps.send(
+        const headline =
           `🧩 Feature ${title} analyzed — <b>${phases} phase(s), ${tasks} task(s)</b>${verdict}.\n` +
-            (plan?.summary ? escapeHtml(plan.summary) : '') +
-            `\nApprove to create the tasks and start phase 1.`,
-          featureKeyboard(fresh.id),
-        );
+          `Approve to create the tasks and start phase 1.`;
+        // The plan itself is long — phases, goals, per-task exit criteria — so
+        // it leaves the chat as the report document rather than as ten chunked
+        // messages, and the caption carries the Russian gist. A report that
+        // cannot be built must not cost the notification: fall back to the
+        // message that existed before this was a document.
+        let doc: ReportDocument | null = null;
+        try {
+          doc = await buildReport(this.deps.storage, { kind: 'feature', feature: fresh });
+        } catch (e) {
+          console.warn('telegram: feature report failed, sending the plain message:', String(e));
+        }
+        if (doc) {
+          const caption = `${headline}\n\n${doc.lines.map((l) => escapeHtml(l)).join('\n')}`;
+          await this.deps.sendDocument(doc, caption, featureKeyboard(fresh.id));
+        } else {
+          await this.deps.send(
+            `${headline}\n${plan?.summary ? escapeHtml(plan.summary) : ''}`,
+            featureKeyboard(fresh.id),
+          );
+        }
       } else {
         await this.deps.send(
           `⏸ Feature ${title} was <b>paused</b>${fresh.error ? `: ${escapeHtml(fresh.error)}` : '.'}`,

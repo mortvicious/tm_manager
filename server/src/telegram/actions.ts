@@ -128,12 +128,21 @@ export async function killRun(deps: ActionDeps, runId: string, actor: string): P
  */
 export async function setQueueEnabled(deps: ActionDeps, enabled: boolean, actor: string): Promise<ActionOutcome> {
   const before = await deps.orchestrator.status();
-  if (before.enabled === enabled) return done(`The queue is already ${enabled ? 'running' : 'stopped'}.`);
+  // What /off leaves BEHIND is the whole point of it being the soft stop, and
+  // the phone is the surface where "live sessions keep running" is invisible
+  // unless the number is said out loud.
+  const live =
+    before.running > 0
+      ? ` ${before.running} live session(s) keep running (/kill ends one, /killall ends all).`
+      : ' Nothing is running right now.';
+  if (before.enabled === enabled) {
+    return done(`The queue is already ${enabled ? 'running' : 'stopped'}.${enabled ? '' : live}`);
+  }
   await deps.orchestrator.setEnabled(enabled, actor);
   return done(
     enabled
       ? 'Queue started — picking tasks again.'
-      : 'Queue stopped — no new tasks will be picked. Live sessions keep running (/kill ends one).',
+      : `Queue stopped — no new tasks will be picked. Live sessions keep running.${live}`,
   );
 }
 
@@ -281,6 +290,8 @@ export type ButtonAction =
   | { kind: 'feature.approve'; id: string }
   | { kind: 'run.kill'; id: string };
 
+// `k:` is NOT available here: emergency.ts owns that namespace and bot.ts
+// parses it BEFORE this codec, so a `k:` entry added below would be shadowed.
 const WIRE: Record<ButtonAction['kind'], string> = {
   'task.done': 't:done',
   'task.publish': 't:pub',

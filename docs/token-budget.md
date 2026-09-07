@@ -166,6 +166,174 @@ hooks, full `STANDING_RULES`) running a real task in a scratch repo measured
 Applied to the audit's population, a median of 52,337 becomes roughly **25k**,
 against a target of 30k: about **$250/wk** of the $483.
 
+## The other fixed cost: reviewing the same diff twice
+
+This file is about what a WORKER turn re-buys. The second-largest repeat charge
+was the REVIEWER: the 2026-08-31..09-01 audit found 36 adversarial reviews for
+17 tasks in two days (≈$275), because `reviewWorkerChange` reads `git diff HEAD`
+— the whole uncommitted tree, not just this turn's work — so every Stop after
+the first presented a fat diff and paid for a full headless run over changes
+already judged. Talk-only Stops (dispatch replies, answered questions) were the
+worst case: zero new code, full review price.
+
+The diff is now hashed (sha256 of the raw output, before the 60k prompt
+truncation) and the hash stored on the task; an unchanged hash spawns nothing.
+The saving is not a smaller prompt but a run that does not happen, so it does
+not show up in the measurements above — count `run.reviewed` rows carrying
+`skipped` instead. `review.maxRounds` also dropped to 1, because each extra
+round resumes a 300–500k-token session (≈$15) before its first useful token.
+Full rationale: `docs/design.md` § Adversarial review, decisions log 2026-09-03.
+
+## The third: waking a session to be told something
+
+A dispatch delivery is a session resume, and a resume re-writes the WHOLE
+conversation to cache twice — measured at 395k + 398k tokens on a 400k session,
+≈$15 — before the agent produces a single useful token. The reply then Stops
+into the adversarial reviewer, possibly for another fix round. The same audit
+found the two auth tasks `0cb8555a ⇄ a5d9442a` spending 8 dispatches of 4–6.5k
+chars on each other, mostly status reports and corrections of corrections; one
+reply that made **zero code change** cost ~$23 for four minutes.
+
+Since 2026-09-05 a dispatch must declare an `intent`. `needs_action` delivers
+as before. **`fyi` never wakes a session**: it waits and is prepended to the
+next turn the target takes anyway, or is recorded as a note if that task has
+already finished for good. The per-run cap went 5 → 2 and the per-pair cap
+8 → 3. Full rationale and the delivery rules: `docs/dispatch.md` § Intent,
+decisions log 2026-09-05.
+
+Like the review skip, the saving is a run that does not happen, so it will not
+show up in the preamble measurements above. Count it instead as `tm_dispatches`
+rows with `intent = 'fyi'` that reached `delivered` without a `run.started`
+between their `created_at` and `delivered_at`.
+
+## The fourth: paying for the whole conversation to resume it
+
+The resume itself is the single biggest line in the audit. Workers run on a 1M
+window so the CLI never compacts on its own; the 2026-08-31..09-01 sessions
+reached 400–500k tokens per call, and the top session had **267 of its 367 calls
+above 150k**. Every `--resume` — a review fix round, a dispatch delivery, a
+Proceed, the publish turn — re-writes that entire conversation to cache **twice**
+before the follow-up turn says a word (measured 395k + 398k tokens on one 400k
+session, ≈$15), and every later turn of the run re-reads it at $1.50/MTok.
+
+Resume re-writes alone were **16.4M tokens ≈ $308** of ~$1,040 of worker spend;
+cache reads another **≈$496**. And most of what is being re-bought is not
+knowledge — it is old heredoc file contents, superseded perl one-liners,
+screenshots.
+
+The constraint on any fix is quality: good work has come out of ~300k-token
+sessions, so the answer cannot be "start fresh sooner".
+
+### The gate
+
+`agent.resumeContextCap` (default **300,000** tokens, 0 = off) is checked in
+`Orchestrator.resumeHandoff`, called from `startWorker` — **only** when an idle
+session is about to be resumed, never mid-run. The measure is the previous run's
+last-turn context read straight from its transcript: `RunStats.contextTokens`,
+the raw number behind `contextPct` (which divides by a fixed 200k and clamps at
+100, so it reads "100%" for every session this decision is ever about).
+
+Under the cap, nothing changes. Over it, in order of preference:
+
+- **`compact`** — a `-p` turn whose prompt IS the `/compact` slash command:
+  `claude -p --resume <id> "/compact <focus>"`. Measured against CLI v2.1.257 on
+  two real sessions: the transcript gains
+  `{type:'system', subtype:'compact_boundary', compactMetadata:{trigger:'manual',
+  preTokens:191365, postTokens:10360}}`, `num_turns` 0, empty result. The
+  session keeps its id, so the worker PTY behind it resumes the SAME session and
+  everything downstream (`sessionId`, `statsBaseline`, the attachable terminal)
+  is untouched. Cost shape: ONE cache-write of the conversation instead of two,
+  and afterwards the session is ~10k rather than ~400k, so the rest of the run
+  is cheap as well.
+  The focus string is built from the task title plus what the turn is about to
+  do (`compactFocus`), because a summariser keeps what it is told matters —
+  naming the pending instruction is what stops the summary from being a neutral
+  recap that drops the half the follow-up needs.
+- **`fresh`** — only if the compaction failed. The existing non-resume branch of
+  `buildWorkerPrompt`, but handed a richer `Previous run summary` than the task
+  row's 4000-char `resultSummary`: the previous session's **last assistant text
+  in full**, plus **the files it changed** (`git diff --name-only HEAD` +
+  untracked, no `git add -N`, so naming files never touches the index), with an
+  instruction to re-read those files and nothing else.
+- **`resume`**, unchanged, is what a failed compaction falls back to for the
+  **publish turn** specifically. Publish commits work it must already know
+  about, and the existing no-session path for it is `publishRepo` in-process,
+  not "a new agent guesses a commit message" — so that one turn pays the old
+  price rather than handing the commit to a stranger.
+
+`--autocompact <100k..1M>` does the same compaction with `trigger:'auto'` and
+was measured working too (175,101 → 6,682). It is **not** what we use: it takes
+no focus string, and it would then apply for the whole resumed run, which is
+exactly the mid-run interference the cap is defined to avoid.
+
+Two consequences worth knowing. A compaction is a paid turn on the resumed
+transcript, and the resume baseline is snapshotted **before** the gate runs, so
+that cost lands on the run that chose to compact — which is what makes the
+comparison below honest. And for the ~1–3 minutes it takes, the task sits
+`running` with no run row and no PTY yet; like a headless adversarial review, it
+holds no orchestrator concurrency slot, only a `liveHeadless` entry (so
+`/killall` and the restart guard still see it).
+
+### That window is the dangerous part
+
+Before this gate, the distance between `followUp` marking a task `running` and
+the PTY spawning was a few milliseconds. It is now up to ten minutes, which is
+long enough for the world to move — and everything downstream of the gate used
+to assume it had not. Two rules close that:
+
+- **A compaction WE stopped is `aborted`, never `failed`.** The answer to a
+  failed compaction is to spawn an agent; doing that seconds after `/killall`
+  reported the machine idle, or while a forced restart is closing storage, is
+  the worst outcome the gate can produce. `stopAllHeadless()` records when it
+  swept (`headlessStoppedSince`), `cancel()` stops the compaction for its task
+  by name (`abortCompaction`), and either way `resumeHandoff` returns `abort`:
+  no run row, no spawn, the task parked in `review` with the reason. A genuine
+  CLI failure or a ten-minute timeout is still `failed` and still falls through
+  to `fresh` — `compactSession` runs its own deadline timer precisely so a
+  timeout's SIGTERM is not mistaken for an abort's.
+- **The task row is re-read after the gate.** `cancel()` writes to storage, not
+  to the `Task` object `startWorker` is holding; anything other than `running`
+  means the turn must not happen, and the re-read row (not the stale one) is
+  what gets broadcast, or the UI would flip a just-cancelled task back to
+  `running`.
+- **A task inside the gate has no run row, so boot recovery cannot see it.**
+  `recoverOnBoot` sweeps `tm_runs`; a compacting task is `running` with nothing
+  in that table, and nothing else frees the state (`followUp` answers "marked
+  running but has no live session", enqueue and retry refuse a running task —
+  only Cancel would). So recovery now also sweeps tasks that are `running` with
+  no `running` run row, parking them in `review` if they ever had a worker and
+  `failed` if they never did. `stop()` additionally awaits `drainResumeGates()`
+  before closing storage, so the graceful path settles rather than needing to
+  be recovered from; a SIGKILL or a crash cannot be drained, which is why the
+  boot sweep is the real fix and the drain is the courtesy.
+- **The gate must not be awaited inside the scheduler.** Dispatch delivery runs
+  inside `maybeSchedule()`'s single-flight pass, so awaiting a ten-minute
+  compaction there would freeze the claim loop, the custom queue and every
+  other delivery. It fires the `followUp` and settles from its result instead
+  (`docs/dispatch.md` § Delivery).
+
+Because a turn can now be certain-but-unspawned for minutes, `activeWorkers()`
+counts those too — gates in flight and dispatch turns fired — rather than live
+PTYs alone. `status()` still reports the honest live count for the UI.
+
+Every spawn records which path it took: `run.started` gains
+`handoff: 'resume' | 'compact' | 'fresh'`, plus `contextTokens` (what the gate
+measured), `cap`, and either `compactedFrom`/`compactedTo` or `compactError`.
+
+Note that an ordinary cold claim — a queued task with no previous session at all
+— also records `handoff: 'fresh'`, because that is what it is. The two are told
+apart by `contextTokens`, which is present only when there WAS a session to
+resume: `fresh` with a `contextTokens` (and a `compactError`) is the gate
+declining, `fresh` without one is just a new task starting.
+
+### Counting the saving
+
+Unlike the two sections above, this one shows up directly in money. Take a task
+with several resumes and compare `costUsd` of runs whose `run.started` carries
+`handoff: 'resume'` against the ones carrying `'compact'`, on the same task and
+the same model. The re-write is the floor of a resumed run's cost, so the
+difference should be most of it.
+
 ## Re-measuring after a change here
 
 1. `npm run typecheck` && `npm run build`.
@@ -179,3 +347,8 @@ against a target of 30k: about **$250/wk** of the $483.
    the previous run's summary, not just the title.
 4. Run a publish turn — it needs `Bash` and git, and it is the one turn whose
    tool needs are narrower than everything else's.
+5. Exercise the resume gate at a cap low enough to fire on a small session
+   (`agent.resumeContextCap`), then read the `run.started` row: `handoff` must
+   say `compact`, `compactedTo` must be far below `compactedFrom`, and the
+   session must still be the same one in the same terminal. A `handoff: 'fresh'`
+   here is a compaction that failed, not a success — read `compactError`.

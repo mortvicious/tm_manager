@@ -131,7 +131,9 @@ export function registerStatsRoutes(
     const taskById = new Map(tasks.map((t) => [t.id, t]));
     const byActorMap = new Map<string, number>();
     for (const e of allForActors) byActorMap.set(e.actor, (byActorMap.get(e.actor) ?? 0) + 1);
-    totals.attentionEvents = attention.length;
+    // `run.attention` is also written when the flag is CLEARED (the agent
+    // moved past an answered prompt) — count only the raises.
+    totals.attentionEvents = attention.filter((e) => !e.data?.cleared).length;
     totals.agentFiledTasks = agentCreates.length;
     for (const e of transitions) {
       const to = (e.data as any)?.to;

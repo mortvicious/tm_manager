@@ -1,4 +1,17 @@
-import type { Dispatch, Feature, FeaturePlan, FeatureReview, Proposal, Repo, RepoCommand, Run, Task } from '@tm/shared';
+import type {
+  Chat,
+  ChatMessage,
+  Dispatch,
+  Feature,
+  FeaturePlan,
+  FeatureReview,
+  Proposal,
+  Question,
+  Repo,
+  RepoCommand,
+  Run,
+  Task,
+} from '@tm/shared';
 
 // One malformed JSON cell must not break every list query (review F4).
 function safeParse<T>(raw: unknown, fallback: T): T {
@@ -70,6 +83,10 @@ export function rowToTask(r: any): Task {
     autoPublish: !!Number(r.auto_publish ?? 0),
     customQueueAt: r.custom_queue_at ?? null,
     reviewSummary: r.review_summary ?? null,
+    reviewDiffHash: r.review_diff_hash ?? null,
+    reviewState: r.review_state ?? null,
+    reviewRounds: safeParse(r.review_rounds, []),
+    wakeAt: r.wake_at ?? null,
     error: r.error ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -115,6 +132,22 @@ export function rowToFeature(r: any): Feature {
   };
 }
 
+export function rowToQuestion(r: any): Question {
+  return {
+    id: r.id,
+    taskId: r.task_id,
+    runId: r.run_id,
+    toolUseId: r.tool_use_id ?? null,
+    status: r.status,
+    questions: safeParse(r.questions, []),
+    answers: r.answers == null ? null : safeParse<Record<string, string> | null>(r.answers, null),
+    answeredBy: r.answered_by ?? null,
+    note: r.note ?? null,
+    createdAt: r.created_at,
+    answeredAt: r.answered_at ?? null,
+  };
+}
+
 export function rowToDispatch(r: any): Dispatch {
   return {
     id: r.id,
@@ -122,10 +155,50 @@ export function rowToDispatch(r: any): Dispatch {
     fromRunId: r.from_run_id ?? null,
     toTaskId: r.to_task_id,
     message: r.message,
+    // pre-migration-18 rows have no column at all; they were created under
+    // wake-the-session semantics, so that is what they keep reading as.
+    intent: r.intent === 'fyi' ? 'fyi' : 'needs_action',
     status: r.status,
     note: r.note ?? null,
     createdAt: r.created_at,
     deliveredAt: r.delivered_at ?? null,
+  };
+}
+
+export function rowToChat(r: any): Chat {
+  return {
+    id: r.id,
+    repoId: r.repo_id,
+    title: r.title,
+    model: r.model,
+    effort: (r.effort ?? null) as Chat['effort'],
+    mode: r.mode === 'write' ? 'write' : 'read',
+    sessionId: r.session_id ?? null,
+    status: r.status,
+    error: r.error ?? null,
+    // pre-migration-20 rows have no column at all, which reads as "no turn".
+    pid: r.pid === null || r.pid === undefined ? null : Number(r.pid),
+    turns: Number(r.turns ?? 0),
+    // pg returns NUMERIC/REAL as a string on some drivers; Number() is the
+    // same normalisation rowToRun does for its stats.
+    costUsd: Number(r.cost_usd ?? 0),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    lastMessageAt: r.last_message_at ?? null,
+  };
+}
+
+export function rowToChatMessage(r: any): ChatMessage {
+  return {
+    id: r.id,
+    chatId: r.chat_id,
+    role: r.role,
+    text: r.text,
+    actor: r.actor,
+    error: r.error ?? null,
+    costUsd: Number(r.cost_usd ?? 0),
+    durationMs: r.duration_ms === null || r.duration_ms === undefined ? null : Number(r.duration_ms),
+    createdAt: r.created_at,
   };
 }
 

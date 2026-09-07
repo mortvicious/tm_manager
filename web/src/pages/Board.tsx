@@ -414,7 +414,7 @@ export function BoardPage({
   onOpenTask: (id: string) => void;
   onOpenTerminal: (runId: string) => void;
 }) {
-  const { tasks, repos, runs, settings, refresh, dispatches } = useApp();
+  const { tasks, repos, runs, settings, refresh, dispatches, questions } = useApp();
   // default ON so the board is coloured before /api/config answers, matching
   // DEFAULT_SETTINGS['board.groupColors']
   const groupColors = settings?.['board.groupColors'] ?? true;
@@ -601,6 +601,8 @@ export function BoardPage({
 
   const attention = (t: Task) =>
     t.status === 'running' && runs.some((r) => r.taskId === t.id && r.needsAttention && r.status === 'running');
+  // the slice is the pending set (docs/questions.md)
+  const asking = useMemo(() => new Set(questions.map((q) => q.taskId)), [questions]);
 
   const sortField = SORTS.find((s) => s.key === sort)!.field;
 
@@ -661,7 +663,7 @@ export function BoardPage({
             {repoName(t.repoId) && ctx !== 'repo' && <span className="chip">{repoName(t.repoId)}</span>}
           </>
         )}
-        <StatusBadge status={t.status} attention={attention(t)} />
+        <StatusBadge status={t.status} attention={attention(t)} question={asking.has(t.id)} reviewState={t.reviewState} />
         {!focus && (
           <TimeAgo
             iso={t[field]}

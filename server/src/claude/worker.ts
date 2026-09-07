@@ -12,11 +12,13 @@ export interface WorkerInvocation {
  * the model is sent, which is what the fixed preamble is mostly made of —
  * unlike `--allowedTools`, which is only a permission gate and costs the same
  * context either way (docs/token-budget.md). Anything left out here is not
- * re-sent on every turn: interactive-only tools (AskUserQuestion — nobody is
- * watching a hidden terminal), planning tools (workers never run in plan mode),
+ * re-sent on every turn: planning tools (workers never run in plan mode),
  * artifact/cron/remote-session tooling and the workflow orchestrator.
  * `Skill` and `ToolSearch` stay so a worker can still reach a project skill or
- * load an MCP schema on demand.
+ * load an MCP schema on demand. `AskUserQuestion` is IN even though nobody
+ * watches the hidden terminal: the PreToolUse hook below carries the question
+ * to the dashboard and the phone and hands the answer back to the tool, so
+ * the dialog is never drawn in the terminal (docs/questions.md).
  */
 const WORKER_TOOLS = [
   // shell — also the publish turn's only tool (git add/commit/push)
@@ -37,6 +39,8 @@ const WORKER_TOOLS = [
   'WebSearch',
   'Skill',
   'ToolSearch',
+  // decisions for the human — see the PreToolUse hook (docs/questions.md)
+  'AskUserQuestion',
 ];
 
 // Standing instructions appended to every worker prompt (user-mandated caps).
@@ -55,10 +59,29 @@ const STANDING_RULES = [
   'work around its refusals. When a related task already exists (one you filed, or the one that filed',
   'yours), DISPATCH to its session instead of creating another task — dispatch reuses that agent',
   'conversation rather than spawning a new one.',
+  'Decisions: when a choice would materially change the outcome — an architecture or library',
+  'choice, an ambiguous or conflicting requirement, a destructive or irreversible step, scope that',
+  'could go two ways — stop and ask with the AskUserQuestion tool. It reaches the user in the',
+  'dashboard and on their phone, and your session waits for the answer. Decide small things',
+  'yourself; never ask about those.',
   'Finish with a short summary of what you changed and how you verified it. Your change is then',
   'adversarially reviewed before the user sees it, so make it correct and self-consistent: verify it',
   'compiles/passes and handle the edge cases a reviewer would probe.',
 ].join(' ');
+
+/**
+ * What the AskUserQuestion hook prints when it cannot reach the server at all
+ * (docs/questions.md). A deny, not a silent exit: exiting 0 with no output
+ * would let the tool run and draw its dialog in a terminal nobody watches.
+ */
+export const ASK_UNREACHABLE = {
+  hookSpecificOutput: {
+    hookEventName: 'PreToolUse',
+    permissionDecision: 'deny',
+    permissionDecisionReason:
+      'Task Manager could not deliver this question to the user. Do not ask again this turn: decide yourself, state the assumption in your summary, and continue.',
+  },
+};
 
 /** Sent when the human hits "proceed" without typing anything. */
 export const DEFAULT_PROCEED =
@@ -98,8 +121,10 @@ const RESUME_REMINDER = [
   'autonomously; plan briefly before you edit; delegate exploration to a subagent instead of reading',
   'files turn by turn (up to 3 subagents per session, one at a time, no parallel fan-outs); save',
   'deliverables in $TM_ARTIFACTS_DIR; route follow-up/cross-repo work through the Task Manager API,',
-  "dispatching to a related task's session rather than creating a new task; finish with a short",
-  'summary of what you changed and how you verified it.',
+  "dispatching to a related task's session rather than creating a new task; ask the user with",
+  'AskUserQuestion when a decision would materially change the outcome (it reaches their dashboard',
+  'and phone and waits), decide small things yourself; finish with a short summary of what you',
+  'changed and how you verified it.',
 ].join(' ');
 
 /**
@@ -108,22 +133,43 @@ const RESUME_REMINDER = [
  * only changes which header/reminder wraps it; it never implies `--resume`
  * (codex never sets it — see isCodexModel branch below).
  */
-function buildWorkerPrompt(opts: { task: Task; followUp?: string; resumeSessionId?: string }): string {
+function buildWorkerPrompt(opts: {
+  task: Task;
+  followUp?: string;
+  resumeSessionId?: string;
+  dispatchNote?: string;
+  previousSummary?: string;
+}): string {
   const { task } = opts;
+  // Strict identity on purpose: the publish turn is recognised by BEING the
+  // publish instruction. That is why an `fyi` backlog travels as its own
+  // `dispatchNote` and is never concatenated onto `followUp` — doing that
+  // would silently turn every publish turn into an ordinary one.
   const isPublishTurn = opts.followUp === PUBLISH_INSTRUCTION;
   const resumeBody = opts.followUp ?? DEFAULT_PROCEED;
+  // The note goes FIRST (context the turn may need) and never last: the last
+  // thing a resumed agent reads must stay the instruction it has to act on.
+  const note = opts.dispatchNote ? [opts.dispatchNote, ''] : [];
   return opts.resumeSessionId
     ? [
         `# Continuing task: ${task.title}`,
         '',
+        ...note,
         ...(isPublishTurn ? [RESUME_REMINDER, '', resumeBody] : [resumeBody, '', RESUME_REMINDER]),
       ].join('\n')
     : [
         `# Task: ${task.title}`,
         task.description ? `\n${task.description}` : '',
         opts.followUp
-          ? `\n\n## Previous run summary\n${task.resultSummary ?? '(none recorded)'}\n\n## Follow-up instruction from the user\n${opts.followUp}`
+          ? // `previousSummary` is the richer handoff the resume gate builds
+            // when it declines to resume an over-cap session (the full last
+            // assistant text plus the files that session touched), so the new
+            // agent re-reads only those files instead of rediscovering the
+            // work. Without it this falls back to the task row's 4000-char
+            // `resultSummary`, which is all a plain fresh follow-up ever had.
+            `\n\n## Previous run summary\n${opts.previousSummary ?? task.resultSummary ?? '(none recorded)'}\n\n## Follow-up instruction from the user\n${opts.followUp}`
           : '',
+        opts.dispatchNote ? `\n\n${opts.dispatchNote}` : '',
         `\n\n${STANDING_RULES}`,
       ].join('');
 }
@@ -151,6 +197,32 @@ export function buildDispatchTurn(
     `back through the Task Manager API instead of creating a new task. Then finish your turn with a`,
     `short summary as usual.`,
   );
+  return parts.join('\n');
+}
+
+/**
+ * The `fyi` backlog block (docs/dispatch.md § Intent). These messages did NOT
+ * cause this turn — they were queued by related sessions with nothing for this
+ * task to do, and are riding along on a resume that was going to happen anyway.
+ * Deliberately worded so the agent does not treat them as a new instruction:
+ * an `fyi` that turns into work is exactly the wake-up this split removes.
+ */
+export function buildDispatchNote(
+  items: { fromTitle: string; fromTaskId: string; message: string }[],
+): string {
+  const parts = [
+    `## FYI from related task sessions (queued while you were not running)`,
+    '',
+    `${items.length === 1 ? 'This message was' : `These ${items.length} messages were`} sent to you as FYI —`,
+    `context, answers or corrections, with nothing specifically asked of you. Read them, let them`,
+    `inform what you are doing now, and do NOT treat them as a new instruction or start separate work`,
+    `for them. No reply is expected; dispatch back only if you have something the sender must act on.`,
+    '',
+  ];
+  for (const d of items) {
+    // full id on purpose — it is the address for dispatching an answer back
+    parts.push(`### FYI from task "${d.fromTitle}" (task id: ${d.fromTaskId})`, '', d.message, '');
+  }
   return parts.join('\n');
 }
 
@@ -186,11 +258,24 @@ export function buildWorkerInvocation(opts: {
   /** re-run with an additional human instruction (previous summary included) */
   followUp?: string;
   /**
+   * `fyi` dispatches that were waiting for this session to be resumed for some
+   * other reason (docs/dispatch.md § Intent). Prepended to the turn; it is
+   * never the reason the turn exists.
+   */
+  dispatchNote?: string;
+  /**
    * Continue an existing claude session instead of starting a fresh one
    * (`claude --resume <id>`) — the "proceed" flow. The agent keeps its whole
    * conversation, so the prompt carries only the new instruction.
    */
   resumeSessionId?: string;
+  /**
+   * Handoff text for a follow-up that is deliberately NOT resuming: the resume
+   * gate found the session past `agent.resumeContextCap` and could not compact
+   * it (docs/token-budget.md § The fourth). Ignored when `resumeSessionId` is
+   * set — a resumed session needs no summary of itself.
+   */
+  previousSummary?: string;
 }): WorkerInvocation {
   const { task, settings } = opts;
   const model = task.model ?? settings['agent.model'];
@@ -202,7 +287,13 @@ export function buildWorkerInvocation(opts: {
   };
 
   if (isCodexModel(model)) {
-    const prompt = buildWorkerPrompt({ task, followUp: opts.followUp, resumeSessionId: opts.resumeSessionId });
+    const prompt = buildWorkerPrompt({
+      task,
+      followUp: opts.followUp,
+      resumeSessionId: opts.resumeSessionId,
+      dispatchNote: opts.dispatchNote,
+      previousSummary: opts.previousSummary,
+    });
     // `-c model_reasoning_effort` has no Codex-CLI-wide free/paid distinction
     // worth encoding yet, so effort is not forwarded — "free" is entirely a
     // property of how `codex login` was authenticated (ChatGPT account vs an
@@ -234,9 +325,38 @@ export function buildWorkerInvocation(opts: {
   // ~40 skill descriptions a worker never invokes (/design, /schedule,
   // statusline-setup…). Project skills (.claude/skills in the target repo) are
   // NOT affected by this flag, so a repo can still ship its own.
+  // The AskUserQuestion carrier (docs/questions.md). Unlike the fire-and-forget
+  // hooks above, this one's stdout IS the tool decision, so nothing is
+  // discarded and `|| true` would be wrong: the loop re-sends the same body
+  // (idempotent on tool_use_id server-side) until the server answers with a
+  // decision; a `pending` reply just means "still waiting" and resets the
+  // failure count. Five consecutive failed ATTEMPTS — curl error or a reply
+  // that is neither a decision nor pending (403, 400, 500, an error page) —
+  // print a deny that tells the agent to decide for itself: a hidden terminal
+  // must never be left on a dialog nobody can see. The one reply that exits
+  // SILENTLY is the route's "run is not working" 409: the session is idle, so
+  // this is a human typing into an attached terminal after the turn — the one
+  // place the CLI's own dialog works, so it is left to draw it. `case`
+  // patterns carry no quotes on purpose (inside a pattern `"` quotes rather
+  // than matches — review round 1). `timeout` is the CLI's own cap on the hook
+  // (seconds; default 600), raised to a week: the human is the slow part.
+  const askHook = [
+    'b=$(cat); f=0; while :; do',
+    `o=$(printf %s "$b" | curl -s --max-time 75 -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" --data-binary @- "$TM_CALLBACK_URL/api/internal/runs/$TM_RUN_ID/question?waitMs=60000"); c=$?;`,
+    'if [ $c -ne 0 ]; then f=$((f+1)); else case "$o" in',
+    '*hookSpecificOutput*) printf %s "$o"; exit 0;;',
+    '*run?is?not?working*) exit 0;;',
+    '*pending*) f=0;;',
+    '*) f=$((f+1));;',
+    'esac; fi;',
+    `[ $f -ge 5 ] && { printf %s '${JSON.stringify(ASK_UNREACHABLE)}'; exit 0; };`,
+    'sleep 3; done',
+  ].join(' ');
+
   const hookSettings = {
     disableBundledSkills: true,
     hooks: {
+      PreToolUse: [{ matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: askHook, timeout: 604_800 }] }],
       // SessionStart reports session_id/transcript_path immediately so live
       // stats can stream mid-run instead of waiting for the first Stop.
       SessionStart: [
@@ -313,7 +433,13 @@ export function buildWorkerInvocation(opts: {
   // rules (no code, no subagents, git output as the closing report), so the
   // reminder goes ABOVE it — the last thing the agent reads on that turn has
   // to be the narrow instruction, not "plan, delegate, summarise".
-  const prompt = buildWorkerPrompt({ task, followUp: opts.followUp, resumeSessionId: opts.resumeSessionId });
+  const prompt = buildWorkerPrompt({
+    task,
+    followUp: opts.followUp,
+    resumeSessionId: opts.resumeSessionId,
+    dispatchNote: opts.dispatchNote,
+    previousSummary: opts.previousSummary,
+  });
   args.push(prompt);
 
   return { cmd: 'claude', args, env };

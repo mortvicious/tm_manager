@@ -1,9 +1,11 @@
 import { useCallback, useState } from 'react';
 import { Route, Routes } from 'react-router-dom';
 import { Layout } from './components/Layout.tsx';
+import { QuestionModal } from './components/QuestionModal.tsx';
 import { TaskSlideOver } from './components/TaskSlideOver.tsx';
 import { TerminalDrawer } from './components/TerminalDrawer.tsx';
 import { BoardPage } from './pages/Board.tsx';
+import { ChatPage } from './pages/Chat.tsx';
 import { DashboardPage } from './pages/Dashboard.tsx';
 import { FeaturePage } from './pages/Feature.tsx';
 import { FeaturesPage } from './pages/Features.tsx';
@@ -27,6 +29,8 @@ export function App() {
         <Route path="/" element={<DashboardPage onOpenTask={setOpenTask} />} />
         <Route path="/board" element={<BoardPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
         <Route path="/queue" element={<QueuePage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
+        <Route path="/chat" element={<ChatPage />} />
+        <Route path="/chat/:id" element={<ChatPage />} />
         <Route path="/features" element={<FeaturesPage />} />
         <Route path="/features/:id" element={<FeaturePage onOpenTask={setOpenTask} />} />
         <Route path="/repos" element={<ReposPage onOpenTerminal={openTerm} />} />
@@ -52,6 +56,8 @@ export function App() {
           onClose={() => setOpenTerminal(null)}
         />
       )}
+      {/* an agent's question pops up on whatever page is open (docs/questions.md) */}
+      <QuestionModal />
     </Layout>
   );
 }

@@ -36,12 +36,22 @@ const QUEUED_AGENT_CEILING = 10;
 // Dispatch caps (docs/dispatch.md). Per-run bounds one turn's chatter; the
 // per-pair cap bounds A⇄B ping-pong across resumed turns (each resume is a NEW
 // run, so a per-run cap alone would never terminate an echo loop).
-const DISPATCH_RUN_CAP = 5;
-const DISPATCH_PAIR_CAP = 8;
+//
+// Lowered from 5/8 by the token audit 2026-08-31..09-01 (docs/token-budget.md):
+// two auth tasks spent 8 dispatches on status reports and corrections of
+// corrections, and every delivery is a resume that re-writes the whole
+// conversation to cache before the agent's first useful token. Three exchanges
+// is enough to hand over a contract; past that a human should be looking.
+const DISPATCH_RUN_CAP = 2;
+const DISPATCH_PAIR_CAP = 3;
 
 const dispatchBody = z
   .object({
     task: z.string().min(1),
+    // Required, with no default on purpose: which of the two this is decides
+    // whether a session gets woken, and that is a judgement only the sender
+    // can make. A default would quietly make every unthinking caller expensive.
+    intent: z.enum(['needs_action', 'fyi']),
     message: z.string().min(1).max(20_000),
   })
   .strict();
@@ -102,7 +112,11 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
     const p = path.resolve(serverRoot, '../docs/agent-instructions.md');
     if (!fs.existsSync(p)) return reply.code(404).send({ error: 'instructions not found' });
     const cap = perRunCap(await storage.getSettings());
-    const md = fs.readFileSync(p, 'utf8').replaceAll('{{taskCreationCap}}', String(cap));
+    const md = fs
+      .readFileSync(p, 'utf8')
+      .replaceAll('{{taskCreationCap}}', String(cap))
+      .replaceAll('{{dispatchRunCap}}', String(DISPATCH_RUN_CAP))
+      .replaceAll('{{dispatchPairCap}}', String(DISPATCH_PAIR_CAP));
     return reply.type('text/markdown').send(md);
   });
 
@@ -302,6 +316,7 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
       fromRunId: run.id,
       toTaskId: target.id,
       message: body.message,
+      intent: body.intent,
     });
     broadcast({ type: 'dispatch.updated', dispatch });
     await storage.appendEvent({
@@ -310,21 +325,34 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
       taskId: target.id,
       runId: run.id,
       repoId: target.repoId,
-      data: { phase: 'created', dispatchId: dispatch.id, fromTaskId: callerTask.id, chars: body.message.length },
+      data: {
+        phase: 'created',
+        dispatchId: dispatch.id,
+        fromTaskId: callerTask.id,
+        intent: body.intent,
+        chars: body.message.length,
+      },
     });
     // Immediate attempt (delivers right away when the target session is free —
     // even with the queue stopped); otherwise it stays pending and the
     // orchestrator retries on its ticks.
     await orchestrator.deliverDispatches();
     const fresh = (await storage.getDispatch(dispatch.id)) ?? dispatch;
+    // `fresh.note` first: an `fyi` to an already-finished task settles
+    // `delivered` with the reason "recorded as a note, no session resumed",
+    // and reporting that as "the target has been resumed" would be a lie.
+    const note =
+      fresh.note ??
+      (fresh.status === 'delivered'
+        ? 'delivered — the target session has been resumed with your message'
+        : fresh.status === 'pending'
+          ? body.intent === 'fyi'
+            ? 'queued as FYI — it will NOT wake the target. It is handed over at the start of the next turn that session takes for a reason of its own. This is the normal, cheap outcome: note it in your summary and finish your turn.'
+            : 'queued — the target session is busy; it is delivered automatically when that agent is free. Do not wait for it: note it in your summary and finish your turn.'
+        : null);
     return {
-      dispatch: { id: fresh.id, toTask: target.id, status: fresh.status },
-      note:
-        fresh.status === 'delivered'
-          ? 'delivered — the target session has been resumed with your message'
-          : fresh.status === 'pending'
-            ? 'queued — the target session is busy; it is delivered automatically when that agent is free. Do not wait for it: note it in your summary and finish your turn.'
-            : fresh.note,
+      dispatch: { id: fresh.id, toTask: target.id, intent: fresh.intent, status: fresh.status },
+      note,
     };
   });
 
@@ -335,7 +363,7 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
     const { id } = req.params as { id: string };
     const d = await storage.getDispatch(id);
     if (!d || d.fromRunId !== run.id) return reply.code(404).send({ error: 'not found' });
-    return { id: d.id, status: d.status, note: d.note, deliveredAt: d.deliveredAt };
+    return { id: d.id, intent: d.intent, status: d.status, note: d.note, deliveredAt: d.deliveredAt };
   });
 
   // Read-only sibling context: the feature this run's task belongs to. Agents

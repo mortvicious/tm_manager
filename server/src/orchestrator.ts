@@ -1,41 +1,184 @@
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AppSettings, Dispatch, Run, Task, TaskStatus } from '@tm/shared';
+import {
+  isCodexModel,
+  type AppSettings,
+  type Dispatch,
+  type Repo,
+  type ReviewRound,
+  type ReviewState,
+  type Run,
+  type Task,
+  type TaskStatus,
+} from '@tm/shared';
 import type { ActionResult, OrchestratorApi } from './app-types.ts';
-import { DEFAULT_PROCEED, PUBLISH_INSTRUCTION, buildDispatchTurn, buildWorkerInvocation } from './claude/worker.ts';
+import {
+  DEFAULT_PROCEED,
+  PUBLISH_INSTRUCTION,
+  buildDispatchNote,
+  buildDispatchTurn,
+  buildWorkerInvocation,
+} from './claude/worker.ts';
+import {
+  abortAllCompactions,
+  abortCompaction,
+  changedFiles,
+  compactFocus,
+  compactSession,
+  freshHandoff,
+} from './claude/compact.ts';
 import { publishRepo, verifyPublished } from './git.ts';
 import { killAnalysis } from './claude/analyze.ts';
 import { liveHeadless } from './claude/headless.ts';
-import { reviewWorkerChange } from './claude/review.ts';
-import { summarizeRun, summarizeTranscript } from './claude/stats.ts';
+import { reviewWorkerChange, workerDiff } from './claude/review.ts';
+import { summarizeRun, summarizeTranscript, type TranscriptSummary } from './claude/stats.ts';
+import { liveWindow, readAccountUsage } from './claude/account-usage.ts';
+import {
+  LIVE_TAIL_STRICT_CHARS,
+  assessLimitStall,
+  resolveWakeAt,
+  type AccountView,
+  type StallVerdict,
+} from './claude/limit.ts';
 import { needsFallbackModel, sessionUsagePct } from './claude/usage.ts';
 import { broadcast } from './events.ts';
 import { MAX_LIVE_SESSIONS, pidLooksLikeOurs, type SessionManager } from './pty/session-manager.ts';
 import { artifactsRoot } from './config.ts';
 import type { Storage } from './storage/types.ts';
+import { QuestionService } from './questions.ts';
 
 /** Upper bound on how long a custom-queue hold may outlive its follow-on (docs/queue.md). */
 const CUSTOM_QUEUE_HOLD_TTL_MS = 30 * 60_000;
 
+/**
+ * Statuses after which an `fyi` dispatch is recorded as a note instead of
+ * waiting for a resume that is never coming (docs/dispatch.md § Intent).
+ *
+ * Deliberately NOT `TERMINAL_TASK_STATUSES`: that set also contains `failed`,
+ * and a failed task is the one terminal-looking status a human routinely
+ * retries or proceeds — an `fyi` should still be there waiting when it does.
+ */
+const DISPATCH_TERMINAL_STATUSES: TaskStatus[] = ['done', 'published', 'cancelled'];
+
+/**
+ * The only statuses an auto wake-up acts on (docs/wake.md) — an allow-list,
+ * not an exclusion list, so a task that moved on under a human's hand loses
+ * its pending wake-up by default rather than by enumeration.
+ *
+ * `failed` is IN, deliberately: a turn cut short by the usage limit is exactly
+ * what lands there, and reopening it is the whole point. `queued` and `draft`
+ * are OUT even though `followUp` would accept them — a retried or re-enqueued
+ * task belongs to the claim loop now, and waking it would jump that queue.
+ *
+ * `running` is OUT because a wake could never have worked from it: `followUp`
+ * refuses a running task, whether its session is live and busy ("the agent is
+ * still working") or gone ("marked running but has no live session"). A live
+ * stall is therefore ENDED at park time — the run is killed and the task moved
+ * to `review` — rather than parked where nothing could resume it (review R1).
+ */
+const WAKE_RESUMABLE_STATUSES: TaskStatus[] = ['review', 'failed'];
+
+/**
+ * How long a live session must have written nothing to its transcript before a
+ * banner at the end of its terminal is read as a stall rather than as work in
+ * progress. The transcript is the right clock: it advances on every assistant
+ * message and tool result, and unlike the terminal it is not rewritten by
+ * cursor redraws, so a session that is thinking is never mistaken for a stuck
+ * one and a stuck one goes quiet immediately.
+ */
+const STALL_QUIET_MS = 2 * 60_000;
+
+/** What the resume gate decided for one spawn (docs/token-budget.md § The fourth). */
+interface ResumeHandoff {
+  /**
+   * `abort` is not a handoff at all: WE stopped the compaction (`/killall`, a
+   * forced restart, the task being cancelled underneath it), so the turn must
+   * not happen. It is a separate kind rather than a flavour of `fresh` because
+   * the answer to a failed compaction is to spawn an agent, and spawning one
+   * seconds after an emergency stop said everything was dead is precisely the
+   * outcome this distinction prevents.
+   */
+  kind: 'resume' | 'compact' | 'fresh' | 'abort';
+  /** the richer `Previous run summary` a declined resume hands the new session */
+  previousSummary?: string;
+  /** extra `run.started` fields explaining the decision */
+  detail?: Record<string, unknown>;
+}
+
+/**
+ * The state a settled review loop reads as, from the latest round the task
+ * received: `passed` when nothing blocker/major is open, `flagged` when
+ * something is, `error` when the reviewer could not run, `skipped` when the
+ * task was never really reviewed.
+ */
+export function settledReviewState(rounds: ReviewRound[]): ReviewState {
+  const last = rounds[rounds.length - 1];
+  if (!last) return 'skipped';
+  if (last.error) return 'error';
+  return last.findings.some((f) => f.severity === 'blocker' || f.severity === 'major') ? 'flagged' : 'passed';
+}
+
 export class Orchestrator implements OrchestratorApi {
   private scheduling = false;
   private rescheduleRequested = false;
-  /** per-task adversarial-review round counter (work→review→work loop). */
-  private reviewRounds = new Map<string, number>();
   /**
-   * Tasks whose adversarial review round is in flight RIGHT NOW. The Telegram
-   * notifier consults this to hold its bare "in review" ping while a verdict
-   * is still minutes away — the alternative (predicting from settings) would
-   * silence entry paths that never run a review (docs/telegram.md).
+   * Per-task FIX-round budget for the work→review→work loop (bounded by
+   * `review.maxRounds`). Distinct from `task.reviewRounds`, which is the
+   * persisted history of every review the task received: this counter is
+   * reset whenever the loop settles or a human re-arms it (applyReviewFixes).
    */
-  private readonly pendingReviews = new Set<string>();
+  private fixRounds = new Map<string, number>();
+  /**
+   * Tasks whose adversarial review round is in flight RIGHT NOW — the
+   * single-flight lock behind `reviewCompletedRun`. What other surfaces read
+   * is the persisted `task.reviewState`, written at every step of the round.
+   */
+  private readonly pendingReviews = new Map<string, Promise<void>>();
+  /**
+   * When each live run's needs-attention flag was raised (ms since epoch).
+   * The flag is cleared the moment the transcript shows an assistant line
+   * NEWER than this — the prompt was answered and the agent moved on — so a
+   * run does not read "needs attention" for the rest of its turn after a
+   * human clicked Yes in the terminal (docs/design.md § Completion detection).
+   */
+  private readonly attentionAt = new Map<string, number>();
+  /**
+   * A Stop landed for a task whose review round was STILL RUNNING. A round
+   * takes minutes and only stamps `review_diff_hash` when it returns, so the
+   * late Stop would read a null/stale hash and spawn a second reviewer over
+   * the same diff — the duplicate this whole gate exists to prevent, on the
+   * very path that produces it most (a dispatch delivery resumes a task
+   * sitting in `review`: `deliverDispatches` holds only running/queued/
+   * blocked). It is remembered rather than dropped, because that Stop's turn
+   * MAY have edited something: the in-flight round is allowed to finish and
+   * stamp its hash, then one more pass runs, which the hash gate makes free
+   * when nothing changed and a real review when it did.
+   */
+  private readonly reviewRecheck = new Set<string>();
   /** runs whose turn is a PUBLISH turn (docs/publish.md): their Stop must land
    *  the task in `published`, not in the human review queue. */
   private publishRuns = new Set<string>();
   /** single-flight guard for dispatch delivery (docs/dispatch.md) — the route
    *  and the scheduler may both ask for a sweep at once. */
   private deliveringDispatches = false;
+  /**
+   * Tasks currently inside `startWorker`'s resume gate (docs/token-budget.md
+   * § The fourth) — marked `running`, no run row yet, a compaction possibly
+   * minutes from returning. Two things need to know about them: shutdown, so
+   * it can wait rather than close storage under the settle; and the
+   * concurrency count, because a compacting task is on its way to a PTY and a
+   * slot that ignores it lets a third worker in.
+   */
+  private readonly gatesInFlight = new Set<string>();
+  /**
+   * Dispatch turns fired but not yet spawned: taskId → repoId. The delivery
+   * loop no longer awaits `followUp` (a resume gate could hold the scheduler
+   * for ten minutes), so this is what stops the next pass redelivering the
+   * same dispatch, starting a second turn in the same repo, or over-filling
+   * the worker slots.
+   */
+  private readonly dispatchTurnsInFlight = new Map<string, string | null>();
   /**
    * Custom queue (docs/queue.md): tasks whose turn just ended and whose
    * follow-on (adversarial review round, auto-publish turn) has not decided yet
@@ -50,14 +193,40 @@ export class Orchestrator implements OrchestratorApi {
    * queue until the next restart (review R4).
    */
   private customQueueHold = new Map<string, number>();
+  /**
+   * Auto wake-up (docs/wake.md): taskId → the ms at which the 5h usage window
+   * this task is waiting on reopens. A mirror of `tm_tasks.wake_at`, kept in
+   * memory so the sweep costs nothing while nothing is parked, and rebuilt
+   * from the rows in `recoverOnBoot()`.
+   */
+  private readonly wakeDueAt = new Map<string, number>();
+  /** single-flight for the wake sweep — a pass can outlive its own interval */
+  private wakeSweeping = false;
+  /** runs whose rejected banner has already been audited once (see below) */
+  private readonly stallSkipsAudited = new Set<string>();
+
+  /**
+   * Questions a worker handed to the human (docs/questions.md). Owned here so
+   * every path that ends a run — exit, kill, cancel, boot recovery — expires
+   * what that run was still waiting on; a harness that builds an orchestrator
+   * without one gets a service of its own over the same storage.
+   */
+  readonly questions: QuestionService;
 
   constructor(
     private storage: Storage,
     private sessions: SessionManager,
     private callbackUrl: string,
+    questions?: QuestionService,
   ) {
+    this.questions = questions ?? new QuestionService(storage);
     this.sessions.onExit((info) => {
-      void this.handleExit(info.runId, info.exitCode);
+      // The terminal's own bytes are the ONLY place a usage-limit banner
+      // appears — the CLI prints it as chrome, never as an assistant message,
+      // so it reaches neither the transcript nor `lastAssistantText`. Read it
+      // here, while the session is certainly still in the map.
+      const tail = this.sessionTail(info.runId);
+      void this.handleExit(info.runId, info.exitCode, tail);
     });
     // Safety tick: event-driven scheduling with a slow fallback.
     setInterval(() => this.maybeSchedule(), 10_000).unref();
@@ -66,6 +235,303 @@ export class Orchestrator implements OrchestratorApi {
     setInterval(() => {
       void this.refreshLiveStats();
     }, 20_000).unref();
+    // Auto wake-up (docs/wake.md): park turns that ended against the 5h usage
+    // limit, and reopen their own sessions once the window resets. Its own
+    // cadence rather than a rider on the 10s claim tick — it reads terminal
+    // buffers and the account cache, and nothing about it is urgent to the
+    // second.
+    setInterval(() => {
+      void this.wakeSweep();
+    }, 30_000).unref();
+  }
+
+  /** Recent bytes of a run's terminal, ANSI and all; '' when there is none. */
+  private sessionTail(runId: string, bytes = 16_000): string {
+    try {
+      const buf = this.sessions.get(runId)?.buffer.snapshot();
+      if (!buf) return '';
+      return buf.subarray(Math.max(0, buf.length - bytes)).toString('utf8');
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Auto wake-up (docs/wake.md), both halves: park turns that ended against
+   * the account's 5h usage window, then reopen the ones whose window has
+   * reopened. Never throws into its timer.
+   */
+  private async wakeSweep(): Promise<void> {
+    if (this.wakeSweeping) return;
+    this.wakeSweeping = true;
+    try {
+      const settings = await this.storage.getSettings();
+      if (!settings['agent.autoWake']) return;
+      await this.parkStalledSessions(settings);
+      await this.wakeDue(settings);
+    } catch (err) {
+      console.error('orchestrator wake sweep error:', err);
+    } finally {
+      this.wakeSweeping = false;
+    }
+  }
+
+  /** The account's own live 5h window, or null when the CLI cache is unusable. */
+  private accountWindow(): AccountView | null {
+    const w = liveWindow(readAccountUsage()?.session);
+    return w ? { percent: w.percent, resetsAt: w.resetsAt } : null;
+  }
+
+  /**
+   * Records that a task's turn ended against the usage limit rather than
+   * against its work, and when the window reopens.
+   *
+   * The status the turn already landed in is deliberately NOT rewritten.
+   * `review` and `failed` are both statuses `proceed()` resumes from, so
+   * neither blocks the wake-up, and flattening one into the other would hide
+   * a real exit code behind a guess about what caused it. `error` is left
+   * alone for the same reason — the wait is carried by `wake_at`, which the
+   * UI renders on its own, so nothing true is overwritten by it.
+   */
+  private async parkForUsageLimit(
+    task: Task,
+    verdict: Extract<StallVerdict, { stalled: true }>,
+    settings: AppSettings,
+  ): Promise<void> {
+    // The account's own `resets_at` is the better clock when the CLI printed a
+    // banner with no time in it (or one we could not place in this window).
+    const wakeAt = resolveWakeAt(verdict.notice, verdict.accountResetsAt, settings['agent.autoWakeGraceSec']);
+    const patched = await this.storage.updateTask(task.id, { wakeAt });
+    if (!patched) return;
+    this.wakeDueAt.set(task.id, Date.parse(wakeAt));
+    await this.storage.appendEvent({
+      kind: 'task.wake',
+      actor: 'system',
+      taskId: task.id,
+      repoId: patched.repoId,
+      data: {
+        action: 'parked',
+        wakeAt,
+        status: patched.status,
+        statedResetsAt: verdict.notice.resetsAt,
+        accountResetsAt: verdict.accountResetsAt,
+        accountPct: verdict.accountPct,
+        evidence: verdict.notice.evidence,
+      },
+    });
+    broadcast({ type: 'task.updated', task: patched });
+  }
+
+  /**
+   * A banner that did not park anything is still a decision. Recorded only
+   * when one was actually seen, so ordinary turns write nothing.
+   */
+  private async auditStallSkip(
+    task: Task,
+    verdict: Extract<StallVerdict, { stalled: false }>,
+    runId?: string,
+  ): Promise<void> {
+    if (!verdict.sawBanner) return;
+    // The stall sweep re-reads the same terminal every thirty seconds. One row
+    // per run says what was decided; a row per sweep would say it 120 times an
+    // hour and bury everything else in the log.
+    if (runId) {
+      if (this.stallSkipsAudited.has(runId)) return;
+      this.stallSkipsAudited.add(runId);
+    }
+    await this.storage.appendEvent({
+      kind: 'task.wake',
+      actor: 'system',
+      taskId: task.id,
+      repoId: task.repoId,
+      data: { action: 'skipped', reason: verdict.reason, status: task.status },
+    });
+  }
+
+  /** ms since a run's transcript last grew; Infinity when there is none to read. */
+  private transcriptQuietMs(run: Run, now: number): number {
+    if (!run.transcriptPath) return Number.POSITIVE_INFINITY;
+    try {
+      return now - fs.statSync(run.transcriptPath).mtimeMs;
+    } catch {
+      return Number.POSITIVE_INFINITY;
+    }
+  }
+
+  /**
+   * The half of detection that has no exit to hang off: a turn that hits the
+   * limit does not always die. The CLI prints the banner and drops back to its
+   * prompt with the PTY alive — either still `running` with no Stop hook at
+   * all, or settled into `review` by a Stop hook that fired over a turn which
+   * did no work. Both shapes keep a live session, which is what this reads.
+   *
+   * There is deliberately no `isIdle` test. `markIdle()` is called in the
+   * stop-hook route AFTER the task has been transitioned out of `running`, so
+   * "running and idle" is a state that cannot exist, and gating on it made
+   * this function unreachable (review R1). Quiet is measured on the
+   * transcript instead, which is the thing that actually stops moving.
+   */
+  private async parkStalledSessions(settings: AppSettings): Promise<void> {
+    const now = Date.now();
+    // Driven from the RUNS, not the tasks: a stall by definition still holds a
+    // live PTY, and live PTYs are capped at MAX_LIVE_SESSIONS. Sweeping tasks
+    // instead would mean re-reading every `failed` row the database has ever
+    // accumulated, every thirty seconds, to find at most ten candidates.
+    const live = await this.storage.listRuns({ status: 'running', mode: 'worker' });
+    for (const run of live) {
+      if (!run.taskId || !this.sessions.get(run.id)) continue;
+      // A publish turn is settled against git by settlePublish(), and
+      // `proceed()` would resume it with the wrong instruction entirely.
+      if (this.publishRuns.has(run.id)) continue;
+      // Blocked on a HUMAN, not on the account (docs/wake.md): a session at a
+      // permission prompt writes nothing to its transcript for as long as it
+      // waits, so it passes the quiet test forever — and the hunk it is
+      // previewing may be a file that quotes a banner. The run row already
+      // says so; killing it would throw away the answer it is waiting for
+      // (review R2).
+      if (run.needsAttention) continue;
+      const task = await this.storage.getTask(run.taskId);
+      if (!task || task.wakeAt) continue;
+      if (task.status !== 'running' && !WAKE_RESUMABLE_STATUSES.includes(task.status)) continue;
+      // A task inside the resume gate or a fired dispatch turn is `running`
+      // with a NEWER turn on the way — this session is not the live one.
+      if (this.gatesInFlight.has(task.id) || this.dispatchTurnsInFlight.has(task.id)) continue;
+      const latest = (await this.storage.listRuns({ taskId: task.id }))[0];
+      if (latest && latest.id !== run.id) continue;
+      // Only a task still marked `running` can be mid-thought; one already in
+      // review/failed has finished by definition and needs no quiet test.
+      const live = task.status === 'running';
+      if (live && this.transcriptQuietMs(run, now) < STALL_QUIET_MS) continue;
+      // Acting on a live task means KILLING its PTY, so the banner has to be
+      // the last thing that terminal printed — not merely on the last
+      // screenful, which a previewed file could be.
+      const verdict = assessLimitStall(this.sessionTail(run.id), this.accountWindow(), now, {
+        maxCharsAfter: live ? LIVE_TAIL_STRICT_CHARS : undefined,
+      });
+      if (!verdict.stalled) {
+        await this.auditStallSkip(task, verdict, run.id);
+        continue;
+      }
+      // A live stall must be ENDED, not parked in place: nothing resumes a
+      // `running` task. Killing its PTY is safe precisely because the session
+      // is resumable from disk — that is what the wake-up then does.
+      let parked: Task | null = task;
+      if (live) {
+        parked = await this.endStalledRun(task, run);
+        if (!parked) continue;
+      }
+      this.stallSkipsAudited.delete(run.id);
+      await this.parkForUsageLimit(parked, verdict, settings);
+    }
+  }
+
+  /**
+   * Ends a session the account has stopped: mark the run `killed` FIRST (which
+   * is what makes `handleExit` leave the task alone when the PTY dies), kill
+   * it, then move the task to `review` — the same landing a clean exit gets,
+   * and the one status this stall can be resumed from.
+   */
+  private async endStalledRun(task: Task, run: Run): Promise<Task | null> {
+    await this.storage.updateRun(run.id, { status: 'killed', endedAt: new Date().toISOString() });
+    this.sessions.kill(run.id);
+    await this.storage.appendEvent({
+      kind: 'run.killed',
+      actor: 'system',
+      runId: run.id,
+      taskId: task.id,
+      data: { reason: 'usage-limit-stall' },
+    });
+    const moved = await this.storage.transitionTask(task.id, ['running'], 'review', 'system', {
+      error: 'the 5h usage window ran out mid-turn — this session is waiting to be resumed',
+    });
+    if (moved) broadcast({ type: 'task.updated', task: moved });
+    return moved;
+  }
+
+  /**
+   * Resumes parked tasks whose window has reopened — one per pass, because a
+   * reset frees every one of them at the same instant and the concurrency cap
+   * is the only thing that should decide how many run.
+   */
+  private async wakeDue(settings: AppSettings): Promise<void> {
+    const now = Date.now();
+    const due = [...this.wakeDueAt.entries()].filter(([, at]) => at <= now).sort((a, b) => a[1] - b[1]);
+    for (const [taskId] of due) {
+      // The row is the truth and the map is only a cache of it: anything that
+      // started a turn cleared `wake_at` in `startWorker`, which is what makes
+      // a human clicking Proceed cancel the pending wake-up for free.
+      const task = await this.storage.getTask(taskId);
+      if (!task || !task.wakeAt) {
+        this.wakeDueAt.delete(taskId);
+        continue;
+      }
+      const at = Date.parse(task.wakeAt);
+      if (Number.isFinite(at) && at > now) {
+        this.wakeDueAt.set(taskId, at);
+        continue;
+      }
+      if (!WAKE_RESUMABLE_STATUSES.includes(task.status)) {
+        await this.clearWake(taskId);
+        continue;
+      }
+      // The global switch means the human stopped the machine; only the custom
+      // queue is deliberately independent of it (docs/queue.md). Either way the
+      // mark stays, so the task wakes the moment the switch comes back.
+      if (!settings['orchestrator.enabled'] && !task.customQueueAt) continue;
+      if (this.activeWorkers() >= settings['orchestrator.concurrency']) return;
+      // Cleared BEFORE the resume, not after: `startWorker` clears it too, but
+      // a resume that fails for a reason of its own must not leave a mark that
+      // fires again every thirty seconds forever.
+      await this.clearWake(taskId);
+      await this.storage.appendEvent({
+        kind: 'task.wake',
+        actor: 'system',
+        taskId,
+        repoId: task.repoId,
+        data: { action: 'resumed', wakeAt: task.wakeAt, status: task.status },
+      });
+      const res = await this.proceed(taskId, null, 'system');
+      if ('error' in res) {
+        // Not resumable (still working, or no session left on disk). Recorded
+        // once and left to the human — retrying a 409 every thirty seconds is
+        // how an audit log stops being readable.
+        await this.storage.appendEvent({
+          kind: 'task.wake',
+          actor: 'system',
+          taskId,
+          repoId: task.repoId,
+          data: { action: 'failed', error: res.error, code: res.code },
+        });
+      }
+      return;
+    }
+  }
+
+  /**
+   * Rebuilds the in-memory wake schedule from the rows. Only the statuses a
+   * parked task can be sitting in are scanned — `review` and `failed`, where a
+   * cut-short turn lands and where a killed stall is put. A mark left on any
+   * other status is inert, and the first turn the task runs clears it.
+   */
+  private async reloadWakes(): Promise<void> {
+    this.wakeDueAt.clear();
+    for (const status of WAKE_RESUMABLE_STATUSES) {
+      for (const task of await this.storage.listTasks({ status })) {
+        if (!task.wakeAt) continue;
+        const at = Date.parse(task.wakeAt);
+        // A wake whose time passed while the server was down is due now, not
+        // dropped: the window it waited for has certainly reopened.
+        this.wakeDueAt.set(task.id, Number.isFinite(at) ? at : Date.now());
+      }
+    }
+    if (this.wakeDueAt.size) console.log(`auto wake-up: ${this.wakeDueAt.size} task(s) waiting on the usage window`);
+  }
+
+  /** Drops a pending wake-up, in the row and in the map. */
+  private async clearWake(taskId: string): Promise<void> {
+    this.wakeDueAt.delete(taskId);
+    const patched = await this.storage.updateTask(taskId, { wakeAt: null });
+    if (patched) broadcast({ type: 'task.updated', task: patched });
   }
 
   private async refreshLiveStats(): Promise<void> {
@@ -97,6 +563,12 @@ export class Orchestrator implements OrchestratorApi {
     // before its process actually dies; a crash in that window leaves a live
     // claude pid under a non-running row (review M8).
     const all = await this.storage.listRuns();
+    // No hook survives a restart: a question still pending was being waited
+    // on by a process this boot is about to kill (or that died with the last
+    // one), so it can never be collected — expire it before the human answers
+    // into the void (docs/questions.md).
+    const staleQuestions = await this.questions.expireAll('the server restarted').catch(() => []);
+    if (staleQuestions.length) console.log(`questions: expired ${staleQuestions.length} left pending by the last process`);
     const recentCutoff = Date.now() - 2 * 60_000;
     // Sweep only deaths we never OBSERVED (exitCode null): killed rows and
     // prior-boot recoveries. Normally-exited pids are long free and may be
@@ -128,18 +600,71 @@ export class Orchestrator implements OrchestratorApi {
           // not be clobbered to failed (review M8).
           const task = await this.storage.transitionTask(run.taskId, ['running'], 'failed', 'system', {
             error: 'server restarted while the worker was running',
+            reviewState: null, // a fix round that died with the server is not "fixing"
           });
           if (task) await this.resolveCompletion(task, 'system');
         }
       }
     }
-    if (orphans.length) {
+    // A task can be `running` with NO run row at all: the resume gate marks it
+    // running and then spends up to ten minutes compacting before `createRun`
+    // (docs/token-budget.md § The fourth). A crash, a SIGKILL from the front
+    // door, or a `stop()` that closed storage under the abort path leaves it
+    // there — and the run sweep above cannot see it, because it sweeps
+    // `tm_runs`. Nothing else frees that state either: `followUp` answers
+    // "marked running but has no live session", and enqueue/retry refuse a
+    // running task, so only Cancel would. Re-read AFTER the loop above, which
+    // has already moved the tasks whose runs it failed.
+    const stranded: string[] = [];
+    for (const task of await this.storage.listTasks({ status: 'running' })) {
+      const runs = await this.storage.listRuns({ taskId: task.id });
+      if (runs.some((r) => r.status === 'running')) continue;
+      // Ever had a worker? Then work may be sitting uncommitted in the tree and
+      // its session is resumable — `review` is where a human picks that up.
+      // Never ran at all, and there is nothing to review.
+      const everRan = runs.some((r) => r.mode === 'worker');
+      const to = everRan ? 'review' : 'failed';
+      const moved = await this.storage.transitionTask(task.id, ['running'], to, 'system', {
+        error: 'server stopped before this task had a live agent — nothing was running at boot',
+        reviewState: null,
+      });
+      if (moved) {
+        stranded.push(task.id);
+        broadcast({ type: 'task.updated', task: moved });
+        if (!everRan) await this.resolveCompletion(moved, 'system');
+      }
+    }
+    // Pending wake-ups outlive the process because they live in the row, not
+    // in the map (docs/wake.md). Rebuilt AFTER the stranded sweep above, which
+    // is what moves a parked-but-`running` task into a status a resume accepts.
+    await this.reloadWakes();
+    // A reviewer that died with the server left its task `review` + pending/
+    // reviewing — a badge that would say "auto-review" forever. The diff is
+    // still in the tree, so the review is simply re-run (free when the hash
+    // says it was already judged). `fixing` on a task that is no longer
+    // running is the same stranded state from the other side: the fix round
+    // never Stopped, so the previous verdict is the latest word.
+    for (const task of await this.storage.listTasks()) {
+      if (task.status === 'review' || task.status === 'done') {
+        if (task.reviewState === 'pending' || task.reviewState === 'reviewing') {
+          void this.reviewCompletedRun(task.id);
+        } else if (task.reviewState === 'fixing') {
+          await this.setReviewState(task.id, settledReviewState(task.reviewRounds));
+        }
+      } else if (task.reviewState === 'pending' || task.reviewState === 'reviewing' || task.reviewState === 'fixing') {
+        if (task.status !== 'running') await this.setReviewState(task.id, null);
+      }
+    }
+    if (orphans.length || stranded.length) {
       await this.storage.appendEvent({
         kind: 'boot.recovery',
         actor: 'system',
-        data: { swept: orphans.length },
+        data: { swept: orphans.length, strandedTasks: stranded.length },
       });
-      console.log(`boot recovery: swept ${orphans.length} run(s)`);
+      console.log(
+        `boot recovery: swept ${orphans.length} run(s)` +
+          (stranded.length ? `, freed ${stranded.length} task(s) stuck 'running' with no run` : ''),
+      );
     }
   }
 
@@ -224,8 +749,36 @@ export class Orchestrator implements OrchestratorApi {
     })();
   }
 
+  /**
+   * Worker slots in use for SCHEDULING purposes: live PTYs plus the turns that
+   * are certain to become one but have not spawned yet (a resume gate mid
+   * compaction, a dispatch turn already fired). Deliberately not what
+   * `status()` reports — that stays the honest live-PTY count the UI shows.
+   * A task can be in both sets, so they are unioned rather than added.
+   */
   private activeWorkers(): number {
-    return this.sessions.liveCount();
+    const pending = new Set([...this.gatesInFlight, ...this.dispatchTurnsInFlight.keys()]);
+    return this.sessions.liveCount() + pending.size;
+  }
+
+  /**
+   * Shutdown: stop every in-flight resume gate and wait (briefly) for each to
+   * finish settling its task. Without this, `stop()` closes storage while a
+   * compaction's abort path is still writing `running → review`, the write
+   * throws, and the task is stranded `running` with no run row — a state only
+   * Cancel can leave, since `followUp`, enqueue and retry all refuse it.
+   * `recoverOnBoot` sweeps that state anyway (a SIGKILL or a crash cannot be
+   * drained), but the graceful path should not need recovering from.
+   */
+  async drainResumeGates(timeoutMs = 5_000): Promise<number> {
+    const n = this.gatesInFlight.size;
+    if (n === 0) return 0;
+    abortAllCompactions();
+    const deadline = Date.now() + timeoutMs;
+    while (this.gatesInFlight.size > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return n;
   }
 
   /**
@@ -313,6 +866,13 @@ export class Orchestrator implements OrchestratorApi {
    * reached — is simply held for a later tick; only a target that can never
    * receive (deleted, repo-less) settles as failed. Rides maybeSchedule, so
    * every finished turn is also a delivery opportunity.
+   *
+   * Only `needs_action` dispatches get a target this far (docs/dispatch.md
+   * § Intent). An `fyi` never starts a turn: it stays pending until some
+   * OTHER reason resumes the session, and `followUp` picks it up there. The
+   * one thing this loop does for `fyi` is settle it against a target that has
+   * gone terminal — no session will ever open again, so it is recorded as a
+   * note on the task instead of waiting forever.
    */
   async deliverDispatches(): Promise<void> {
     if (this.deliveringDispatches) return;
@@ -334,8 +894,8 @@ export class Orchestrator implements OrchestratorApi {
       }
 
       for (const [taskId, list] of byTarget) {
-        const settle = async (status: 'delivered' | 'failed', note: string | null) => {
-          for (const d of list) {
+        const settle = async (items: Dispatch[], status: 'delivered' | 'failed', note: string | null) => {
+          for (const d of items) {
             const updated = await this.storage.settleDispatch(d.id, status, note);
             if (!updated) continue;
             broadcast({ type: 'dispatch.updated', dispatch: updated });
@@ -350,15 +910,42 @@ export class Orchestrator implements OrchestratorApi {
 
         const target = await this.storage.getTask(taskId);
         if (!target) {
-          await settle('failed', 'target task no longer exists');
+          await settle(list, 'failed', 'target task no longer exists');
           continue;
         }
         if (!target.repoId) {
-          await settle('failed', 'target task has no repo');
+          await settle(list, 'failed', 'target task has no repo');
           continue;
         }
+
+        // `fyi` to a task that has finished for good: no session is ever going
+        // to be resumed for it, so waiting is waiting forever. Record it as a
+        // note on the task and settle. Done BEFORE the hold checks below —
+        // writing a note needs no agent, no repo lock and no concurrency slot.
+        // (`needs_action` deliberately keeps resuming a terminal target: a
+        // finished task can still be asked to change something, and followUp
+        // has always allowed done/published/cancelled.)
+        const actionable = list.filter((d) => d.intent === 'needs_action');
+        if (DISPATCH_TERMINAL_STATUSES.includes(target.status)) {
+          const fyi = list.filter((d) => d.intent === 'fyi');
+          if (fyi.length > 0) {
+            await settle(fyi, 'delivered', `recorded as a note — target task is '${target.status}', no session resumed`);
+          }
+        }
+        // The whole point of the intent split: an `fyi` never wakes a session.
+        // With nothing actionable there is no turn to start, so this target is
+        // simply left alone — `followUp` picks its backlog up whenever some
+        // other reason opens that session. (A `needs_action` still resumes a
+        // terminal target: followUp has always allowed done/published/cancelled,
+        // and a finished task can still be asked to change something.)
+        if (actionable.length === 0) continue;
+
         // Hold (retry later): mid-turn / about to start / waiting on children.
         if (['running', 'queued', 'blocked'].includes(target.status)) continue;
+        // A turn we already fired for this target has not spawned yet (it may
+        // be compacting). Its status is still whatever it was, so without this
+        // the next pass would deliver the same backlog a second time.
+        if (this.dispatchTurnsInFlight.has(taskId)) continue;
         const targetRuns = await this.storage.listRuns({ taskId, mode: 'worker' });
         // A draft that never ran must NOT be started by a dispatch — that
         // would let an agent bypass the enqueue gate (file a draft, dispatch
@@ -369,19 +956,46 @@ export class Orchestrator implements OrchestratorApi {
           return s !== undefined && s.exit === null && !s.idle;
         });
         if (busy) continue;
-        // Never resume an agent into a repo another agent is actively editing.
+        // Never resume an agent into a repo another agent is actively editing —
+        // including by a turn we fired that has not spawned its PTY yet.
         if (await this.repoBusy(target.repoId)) continue;
+        if (target.repoId && [...this.dispatchTurnsInFlight.values()].includes(target.repoId)) continue;
         // Delivery starts a real agent turn — it respects worker concurrency.
-        if (this.sessions.liveCount() >= settings['orchestrator.concurrency']) break;
+        // `activeWorkers()` rather than the raw PTY count, so turns already
+        // fired but not yet spawned still occupy their slot.
+        if (this.activeWorkers() >= settings['orchestrator.concurrency']) break;
 
         const items: { fromTitle: string; fromTaskId: string; message: string }[] = [];
-        for (const d of list) {
+        for (const d of actionable) {
           const from = await this.storage.getTask(d.fromTaskId);
           items.push({ fromTitle: from?.title ?? '(deleted task)', fromTaskId: d.fromTaskId, message: d.message });
         }
-        const res = await this.followUp(taskId, buildDispatchTurn(items), 'dispatch');
-        if ('error' in res) continue; // raced with a claim/human action — hold and retry
-        await settle('delivered', null);
+        // Any `fyi` still pending for this target is NOT in `items`: followUp
+        // drains it into the same prompt ahead of this block (the "prepended
+        // to that turn's dispatch backlog" rule) and settles it there.
+        // NOT awaited. `followUp` can now sit inside a resume gate for minutes
+        // (docs/token-budget.md § The fourth), and this loop runs inside
+        // `maybeSchedule`'s single-flight pass — awaiting it would stop the
+        // claim loop, `pumpCustomQueue` and every other delivery for that long.
+        // The target is held in `dispatchTurnsInFlight` instead, which is what
+        // the guards at the top of this loop and `activeWorkers()` read, so
+        // releasing the scheduler does not mean releasing the target.
+        this.dispatchTurnsInFlight.set(taskId, target.repoId);
+        void this.followUp(taskId, buildDispatchTurn(items), 'dispatch')
+          .then(async (res) => {
+            // Raced with a claim or a human action — hold, and let the next
+            // pass retry. Same decision as before, just later.
+            if ('error' in res) return;
+            await settle(actionable, 'delivered', null);
+          })
+          .catch((err) => console.error('dispatch delivery turn failed:', err))
+          // Releases the target, and deliberately does NOT wake the scheduler.
+          // A turn that was ABORTED (shutdown, `/killall`) parks its task back
+          // in `review`, which makes it deliverable again — waking a pass right
+          // here would re-deliver it and start a new compaction seconds after
+          // an emergency stop, the exact loop round 1 closed. The 10s safety
+          // tick, and every real event, still retry.
+          .finally(() => this.dispatchTurnsInFlight.delete(taskId));
       }
     } catch (err) {
       // delivery must never take the scheduler down with it
@@ -438,10 +1052,149 @@ export class Orchestrator implements OrchestratorApi {
     }
   }
 
+  /**
+   * The `fyi` dispatch backlog waiting on one task (docs/dispatch.md § Intent),
+   * as a prompt block plus the settle that goes with it.
+   *
+   * Split in two halves deliberately: the note has to be READ before the spawn
+   * (it goes into the prompt) and SETTLED only after the spawn succeeded — a
+   * worker that never started showed the agent nothing, so its messages must
+   * stay `pending` for the next attempt.
+   */
+  private async pendingFyiDispatches(
+    taskId: string,
+  ): Promise<{ note: string | undefined; settle: () => Promise<void> }> {
+    const pending = (await this.storage.listDispatches({ toTaskId: taskId, status: 'pending' }))
+      .filter((d) => d.intent === 'fyi')
+      .reverse(); // storage is newest-first; the turn reads them oldest-first
+    if (pending.length === 0) return { note: undefined, settle: async () => {} };
+
+    const items: { fromTitle: string; fromTaskId: string; message: string }[] = [];
+    for (const d of pending) {
+      const from = await this.storage.getTask(d.fromTaskId);
+      items.push({ fromTitle: from?.title ?? '(deleted task)', fromTaskId: d.fromTaskId, message: d.message });
+    }
+    return {
+      note: buildDispatchNote(items),
+      settle: async () => {
+        for (const d of pending) {
+          const updated = await this.storage.settleDispatch(
+            d.id,
+            'delivered',
+            // "turn", not "resume": this also covers a fresh spawn with no
+            // session on disk, and the note has to be true in both cases.
+            'handed over on the target\u2019s next turn, which started for another reason',
+          );
+          if (!updated) continue; // raced with a human cancel — settleDispatch is conditional
+          broadcast({ type: 'dispatch.updated', dispatch: updated });
+          await this.storage.appendEvent({
+            kind: 'task.dispatch',
+            actor: 'orchestrator',
+            taskId: updated.toTaskId,
+            data: {
+              phase: 'delivered',
+              dispatchId: d.id,
+              fromTaskId: updated.fromTaskId,
+              intent: 'fyi',
+              rideAlong: true,
+            },
+          });
+        }
+      },
+    };
+  }
+
+  /**
+   * The resume gate (docs/token-budget.md § The fourth). A worker session that
+   * has grown past `agent.resumeContextCap` is about to be `--resume`d: the CLI
+   * re-writes the entire conversation to cache TWICE before the follow-up turn
+   * says a word (measured 395k + 398k tokens, ~$15), and every later turn of
+   * that run re-reads it. Most of those bytes are stale tool output, not
+   * knowledge.
+   *
+   * Fires ONLY here — between turns, on an idle session the caller has already
+   * killed — never mid-run: a session doing good work at 300k is left alone
+   * until the moment it would otherwise be re-bought.
+   *
+   * Preference order, and why:
+   *  - `resume`  — under the cap, or the gate is off. Unchanged behaviour.
+   *  - `compact` — over the cap: `/compact <focus>` costs ONE cache-write of
+   *    the conversation instead of two, and leaves the session at ~10k so the
+   *    rest of the run is cheap. The session keeps its identity, so nothing
+   *    downstream (sessionId, statsBaseline, the PTY resume) changes.
+   *  - `fresh`   — compaction failed. A cold start with a rich handoff is
+   *    still better than re-buying half a megabyte of stale context.
+   *
+   * The publish turn is the one exception to that last step: it commits work it
+   * must already know about, and the existing no-session path for publish is
+   * `publishRepo` in-process, not "a new agent guesses a commit message". So a
+   * failed compaction there falls back to the plain resume and pays the old
+   * price rather than handing the commit to a stranger.
+   */
+  private async resumeHandoff(
+    task: Task,
+    repo: Repo,
+    resumeFrom: Run | null,
+    prev: TranscriptSummary | null,
+    settings: AppSettings,
+    model: string,
+    followUp: string | undefined,
+    purpose: 'work' | 'publish',
+  ): Promise<ResumeHandoff> {
+    if (!resumeFrom?.sessionId || !resumeFrom.transcriptPath) return { kind: 'fresh' };
+    // Codex runs never carry a sessionId (see buildWorkerInvocation), so this
+    // is unreachable today — but `/compact` is a claude slash command and must
+    // never be aimed at another CLI if that ever changes.
+    if (isCodexModel(model)) return { kind: 'resume' };
+
+    const cap = settings['agent.resumeContextCap'];
+    const ctx = prev?.stats.contextTokens ?? 0;
+    // ctx === 0 means the transcript told us nothing (unparseable, or no usage
+    // record yet). Unknown is not "over the cap": stay with the old behaviour.
+    if (!(cap > 0) || ctx <= cap) return { kind: 'resume' };
+
+    const result = await compactSession({
+      cwd: repo.path,
+      sessionId: resumeFrom.sessionId,
+      transcriptPath: resumeFrom.transcriptPath,
+      model,
+      focus: compactFocus(task.title, followUp, purpose),
+      label: `compact ${task.title.slice(0, 60)}`,
+      // Keyed by the task so `cancel()` can stop a compaction it is about to
+      // make pointless, instead of paying for another two minutes of it.
+      key: task.id,
+    });
+    if (result.outcome === 'aborted') {
+      return { kind: 'abort', detail: { compactAborted: result.reason ?? 'stopped', cap } };
+    }
+    if (result.ok) {
+      return {
+        kind: 'compact',
+        detail: { compactedFrom: result.preTokens, compactedTo: result.postTokens, cap },
+      };
+    }
+    if (purpose === 'publish') {
+      return { kind: 'resume', detail: { compactError: result.reason ?? 'unknown', cap } };
+    }
+    const files = await changedFiles(repo.path).catch(() => [] as string[]);
+    return {
+      kind: 'fresh',
+      previousSummary: freshHandoff({
+        lastAssistantText: prev?.lastAssistantText ?? null,
+        fallbackSummary: task.resultSummary,
+        files,
+        reason: `${Math.round(ctx / 1000)}k tokens of context, over the ${Math.round(cap / 1000)}k cap, and it could not be compacted`,
+      }),
+      detail: { compactError: result.reason ?? 'unknown', cap, handoffFiles: files.length },
+    };
+  }
+
   /** Spawns the PTY for a task already in `running`. Reverts the claim on failure.
    *  `purpose: 'publish'` marks the run as the commit-and-push turn so its Stop
    *  is settled against git instead of parking the task in review. */
   private async startWorker(
+    // Reassigned once, after the resume gate: a compaction can take minutes,
+    // and the row must be re-read before anything is spawned against it.
     task: Task,
     followUp?: string,
     resumeFrom?: Run | null,
@@ -471,10 +1224,96 @@ export class Orchestrator implements OrchestratorApi {
     const runToken = randomBytes(24).toString('hex');
     // Resumed runs append to the SAME transcript, so snapshot its cumulative
     // totals now and report only what this run adds on top (no double billing).
-    const baseline =
+    // Captured BEFORE the resume gate below, on purpose: a compaction is itself
+    // a paid turn on this transcript, and the run that decided to compact is
+    // the one that should carry its cost.
+    const prev =
       resumeFrom?.transcriptPath && fs.existsSync(resumeFrom.transcriptPath)
-        ? (await summarizeTranscript(resumeFrom.transcriptPath, resumeFrom.model))?.stats ?? null
+        ? await summarizeTranscript(resumeFrom.transcriptPath, resumeFrom.model)
         : null;
+    // Guarded, and guarded HERE rather than inside: this runs before the run
+    // row exists, so an exception escaping it would leave the task `running`
+    // with no run, no PTY and no error to explain either. Falling back to
+    // `resume` means the worst case of a broken gate is the old cost, not a
+    // stuck task.
+    // Registered for the whole gate window — the compaction AND the settlement
+    // that follows it — so shutdown can wait for it and the scheduler counts it
+    // as a worker on its way. Removed in the `finally` below, on every exit.
+    // Registered for the whole gate window — the compaction AND the settlement
+    // that follows it — so shutdown can wait for it and the scheduler counts it
+    // as a worker on its way. Removed in the `finally`, on every exit.
+    this.gatesInFlight.add(task.id);
+    let handoff: ResumeHandoff;
+    let still: Task | null;
+    try {
+      handoff = await this.resumeHandoff(
+        task,
+        repo,
+        resumeFrom ?? null,
+        prev,
+        settings,
+        model,
+        followUp,
+        purpose,
+      ).catch((e): ResumeHandoff => {
+        console.error('resume gate failed, resuming as before:', e);
+        return { kind: 'resume', detail: { handoffError: String((e as Error)?.message ?? e).slice(0, 200) } };
+      });
+
+      // Everything from here on assumes the world did not move while the gate
+      // ran. Before the gate existed that assumption cost nothing — the
+      // distance from `followUp`'s transition to `running` down to the spawn
+      // was a few milliseconds. A compaction makes it up to ten minutes, which
+      // is long enough for a human to cancel the task, for `/killall` to
+      // declare the machine idle, or for a forced restart to be halfway
+      // through closing storage. So the two things that changed have to be
+      // re-checked before a run row exists, not after a PTY is already editing
+      // the repo.
+      if (handoff.kind === 'abort') {
+        // We stopped the compaction ourselves. Park the task where a human can
+        // pick it up again — the same place the live-session guard above parks
+        // one — and spawn nothing. Guarded, because the commonest reason we
+        // stopped it is a shutdown, and storage may already be closing: a
+        // failure to record this is not a reason to throw out of startWorker,
+        // and `recoverOnBoot` sweeps exactly this state on the way back up.
+        try {
+          const reverted = await this.storage.transitionTask(task.id, ['running'], 'review', 'orchestrator', {
+            error: 'stopped while compacting the previous session before resuming it — follow up again to retry',
+          });
+          if (reverted) broadcast({ type: 'task.updated', task: reverted });
+          await this.storage.appendEvent({
+            kind: 'schedule.spawn-fail',
+            actor: 'orchestrator',
+            taskId: task.id,
+            repoId: repo.id,
+            data: { reason: 'resume gate aborted', ...(handoff.detail ?? {}) },
+          });
+        } catch (e) {
+          console.error('could not park an aborted resume gate (storage closing?):', e);
+        }
+        return false;
+      }
+      // Re-read rather than trust the `task` we were handed: `cancel()` (and
+      // anything else that moves a task) writes to storage, not to this
+      // closure. Broadcasting the stale object would also flip the UI back to
+      // `running` for a task the human just cancelled.
+      still = await this.storage.getTask(task.id);
+      if (!still || still.status !== 'running') {
+        await this.storage.appendEvent({
+          kind: 'schedule.spawn-fail',
+          actor: 'orchestrator',
+          taskId: task.id,
+          repoId: repo.id,
+          data: { reason: `task left 'running' while the resume gate ran (now '${still?.status ?? 'deleted'}')` },
+        });
+        if (still) broadcast({ type: 'task.updated', task: still });
+        return false;
+      }
+    } finally {
+      this.gatesInFlight.delete(task.id);
+    }
+    task = still;
+
     const run = await this.storage.createRun({
       taskId: task.id,
       repoId: repo.id,
@@ -482,13 +1321,23 @@ export class Orchestrator implements OrchestratorApi {
       model,
       effort: task.effort ?? settings['agent.effort'],
       runToken,
-      resumedFrom: resumeFrom?.id ?? null,
-      statsBaseline: baseline,
+      // A fresh session writes its OWN transcript, so it inherits neither the
+      // lineage nor the baseline — subtracting the old session's totals from a
+      // file it never wrote would zero out this run's real usage.
+      resumedFrom: handoff.kind === 'fresh' ? null : resumeFrom?.id ?? null,
+      statsBaseline: handoff.kind === 'fresh' ? null : prev?.stats ?? null,
     });
     if (purpose === 'publish') this.publishRuns.add(run.id);
     try {
       const artifactsDir = path.join(artifactsRoot, task.id);
       fs.mkdirSync(artifactsDir, { recursive: true });
+      // `fyi` dispatch backlog (docs/dispatch.md § Intent). Drained HERE, not
+      // in followUp: every turn this task takes — a fresh claim, Run now,
+      // Retry, a custom-queue claim, a resume, publish — goes through
+      // startWorker, and the instruction sheet promises delivery on "the next
+      // turn it takes anyway". Draining one layer up would have missed the
+      // four callers that spawn without a follow-up (review round 1, major).
+      const fyi = await this.pendingFyiDispatches(task.id);
       const inv = buildWorkerInvocation({
         task: { ...task, model },
         settings,
@@ -497,7 +1346,9 @@ export class Orchestrator implements OrchestratorApi {
         callbackUrl: this.callbackUrl,
         artifactsDir,
         followUp,
-        resumeSessionId: resumeFrom?.sessionId ?? undefined,
+        dispatchNote: fyi.note,
+        resumeSessionId: handoff.kind === 'fresh' ? undefined : resumeFrom?.sessionId ?? undefined,
+        previousSummary: handoff.previousSummary,
       });
       const session = this.sessions.spawn({
         runId: run.id,
@@ -516,16 +1367,35 @@ export class Orchestrator implements OrchestratorApi {
         data: {
           model,
           effort: task.effort ?? settings['agent.effort'],
-          resumedFrom: resumeFrom?.id ?? null,
-          sessionId: resumeFrom?.sessionId ?? null,
+          resumedFrom: handoff.kind === 'fresh' ? null : resumeFrom?.id ?? null,
+          sessionId: handoff.kind === 'fresh' ? null : resumeFrom?.sessionId ?? null,
+          // Which path the resume gate took, so the saving can be measured
+          // against costUsd per run (docs/token-budget.md § The fourth).
+          handoff: handoff.kind,
+          ...(resumeFrom ? { contextTokens: prev?.stats.contextTokens ?? 0 } : {}),
+          ...(handoff.detail ?? {}),
         },
       });
       broadcast({ type: 'run.started', run: withPid ?? run });
+      // A turn started, so nothing is waiting on the usage window any more —
+      // whoever started it (the waker, a human hitting Proceed, a dispatch)
+      // has settled the wait. `startWorker` is the single funnel every turn
+      // goes through, which is why the clear lives here and nowhere else.
+      if (task.wakeAt) await this.clearWake(task.id);
       broadcast({ type: 'task.updated', task });
       // The status was only broadcast on toggle and on EXIT, so the header's
       // "running n/2" (and the restart guard that reads it) stayed stale for a
       // whole session after a spawn.
       broadcast({ type: 'orchestrator.status', status: await this.status() });
+      // Settled only now: the agent has a live session and the note is in the
+      // prompt it was spawned with. A spawn that threw above leaves every
+      // `fyi` pending for the next turn. Its own try/catch on purpose —
+      // bookkeeping must never fail a worker that is already running.
+      try {
+        await fyi.settle();
+      } catch (e) {
+        console.error('settling fyi dispatches failed:', e);
+      }
       return true;
     } catch (err) {
       this.publishRuns.delete(run.id);
@@ -577,6 +1447,11 @@ export class Orchestrator implements OrchestratorApi {
    * of restarting a fresh agent from the task text plus a summary. Falls back
    * to a fresh session when nothing is resumable, unless mode is 'resume'
    * (the explicit Proceed button), which reports the reason instead.
+   *
+   * Resumes are only SOME of the turns a task takes, which is why the `fyi`
+   * dispatch backlog is drained one layer down in `startWorker` and not here
+   * (docs/dispatch.md § Intent) — the claim loop, pumpCustomQueue and runNow
+   * never come through this function.
    */
   async followUp(
     taskId: string,
@@ -646,6 +1521,8 @@ export class Orchestrator implements OrchestratorApi {
         chars: message.length,
       },
     });
+    // The `fyi` backlog is drained by startWorker, which every spawn goes
+    // through — see pendingFyiDispatches().
     const ok = await this.startWorker(task, message, resumeFrom, purpose);
     if (!ok) {
       const latest = await this.storage.getTask(taskId);
@@ -785,7 +1662,7 @@ export class Orchestrator implements OrchestratorApi {
     const task = await this.storage.getTask(taskId);
     if (!task) return { error: 'task not found', code: 404 };
     if (!task.repoId) return { error: 'assign a repo first', code: 409 };
-    this.reviewRounds.delete(taskId); // fresh loop budget for this attempt
+    this.fixRounds.delete(taskId); // fresh loop budget for this attempt
     const message = task.reviewSummary
       ? [
           `A prior adversarial review of your change to this task found the issues below. Apply the fixes`,
@@ -798,7 +1675,9 @@ export class Orchestrator implements OrchestratorApi {
           `missed edge cases, and anything that doesn't fully satisfy the task — then fix what you find and`,
           `finish. Your change will be adversarially reviewed afterward.`,
         ].join('\n');
-    return this.followUp(taskId, message, actor);
+    const res = await this.followUp(taskId, message, actor);
+    if (!('error' in res)) await this.setReviewState(taskId, 'fixing');
+    return res;
   }
 
   async runNow(taskId: string, actor = 'human'): Promise<ActionResult> {
@@ -828,6 +1707,12 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   async cancel(taskId: string, actor = 'human'): Promise<ActionResult> {
+    // A resume gate compacting this task's session has no run row yet (the row
+    // is created after it returns), so killing runs would miss it entirely and
+    // it would keep paying for a summary of work nobody wants. startWorker
+    // re-checks the status afterwards either way — this is about the money and
+    // the minutes, not the correctness.
+    abortCompaction(taskId);
     const runs = await this.storage.listRuns({ taskId, status: 'running' });
     for (const run of runs) {
       this.sessions.kill(run.id);
@@ -888,10 +1773,20 @@ export class Orchestrator implements OrchestratorApi {
     return killed;
   }
 
-  /** PTY exited. Hook-driven completion (Phase 4) usually resolved the task already. */
-  private async handleExit(runId: string, exitCode: number): Promise<void> {
+  /** PTY exited. Hook-driven completion (Phase 4) usually resolved the task already.
+   *  `tail` is the terminal's last bytes, captured by the caller at exit — the
+   *  only surface a usage-limit banner ever reaches (docs/wake.md). */
+  private async handleExit(runId: string, exitCode: number, tail = ''): Promise<void> {
     // Consumed here whatever happens next: this run is over either way.
     const wasPublish = this.publishRuns.delete(runId);
+    this.stallSkipsAudited.delete(runId);
+    this.forgetAttention(runId);
+    // Nothing will collect an answer for this run any more — stop asking the
+    // human (docs/questions.md). Before the row is touched, so a consumer that
+    // reacts to `run.exited` never sees a live question under a dead run.
+    await this.questions.expireForRun(runId, 'the agent session ended').catch((e) => {
+      console.warn('questions: expire on exit failed:', e instanceof Error ? e.message : e);
+    });
     const run = await this.storage.getRun(runId);
     if (!run) return;
     if (run.status === 'running') {
@@ -976,9 +1871,21 @@ export class Orchestrator implements OrchestratorApi {
       const to = exitCode === 0 ? 'review' : 'failed';
       const task = await this.storage.transitionTask(run.taskId, ['running'], to, 'system', {
         error: exitCode === 0 ? null : `worker exited with code ${exitCode} before finishing`,
+        // no Stop, so no reviewer runs for this landing — and a fix round that
+        // died mid-turn is not "fixing" any more either
+        reviewState: null,
       });
       if (task) {
         broadcast({ type: 'task.updated', task });
+        // A turn the account cut short is parked for the window's reset rather
+        // than left for a human to notice (docs/wake.md). Read from the tail
+        // captured at exit: by now the session may already have been disposed.
+        const settings = await this.storage.getSettings();
+        if (settings['agent.autoWake']) {
+          const verdict = assessLimitStall(tail, this.accountWindow());
+          if (verdict.stalled) await this.parkForUsageLimit(task, verdict, settings);
+          else await this.auditStallSkip(task, verdict);
+        }
         await this.resolveCompletion(task, 'system');
       }
     }
@@ -990,73 +1897,249 @@ export class Orchestrator implements OrchestratorApi {
    * Adversarial review of a completed worker's change (Fable → Opus xhigh
    * fallback). Runs async off the Stop-hook path; attaches findings to the
    * task and broadcasts. Never throws into the caller.
+   *
+   * REVIEWS EACH DIFF ONCE. The reviewer reads `git diff HEAD`, which carries
+   * every uncommitted change in the repo — so a Stop that changed no code (a
+   * dispatch reply, an answered question, a follow-up turn that only talked)
+   * still saw a non-empty diff and paid for a full headless run that re-read
+   * the previous turn's work. The diff is now hashed and the hash stored on
+   * the task: an unchanged hash means there is nothing new to judge, so the
+   * previous verdict stands, the task simply stays in `review`, and no
+   * `claude -p` is spawned. Both skips are recorded as `run.reviewed` rows
+   * carrying `skipped`, so the audit trail shows a decision, not a gap.
    */
   async reviewCompletedRun(taskId: string): Promise<void> {
-    // Set synchronously on call (the hook route fires this void, milliseconds
-    // after the running → review transition), cleared however the round ends.
-    this.pendingReviews.add(taskId);
+    // SINGLE-FLIGHT PER TASK. Two Stops for one task can overlap (see
+    // `reviewRecheck`), and the second must not start its own reviewer while
+    // the first is still deciding what the hash should be. The overlapping
+    // caller is handed the IN-FLIGHT promise rather than a resolved one: the
+    // stop-hook route releases its custom-queue hold in a `.finally` on what
+    // this returns (docs/queue.md), and that hold has to outlive the round
+    // that is actually running, not the call that merely joined it.
+    const inFlight = this.pendingReviews.get(taskId);
+    if (inFlight) {
+      this.reviewRecheck.add(taskId);
+      return inFlight;
+    }
+    // Registered synchronously on call (the hook route fires this void,
+    // milliseconds after the running → review transition), cleared however the
+    // round ends. What other surfaces read is the persisted `reviewState`.
+    const p = this.reviewLoop(taskId).finally(() => this.pendingReviews.delete(taskId));
+    this.pendingReviews.set(taskId, p);
+    return p;
+  }
+
+  /**
+   * One review round, plus one more pass for a Stop that landed while it ran.
+   * Never throws: it runs off the Stop-hook path with nobody to catch it.
+   */
+  private async reviewLoop(taskId: string): Promise<void> {
     try {
-      const task = await this.storage.getTask(taskId);
-      if (!task || !task.repoId) return;
-      const settings = await this.storage.getSettings();
-      // per-task override wins; null falls back to the global setting
-      if (!(task.review ?? settings['review.enabled'])) return;
-      const repo = await this.storage.getRepo(task.repoId);
-      if (!repo) return;
-      const result = await reviewWorkerChange(repo, task, settings['review.model']);
-      if (!result) return;
-      const updated = await this.storage.updateTask(taskId, { reviewSummary: result.markdown });
-      if (updated) broadcast({ type: 'task.updated', task: updated });
+      for (;;) {
+        this.reviewRecheck.delete(taskId);
+        await this.runReviewRound(taskId);
+        if (!this.reviewRecheck.has(taskId)) return;
+        // Another pass is only worth it while the task is still parked in
+        // review. If the round just started a fix round the task is `running`
+        // again and its own Stop will come back through here — reviewing a
+        // turn that is still mid-flight would read a half-written diff.
+        const t = await this.storage.getTask(taskId);
+        if (t?.status !== 'review') return;
+      }
+    } catch (err) {
+      console.error('adversarial review failed:', err);
+    } finally {
+      this.reviewRecheck.delete(taskId);
+    }
+  }
+
+  /** One pass of the gate: decide from the diff hash, then review or skip. */
+  private async runReviewRound(taskId: string): Promise<void> {
+    const task = await this.storage.getTask(taskId);
+    if (!task || !task.repoId) return;
+    // Only a task that is parked (review, or done under autoComplete) has a
+    // change to judge; anything else means a human or a newer turn took over
+    // between the Stop and this pass.
+    if (task.status !== 'review' && task.status !== 'done') return;
+    const settings = await this.storage.getSettings();
+    // per-task override wins; null falls back to the global setting
+    if (!(task.review ?? settings['review.enabled'])) {
+      if (task.reviewState === 'pending') await this.setReviewState(taskId, null);
+      return;
+    }
+    const repo = await this.storage.getRepo(task.repoId);
+    if (!repo) return;
+    await this.setReviewState(taskId, 'reviewing');
+
+    // One git read per Stop, hashed before truncation; the reviewer reuses it.
+    const { diff, hash } = await workerDiff(repo);
+    if (!hash) {
+      // Read-only turn on a clean tree — the old code returned silently here.
       await this.storage.appendEvent({
         kind: 'run.reviewed',
         actor: 'system',
         taskId,
         repoId: repo.id,
-        data: { model: result.model, verdict: result.verdict, findings: result.findings.length },
+        data: { skipped: 'empty-diff', state: 'skipped' },
       });
+      this.fixRounds.delete(taskId);
+      await this.setReviewState(taskId, 'skipped');
+      return;
+    }
+    if (hash === task.reviewDiffHash) {
+      // Nothing changed since the last review: its verdict still holds and
+      // the task is already in `review`. Skip the spawn, settle the loop on
+      // the verdict that round produced.
+      const state = settledReviewState(task.reviewRounds);
+      await this.storage.appendEvent({
+        kind: 'run.reviewed',
+        actor: 'system',
+        taskId,
+        repoId: repo.id,
+        data: { skipped: 'unchanged-diff', state },
+      });
+      this.fixRounds.delete(taskId);
+      await this.setReviewState(taskId, state);
+      return;
+    }
 
-      // work → review → work: hand blocker/major findings back to the SAME live
-      // worker session to fix, then it Stops and re-reviews. Bounded rounds so
-      // an unfixable finding can't loop forever; minor-only or clean lands in
-      // the human review queue as before.
-      const actionable = result.findings.filter((f) => f.severity === 'blocker' || f.severity === 'major');
-      const maxRounds = settings['review.maxRounds'];
-      const round = this.reviewRounds.get(taskId) ?? 0;
-      const current = await this.storage.getTask(taskId);
-      const canLoop =
-        actionable.length > 0 &&
-        round < maxRounds &&
-        current?.status === 'review' && // human hasn't taken over
-        (await this.hasLiveSession(taskId));
+    const fixRound = this.fixRounds.get(taskId) ?? 0;
+    const lastRound = task.reviewRounds[task.reviewRounds.length - 1] ?? null;
+    const result = await reviewWorkerChange(
+      repo,
+      task,
+      settings['review.model'],
+      diff,
+      fixRound > 0 && lastRound ? { fixRound, findings: lastRound.findings } : null,
+    );
+    if (!result) return;
 
-      if (canLoop) {
-        this.reviewRounds.set(taskId, round + 1);
-        const msg = [
-          `Adversarial review (round ${round + 1}) found ${actionable.length} issue(s) to fix before this task is done:`,
-          ...actionable.map((f) => `- [${f.severity}] ${f.summary}${f.detail ? ` — ${f.detail}` : ''}`),
-          `Fix the blocker/major items above (address minors if quick), then finish. Your fix will be re-reviewed.`,
-        ].join('\n');
-        await this.storage.appendEvent({
-          kind: 'task.follow-up',
-          actor: 'system',
-          taskId,
-          repoId: repo.id,
-          data: { reason: 'adversarial-review', round: round + 1, actionable: actionable.length },
-        });
-        await this.followUp(taskId, msg, 'system'); // reactivates the idle session → running
-      } else {
-        this.reviewRounds.delete(taskId); // loop settled (clean, minors, cap, or human took over)
+    // work → review → work: hand blocker/major findings back to the SAME live
+    // worker session to fix, then it Stops and re-reviews. Bounded rounds so
+    // an unfixable finding can't loop forever; minor-only or clean lands in
+    // the human review queue as before. Decided BEFORE the row is written so
+    // the round, the summary and the state land in one broadcast.
+    const actionable = result.findings.filter((f) => f.severity === 'blocker' || f.severity === 'major');
+    const maxRounds = settings['review.maxRounds'];
+    const current = await this.storage.getTask(taskId);
+    const canLoop =
+      actionable.length > 0 &&
+      fixRound < maxRounds &&
+      current?.status === 'review' && // human hasn't taken over
+      (await this.hasLiveSession(taskId));
+    const round: ReviewRound = {
+      round: task.reviewRounds.length + 1,
+      at: new Date().toISOString(),
+      model: result.model,
+      effort: result.effort,
+      verdict: result.verdict,
+      summary: result.summary,
+      findings: result.findings,
+      fixRound,
+      diffHash: hash,
+      error: result.error,
+    };
+    const state: ReviewState = canLoop
+      ? 'fixing'
+      : result.error
+        ? 'error'
+        : actionable.length > 0
+          ? 'flagged'
+          : 'passed';
+    const updated = await this.storage.updateTask(taskId, {
+      reviewSummary: result.markdown,
+      reviewDiffHash: hash,
+      reviewRounds: [...task.reviewRounds, round],
+      reviewState: state,
+    });
+    if (updated) broadcast({ type: 'task.updated', task: updated });
+    await this.storage.appendEvent({
+      kind: 'run.reviewed',
+      actor: 'system',
+      taskId,
+      repoId: repo.id,
+      data: {
+        model: result.model,
+        verdict: result.verdict,
+        findings: result.findings.length,
+        actionable: actionable.length,
+        round: round.round,
+        fixRound,
+        state,
+      },
+    });
+
+    if (canLoop) {
+      this.fixRounds.set(taskId, fixRound + 1);
+      const msg = [
+        `Adversarial review (round ${fixRound + 1}) found ${actionable.length} issue(s) to fix before this task is done:`,
+        ...actionable.map((f) => `- [${f.severity}] ${f.summary}${f.detail ? ` — ${f.detail}` : ''}`),
+        `Fix the blocker/major items above (address minors if quick), then finish. Your fix will be re-reviewed.`,
+      ].join('\n');
+      await this.storage.appendEvent({
+        kind: 'task.follow-up',
+        actor: 'system',
+        taskId,
+        repoId: repo.id,
+        data: { reason: 'adversarial-review', round: fixRound + 1, actionable: actionable.length },
+      });
+      const res = await this.followUp(taskId, msg, 'system'); // reactivates the idle session → running
+      if ('error' in res) {
+        // The session went away between the liveness check and the resume:
+        // the findings stand, nobody is fixing them.
+        this.fixRounds.delete(taskId);
+        await this.setReviewState(taskId, 'flagged');
       }
-    } catch (err) {
-      console.error('adversarial review failed:', err);
-    } finally {
-      this.pendingReviews.delete(taskId);
+    } else {
+      this.fixRounds.delete(taskId); // loop settled (clean, minors, cap, or human took over)
     }
   }
 
-  /** Is an adversarial review round in flight for this task right now? */
-  isReviewPending(taskId: string): boolean {
-    return this.pendingReviews.has(taskId);
+  /** Persist + broadcast a review-state change; a no-op when it already reads that way. */
+  private async setReviewState(taskId: string, state: ReviewState | null): Promise<void> {
+    const cur = await this.storage.getTask(taskId);
+    if (!cur || cur.reviewState === state) return;
+    const updated = await this.storage.updateTask(taskId, { reviewState: state });
+    if (updated) broadcast({ type: 'task.updated', task: updated });
+  }
+
+  // ---- needs-attention lifecycle -------------------------------------------
+
+  /** The Notification hook raised the flag on this run: remember when. */
+  attentionFlagged(runId: string): void {
+    this.attentionAt.set(runId, Date.now());
+  }
+
+  /**
+   * The transcript grew an assistant line stamped `at` — from the activity
+   * watcher, which tails every live run. Newer than the flag means the
+   * prompt was answered (approved: the tool ran and the agent went on;
+   * denied: the agent was told and went on), so the flag is stale. An older
+   * line is the one that CAUSED the prompt, still being caught up on.
+   */
+  async attentionProgress(runId: string, at: string): Promise<void> {
+    const flagged = this.attentionAt.get(runId);
+    if (flagged === undefined) return;
+    const t = Date.parse(at);
+    if (!Number.isFinite(t) || t <= flagged) return;
+    this.attentionAt.delete(runId);
+    const run = await this.storage.getRun(runId);
+    if (!run || !run.needsAttention) return;
+    const cleared = await this.storage.updateRun(runId, { needsAttention: false });
+    if (!cleared) return;
+    await this.storage.appendEvent({
+      kind: 'run.attention',
+      actor: 'system',
+      runId,
+      taskId: cleared.taskId,
+      data: { cleared: 'agent-resumed' },
+    });
+    broadcast({ type: 'run.needs-attention', run: cleared });
+  }
+
+  /** The run is over one way or another — forget its flag time. */
+  private forgetAttention(runId: string): void {
+    this.attentionAt.delete(runId);
   }
 
   /**

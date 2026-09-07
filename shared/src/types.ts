@@ -17,6 +17,39 @@ export type TaskStatus =
  * that waits on a task (a split parent, a feature phase gate) must treat a
  * pushed task as settled, not as still-open work.
  */
+export type ReviewState = 'pending' | 'reviewing' | 'fixing' | 'passed' | 'flagged' | 'skipped' | 'error';
+
+export type ReviewVerdict = 'clean' | 'concerns' | 'blocker';
+
+export interface ReviewFinding {
+  severity: 'blocker' | 'major' | 'minor';
+  summary: string;
+  detail: string | null;
+}
+
+/** One adversarial review of a task's diff (docs/design.md § Adversarial review). */
+export interface ReviewRound {
+  /** 1-based, in the order the task received them */
+  round: number;
+  /** ISO time the verdict landed */
+  at: string;
+  model: string;
+  effort: string | null;
+  verdict: ReviewVerdict;
+  /** the reviewer's overall reading of the work as it stands */
+  summary: string | null;
+  findings: ReviewFinding[];
+  /** 0 = the original change; n = the n-th fix round the reviewer sent back */
+  fixRound: number;
+  /** sha256 of the diff this round judged */
+  diffHash: string | null;
+  /** set when the reviewer could not run — `verdict` is then `concerns` by convention */
+  error: string | null;
+}
+
+/** States in which the reviewer has finished with the current change. */
+export const SETTLED_REVIEW_STATES: ReviewState[] = ['passed', 'flagged', 'skipped', 'error'];
+
 export const TERMINAL_TASK_STATUSES: TaskStatus[] = ['published', 'done', 'failed', 'cancelled'];
 
 export type TaskSource = 'manual' | 'sentry' | 'auto' | 'feature';
@@ -29,7 +62,13 @@ export const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', '
 // (agent/analysis/orchestrator/review/router.*), which all run through
 // `claude -p` or the hooked worker session — never offer a codex id here, only
 // a per-task override (TASK_PRESETS 'codexFree') opts a single task in.
-export const MODEL_OPTIONS = ['claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'];
+export const MODEL_OPTIONS = [
+  'claude-fable-5-1',
+  'claude-fable-5',
+  'claude-opus-5',
+  'claude-sonnet-5',
+  'claude-haiku-4-5',
+];
 
 /**
  * A task whose `model` names the OpenAI Codex CLI instead of a Claude model —
@@ -83,8 +122,8 @@ export const TASK_PRESETS: TaskPreset[] = [
   {
     id: 'complex',
     label: 'Complex',
-    hint: 'fable 5 · high · review',
-    model: 'claude-fable-5',
+    hint: 'fable 5.1 · high · review',
+    model: 'claude-fable-5-1',
     effort: 'high',
     review: true,
   },
@@ -263,6 +302,37 @@ export interface Task {
   customQueueAt: string | null;
   /** adversarial review of the worker's change (Fable, or Opus xhigh fallback) */
   reviewSummary: string | null;
+  /**
+   * sha256 of the `git diff HEAD` that produced `reviewSummary`. A later Stop
+   * whose diff hashes identically changed no code (a dispatch reply, a
+   * question answered, a follow-up that only talked), so the reviewer is
+   * skipped and the previous verdict stands. null = never reviewed.
+   */
+  reviewDiffHash: string | null;
+  /**
+   * Where the adversarial review of the CURRENT change stands (docs/design.md
+   * § Adversarial review). Written in the same row write as the status it
+   * qualifies, so no surface can see `review` without knowing whether the
+   * reviewer has spoken yet:
+   *  - `pending`   the Stop landed, the reviewer has not started
+   *  - `reviewing` the headless reviewer is reading the diff
+   *  - `fixing`    findings were handed back; the task is `running` on them
+   *  - `passed`    latest round has no blocker/major finding
+   *  - `flagged`   latest round has blocker/major findings and the loop ended
+   *  - `skipped`   nothing to review (clean tree)
+   *  - `error`     the reviewer could not run
+   *  - null        this change was not auto-reviewed (disabled, publish, ...)
+   */
+  reviewState: ReviewState | null;
+  /** every real review this task received, oldest first (skips are audit-only) */
+  reviewRounds: ReviewRound[];
+  /**
+   * ISO time the 5h usage window this task is waiting on resets. Set when a
+   * turn ended against the account limit rather than against the work, and
+   * the orchestrator resumes the task's OWN claude session at it, clearing
+   * the field (docs/wake.md). null = not waiting on usage.
+   */
+  wakeAt: string | null;
   error: string | null;
   createdAt: string;
   updatedAt: string;
@@ -345,6 +415,15 @@ export interface RunStats {
   costUsd: number;
   /** share of the model's context window used by the last turn, 0..100 */
   contextPct: number;
+  /**
+   * Raw last-turn context total in tokens (input + cache read + cache write +
+   * output of the last main-chain message). `contextPct` divides this by a
+   * fixed 200k and clamps at 100, which pins every real worker session — they
+   * run on a 1M window and reach 400–500k — at "100%". The resume gate
+   * (`agent.resumeContextCap`, docs/token-budget.md) needs the number, not the
+   * clamp. Absent on run rows written before this field existed; read `?? 0`.
+   */
+  contextTokens: number;
 }
 
 export interface Run {
@@ -404,9 +483,71 @@ export interface UsageSnapshot {
   accountAgeMs: number | null;
 }
 
+// ---- Questions (docs/questions.md) ----
+
+export type QuestionStatus = 'pending' | 'answered' | 'expired';
+
+export interface QuestionOption {
+  label: string;
+  description: string;
+}
+
+/** One question of an AskUserQuestion call — the CLI's own shape, kept verbatim
+ *  so the answered input can be handed back to the tool unchanged. */
+export interface QuestionItem {
+  question: string;
+  header: string;
+  options: QuestionOption[];
+  multiSelect: boolean;
+}
+
+/**
+ * A decision a worker agent handed to the human (docs/questions.md): the
+ * agent's `AskUserQuestion` call, intercepted by a PreToolUse hook and parked
+ * here while the session waits inside that hook. Answered from the SPA or
+ * from Telegram — whichever comes first — and handed back to the tool as its
+ * `answers`. No FK constraints, like dispatches: the row is the audit trail of
+ * what was asked and what was decided, and it outlives the task.
+ */
+export interface Question {
+  id: string;
+  taskId: string;
+  runId: string;
+  /** the CLI's `tool_use_id` — what makes a re-sent hook request idempotent */
+  toolUseId: string | null;
+  status: QuestionStatus;
+  questions: QuestionItem[];
+  /** keyed by the question TEXT, as the CLI expects; multi-select joins labels with ", " */
+  answers: Record<string, string> | null;
+  /** actor vocabulary of tm_events: human | telegram */
+  answeredBy: string | null;
+  /** why an `expired` row expired (run ended, cancelled, restart) */
+  note: string | null;
+  createdAt: string;
+  answeredAt: string | null;
+}
+
 // ---- Dispatches (docs/dispatch.md) ----
 
 export type DispatchStatus = 'pending' | 'delivered' | 'failed' | 'cancelled';
+
+/**
+ * What the sender is asking for — the field that decides whether delivery may
+ * WAKE a session (docs/dispatch.md § Intent, token audit 2026-08-31..09-01).
+ *
+ * - `needs_action`: the target must change something. Delivery resumes its
+ *   session as soon as it is free, exactly as dispatch has always worked.
+ * - `fyi`: facts, answers, corrections — nothing for the target to do right
+ *   now. It NEVER starts a turn of its own. It waits and rides along at the
+ *   start of the target's next resume for a real reason (review round,
+ *   Proceed, a `needs_action` dispatch, publish); if the target is already
+ *   terminal it is recorded as a note on the task and no session is opened.
+ *
+ * A resume re-writes the whole conversation to cache before the agent's first
+ * useful token (~$15 on a 400k session) and its reply then Stops into an
+ * adversarial review — far too much for a status report.
+ */
+export type DispatchIntent = 'needs_action' | 'fyi';
 
 /**
  * A message from one task's agent session to a RELATED task's agent session,
@@ -429,6 +570,8 @@ export interface Dispatch {
   /** task whose session receives it */
   toTaskId: string;
   message: string;
+  /** whether delivery may wake an idle session (`fyi` may not) */
+  intent: DispatchIntent;
   status: DispatchStatus;
   /** why it failed / was downgraded — delivery details for the human */
   note: string | null;
@@ -508,9 +651,13 @@ export interface AppSettings {
   'review.enabled': boolean;
   /** reviewer model; falls back to Opus 5 xhigh when unavailable */
   'review.model': string;
-  /** max work→review→work rounds before a task lands in the human review queue */
+  /**
+   * max work→review→work rounds before a task lands in the human review queue.
+   * Default 1: every extra round resumes a warm 300–500k-token session, and
+   * the token audit found round 2+ almost never actionable (docs/design.md).
+   */
   'review.maxRounds': number;
-  /** max feature-plan re-analysis rounds after a blocker verdict (mirrors review.maxRounds) */
+  /** max feature-plan re-analysis rounds after a blocker verdict (plan review, not diff review — independent of review.maxRounds) */
   'feature.analysisMaxRounds': number;
   'anomaly.longRunMin': number;
   'anomaly.costUsd': number;
@@ -523,6 +670,21 @@ export interface AppSettings {
   /** follow-ups continue the previous claude session (`--resume`) when one is
    *  still on disk, instead of respawning a fresh agent that lost its context */
   'agent.resumeSessions': boolean;
+  /**
+   * Last-turn context (tokens) above which resuming a session compacts it
+   * first (`claude -p --resume <id> "/compact <focus>"`) instead of re-writing
+   * the whole conversation to cache twice. 0 disables the gate — every resume
+   * is a plain `--resume`, the behaviour before docs/token-budget.md § The
+   * fourth. Applies ONLY when an idle session is about to be resumed, never
+   * mid-run.
+   */
+  'agent.resumeContextCap': number;
+  /** a turn that ended against the 5h usage limit is resumed automatically
+   *  when the window resets, in its own session (docs/wake.md) */
+  'agent.autoWake': boolean;
+  /** seconds to wait past the window's reset time before resuming — the
+   *  account's `resets_at` is the boundary, not a promise of capacity at it */
+  'agent.autoWakeGraceSec': number;
   'sentry.dsn': string;
   'sentry.authToken': string;
   'sentry.org': string;
@@ -541,6 +703,50 @@ export interface AppSettings {
    * sends only keys it changed, so nothing in the UI can clobber it.
    */
   'telegram.updateOffset': number;
+  /**
+   * Local calendar day (YYYY-MM-DD) the daily digest last went out. Bot state,
+   * so it lives here and not in config.json: it changes once a day on its own,
+   * and rewriting the file that holds the bot token on a timer is not a trade
+   * worth making. Empty = never sent.
+   *
+   * It is a DAY and not a timestamp because that is what makes the digest both
+   * idempotent across a restart and catch-up-capable after the Mac slept
+   * through the configured hour.
+   *
+   * Deliberately absent from the PUT /api/config schema, like the offset above.
+   */
+  'telegram.digestSentOn': string;
+  /**
+   * ISO instant at which the digest's current (`enabled`, `hour`) pairing
+   * became active. A slot only counts if the digest was already armed with
+   * that hour when the slot arrived — which is what makes re-timing the digest
+   * from a phone neither skip a day nor fire twice in one.
+   *
+   * Persisted rather than reset at boot: re-arming on every restart would
+   * cancel a catch-up that was owed for an hour the machine slept through.
+   * Deliberately absent from the PUT /api/config schema, like the two above.
+   */
+  'telegram.digestArmedAt': string;
+  /**
+   * The chat (docs/chat.md) the phone is currently talking to — bot STATE, and
+   * the reason it is persisted rather than held in memory next to the flows:
+   * chat mode is not a ten-minute wizard, it is a mode you leave on. If a
+   * restart silently dropped it, the next thing typed would stop being a chat
+   * message and start being an offer to file a task, which is exactly the
+   * surprise the explicit /endchat exists to avoid. Empty = not in chat mode.
+   * Deliberately absent from the PUT /api/config schema, like the keys above.
+   */
+  'telegram.activeChatId': string;
+  /** Default model for a new chat. Its own key rather than a borrow of
+   *  `agent.model`: a chat is a conversation, not a task, and wanting the
+   *  cheap model for one and the heavy model for the other is the normal case. */
+  'chat.model': string;
+  'chat.effort': EffortLevel;
+  /** Concurrent chat turns across ALL chats. Chats are serial per chat by
+   *  construction; this is the second fence, against opening six chats and
+   *  sending to all of them. Separate from `orchestrator.concurrency` on
+   *  purpose — a chat turn owns no task and must not eat a worker slot. */
+  'chat.concurrency': number;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -551,12 +757,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // tells it what to do and reviews.
   'agent.model': 'claude-opus-5',
   'agent.effort': 'high',
-  'analysis.model': 'claude-fable-5',
-  'orchestrator.model': 'claude-fable-5',
+  'analysis.model': 'claude-fable-5-1',
+  'orchestrator.model': 'claude-fable-5-1',
   // usage-based routing is superseded by the role split; keep it available
   // but off by default (task.model overrides always win either way)
   'router.enabled': false,
-  'router.primaryModel': 'claude-fable-5',
+  'router.primaryModel': 'claude-fable-5-1',
   'router.fallbackModel': 'claude-opus-5',
   'router.usageThresholdPct': 85,
   'router.budget5hTokens': 2_000_000,
@@ -574,8 +780,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'agent.allowedTools': [],
   'board.groupColors': true,
   'review.enabled': true,
-  'review.model': 'claude-fable-5',
-  'review.maxRounds': 2,
+  'review.model': 'claude-fable-5-1',
+  'review.maxRounds': 1,
   'feature.analysisMaxRounds': 2,
   'anomaly.longRunMin': 30,
   'anomaly.costUsd': 10,
@@ -586,6 +792,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'pty.sessionTtlMinutes': 30,
   'terminal.clickOutside': 'compact',
   'agent.resumeSessions': true,
+  // 300k: the user's own measurement is that good work still comes out of a
+  // ~300k session, so the cap sits where quality is not yet in question and
+  // only the re-write cost is.
+  'agent.resumeContextCap': 300_000,
+  'agent.autoWake': true,
+  // A minute past the stated reset: the boundary is the account's, and a
+  // resume that arrives a second early buys nothing but a second stall.
+  'agent.autoWakeGraceSec': 60,
   'sentry.dsn': '',
   'sentry.authToken': '',
   'sentry.org': '',
@@ -594,6 +808,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'sentry.repoId': '',
   'sentry.categoryTag': '',
   'telegram.updateOffset': 0,
+  'telegram.digestSentOn': '',
+  'telegram.digestArmedAt': '',
+  'telegram.activeChatId': '',
+  'chat.model': 'claude-opus-5',
+  'chat.effort': 'high',
+  'chat.concurrency': 2,
 };
 
 // ---- Features (big request → analysis → reviewed plan → approved tasks) ----
@@ -716,7 +936,24 @@ export type AuditKind =
    *  this table at will (docs/telegram.md) */
   | 'telegram.rejected'
   /** bot lifecycle: started (with the boot-discard count) / stopped */
-  | 'telegram.bot';
+  | 'telegram.bot'
+  /** the red button fired: the exact run ids / task ids / feature ids it took
+   *  down, so "what killed my session?" has one row to read (docs/telegram.md) */
+  | 'telegram.killall'
+  /** a restart the bot asked the front door for, with the guard's verdict */
+  | 'telegram.restart'
+  /** a chat was opened / renamed / retargeted / deleted (docs/chat.md) */
+  | 'chat.created'
+  | 'chat.edited'
+  | 'chat.deleted'
+  /** one chat turn: the prompt went out and the reply (or the failure) landed */
+  | 'chat.turn'
+  /** a turn parked on the 5h usage window, or resumed when it reopened (docs/wake.md) */
+  | 'task.wake'
+  /** a worker's AskUserQuestion reached the human / was answered / expired (docs/questions.md) */
+  | 'question.asked'
+  | 'question.answered'
+  | 'question.expired';
 
 /** actor: human | hook | orchestrator | system | analyze | telegram | agent:<runId8> */
 export interface AuditEvent {
@@ -763,6 +1000,84 @@ export interface Anomaly {
   taskId?: string;
   runId?: string;
   at?: string;
+}
+
+// ---- Chat (docs/chat.md) ----
+
+/**
+ * What a chat turn may do in the repo it is pointed at. `read` is the default
+ * and the one a new chat gets: the same `--disallowedTools Edit Write
+ * NotebookEdit Bash` the analysis and review runs use, so a chat cannot change
+ * a working tree an agent may be mid-task in. `write` is the "same as sitting
+ * in the terminal" mode and is opted into per chat.
+ */
+export type ChatMode = 'read' | 'write';
+export const CHAT_MODES: ChatMode[] = ['read', 'write'];
+
+
+/**
+ * `thinking` is held for exactly one turn and is what makes a chat serial —
+ * two surfaces sending at once must not put two `claude -p` children on one
+ * session id. `error` is a turn that failed; the chat is still usable and the
+ * next send clears it.
+ */
+export type ChatStatus = 'idle' | 'thinking' | 'error';
+
+/**
+ * A free-form conversation with claude in a repo's working directory —
+ * the terminal you would have opened yourself, held open across surfaces
+ * (docs/chat.md). Every turn is a headless `claude -p --resume <sessionId>`
+ * run, which is what lets the phone and the browser take turns in ONE
+ * conversation instead of each getting their own.
+ */
+export interface Chat {
+  id: string;
+  repoId: string;
+  title: string;
+  model: string;
+  effort: EffortLevel | null;
+  mode: ChatMode;
+  /** claude's own session id, captured from the first turn's result envelope;
+   *  null until that turn lands, which is why turn one carries no `--resume` */
+  sessionId: string | null;
+  status: ChatStatus;
+  /** why the last turn failed; cleared when the next one starts */
+  error: string | null;
+  /**
+   * The pid of the turn running right now, and null whenever one is not.
+   *
+   * Persisted rather than kept in memory because it is needed by the process
+   * AFTER this one: a chat turn owns no `tm_runs` row, so boot recovery's pid
+   * sweep cannot see it, and the child is spawned detached — a crash leaves it
+   * alive, still editing the repo in write mode. Without this column the next
+   * boot would clear the lock and the next message would put a SECOND
+   * `--resume` on the same session id alongside the orphan.
+   */
+  pid: number | null;
+  /** completed turns (a failed turn does not count) */
+  turns: number;
+  costUsd: number;
+  createdAt: string;
+  updatedAt: string;
+  /** last message in either direction — the list's sort key */
+  lastMessageAt: string | null;
+}
+
+export type ChatRole = 'user' | 'assistant';
+
+export interface ChatMessage {
+  id: string;
+  chatId: string;
+  role: ChatRole;
+  text: string;
+  /** who sent it: 'human' from the SPA, 'telegram' from the phone, 'claude'
+   *  for a reply — the same actor vocabulary tm_events uses */
+  actor: string;
+  /** set on an assistant message that is the record of a FAILED turn */
+  error: string | null;
+  costUsd: number;
+  durationMs: number | null;
+  createdAt: string;
 }
 
 // ---- WebSocket protocol ----
@@ -824,6 +1139,10 @@ export type ServerEvent =
   | { type: 'command.updated'; command: RepoCommand }
   | { type: 'command.deleted'; commandId: string }
   | { type: 'command.run'; run: CommandRun }
+  | { type: 'chat.updated'; chat: Chat }
+  | { type: 'chat.deleted'; chatId: string }
+  | { type: 'chat.message'; message: ChatMessage }
+  | { type: 'question.updated'; question: Question }
   | { type: 'orchestrator.status'; status: OrchestratorStatus };
 
 /**

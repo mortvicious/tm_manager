@@ -16,6 +16,14 @@ Through them you can file follow-up tasks and coordinate work in OTHER repos.
   correction: **dispatch to it, don't create another task.** Dispatch hands
   your message to that task's existing session (`claude --resume`), so one
   backend⇄frontend exchange stays two sessions instead of spawning a third.
+  Say whether you need that agent to DO something (`intent: "needs_action"`)
+  or are only telling it something (`intent: "fyi"`) — see below.
+
+- A DECISION is not a task and not a dispatch. When a choice would materially
+  change the outcome (architecture or library, an ambiguous or conflicting
+  requirement, a destructive step, scope that could go two ways), ask with the
+  `AskUserQuestion` tool: it reaches the user in the dashboard and on their
+  phone, and your session waits for the answer. Decide small things yourself.
 
 ## API
 
@@ -65,15 +73,36 @@ waiting on the contract:
 curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
   "$TM_CALLBACK_URL/api/agent/dispatch" -d '{
     "task": "<related task id>",
+    "intent": "needs_action",
     "message": "Backend shipped. The contract: GET /v2/orders now returns { items: [...] } — <exact shapes, examples, how to verify>. Implement your side against it."
   }'
-# → { "dispatch": { "id", "toTask", "status" }, "note" }
+# → { "dispatch": { "id", "toTask", "intent", "status" }, "note" }
 ```
 
-`status: "delivered"` means the target session was resumed with your message.
-`status: "pending"` means the target agent is mid-turn — delivery is automatic
-the moment it is free. **Do not wait for a pending dispatch**: mention it in
-your final summary and finish your turn. (You can check one you sent with
+**`intent` is required, and it is the most important field.** Choose honestly:
+
+- **`needs_action`** — the target must CHANGE something (implement this
+  contract, fix this break, unblock me). Delivery wakes its session as soon as
+  it is free.
+- **`fyi`** — facts, answers, corrections, status: there is nothing for the
+  target to do right now. It NEVER wakes a session. It waits and is handed to
+  that agent at the start of the next turn it takes anyway; if the task has
+  already finished for good, it is recorded as a note on it.
+
+Waking a session is expensive: the resume re-reads the entire conversation
+(≈$15 on a long one) before the agent's first useful token, and its reply is
+then adversarially reviewed. That is worth it for real work and absurd for a
+status report. **If you cannot name the change you are asking the target to
+make, it is `fyi`.** "Here is what I found", "correcting my last message",
+"done, FYI" and "answering your question" are all `fyi`.
+
+`status: "delivered"` means the message reached the target (its session was
+resumed, or — for an `fyi` to a finished task — it was recorded as a note).
+`status: "pending"` means it is queued: the target is mid-turn, or it is an
+`fyi` waiting to ride along on that session's next turn. **Do not wait for a
+pending dispatch**: mention it in your final summary and finish your turn. A
+pending `fyi` is the normal, cheap outcome — not a failure, and not something
+to re-send as `needs_action`. (You can check one you sent with
 `GET /api/agent/dispatches/<id>` if you have other work to finish meanwhile.)
 Write dispatch messages like task descriptions: full contracts, not references
 to your own conversation — the target session cannot see it.
@@ -101,7 +130,12 @@ to your own conversation — the target session cannot see it.
    exists in your coordination (you filed it, it filed you, same group),
    dispatch to it. Creating a duplicate task spawns a whole new agent that
    knows nothing.
-9. **Dispatch caps**: 5 per session, 8 lifetime between any two tasks (both
-   directions) — a 403 means stop dispatching and finish; the human reconciles.
-   Dispatches to a target that can never receive (deleted, no repo) fail with
-   the reason in `note`; that is an answer, not something to retry.
+9. **Dispatch caps**: {{dispatchRunCap}} per session, {{dispatchPairCap}}
+   lifetime between any two tasks (both directions, and both intents count) —
+   a 403 means stop dispatching and finish; the human reconciles. They are
+   deliberately tight: two tasks that need a fourth exchange are arguing, not
+   coordinating. Spend them on `needs_action`. Dispatches to a target that can
+   never receive (deleted, no repo) fail with the reason in `note`; that is an
+   answer, not something to retry.
+10. **Never send a correction of a correction.** Get the contract right in one
+    message. Each round trip is a full session resume on both sides.

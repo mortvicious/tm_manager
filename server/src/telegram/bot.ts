@@ -1,9 +1,34 @@
-import { saveTelegramNotify, type TelegramConfig } from '../config.ts';
+import { DEFAULT_DIGEST, saveTelegramDigest, saveTelegramNotify, type TelegramConfig } from '../config.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { Storage } from '../storage/types.ts';
 import { parseActionData, runButtonAction, type ActionOutcome } from './actions.ts';
 import { TelegramApi, TelegramApiError, escapeHtml, toReply, type Reply } from './api.ts';
 import { commandSpecs, findCommand, parseCommand, unknownCommandReply } from './commands.ts';
+import type { Chat } from '@tm/shared';
+import type { ChatService } from '../chat/service.ts';
+import {
+  activeChat,
+  handleChatButton,
+  parseChatData,
+  phoneMaySend,
+  renderReply,
+  WRITE_BLOCKED_REPLY,
+  type ChatButton,
+  type ChatDeps,
+} from './chat.ts';
+import {
+  CONFIRM_LABEL,
+  ConfirmStore,
+  KillWatcher,
+  RateLimiter,
+  executeKillAll,
+  parseConfirmData,
+  renderKillAllReport,
+  requestHostRestart,
+  type BotHooks,
+  type Confirm,
+  type ConfirmButton,
+} from './emergency.ts';
 import {
   FlowStore,
   handleFlowButton,
@@ -14,7 +39,11 @@ import {
   type Flow,
   type FlowButton,
 } from './flows.ts';
+import { DigestScheduler } from './digest.ts';
 import { TelegramNotifier } from './notifications.ts';
+import { QuestionDrafts, handleQuestionButton, parseQuestionData, type QuestionButton, type QuestionDeps } from './questions.ts';
+import type { QuestionService } from '../questions.ts';
+import type { ReportDocument } from './report.ts';
 import { formatClock, type GateCounters } from './status.ts';
 import type { InlineKeyboardMarkup, TelegramCallbackQuery, TelegramUpdate } from './types.ts';
 
@@ -114,26 +143,63 @@ export class TelegramBot {
   private fatal = false;
 
   private readonly notifier: TelegramNotifier;
+  private readonly digest: DigestScheduler;
   /**
    * The single conversational flow (docs/telegram.md § Conversations). One
    * user means one flow; it lives in memory and dies with the process, which
    * is the same rule the boot-discard filter enforces for updates.
    */
   private readonly flows = new FlowStore();
+  /** half-answered multi-part questions (docs/questions.md) */
+  private readonly questionDrafts = new QuestionDrafts();
+  /**
+   * The red button's state (docs/telegram.md § Emergency controls). In memory,
+   * like the flow store — which is also the answer to "what if the server
+   * restarts mid-confirm": the window dies with the process, and the boot
+   * drain treats a callback_query as undatable and therefore stale, so a
+   * Confirm pressed before a restart can neither survive nor be replayed.
+   */
+  private readonly confirms = new ConfirmStore();
+  private readonly limiter = new RateLimiter();
+  private readonly killWatcher: KillWatcher;
 
   constructor(
     private readonly cfg: TelegramConfig,
     private readonly storage: Storage,
     private readonly orchestrator: Orchestrator,
+    private readonly hooks: BotHooks | null = null,
+    /** the chat service (docs/chat.md). Null in a harness with no chat
+     *  surface — /chat then says so rather than throwing. */
+    private readonly chats: ChatService | null = null,
+    /** the question service (docs/questions.md). Null in a harness — the
+     *  buttons and /questions then say so rather than throwing. */
+    private readonly questions: QuestionService | null = null,
   ) {
+    // `loadBootConfig()` always merges this block in, but a config built by
+    // hand — a harness, an older caller — can be missing it entirely. The
+    // digest is the most optional thing in this module and it must not be able
+    // to throw the bot's startup, so it is normalised once, in place, and both
+    // the scheduler and the `/digest` handler share the one live object.
+    if (!cfg.digest) cfg.digest = { ...DEFAULT_DIGEST };
     this.api = new TelegramApi(cfg.botToken);
+    this.killWatcher = new KillWatcher((html) => this.send(cfg.allowedUserId, html));
     this.notifier = new TelegramNotifier({
       storage,
       // The live object, not a copy: /mute and /notify flip cfg.notify in
       // place and the notifier must see it at its next flush.
       notify: cfg.notify,
-      isReviewPending: (taskId) => orchestrator.isReviewPending(taskId),
       send: (html, keyboard) => this.send(cfg.allowedUserId, html, keyboard),
+      // The feature-plan message carries the SAME report /report builds — one
+      // generator, one shape (docs/telegram.md § Reports).
+      sendDocument: (doc, caption, keyboard) => this.sendDocument(cfg.allowedUserId, doc, caption, keyboard),
+    });
+    this.digest = new DigestScheduler({
+      storage,
+      // The live object, like notify above: /digest flips it in place.
+      digest: cfg.digest,
+      send: (doc) => this.deliverDocument(cfg.allowedUserId, doc, doc.summary),
+      onSent: (day) => this.audit('telegram.bot', { event: 'digest', day, hour: cfg.digest.hour }),
+      onError: (e) => console.warn('telegram: digest tick failed:', errText(e)),
     });
   }
 
@@ -194,6 +260,9 @@ export class TelegramBot {
   private async shutdown(timeoutMs: number): Promise<void> {
     this.running = false;
     this.notifier.stop();
+    this.digest.stop();
+    this.killWatcher.stop();
+    this.confirms.clear();
     this.abort.abort();
     await Promise.race([this.loop ?? Promise.resolve(), new Promise((r) => setTimeout(r, timeoutMs))]);
     this.loop = null;
@@ -245,6 +314,14 @@ export class TelegramBot {
     // AFTER the drain: the "back online" message must be the first thing the
     // phone hears, not a notification racing it.
     await this.notifier.start();
+    // Same rule as the token check in start(): one optional subsystem failing
+    // must not cost the bot its poll loop. A digest that cannot start says so
+    // and the commands still answer.
+    try {
+      await this.digest.start();
+    } catch (e) {
+      console.warn('telegram: daily digest not scheduled:', errText(e));
+    }
     await this.audit('telegram.bot', {
       event: 'started',
       username: this.username,
@@ -479,7 +556,22 @@ export class TelegramBot {
               return errText(e);
             }
           },
+          digest: this.cfg.digest,
+          digestControl: this.digest,
+          persistDigest: () => {
+            try {
+              saveTelegramDigest(this.cfg.digest);
+              return null;
+            } catch (e) {
+              return errText(e);
+            }
+          },
           flows: this.flows,
+          chatDeps: this.chatDeps(),
+          questions: this.questionDeps(),
+          confirms: this.confirms,
+          limiter: this.limiter,
+          hooks: this.hooks,
           actor: ACTOR,
           args: parsed.args,
           message: msg,
@@ -510,7 +602,14 @@ export class TelegramBot {
       ok: reply.ok !== false,
       args: parsed.args || null,
     });
-    await this.send(msg.chat.id, dropNote(dropped) + reply.html, reply.keyboard);
+    const text = dropNote(dropped) + reply.html;
+    // A reply carrying a document (`/report`) goes out as ONE upload with the
+    // text as its caption, not a message plus a file: two notifications for
+    // one command is the thing a phone surface must not do.
+    if (reply.document) await this.sendDocument(msg.chat.id, reply.document, text, reply.keyboard);
+    else await this.send(msg.chat.id, text, reply.keyboard);
+    // A multi-part question is one message per part (docs/questions.md).
+    for (const more of reply.extra ?? []) await this.send(msg.chat.id, more.html, more.keyboard);
   }
 
   /**
@@ -540,6 +639,16 @@ export class TelegramBot {
         await this.audit('telegram.command', { command: null, ignored: 'flow expects a button' });
         reply = { html: 'Use the buttons above, or ✕ Cancel to start over.' };
       } else {
+        // Chat mode (docs/chat.md) swallows plain text — that is the whole
+        // point of it. Checked only when no flow is live: a half-finished
+        // /new is answering a question it asked, and a mode must not steal
+        // the answer. `offerDraft` stays the behaviour outside chat mode.
+        const deps = this.chatDeps();
+        const chat = deps && this.cfg.chat.enabled ? await activeChat(this.storage) : null;
+        if (chat) {
+          await this.sendToChat(chatId, chat, text);
+          return;
+        }
         await this.audit('telegram.command', { command: null, ignored: 'free text' });
         reply = offerDraft(this.flows, text);
       }
@@ -553,7 +662,73 @@ export class TelegramBot {
   }
 
   private flowDeps() {
-    return { storage: this.storage, orchestrator: this.orchestrator, actor: ACTOR };
+    return { storage: this.storage, orchestrator: this.orchestrator, actor: ACTOR, questions: this.questionDeps() };
+  }
+
+  /** Null when this bot was built without a chat service (a harness). */
+  private chatDeps(): ChatDeps | null {
+    return this.chats ? { storage: this.storage, chats: this.chats, cfg: this.cfg.chat } : null;
+  }
+
+  /**
+   * One chat turn, from the phone.
+   *
+   * Awaits the ACCEPTANCE only, and that is load-bearing: this runs inside the
+   * update loop, which handles updates one at a time. Awaiting the reply would
+   * make the whole bot deaf for the minutes the turn takes — no /endchat, no
+   * /status, and in particular no ⏹ Stop for the very turn you are waiting on.
+   * The two-phase `send()` (docs/chat.md § The API) exists so this method can
+   * return as soon as the message is safely stored and let the reply land on
+   * its own.
+   *
+   * The tail keeps the typing indicator alive for the whole turn — Telegram
+   * clears it after ~5s and a silent five minutes reads as a dead bot — and
+   * clears the timer on every path, including a throw.
+   */
+  private async sendToChat(chatId: number, chat: Chat, text: string): Promise<void> {
+    const deps = this.chatDeps()!;
+    // The security boundary, and it is HERE rather than only on /mode: a chat
+    // switched to write in the browser and left there would otherwise let an
+    // unlocked handset run anything. Refused before the turn is accepted, so
+    // nothing is stored and nothing is spawned (docs/chat.md § From the phone).
+    if (!phoneMaySend(deps.cfg, chat)) {
+      await this.audit('telegram.command', {
+        command: 'chat',
+        ok: false,
+        target: chat.id,
+        error: 'write mode not allowed from telegram',
+      });
+      await this.send(chatId, WRITE_BLOCKED_REPLY);
+      return;
+    }
+    const accepted = await deps.chats.send(chat.id, text, ACTOR);
+    if (!accepted.ok) {
+      await this.audit('telegram.command', { command: 'chat', ok: false, target: chat.id, error: accepted.error });
+      await this.send(chatId, `⚠ ${escapeHtml(accepted.error)}`);
+      return;
+    }
+    const turn = accepted.value;
+    // Detached on purpose — see above. It resolves rather than throws, and the
+    // catch is the floor under `this.send` failing on a network blip.
+    void (async () => {
+      const typing = setInterval(() => {
+        // Best effort: an indicator that failed must not cost the reply.
+        void this.api.sendChatAction(chatId, 'typing').catch(() => {});
+      }, 4000);
+      void this.api.sendChatAction(chatId, 'typing').catch(() => {});
+      try {
+        const done = await turn.done;
+        // The turn's own audit row is written by the service (`chat.turn`);
+        // this one records that the PHONE was the surface, like every command.
+        await this.audit('telegram.command', { command: 'chat', ok: done.ok, target: chat.id });
+        if (!done.ok) await this.send(chatId, `⚠ <b>${escapeHtml(chat.title)}</b> — ${escapeHtml(done.error)}`);
+        else await this.send(chatId, renderReply(done.value.text));
+      } catch (e) {
+        console.error('telegram: chat reply failed to deliver:', errText(e));
+      } finally {
+        clearInterval(typing);
+      }
+    })();
   }
 
   /**
@@ -582,6 +757,31 @@ export class TelegramBot {
     const flowButton = cb.data ? parseFlowData(cb.data) : null;
     if (flowButton) {
       await this.handleFlowPress(cb, flowButton);
+      return;
+    }
+    // Then the confirm buttons. Same reason they go before the action codec:
+    // they EXPIRE, and an expired one must be refused rather than fall through
+    // to a stateless action that is still valid a week later.
+    const confirmButton = cb.data ? parseConfirmData(cb.data) : null;
+    if (confirmButton) {
+      await this.handleConfirmPress(cb, confirmButton);
+      return;
+    }
+    // Then the chat buttons. Before the action codec for the same reason as
+    // the two above: they name a chat that either surface can delete, so a
+    // stale one must be refused rather than fall through to a codec whose
+    // buttons stay valid forever.
+    const chatButton = cb.data ? parseChatData(cb.data) : null;
+    if (chatButton) {
+      await this.handleChatPress(cb, chatButton);
+      return;
+    }
+    // Then the question buttons — same reason again: a question is answered
+    // or expired within hours, and a stale one must be refused with the
+    // outcome, never fall through to the codec.
+    const questionButton = cb.data ? parseQuestionData(cb.data) : null;
+    if (questionButton) {
+      await this.handleQuestionPress(cb, questionButton);
       return;
     }
     const action = cb.data ? parseActionData(cb.data) : null;
@@ -641,6 +841,176 @@ export class TelegramBot {
     });
     await this.answerCallback(cb.id, press.toast);
     if (press.reply) await this.send(this.cfg.allowedUserId, press.reply.html, press.reply.keyboard);
+  }
+
+  /**
+   * A confirm press — the second half of every destructive command.
+   *
+   * `take()` CONSUMES the window, and that single fact answers the two things
+   * a reviewer probes here. A duplicated update (Telegram redelivering after a
+   * network blip, or a double-tap arriving as two callback_query updates)
+   * finds an empty store on its second visit and is refused, so nothing fires
+   * twice. And a press that survived a restart finds an empty store too — the
+   * window lives in memory only.
+   *
+   * The nonce is also the only identity on the wire: the window's KIND is held
+   * here, so a captured `k:go:<nonce>` cannot be re-pointed at a different
+   * action, and a nonce spent on `/killall` cannot fire a `/restart`.
+   *
+   * Everything below is inside one try/catch, per the rule the loop's
+   * `safeDispatch` exists to enforce: a branch that throws bare is a branch
+   * that can silence the bot until the next restart.
+   */
+  /** A `c:` press (docs/chat.md). Same gate as any other button. */
+  private async handleChatPress(cb: TelegramCallbackQuery, button: ChatButton): Promise<void> {
+    const deps = this.chatDeps();
+    if (!deps) {
+      await this.answerCallback(cb.id, 'Chat is unavailable');
+      return;
+    }
+    let press: Awaited<ReturnType<typeof handleChatButton>>;
+    try {
+      press = await handleChatButton(deps, button, ACTOR);
+    } catch (e) {
+      console.error('telegram: chat button failed:', errText(e));
+      press = { reply: { html: `⚠ ${escapeHtml(errText(e))}`, ok: false }, toast: 'Failed' };
+    }
+    // Audited BEFORE the answers, like every other button.
+    await this.audit('telegram.command', {
+      command: `button:chat.${button.kind}`,
+      target: button.id,
+      ok: press.reply.ok !== false,
+    });
+    await this.answerCallback(cb.id, press.toast);
+    await this.send(this.cfg.allowedUserId, press.reply.html, press.reply.keyboard);
+  }
+
+  private async handleQuestionPress(cb: TelegramCallbackQuery, button: QuestionButton): Promise<void> {
+    const deps = this.questionDeps();
+    if (!deps) {
+      await this.answerCallback(cb.id, 'Questions are unavailable');
+      return;
+    }
+    let press: Awaited<ReturnType<typeof handleQuestionButton>>;
+    try {
+      press = await handleQuestionButton(deps, button);
+    } catch (e) {
+      console.error('telegram: question button failed:', errText(e));
+      press = { reply: { html: `⚠ ${escapeHtml(errText(e))}`, ok: false }, toast: 'Failed' };
+    }
+    // Audited BEFORE the answers, like every other button.
+    await this.audit('telegram.command', {
+      command: `button:question.${button.verb}`,
+      target: button.id,
+      ok: press.reply.ok !== false,
+    });
+    await this.answerCallback(cb.id, press.toast);
+    await this.send(this.cfg.allowedUserId, press.reply.html, press.reply.keyboard);
+  }
+
+  private questionDeps(): QuestionDeps | null {
+    return this.questions
+      ? { storage: this.storage, questions: this.questions, drafts: this.questionDrafts, flows: this.flows, actor: ACTOR }
+      : null;
+  }
+
+  private async handleConfirmPress(cb: TelegramCallbackQuery, button: ConfirmButton): Promise<void> {
+    let confirm: Confirm | null = null;
+    try {
+      confirm = this.confirms.take(button.nonce);
+      if (!confirm) {
+        await this.audit('telegram.command', {
+          command: 'button:confirm',
+          ok: false,
+          error: 'no such confirm window (expired, already used, or from before a restart)',
+        });
+        await this.answerCallback(cb.id, 'Expired');
+        await this.send(
+          this.cfg.allowedUserId,
+          '⌛ That confirm has expired, was already used, or belongs to a previous run of the server. Send the command again.',
+        );
+        return;
+      }
+      if (button.verb === 'no') {
+        // Cancelling destroyed nothing, so it costs no rate-limit slot.
+        await this.audit('telegram.command', { command: `button:confirm:${confirm.kind}`, ok: true, cancelled: true });
+        await this.answerCallback(cb.id, 'Cancelled');
+        await this.send(this.cfg.allowedUserId, `✅ ${escapeHtml(CONFIRM_LABEL[confirm.kind])} cancelled — nothing was touched.`);
+        return;
+      }
+      if (confirm.kind === 'killall') await this.runKillAll();
+      else await this.runRestart(confirm.kind === 'restart-force');
+    } catch (e) {
+      console.error('telegram: confirm press failed:', errText(e));
+      await this.audit('telegram.command', {
+        command: `button:confirm:${confirm?.kind ?? 'unknown'}`,
+        ok: false,
+        error: errText(e),
+      }).catch(() => {});
+      await this.answerCallback(cb.id, 'Failed');
+      await this.send(this.cfg.allowedUserId, `⚠ That failed: ${escapeHtml(errText(e))}`);
+      return;
+    }
+    await this.answerCallback(cb.id, 'Done');
+  }
+
+  /** The red button, once confirmed. */
+  private async runKillAll(): Promise<void> {
+    this.limiter.record('/killall');
+    // Armed BEFORE the kills go out: a pty can exit inside the same tick that
+    // signalled it, and an exit that lands before the watcher is listening
+    // would leave the follow-up waiting for an event that already happened.
+    this.killWatcher.arm();
+    const report = await executeKillAll({ storage: this.storage, orchestrator: this.orchestrator }, ACTOR);
+    // A domain row of its own, not just the transport one: "what killed my
+    // session?" should be answerable from a single event, even though every
+    // leg also wrote its own task.transition / run.killed / feature.transition.
+    await this.audit('telegram.killall', {
+      queueWasEnabled: report.queueWasEnabled,
+      killed: report.killed.map((k) => ({ runId: k.runId, taskId: k.taskId, mode: k.mode, title: k.title })),
+      killFailed: report.killFailed.map((f) => ({ runId: f.target.runId, reason: f.reason })),
+      cancelled: report.cancelled,
+      cancelFailed: report.cancelFailed,
+      paused: report.paused,
+      dispatchesCancelled: report.dispatchesCancelled,
+      headlessStopped: report.headlessStopped,
+      resweptSomething: report.resweptSomething,
+      idle: report.idle,
+    });
+    await this.audit('telegram.command', { command: 'button:confirm:killall', ok: true });
+    await this.send(this.cfg.allowedUserId, renderKillAllReport(report));
+    // The message above says what was SIGNALLED. The follow-up says what has
+    // actually exited — see KillWatcher.
+    this.killWatcher.expect(report.killed);
+  }
+
+  /** The restart, once confirmed. `force` only ever comes from a window that
+   *  was armed as `restart-force`, i.e. after the guard already refused once
+   *  and the owner pressed a button that says so. */
+  private async runRestart(force: boolean): Promise<void> {
+    if (!this.hooks) {
+      await this.send(this.cfg.allowedUserId, '⚠ Restart is not available in this process (no front door wired).');
+      return;
+    }
+    this.limiter.record('/restart');
+    // Sent BEFORE the request: the front door answers by killing this process,
+    // so anything we tried to send afterwards would die with the socket.
+    await this.send(
+      this.cfg.allowedUserId,
+      force
+        ? '🔄 Forcing a restart — every session dies with it. The next message will be the boot notice.'
+        : '🔄 Restarting through the front door. The next message will be the boot notice.',
+    );
+    await this.audit('telegram.restart', { force, hostPort: this.hooks.hostPort, supervised: this.hooks.supervised });
+    const result = await requestHostRestart(this.hooks.hostPort, force);
+    await this.audit('telegram.command', { command: 'button:confirm:restart', ok: result.ok, force });
+    if (result.ok) return; // the boot message is the confirmation
+    await this.send(
+      this.cfg.allowedUserId,
+      result.blocked
+        ? `⛔ The restart guard refused: ${escapeHtml(result.error)}`
+        : `⚠ Restart failed: ${escapeHtml(result.error)}`,
+    );
   }
 
   /**
@@ -800,6 +1170,45 @@ export class TelegramBot {
     );
   }
 
+  /**
+   * Upload a report and say the gist in the same breath. The caption carries
+   * the Russian summary; if it is over Telegram's 1024-character caption cap,
+   * api.ts hands it back as `overflow` and it goes out as its own (chunked)
+   * message instead of being cut — the summary is the part that has to arrive
+   * whole, since it is what is readable without opening the file.
+   */
+  private async sendDocument(
+    chatId: number,
+    doc: { filename: string; html: string },
+    caption?: string,
+    keyboard?: InlineKeyboardMarkup,
+  ): Promise<void> {
+    try {
+      await this.deliverDocument(chatId, doc, caption, keyboard);
+    } catch (e) {
+      if (this.abort.signal.aborted) return;
+      console.warn('telegram: sendDocument failed:', errText(e));
+      // A failed upload must not swallow the summary: the gist still goes out
+      // as a plain message, which is the whole point of duplicating it.
+      if (caption) await this.send(chatId, caption, keyboard);
+    }
+  }
+
+  /**
+   * The same upload, but it THROWS. The digest needs that: it records the day
+   * as sent only on success, so a Telegram outage at 09:00 has to be visible
+   * as a rejection here or the scheduler would mark the day done and lose it.
+   */
+  private async deliverDocument(
+    chatId: number,
+    doc: { filename: string; html: string },
+    caption?: string,
+    keyboard?: InlineKeyboardMarkup,
+  ): Promise<void> {
+    const { overflow } = await this.api.sendDocument(chatId, doc, caption, { signal: this.abort.signal }, keyboard);
+    if (overflow) await this.send(chatId, overflow);
+  }
+
   private async send(chatId: number, html: string, keyboard?: InlineKeyboardMarkup): Promise<void> {
     try {
       await this.api.sendMessage(chatId, html, { signal: this.abort.signal }, keyboard);
@@ -809,7 +1218,10 @@ export class TelegramBot {
     }
   }
 
-  private async audit(kind: 'telegram.command' | 'telegram.rejected' | 'telegram.bot', data: Record<string, unknown>) {
+  private async audit(
+    kind: 'telegram.command' | 'telegram.rejected' | 'telegram.bot' | 'telegram.killall' | 'telegram.restart',
+    data: Record<string, unknown>,
+  ) {
     try {
       await this.storage.appendEvent({ kind, actor: 'telegram', data });
     } catch (e) {

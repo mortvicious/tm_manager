@@ -10,8 +10,35 @@ import type { ChildProcess } from 'node:child_process';
  * Keyed by the child process, not a run id: a feature-analysis pipeline runs
  * several children under ONE run row, and `review.ts` has no run row at all.
  */
-const live = new Map<ChildProcess, string>();
+interface Entry {
+  label: string;
+  /**
+   * True for a child spawned `detached` (its own process-group leader) —
+   * today only a chat turn (docs/chat.md). Signalling such a child alone is
+   * not enough: the tools it spawns inherit its stdout, and one surviving
+   * grandchild holds the pipe open forever. These are signalled as `-pid`.
+   */
+  group: boolean;
+}
+
+const live = new Map<ChildProcess, Entry>();
 const listeners = new Set<() => void>();
+
+/**
+ * When `stopAllHeadless` last swept. A child that was killed by that sweep did
+ * not FAIL — it was aborted, and the difference matters to anything that reacts
+ * to a failure by doing more work: the resume gate answers a failed compaction
+ * by spawning an agent, which after a `/killall` or a forced restart would be a
+ * live worker starting seconds after the emergency stop reported everything
+ * dead. Compared against a start time rather than exposed as a flag, so a child
+ * that began AFTER the sweep is not tarred by it.
+ */
+let lastStopAll = 0;
+
+/** Did a global headless stop happen at or after `since` (epoch ms)? */
+export function headlessStoppedSince(since: number): boolean {
+  return lastStopAll >= since;
+}
 
 /** Notified whenever the live set changes, so the UI's agent count can follow. */
 export function onHeadlessChange(l: () => void): () => void {
@@ -29,9 +56,13 @@ function notify(): void {
   }
 }
 
-/** @param label what this child is doing, for the restart refusal message. */
-export function registerHeadless(child: ChildProcess, label: string): void {
-  live.set(child, label);
+/**
+ * @param label what this child is doing, for the restart refusal message.
+ * @param opts  `group: true` for a child spawned `detached`, so shutdown
+ *              signals its whole process group rather than the leader alone.
+ */
+export function registerHeadless(child: ChildProcess, label: string, opts: { group?: boolean } = {}): void {
+  live.set(child, { label, group: !!opts.group });
   const done = () => {
     if (live.delete(child)) notify();
   };
@@ -51,13 +82,25 @@ export function registerHeadless(child: ChildProcess, label: string): void {
  * really is a claude).
  */
 export function stopAllHeadless(): number {
+  lastStopAll = Date.now();
   let n = 0;
-  for (const child of [...live.keys()]) {
+  for (const [child, entry] of [...live.entries()]) {
     try {
-      child.kill('SIGTERM');
+      // A detached child is a group leader; `-pid` reaches the tools it
+      // started. Signalling the leader alone would leave a Bash grandchild
+      // running (and holding the reply pipe) through /killall and shutdown.
+      if (entry.group && child.pid) process.kill(-child.pid, 'SIGTERM');
+      else child.kill('SIGTERM');
       n++;
     } catch {
-      // already gone
+      // The group may already be gone; fall back to the child itself before
+      // giving up, so a race between exit and signal is not a missed kill.
+      try {
+        child.kill('SIGTERM');
+        n++;
+      } catch {
+        // already reaped
+      }
     }
   }
   return n;
@@ -65,5 +108,5 @@ export function stopAllHeadless(): number {
 
 /** Labels of the headless agents running right now. */
 export function liveHeadless(): string[] {
-  return [...live.values()];
+  return [...live.values()].map((e) => e.label);
 }

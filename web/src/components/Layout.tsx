@@ -6,7 +6,19 @@ import { useApp } from '../state.tsx';
 import { CommandsLauncher } from './Commands.tsx';
 import { EmulatorLauncher } from './Emulator.tsx';
 import { useLocation } from 'react-router-dom';
-import { IconBoard, IconBook, IconConfig, IconFeature, IconMoon, IconMore, IconQueue, IconRepo, IconSun, IconTerminal } from './Icons.tsx';
+import {
+  IconBoard,
+  IconBook,
+  IconChat,
+  IconConfig,
+  IconFeature,
+  IconMoon,
+  IconMore,
+  IconQueue,
+  IconRepo,
+  IconSun,
+  IconTerminal,
+} from './Icons.tsx';
 
 /** The one breakpoint. Mirrors `--tm-mobile-max` in theme.css — keep in step. */
 const MOBILE_QUERY = '(max-width: 768px)';
@@ -319,6 +331,7 @@ const NAV: NavItem[] = [
   { to: '/board', label: 'Board', icon: <IconBoard />, primary: true },
   { to: '/queue', label: 'Queue', icon: <IconTerminal />, primary: true },
   { to: '/features', label: 'Features', icon: <IconFeature />, primary: true },
+  { to: '/chat', label: 'Chat', icon: <IconChat /> },
   { to: '/repos', label: 'Repos', icon: <IconRepo /> },
   { to: '/config', label: 'Config', icon: <IconConfig /> },
   { to: '/handbook', label: 'Handbook', icon: <IconBook /> },
@@ -356,6 +369,23 @@ function RunCount() {
  * compact top bar could not hold. Those controls are mounted HERE and nowhere
  * else while the viewport is mobile.
  */
+/** "❓ n" while any agent is waiting on a decision; a click reopens the modal (docs/questions.md). */
+function QuestionChip() {
+  const { questions, nudgeQuestions } = useApp();
+  const n = questions.length;
+  if (n === 0) return null;
+  return (
+    <button
+      type="button"
+      className="btn ghost qchip"
+      title={`${n} agent question${n === 1 ? '' : 's'} waiting for your answer`}
+      onClick={nudgeQuestions}
+    >
+      <span className="dot" /> {n} {n === 1 ? 'question' : 'questions'}
+    </button>
+  );
+}
+
 function MoreSheet({ onClose, onOpenTerminal }: { onClose: () => void; onOpenTerminal: (runId: string) => void }) {
   // Escape closes it like the slide-over; a phone keyboard has one too.
   useEffect(() => {
@@ -447,6 +477,7 @@ export function Layout({ children, onOpenTerminal }: { children: ReactNode; onOp
         )}
         <OrchestratorSwitch />
         <RunCount />
+        <QuestionChip />
         {!mobile && <UsagePill />}
         <span className="spacer" />
         {mobile ? (

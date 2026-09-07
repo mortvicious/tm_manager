@@ -37,6 +37,19 @@ export const IconConfig = () => (
   </svg>
 );
 
+export const IconChat = () => (
+  <svg {...p}>
+    <path d="M21 12a8 8 0 0 1-8 8H8l-5 3 1.2-4.2A8 8 0 1 1 21 12z" />
+  </svg>
+);
+
+export const IconSend = () => (
+  <svg {...p}>
+    <path d="M21 3L3 10.5l7 2.5 2.5 7z" />
+    <path d="M10 13.5L21 3" />
+  </svg>
+);
+
 export const IconTerminal = () => (
   <svg {...p}>
     <path d="M4 17l6-5-6-5M12 19h8" />
