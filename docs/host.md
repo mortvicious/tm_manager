@@ -79,31 +79,40 @@ still be running when nothing else is.
 
 Remote access (`docs/remote-access.md`) puts `tailscale serve` in front of this
 process: it terminates HTTPS for the Mac's MagicDNS name on the tailnet and
-forwards to `127.0.0.1:<host port>`, keeping the original port-less `Host` and
+forwards to the front door, keeping the original port-less `Host` and
 stamping `Tailscale-User-Login` with the connecting person's identity. The gate
 lives HERE, not in the API, because the proxy rewrites `Host` to
 `127.0.0.1:<api>` and the API can no longer tell a request from the phone from
 one typed at the Mac.
 
-The decision is `checkRemote()` in `server/src/remote.ts`, run first on every
-request and every WS upgrade, `/host/*` included:
+**Remote-ness is decided by the listener, never by `Host`.** serve forwards the
+client's `Host` verbatim, so `curl -H 'Host: 127.0.0.1:5176' https://<name>/`
+arrives looking local. With `remote.enabled` the front door opens a SECOND
+listener, `127.0.0.1:<remote.port>` (default 5177, always loopback), which is the
+only thing serve points at. EVERY request and WS upgrade on it, `/host/*`
+included, goes through `checkRemote()` in `server/src/remote.ts`:
 
-1. `Host` is not EXACTLY `remote.hostname` (port-less or `:443`) → not a remote
-   request; the loopback/LAN rules above apply unchanged. `isAllowedHost` reads a
-   port-less Host as port 80, which is why the remote name has its own rule, and
-   the match is never a `.ts.net` suffix.
-2. Otherwise 403 (`{"error":"forbidden: <reason>"}`; a WS upgrade gets a bare
-   `403` and the socket closes) unless ALL of: `remote.enabled`; the TCP peer is
-   loopback; `Tailscale-User-Login` is on `remote.allowedLogins`
-   (case-insensitive, exact); and `Origin` is exactly `https://<hostname>` —
-   required on a WS upgrade and on every method but GET/HEAD, and refused on any
-   method when present and different.
-3. Admitted: every `tailscale-*` header is stripped (for local requests too),
-   and the Origin — just verified — is **rewritten to this front door's loopback
-   origin** (`http://127.0.0.1:<host port>`). The API's Origin checks and the
-   `/host/*` check below therefore stay loopback/LAN-only; the API has no remote
-   code path at all. See `docs/decisions.md` 2026-09-29 for why this and not a
-   `net.ts` entry.
+1. 403 (`{"error":"forbidden: <reason>"}`; a WS upgrade gets a bare `403` and
+   the socket closes) unless ALL of: `remote.enabled`; `Host` is EXACTLY
+   `remote.hostname`, port-less or `:443` (a loopback Host is `forbidden host`,
+   and the match is never a `.ts.net` suffix); the TCP peer is loopback;
+   `Tailscale-User-Login` is on `remote.allowedLogins` (case-insensitive,
+   exact); and `Origin` is exactly `https://<hostname>` — required on a WS
+   upgrade and on every method but GET/HEAD, and refused on any method when
+   present and different.
+2. Admitted: every `tailscale-*` header is stripped, and the Origin — just
+   verified — is **rewritten to this front door's loopback origin**
+   (`http://127.0.0.1:<host port>`). The API's Origin checks and the `/host/*`
+   check below therefore stay loopback/LAN-only; the API has no remote code path
+   at all. See `docs/decisions.md` 2026-09-29 for why this and not a `net.ts`
+   entry.
+
+The MAIN listener (`host.port`) refuses anything that looks proxied: a request
+with `X-Forwarded-For`/`-Host`/`-Proto` (serve adds all three) or any
+`Tailscale-*` header gets 403 `proxied requests are not served on the local
+port` (`looksProxied`). That is the tripwire for serve pointed at 5176 by
+mistake, which would otherwise reopen the loopback-Host bypass. Nothing local
+sends those headers (the Vite dev proxy has no `xfwd`).
 
 Refusals are logged at most once a minute per reason. The FIRST admitted request
 of each login per front-door boot is audited: this process has no storage, so it
@@ -204,4 +213,6 @@ listen error is still fatal on the first try.
 | `409` naming agent sessions | the API's restart guard | stop the agents, or `{"force": true}` |
 | `403 forbidden: no tailnet identity` on the `ts.net` name | the request came from a tagged node (the Mac itself) or through Funnel — no `Tailscale-User-Login` | expected; open it from the phone |
 | `403 forbidden: remote access is disabled` | `remote.enabled` is false | set it in `data/config.json`, restart the front door |
+| `403 forbidden: proxied requests are not served on the local port` over the `ts.net` name | serve points at `host.port` (5176) | `tailscale serve --bg --https=443 http://127.0.0.1:<remote.port>` (5177) |
+| `502` from serve with remote on | nothing on `remote.port`: the front door is down, or `remote.enabled` is false so the listener was never opened | start the front door; check the boot banner's `remote:` line |
 | front door refuses to boot: `remote.enabled and LAN mode … mutually exclusive` | `lan.enabled` or `TM_LAN=1` (`npm run start:lan`) with remote on | start with `npm start`; drop `lan.enabled` |

@@ -49,6 +49,13 @@ export interface RemoteConfig {
   enabled: boolean;
   /** The node's MagicDNS name, matched EXACTLY (`tm-m.tail04c8fe.ts.net`). */
   hostname: string;
+  /**
+   * The front door's DEDICATED loopback listener for `tailscale serve` (opened
+   * only when enabled). Every request on it is gated whatever its Host, because
+   * serve forwards the client's Host verbatim and a loopback Host would
+   * otherwise pass as local. Serve points here, never at `host.port`.
+   */
+  port: number;
   /** Tailscale logins (as `Tailscale-User-Login` carries them), case-insensitive. */
   allowedLogins: string[];
 }
@@ -150,7 +157,7 @@ const DEFAULT_CONFIG: BootConfig = {
   port: 5175,
   host: { port: 5176 },
   lan: { enabled: false },
-  remote: { enabled: false, hostname: '', allowedLogins: [] },
+  remote: { enabled: false, hostname: '', port: 5177, allowedLogins: [] },
   storage: {
     driver: 'sqlite',
     sqlite: { file: 'data/taskman.db' },
@@ -284,6 +291,9 @@ export function loadBootConfig(): BootConfig {
   if (hostPort === port) {
     throw new Error(`host.port (${hostPort}) must differ from the API port (${port})`);
   }
+  if (remote.enabled && (remote.port === port || remote.port === hostPort)) {
+    throw new Error(`data/config.json: remote.port (${remote.port}) must differ from the API port and host.port`);
+  }
   // Fatal, unlike a half-configured bot: LAN mode binds every interface with no
   // identity check, so a "remote access" install that is also in LAN mode would
   // be wide open on the Wi-Fi while its owner believes it is behind the tailnet.
@@ -340,6 +350,9 @@ function parseRemote(r: unknown): RemoteConfig {
   if (o.hostname !== undefined && typeof o.hostname !== 'string') {
     throw new Error(`data/config.json: remote.hostname must be a string`);
   }
+  if (o.port !== undefined && !(Number.isInteger(o.port) && (o.port as number) > 0 && (o.port as number) < 65536)) {
+    throw new Error(`data/config.json: remote.port must be an integer in 1..65535`);
+  }
   if (o.allowedLogins !== undefined && !(Array.isArray(o.allowedLogins) && o.allowedLogins.every((l) => typeof l === 'string'))) {
     throw new Error(`data/config.json: remote.allowedLogins must be an array of strings`);
   }
@@ -360,7 +373,8 @@ function parseRemote(r: unknown): RemoteConfig {
   if (enabled && allowedLogins.length === 0) {
     throw new Error(`data/config.json: remote.enabled needs at least one entry in remote.allowedLogins`);
   }
-  return { enabled, hostname, allowedLogins };
+  const port = (o.port as number | undefined) ?? DEFAULT_CONFIG.remote.port;
+  return { enabled, hostname, port, allowedLogins };
 }
 
 /**

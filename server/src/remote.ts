@@ -6,8 +6,12 @@
  * ORIGINAL Host (port-less) and stamping `Tailscale-User-Login` with the
  * connecting peer's identity — after stripping any copy the client sent. A
  * request from a TAGGED node (this Mac included) carries no identity at all.
- * So the whole decision is: did the request address us by the remote name, and
- * if so, did tailscaled vouch for a login on the allowlist?
+ * serve also forwards the CLIENT'S Host verbatim, so Host says nothing about
+ * where a request came from: `curl -H 'Host: 127.0.0.1:5176' https://<name>/`
+ * arrives looking local. That is why remote traffic gets its OWN loopback
+ * listener (`remote.port`, the only thing serve points at) and EVERY request
+ * on it goes through checkRemote whatever its Host — and why the main listener
+ * refuses anything that looks proxied (`looksProxied`).
  *
  * Pure functions over headers + the TCP peer, so the front door stays boring
  * and this file can be exercised without a tailnet.
@@ -23,8 +27,6 @@ import path from 'node:path';
 import { dataDir, type RemoteConfig } from './config.ts';
 
 export type RemoteVerdict =
-  /** Host is not the remote name: the ordinary loopback/LAN rules apply. */
-  | { kind: 'local' }
   | { kind: 'deny'; reason: string }
   /** Admitted, as this (lowercased) login. */
   | { kind: 'allow'; login: string };
@@ -57,7 +59,9 @@ function single(v: string | string[] | undefined): string | undefined {
 }
 
 /**
- * The gate. `upgrade` is a WebSocket upgrade, which browsers always send with
+ * The gate, for every request on the remote listener. A Host other than the
+ * remote name is refused, not "treated as local": on this listener nothing is
+ * local. `upgrade` is a WebSocket upgrade, which browsers always send with
  * an Origin; for plain HTTP only a state-changing method must carry one (a
  * top-level navigation has none), but a PRESENT foreign Origin is refused on
  * every method — there is no cross-origin reader this name should serve.
@@ -69,8 +73,8 @@ export function checkRemote(
   upgrade: boolean,
   cfg: RemoteConfig,
 ): RemoteVerdict {
-  if (!isRemoteHost(single(headers.host), cfg.hostname)) return { kind: 'local' };
   if (!cfg.enabled) return { kind: 'deny', reason: 'remote access is disabled' };
+  if (!isRemoteHost(single(headers.host), cfg.hostname)) return { kind: 'deny', reason: 'forbidden host' };
   if (!isLoopbackPeer(peer)) return { kind: 'deny', reason: 'remote requests must arrive through tailscale serve' };
 
   const login = single(headers['tailscale-user-login'])?.trim().toLowerCase();
@@ -89,9 +93,24 @@ export function checkRemote(
 }
 
 /**
- * Every `tailscale-*` header, stripped before anything is proxied: the API
- * must never see (or start trusting) identity it cannot verify itself. Done for
- * LOCAL requests too, so a header a local client sent is not forwarded either.
+ * Main-listener tripwire: a request that went through `tailscale serve` (or any
+ * reverse proxy) — serve adds `X-Forwarded-For/-Host/-Proto` to everything it
+ * forwards, and `Tailscale-*` identity to tailnet users. If serve were pointed
+ * at the main port by mistake, this is what keeps the loopback-Host bypass
+ * closed there: such a request is refused, never judged by the local rules.
+ * Nothing local sends these (the Vite dev proxy does not set `xfwd`).
+ */
+export function looksProxied(headers: IncomingHttpHeaders): boolean {
+  if (headers['x-forwarded-for'] !== undefined) return true;
+  if (headers['x-forwarded-host'] !== undefined) return true;
+  if (headers['x-forwarded-proto'] !== undefined) return true;
+  return Object.keys(headers).some((k) => k.startsWith('tailscale-'));
+}
+
+/**
+ * Every `tailscale-*` header, stripped from an admitted remote request before
+ * it is proxied: the API must never see (or start trusting) identity it cannot
+ * verify itself.
  */
 export function stripTailscaleHeaders(headers: IncomingHttpHeaders): void {
   for (const k of Object.keys(headers)) {

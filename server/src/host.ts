@@ -29,7 +29,7 @@ import path from 'node:path';
 import type { HostStatus } from '@tm/shared';
 import { loadBootConfig, serverRoot } from './config.ts';
 import { isAllowedHost, isAllowedOriginHost, lanAddresses, setLanEnabled } from './net.ts';
-import { checkRemote, mintHostToken, stripTailscaleHeaders } from './remote.ts';
+import { checkRemote, looksProxied, mintHostToken, stripTailscaleHeaders } from './remote.ts';
 
 const cfg = loadBootConfig();
 setLanEnabled(cfg.lan.enabled);
@@ -294,7 +294,9 @@ function proxyUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffe
 // The gate itself is server/src/remote.ts; this is what the front door does
 // with its verdict. It lives HERE and not in the API because the proxy rewrites
 // Host to 127.0.0.1:<api>, after which the API cannot tell a request that came
-// through `tailscale serve` from one typed at the Mac.
+// through `tailscale serve` from one typed at the Mac. Remote-ness is decided by
+// WHICH LISTENER a request arrived on (remoteServer below), never by its Host:
+// serve forwards the client's Host verbatim.
 
 // Minted every boot, remote or not, so a file left by an earlier boot never stays valid.
 const hostToken = mintHostToken();
@@ -303,6 +305,8 @@ const hostToken = mintHostToken();
  * An admitted remote request, made to look like what it now is — a request
  * the front door vouches for — before any other rule reads it:
  *
+ * - every `tailscale-*` header is stripped: the API never sees identity it
+ *   cannot verify itself.
  * - Origin: the gate has just checked it is EXACTLY `https://<remote.hostname>`,
  *   so it is rewritten to this front door's own loopback origin. The API's
  *   Origin rules (index.ts onRequest, the WS routes) and the /host check below
@@ -311,6 +315,7 @@ const hostToken = mintHostToken();
  * - the first request of each login this boot is audited (one row, not per request).
  */
 function admitRemote(req: http.IncomingMessage, login: string): void {
+  stripTailscaleHeaders(req.headers);
   if (req.headers.origin !== undefined) req.headers.origin = LOOPBACK_ORIGIN;
   auditRemoteLogin(login, String(req.headers['user-agent'] ?? '').slice(0, 300));
 }
@@ -602,21 +607,8 @@ async function control(req: http.IncomingMessage, res: http.ServerResponse, rout
 
 // -------------------------------------------------------------------- serve
 
-const server = http.createServer((req, res) => {
-  // The remote name first: it is the one Host the loopback/LAN allowlist below
-  // would refuse, and the one that must never fall through to it.
-  const gate = checkRemote(req.headers, req.socket.remoteAddress, req.method, false, cfg.remote);
-  if (gate.kind === 'deny') {
-    logDeny(gate.reason, req);
-    return json(res, 403, { error: `forbidden: ${gate.reason}` });
-  }
-  // Same DNS-rebinding guard as the API, against THIS port: a hostile page whose
-  // DNS re-resolves to 127.0.0.1 still arrives with its own Host header.
-  if (gate.kind === 'local' && !isAllowedHost(req.headers.host, HOST_PORT)) {
-    return json(res, 403, { error: 'forbidden host' });
-  }
-  stripTailscaleHeaders(req.headers);
-  if (gate.kind === 'allow') admitRemote(req, gate.login);
+/** Everything after admission, shared by both listeners. */
+function handle(req: http.IncomingMessage, res: http.ServerResponse): void {
   const url = req.url ?? '/';
   const route = url.split('?')[0];
   if (route === '/host' || route.startsWith('/host/')) {
@@ -633,24 +625,69 @@ const server = http.createServer((req, res) => {
   if (isProxied(route)) return proxyHttp(req, res);
   if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: 'method not allowed' });
   serveStatic(req, res);
+}
+
+const refuseUpgrade = (socket: net.Socket) =>
+  socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+
+const server = http.createServer((req, res) => {
+  // Proxied traffic belongs on the remote listener. serve forwards the client's
+  // Host verbatim, so if it were ever pointed HERE a `Host: 127.0.0.1:<port>`
+  // request would pass the check below with nobody's identity behind it.
+  if (looksProxied(req.headers)) {
+    logDeny('proxied request on the local listener', req);
+    return json(res, 403, { error: 'forbidden: proxied requests are not served on the local port' });
+  }
+  // Same DNS-rebinding guard as the API, against THIS port: a hostile page whose
+  // DNS re-resolves to 127.0.0.1 still arrives with its own Host header.
+  if (!isAllowedHost(req.headers.host, HOST_PORT)) {
+    return json(res, 403, { error: 'forbidden host' });
+  }
+  handle(req, res);
 });
 
 server.on('upgrade', (req, socket, head) => {
-  const gate = checkRemote(req.headers, req.socket.remoteAddress, req.method, true, cfg.remote);
-  if (gate.kind === 'deny') {
-    logDeny(gate.reason, req);
-    socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+  if (looksProxied(req.headers)) {
+    logDeny('proxied request on the local listener', req);
+    refuseUpgrade(socket as net.Socket);
     return;
   }
-  if (
-    (gate.kind === 'local' && !isAllowedHost(req.headers.host, HOST_PORT)) ||
-    !isProxied((req.url ?? '/').split('?')[0])
-  ) {
+  if (!isAllowedHost(req.headers.host, HOST_PORT) || !isProxied((req.url ?? '/').split('?')[0])) {
     socket.destroy();
     return;
   }
-  stripTailscaleHeaders(req.headers);
-  if (gate.kind === 'allow') admitRemote(req, gate.login);
+  proxyUpgrade(req, socket as net.Socket, head);
+});
+
+/**
+ * The remote listener: `tailscale serve` → 127.0.0.1:<remote.port>, opened only
+ * when remote access is on. EVERY request here is gated, whatever its Host —
+ * there is no "local" on this port — so the loopback allowlist never runs.
+ */
+const remoteServer = cfg.remote.enabled
+  ? http.createServer((req, res) => {
+      const gate = checkRemote(req.headers, req.socket.remoteAddress, req.method, false, cfg.remote);
+      if (gate.kind === 'deny') {
+        logDeny(gate.reason, req);
+        return json(res, 403, { error: `forbidden: ${gate.reason}` });
+      }
+      admitRemote(req, gate.login);
+      handle(req, res);
+    })
+  : null;
+
+remoteServer?.on('upgrade', (req, socket, head) => {
+  const gate = checkRemote(req.headers, req.socket.remoteAddress, req.method, true, cfg.remote);
+  if (gate.kind === 'deny') {
+    logDeny(gate.reason, req);
+    refuseUpgrade(socket as net.Socket);
+    return;
+  }
+  if (!isProxied((req.url ?? '/').split('?')[0])) {
+    socket.destroy();
+    return;
+  }
+  admitRemote(req, gate.login);
   proxyUpgrade(req, socket as net.Socket, head);
 });
 
@@ -663,6 +700,7 @@ const shutdown = async () => {
   // orphan already holding the API port.
   await stopApi();
   server.close();
+  remoteServer?.close();
   process.exit(0);
 };
 process.on('SIGINT', () => void shutdown());
@@ -682,6 +720,14 @@ await new Promise<void>((resolve, reject) => {
   });
   server.listen(HOST_PORT, bindHost, resolve);
 });
+if (remoteServer) {
+  // Loopback ALWAYS: serve connects from 127.0.0.1, and remote mode refuses to
+  // boot with LAN mode, so nothing else should ever reach this port.
+  await new Promise<void>((resolve, reject) => {
+    remoteServer.once('error', reject);
+    remoteServer.listen(cfg.remote.port, '127.0.0.1', resolve);
+  });
+}
 
 console.log(`task-manager front door on http://127.0.0.1:${HOST_PORT}  → API 127.0.0.1:${API_PORT}`);
 if (cfg.lan.enabled) {
@@ -689,7 +735,7 @@ if (cfg.lan.enabled) {
 }
 if (cfg.remote.enabled) {
   console.log(
-    `  remote: https://${cfg.remote.hostname} (via \`tailscale serve\` → :${HOST_PORT}) for ${cfg.remote.allowedLogins.join(', ')} only`,
+    `  remote: https://${cfg.remote.hostname} → 127.0.0.1:${cfg.remote.port} (\`tailscale serve --bg --https=443 http://127.0.0.1:${cfg.remote.port}\`) for ${cfg.remote.allowedLogins.join(', ')} only`,
   );
 }
 if (!fs.existsSync(path.join(webDist, 'index.html'))) {
