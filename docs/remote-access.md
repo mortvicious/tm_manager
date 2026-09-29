@@ -56,7 +56,7 @@ Out of scope: an attacker who already runs code as your user on the Mac. They al
 - **iOS app** with VPN On Demand: it connects automatically when you open the PWA away from home, and can stay off on trusted Wi-Fi.
 - **Admin controls that map onto the threat model:** grants/ACLs (T4), key expiry (T5), Tailnet Lock (T6/T7), and node removal as a remote kill switch (T5).
 
-Costs, stated plainly: the free Personal plan is enough for one user. iOS allows **one active VPN at a time**, so Tailscale conflicts with a corporate or commercial VPN on the phone. You must trust Tailscale's client software; the control plane is covered by Tailnet Lock.
+Costs, stated plainly: the free Personal plan (6 users, unlimited user devices, Tailnet Lock included; device approval is Standard+, which is why § Phase 0 uses Tailnet Lock) covers this technically, but Tailscale limits it to **non-commercial use**. If this Mac does paid or client work, a paid plan is the honest choice. iOS allows **one active VPN at a time**, so Tailscale conflicts with a corporate or commercial VPN on the phone. You must trust Tailscale's client software; the control plane is covered by Tailnet Lock.
 
 ## Plan
 
