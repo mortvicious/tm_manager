@@ -1,0 +1,135 @@
+# Remote access — the web UI from anywhere, safely
+
+**Status: proposal (2026-09-29). No code has changed.** This page is the research and the plan for using the full mobile web UI (terminal included) away from the Mac. The Telegram bot stays as the break-glass surface. Implementation is sketched in § Plan and waits for the decisions in § Open decisions.
+
+## TL;DR
+
+Use **Tailscale**, a private WireGuard mesh, and put **`tailscale serve`** in front of the front door, which keeps binding `127.0.0.1`. Nothing listens on the internet, on the café Wi-Fi, or even on the home LAN. The iPhone joins the tailnet with the Tailscale app. It opens `https://<mac>.<tailnet>.ts.net`, which has a real Let's Encrypt certificate, and adds it to the Home Screen as the existing PWA.
+
+The app itself gains one gate, **at the front door**: a request that addressed us by the tailnet name must carry a `Tailscale-User-Login` identity header on an allowlist, or it gets a 403. That header is stamped by `tailscaled` and cannot be forged from the tailnet. A passkey (Face ID) login for remote requests is phase 2, as defence in depth. A native iPhone app, a Telegram Mini App, Cloudflare Tunnel and ngrok are all rejected; see § Options.
+
+## Why this needs care: reachability is root today
+
+The measured current state, with the code references behind each point:
+
+- **There is no user authentication.** There is no login, cookie, or password anywhere in `server/src`. The per-boot session token is handed to anyone who asks: `GET /api/session` → `{token}` (`server/src/index.ts:281`). REST `/api/*` carries no token at all. The only guard is the Host/Origin allowlist (`index.ts:144-156`, `server/src/net.ts:52-73`), and GETs are not Origin-checked.
+- **The UI is remote code execution by design.** `/ws/terminal/:runId` writes keystrokes straight into claude PTYs. Repo commands spawn any argv (`POST /api/commands`). Repos register by any absolute path. `PUT /api/config` can switch agents to `bypassPermissions`. Chat `write` mode is `--dangerously-skip-permissions`. `/api/repos/:id/push` pushes. `/host/*` start/stop/restart the API, `force` included, with no auth. `GET /api/config` returns every DB setting, including the Sentry token.
+- **LAN mode (`TM_LAN=1`) is not a remote-access mode.** It binds `::` on every interface and widens the allowlist to RFC1918, link-local and `*.local`, with **no extra auth**. Its own banner says "anyone on this network can run commands here" (`index.ts:424`). At home that means every IoT box and every guest on the Wi-Fi.
+- **Tunnels and tailnets 403 today, and that is correct.** `isAllowedHost` requires the Host port to equal the listener port (a port-less Host counts as 80) and the name to be loopback or private. A `*.ts.net` name, a `100.64/10` address, or a public hostname on 443 all fail.
+
+So any remote path has two jobs: make the Mac reachable **only** to your devices, and put **real identity** in front of the app, because the app has none. `docs/future/telegram-bot.md` § Tailscale suggests that "the one change is `net.ts`: add `100.64/10` and `.ts.net` to the private list behind `TM_LAN`". **This page supersedes that.** It would work, but it rides on LAN mode, which binds every interface with zero auth, and it trusts a whole address range instead of a person.
+
+## Threat model
+
+| # | Adversary | What they could do today if the port were reachable | Mitigated by |
+|---|---|---|---|
+| T1 | Internet scanner or bot | Full RCE on the Mac | Nothing listens publicly (tailnet only, no Funnel, no port forward) |
+| T2 | Someone on the same Wi-Fi (home guests, café, hotel) | Full RCE (in LAN mode) | Keep binding `127.0.0.1`; `tailscale serve` is the only door, and only tailnet peers reach it |
+| T3 | Malicious web page in the phone's or Mac's browser (CSRF, DNS rebinding) | Blind POSTs; rebinding reads | Exact-name Host allowlist + Origin check (existing pattern), `SameSite=Strict` cookie in phase 2 |
+| T4 | Another device on your tailnet gets compromised (an old laptop, a shared node) | Reach the Mac like the phone does | Tailscale **grants/ACL**: only your user's phone → Mac `tcp:443`; the identity allowlist in the app |
+| T5 | Lost or stolen iPhone | Whatever an unlocked phone can open | iOS passcode/Face ID; phase 2 passkey needs Face ID per session; remove the node in the Tailscale admin console from any browser; short phone key expiry |
+| T6 | Your Tailscale login (Google/GitHub/Apple SSO) is phished | Add a new device to the tailnet | Passkey/hardware 2FA on that IdP; **Tailnet Lock** (a new node needs a signature from a trusted node); the app allowlist; phase 2 passkey is bound to the phone |
+| T7 | The Tailscale coordination server is compromised | Inject a node | **Tailnet Lock** is designed for exactly this. Traffic is end-to-end WireGuard, and DERP relays see only ciphertext |
+| T8 | Misconfiguration: someone runs `tailscale funnel` by accident | Public exposure | Funnel requests carry **no** identity headers → the app gate denies (fails closed); plus an ACL `nodeAttrs` that does not grant `funnel` |
+
+Out of scope: an attacker who already runs code as your user on the Mac. They already own everything the app can do.
+
+## Options considered
+
+| Option | Exposure | Who sees plaintext | Identity | Verdict |
+|---|---|---|---|---|
+| **Tailscale + `tailscale serve`** | None public; tailnet peers only | Nobody but the two endpoints (TLS inside WireGuard) | Per-user, per-device; `Tailscale-User-Login` header stamped by `tailscaled` | **Recommended** |
+| Headscale (self-hosted Tailscale control plane) | Same as Tailscale, but you run a public control server | Endpoints | Same | More ops, and a public server you must now defend. Tailnet Lock gets most of the "don't trust the vendor" benefit. Later, if ever |
+| Plain WireGuard (router or Mac as the server) | One UDP port forwarded on the router (silent to unauthenticated packets) | Endpoints | Key per device, no user identity, no headers | Viable, but needs a port forward, dynamic DNS, a non-CGNAT ISP, and manual keys and TLS. No identity to gate on |
+| Cloudflare Tunnel + Access | **Public hostname on the internet**, gated by an Access policy | **Cloudflare** terminates TLS and sees terminal I/O, code and tokens | IdP login (+ app must verify the `Cf-Access-Jwt-Assertion` JWT) | Rejected. One policy slip means internet-facing RCE, and a third party reads your work. This is the same reason Telegraph was dropped (2026-09-01: "public URLs, private work detail") |
+| ngrok / localtunnel / similar | Public URL | The provider | Optional OAuth | Rejected, for the same reasons, only weaker |
+| Tailscale **Funnel** | Public internet | Endpoints | **None** (no identity headers) | Rejected explicitly; guarded against in T8 |
+| Telegram Mini App (UI inside Telegram) | The Mini App URL must be **public HTTPS** reachable by Telegram clients | The hosting path, plus Telegram's webview | Telegram `initData` HMAC | Rejected: it needs a public endpoint (Cloudflare-class exposure) to reach the same UI. The bot stays a chat surface |
+| Native iPhone app | Still needs a transport (one of the above) | — | — | Not needed. The transport is the security; a native shell adds signing, TestFlight and a second front end, and buys nothing a PWA over HTTPS lacks. Revisit only for native push or background features |
+| macOS Screen Sharing / SSH (Blink, Termius) over the tailnet | Tailnet only | Endpoints | macOS account / SSH key | Keep as **break-glass** fallbacks (`tailscale ssh` or plain sshd bound to the tailnet), not the daily UI |
+
+### Why Tailscale specifically
+
+- **Nothing inbound.** Both ends dial out and NAT traversal punches through. When it can't, DERP relays forward packets they cannot decrypt.
+- **`tailscale serve`** listens only on the tailnet interface. It terminates HTTPS with an auto-renewed Let's Encrypt cert for the MagicDNS name, and reverse-proxies to `127.0.0.1:5176`. The app keeps its loopback-only bind, so T2 is closed by construction.
+- **Identity headers.** For proxied serve requests `tailscaled` adds `Tailscale-User-Login`, `Tailscale-User-Name` and `Tailscale-User-Profile-Pic`. It **strips any incoming copies** first, so a tailnet peer cannot forge them. That gives us a real "who" at no auth-code cost. Funnel traffic does not get them, which is what makes T8 fail closed.
+- **iOS app** with VPN On Demand: it connects automatically when you open the PWA away from home, and can stay off on trusted Wi-Fi.
+- **Admin controls that map onto the threat model:** grants/ACLs (T4), key expiry (T5), Tailnet Lock (T6/T7), and node removal as a remote kill switch (T5).
+
+Costs, stated plainly: the free Personal plan is enough for one user. iOS allows **one active VPN at a time**, so Tailscale conflicts with a corporate or commercial VPN on the phone. You must trust Tailscale's client software; the control plane is covered by Tailnet Lock.
+
+## Plan
+
+Phases in order. Each phase is independently useful and gets an adversarial review before the next (CLAUDE.md rule).
+
+### Phase 0 — tailnet hardening (no code, ~30 min, you do it)
+
+1. Tailscale account: sign in through an IdP protected by a **passkey or hardware key**, not SMS.
+2. Install Tailscale on the Mac (the standalone build is preferred over the App Store one: it runs as a system daemon and works with `tailscale serve` from the CLI) and on the iPhone.
+3. **Mac key expiry: disable. Phone key expiry: keep** (≤ 90 days). Otherwise the Mac falls off the tailnet while you are away, with nobody at home to re-auth it.
+4. **Tailnet Lock** on, with the Mac and the phone as signing nodes. Store the disablement secrets offline. It is mutually exclusive with device approval; for a one-person tailnet, Lock is the stronger choice.
+5. **Grants/ACL**, replacing the default allow-all. Tag the Mac `tag:tm-host`. Allow only your user → `tag:tm-host:443` (plus `:22` if you want SSH break-glass). Deny everything else, including the Mac reaching other nodes. Grant **no** `funnel` node attribute.
+6. macOS: firewall on with stealth mode; **leave LAN mode off** (`lan.enabled` absent, no `TM_LAN`).
+7. Mac-as-a-server basics are already a workbook: `docs/telegram.md` § Connect (launchd KeepAlive, `caffeinate`, power settings, and the FileVault reboot wall; after an unattended reboot nothing runs until someone unlocks the disk).
+
+Nothing is reachable after phase 0 alone. The app still 403s the tailnet name, which is the correct resting state.
+
+### Phase 1 — the identity gate (small code change, the minimum to go live)
+
+- **Config** (`server/data/config.json`, a file, not `tm_config`, which `GET /api/config` dumps):
+  `remote: { enabled: false, hostname: "<mac>.<tailnet>.ts.net", allowedLogins: ["you@github"] }`.
+  It is refused at boot if `lan.enabled` is also on; the two are mutually exclusive.
+- **`net.ts`**: accept Host === `remote.hostname` with an implicit or explicit port 443, and Origin === `https://<remote.hostname>`. The match is **exact**, never a `*.ts.net` suffix, which would admit any tailnet's (or any Funnel's) name. The DNS-rebinding guard is otherwise untouched.
+- **Front door (`host.ts`)**: the gate lives HERE, because the front door rewrites `Host` to `127.0.0.1:5175` and the API can no longer tell a remote request from a local one. For a request whose Host is the remote name:
+  - require the TCP peer to be loopback (`tailscale serve` connects from loopback) and `Tailscale-User-Login` ∈ `allowedLogins`, else 403;
+  - **strip** every `Tailscale-*` header before proxying;
+  - pass Origin through as today (the API needs the same exact-name Origin rule);
+  - cover the WS upgrade path the same way.
+- **Serve:** `tailscale serve --bg --https=443 http://127.0.0.1:5176`. It serves the **production front door only**. The Vite dev server (5173) is never exposed.
+- **Verify before relying on it** (unmeasured assumptions today):
+  1. Does `serve` forward the original `Host` (expected: `<mac>.<tailnet>.ts.net`) or rewrite it?
+  2. Are identity headers present on WebSocket upgrades?
+  3. What is the exact `Tailscale-User-Login` value for your account?
+  4. Does a request from a tagged node carry no user login? Expected yes; it must be refused.
+
+  Measure all four with a throwaway echo server behind `serve` before writing the gate. Then check with curl: from the phone → 200; from another tailnet node or user → 403; `tailscale funnel` briefly on → 403; local `127.0.0.1:5176` unchanged.
+- **Audit:** each new remote login ⇒ one `tm_events` row (`actor: 'remote'`, login, user agent), summarised rather than logged per request.
+- **Docs:** this page, plus `docs/host.md` and `SECURITY.md`. `SECURITY.md` has already drifted: it says loopback-only, ignoring LAN mode, and says the internal routes use the session token, where the code uses per-run tokens. Its "never tunnel it" line becomes "never publicly; tailnet via `serve` + gate only".
+
+### Phase 2 — defence in depth: passkey + remote capability profile
+
+The tailnet already gives identity, and this phase covers the cases where the tailnet is not enough (T5, T6):
+
+- **Passkey (WebAuthn) login for the remote hostname only.** Face ID on the phone gives a `__Host-` cookie, `HttpOnly; Secure; SameSite=Strict`, 12 h absolute. The terminal WS and every REST call on the remote name need it. `GET /api/session` stops handing out the token to remote requests without the cookie. The `ts.net` HTTPS name is what makes this possible: WebAuthn needs a secure context and a stable RP ID. Registration happens only from loopback, at the Mac.
+- **Remote capability profile.** Over the remote name, refuse the settings that turn the UI into a stronger weapon than the phone needs. The candidates are listed in § Open decisions.
+- **Redact secrets** from `GET /api/config` for remote requests (the Sentry token, and anything similar).
+- **Telegram ping on each new remote session** ("new sign-in: iPhone, 14:02"). Silent sign-ins are the ones that matter.
+
+### Phase 3 — mobile polish (optional)
+
+- iOS PWA meta (`apple-mobile-web-app-capable`, status-bar style). A service worker for the **shell only**; never cache `/api` or `/ws`.
+- **Self-host the Google Fonts** (`web/index.html:14-19`), so the remote page makes no third-party requests.
+- Telegram cards get an "Open in UI" link to `https://<mac>.<tailnet>.ts.net/tasks/<id>`. It resolves only on the tailnet, so a leaked link is useless.
+- Web Push (iOS 16.4+ for Home Screen PWAs) could later replace some Telegram pings. Not needed while the bot does it.
+
+## Operating it
+
+- **Lost phone:** remove the node in the Tailscale admin console (any browser) → it can no longer reach the Mac. Also revoke the passkey (phase 2). The Telegram bot is on the lost phone too, so the admin console is the kill switch.
+- **Away from home and the Mac is unreachable:** the Mac is asleep, rebooted behind FileVault, or `tailscaled` is down. The Telegram bot does not depend on the tailnet (it polls outward), so if the bot answers, the Mac is up and the problem is the tailnet or `serve`.
+- **Disable remote quickly:** `tailscale serve reset` on the Mac, or `remote.enabled: false` and restart the front door. Either leaves local use untouched.
+
+## Open decisions
+
+1. **Tailscale vs self-hosted WireGuard.** The recommendation is Tailscale: identity headers, no open port, and Tailnet Lock for the vendor-trust concern. Choose WireGuard only if no third-party control plane at all is a hard requirement. You then lose the identity gate and must do phase 2 before going live.
+2. **Is phase 2 a prerequisite for going live, or a follow-up?** Recommendation: phase 1 is enough to start on a locked-down, one-user tailnet. Do phase 2 before adding any second device or person.
+3. **The remote capability profile.** Which actions should the phone not have? Candidates: repo registration, creating (not running) repo commands, switching agents to `bypassPermissions`, chat `write` mode, `/host` force-restart. Each one refused remotely is a trip back to the Mac when you truly need it.
+
+## Sources
+
+- Tailscale Serve: https://tailscale.com/docs/features/tailscale-serve · `serve` CLI: https://tailscale.com/docs/reference/tailscale-cli/serve
+- Identity headers: https://tailscale.com/docs/concepts/tailscale-identity · demo: https://github.com/tailscale-dev/id-headers-demo
+- Security best practices: https://tailscale.com/docs/reference/best-practices/security
+- Tailnet Lock: https://tailscale.com/kb/1226/tailnet-lock · Device approval: https://tailscale.com/kb/1099/device-approval · Key expiry: https://tailscale.com/docs/features/access-control/key-expiry
+- iOS VPN On Demand: https://tailscale.com/docs/features/client/ios-vpn-on-demand
+- Cloudflare Access self-hosted apps (the rejected alternative): https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/
+- Earlier in-repo notes this supersedes: `docs/future/telegram-bot.md` § Tailscale, `docs/future/autonomy-cloud-shadow.md` (a).
