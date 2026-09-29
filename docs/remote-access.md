@@ -118,6 +118,15 @@ The tailnet already gives identity, and this phase covers the cases where the ta
 
 - **Lost phone:** remove the node in the Tailscale admin console (any browser) → it can no longer reach the Mac. Also revoke the passkey (phase 2). The Telegram bot is on the lost phone too, so the admin console is the kill switch.
 - **Away from home and the Mac is unreachable:** the Mac is asleep, rebooted behind FileVault, or `tailscaled` is down. The Telegram bot does not depend on the tailnet (it polls outward), so if the bot answers, the Mac is up and the problem is the tailnet or `serve`.
+- **What survives what.** The serve config and the cert live in `tailscaled`'s state, so they persist across restarts and reboots and never need redoing. The phone never needs re-pairing.
+  - **Sleep/wake:** the Mac is unreachable while asleep (the bot too); Tailscale reconnects on wake by itself.
+  - **API restart** (the UI button, `/host/restart`): the page stays up; that is what the front door is for.
+  - **Front-door restart or crash:** serve answers 502 until 5176 is back, then reload.
+  - **`npm run build`:** reload the page.
+  - **Dev mode is not remote:** only the production front door (`npm start`, port 5176) is served. The Vite dev server (5173) never is.
+  - **Reboot:** stops at the FileVault screen until someone logs in at the Mac (`docs/telegram.md` § 6). After login, the Tailscale app (Settings → Launch at login) and the launchd agent bring everything back.
+- **iPhone:** enable VPN On Demand in the Tailscale app so it connects by itself when the page is opened; otherwise open the Tailscale app first.
+- **Lid closed:** `caffeinate` only stops idle sleep; lid-close still sleeps without an external display. The answers and their caveats are in `docs/telegram.md` § 6: lid open on the charger (recommended), or the undocumented `sudo pmset -a disablesleep 1` (verify with `pmset -g`; watch heat on a fanless Air).
 - **Disable remote quickly:** `tailscale serve reset` on the Mac, or `remote.enabled: false` and restart the front door. Either leaves local use untouched.
 
 ## Open decisions
