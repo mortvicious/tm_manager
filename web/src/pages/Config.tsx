@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_SETTINGS, EFFORT_LEVELS, MODEL_OPTIONS, type AppSettings } from '@tm/shared';
 import { api } from '../api.ts';
+import { PushSettings } from '../components/PushSettings.tsx';
 import { useApp } from '../state.tsx';
 
 function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
@@ -77,6 +78,8 @@ export function ConfigPage() {
         </button>
       </h1>
       {err && <div className="warn-text" style={{ marginBottom: 10 }}>{err}</div>}
+
+      <PushSettings />
 
       <div className="panel cfg-group">
         <h3>Orchestrator</h3>

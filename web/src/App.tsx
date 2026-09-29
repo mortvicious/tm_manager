@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { Route, Routes } from 'react-router-dom';
 import { Layout } from './components/Layout.tsx';
 import { QuestionModal } from './components/QuestionModal.tsx';
+import { PushBridge } from './components/PushBridge.tsx';
 import { TaskSlideOver } from './components/TaskSlideOver.tsx';
 import { TerminalDrawer } from './components/TerminalDrawer.tsx';
 import { BoardPage } from './pages/Board.tsx';
@@ -58,6 +59,8 @@ export function App() {
       )}
       {/* an agent's question pops up on whatever page is open (docs/questions.md) */}
       <QuestionModal />
+      {/* service worker + notification taps + ?task=<id> deep links (docs/push.md) */}
+      <PushBridge onOpenTask={setOpenTask} />
     </Layout>
   );
 }

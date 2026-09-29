@@ -56,7 +56,8 @@ task-manager listening on http://127.0.0.1:5175 (storage: sqlite)
 (`http://faigs-macbook-air.local:5176`) which survives a DHCP lease change. In
 dev the phone wants the **Vite** port (5173); in production it wants the front
 door (5176), which serves the SPA and proxies the API. Add to Home Screen works —
-`site.webmanifest` is already `display: standalone`.
+`site.webmanifest` is already `display: standalone`. Push notifications need the
+Home Screen app over HTTPS (the tailnet), not LAN http: `docs/push.md`.
 
 ### Why it is opt-in, and what it costs
 
@@ -203,6 +204,18 @@ on mousedown keeps the soft keyboard up, otherwise every keypress would cost a
 re-tap on the terminal. Because the row is a sibling of `.term-body` inside the
 drawer, it takes its height from the terminal and not from the tab-bar
 clearance; mounting or unmounting it refits xterm and resizes the PTY.
+
+**Terminal scrolling** (`components/termTouchScroll.ts`). xterm 6 replaced
+its native-overflow viewport with VS Code's scrollable element, which listens
+to `wheel` only, so a finger dragged over the terminal scrolled nothing. A
+one-finger vertical drag now scrolls: in the normal buffer (claude's inline
+TUI, a shell) through `term.scrollLines`, sub-line remainders carried; in the
+alternate buffer (less, vim) through a synthetic line-mode `wheel` on
+`.xterm-screen`, which xterm reports to the app or turns into arrow keys, as a
+desktop wheel would. Nothing is prevented until the finger moves 8px, so a
+tap still focuses xterm and raises the keyboard; a drag cancels the page's own
+scroll and the tap that would follow it. A flick coasts and decays; a finger
+that stopped before lifting does not. Two fingers are left to the browser.
 
 ## Known limits
 

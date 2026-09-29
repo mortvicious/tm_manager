@@ -1,3 +1,4 @@
+import type { PushDevice, PushKind } from '@tm/shared';
 import type {
   AppSettings,
   AuditEvent,
@@ -200,6 +201,21 @@ export interface NewQuestion {
   questions: QuestionItem[];
 }
 
+/** A stored Web Push subscription (docs/push.md): the SPA's view plus the keys. */
+export interface PushDeviceRecord extends PushDevice {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+}
+
+export interface NewPushDevice {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  label: string;
+  kinds: PushKind[];
+}
+
 export interface QuestionFilter {
   status?: QuestionStatus;
   taskId?: string;
@@ -358,6 +374,20 @@ export interface Storage {
    * expires ALL pending questions — the boot sweep.
    */
   expireQuestions(f: { runId?: string; taskId?: string }, note: string): Promise<Question[]>;
+
+  // ---- web push devices (docs/push.md) ----
+
+  listPushDevices(): Promise<PushDeviceRecord[]>;
+  /**
+   * Keyed on the endpoint: re-subscribing the same browser (a new permission
+   * grant, a rotated key) replaces its keys and kinds and resets the failure
+   * count instead of adding a second row that would ping twice.
+   */
+  upsertPushDevice(d: NewPushDevice): Promise<PushDeviceRecord>;
+  updatePushDevice(id: string, patch: { label?: string; kinds?: PushKind[] }): Promise<PushDeviceRecord | null>;
+  deletePushDevice(id: string): Promise<boolean>;
+  /** success: last_ok_at = now, fail_count = 0; failure: last_error, fail_count + 1 */
+  recordPushResult(id: string, error: string | null): Promise<void>;
 
   // ---- chats (docs/chat.md) ----
 

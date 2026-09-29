@@ -1170,3 +1170,73 @@ export interface HostStatus {
   };
   host: { port: number; dev: boolean; spaBuilt: boolean };
 }
+
+// ---- Web Push (docs/push.md) ----
+
+/** What a Home Screen device can be pinged about; chosen per device. */
+export type PushKind =
+  | 'question'
+  | 'attention'
+  | 'review'
+  | 'done'
+  | 'failed'
+  | 'blocked'
+  | 'published'
+  | 'started'
+  | 'proposal'
+  | 'feature'
+  | 'chat'
+  | 'report'
+  | 'queue';
+
+/** The one list every surface renders (SPA toggles, server validation, defaults). */
+export const PUSH_KINDS: { kind: PushKind; label: string; hint: string; default: boolean }[] = [
+  { kind: 'question', label: 'Questions', hint: 'an agent asks you something (AskUserQuestion)', default: true },
+  { kind: 'attention', label: 'Needs attention', hint: 'an agent is stuck on a prompt in its hidden terminal', default: true },
+  { kind: 'review', label: 'Ready for review', hint: 'a task landed in review, with the reviewer’s verdict', default: true },
+  { kind: 'done', label: 'Done', hint: 'a task finished straight to done (auto-complete)', default: true },
+  { kind: 'failed', label: 'Failed', hint: 'a task failed', default: true },
+  { kind: 'blocked', label: 'Blocked', hint: 'a task is waiting on its subtasks', default: true },
+  { kind: 'published', label: 'Published', hint: 'a task was committed and pushed', default: true },
+  { kind: 'started', label: 'Started', hint: 'an agent picked a task up', default: false },
+  { kind: 'proposal', label: 'Proposals', hint: 'an agent proposed a split or follow-up', default: true },
+  { kind: 'feature', label: 'Features', hint: 'a feature plan is ready to approve, or a feature paused', default: true },
+  { kind: 'chat', label: 'Chat replies', hint: 'claude answered in a chat', default: true },
+  { kind: 'report', label: 'Reports', hint: 'a client report finished or failed', default: true },
+  { kind: 'queue', label: 'Queue drained', hint: 'nothing queued, nothing running', default: true },
+];
+
+export const DEFAULT_PUSH_KINDS: PushKind[] = PUSH_KINDS.filter((k) => k.default).map((k) => k.kind);
+
+/** A subscribed browser, as the SPA sees it — never the keys. */
+export interface PushDevice {
+  id: string;
+  /** the push service's host (web.push.apple.com, fcm.googleapis.com, …) */
+  service: string;
+  /** "iPhone", "Mac — Safari"… — set by the SPA at subscribe time, editable */
+  label: string;
+  kinds: PushKind[];
+  createdAt: string;
+  lastOkAt: string | null;
+  lastError: string | null;
+  /** consecutive failed sends; reset by a success */
+  failCount: number;
+}
+
+export interface PushStatus {
+  enabled: boolean;
+  /** base64url VAPID public key — the SPA's applicationServerKey; null when disabled */
+  publicKey: string | null;
+  devices: PushDevice[];
+}
+
+/** The JSON inside every push message; public/sw.js renders it. */
+export interface PushMessage {
+  title: string;
+  body: string;
+  /** same tag replaces the earlier notification (one per task / question) */
+  tag: string;
+  /** in-app path the click opens, e.g. `/?task=<id>` */
+  url: string;
+  kind: PushKind | 'test';
+}

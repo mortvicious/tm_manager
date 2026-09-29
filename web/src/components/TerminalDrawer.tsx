@@ -7,6 +7,7 @@ import type { TerminalServerMsg } from '@tm/shared';
 import { useApp } from '../state.tsx';
 import { IconChevron, IconX } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
+import { attachTouchScroll } from './termTouchScroll.ts';
 
 const b64ToBytes = (b64: string): Uint8Array => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 const bytesToB64 = (bytes: Uint8Array): string => {
@@ -130,6 +131,8 @@ export function TerminalDrawer({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(hostRef.current);
+    // xterm 6 scrolls on wheel only; a finger on a phone needs this
+    const detachTouch = attachTouchScroll(term, hostRef.current);
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${proto}://${location.host}/ws/terminal/${runId}?token=${token}`);
@@ -213,6 +216,7 @@ export function TerminalDrawer({
       focusRef.current = null;
       window.removeEventListener('resize', refit);
       dataSub.dispose();
+      detachTouch();
       ws.close();
       term.dispose();
     };

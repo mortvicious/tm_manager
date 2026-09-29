@@ -23,6 +23,9 @@ import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from
 import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_IDLE } from './queue-sql.ts';
 import { MOVE_SUBTREE_SQL, ROOT_PATH, moveSubtreeParams, pathContains, placement } from './group.ts';
 import { MIGRATIONS } from './migrations.ts';
+import { PUSH_RESULT_FAIL_SQL, PUSH_RESULT_OK_SQL, PUSH_UPSERT_SQL, rowToPushDevice } from './push-sql.ts';
+import type { NewPushDevice, PushDeviceRecord } from './types.ts';
+import type { PushKind } from '@tm/shared';
 import {
   eventId,
   now,
@@ -849,6 +852,35 @@ export class PostgresStorage implements Storage {
     }
     const sql = `SELECT * FROM tm_questions ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC, id DESC`;
     return (await this.q(sql, params)).map(rowToQuestion);
+  }
+
+  // ---- web push devices (docs/push.md) ----
+
+  async listPushDevices(): Promise<PushDeviceRecord[]> {
+    return (await this.q(`SELECT * FROM tm_push_devices ORDER BY created_at`, [])).map(rowToPushDevice);
+  }
+
+  async upsertPushDevice(d: NewPushDevice): Promise<PushDeviceRecord> {
+    const t = now();
+    const r = await this.q(PUSH_UPSERT_SQL, [randomUUID(), d.endpoint, d.p256dh, d.auth, d.label, JSON.stringify(d.kinds), t, t]);
+    return rowToPushDevice(r[0]);
+  }
+
+  async updatePushDevice(id: string, patch: { label?: string; kinds?: PushKind[] }): Promise<PushDeviceRecord | null> {
+    const r = await this.q(
+      `UPDATE tm_push_devices SET label = COALESCE(?, label), kinds = COALESCE(?, kinds), updated_at = ? WHERE id = ? RETURNING *`,
+      [patch.label ?? null, patch.kinds ? JSON.stringify(patch.kinds) : null, now(), id],
+    );
+    return r[0] ? rowToPushDevice(r[0]) : null;
+  }
+
+  async deletePushDevice(id: string): Promise<boolean> {
+    return (await this.q(`DELETE FROM tm_push_devices WHERE id = ? RETURNING id`, [id])).length > 0;
+  }
+
+  async recordPushResult(id: string, error: string | null): Promise<void> {
+    if (error === null) await this.q(PUSH_RESULT_OK_SQL, [now(), id]);
+    else await this.q(PUSH_RESULT_FAIL_SQL, [error, id]);
   }
 
   async getQuestion(id: string): Promise<Question | null> {

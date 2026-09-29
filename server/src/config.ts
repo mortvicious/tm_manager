@@ -43,6 +43,22 @@ export interface BootConfig {
    * can reach the API.
    */
   telegram: TelegramConfig;
+  /**
+   * Web Push to the Home Screen PWA (docs/push.md). The VAPID private key is a
+   * secret, so it lives here (never in `tm_config`, which /api/config dumps).
+   * Both keys are generated on first boot and written back by `savePushVapid`.
+   */
+  push: PushConfig;
+}
+
+export interface PushConfig {
+  enabled: boolean;
+  /** VAPID `sub`: a mailto: or https: URL. Apple refuses a localhost address. */
+  subject: string;
+  /** base64url, 65-byte uncompressed P-256 point. Empty = generate at boot. */
+  vapidPublicKey: string;
+  /** base64url, 32-byte P-256 private scalar. Empty = generate at boot. */
+  vapidPrivateKey: string;
 }
 
 export interface RemoteConfig {
@@ -183,6 +199,7 @@ const DEFAULT_CONFIG: BootConfig = {
     digest: { ...DEFAULT_DIGEST },
     chat: { ...DEFAULT_TELEGRAM_CHAT },
   },
+  push: { enabled: true, subject: 'mailto:task-manager@example.com', vapidPublicKey: '', vapidPrivateKey: '' },
 };
 
 export const serverRoot = path.resolve(fileURLToPath(import.meta.url), '../..');
@@ -327,7 +344,36 @@ export function loadBootConfig(): BootConfig {
       digest: { ...DEFAULT_CONFIG.telegram.digest, ...(tg.digest ?? {}) },
       chat: { ...DEFAULT_CONFIG.telegram.chat, ...(tg.chat ?? {}) },
     },
+    push: parsePush(raw.push),
   };
+}
+
+function parsePush(r: unknown): PushConfig {
+  if (r === undefined) return structuredClone(DEFAULT_CONFIG.push);
+  if (typeof r !== 'object' || r === null || Array.isArray(r)) {
+    throw new Error(`data/config.json: push must be an object`);
+  }
+  const o = r as Record<string, unknown>;
+  if (o.enabled !== undefined && typeof o.enabled !== 'boolean') {
+    throw new Error(`data/config.json: push.enabled must be a boolean`);
+  }
+  for (const k of ['subject', 'vapidPublicKey', 'vapidPrivateKey'] as const) {
+    if (o[k] !== undefined && typeof o[k] !== 'string') {
+      throw new Error(`data/config.json: push.${k} must be a string`);
+    }
+  }
+  const subject = ((o.subject as string | undefined) ?? DEFAULT_CONFIG.push.subject).trim();
+  if (!/^(mailto:\S+@\S+|https:\/\/\S+)$/.test(subject)) {
+    throw new Error(`data/config.json: push.subject must be a mailto: or https: URL, got "${subject}"`);
+  }
+  const pub = ((o.vapidPublicKey as string | undefined) ?? '').trim();
+  const priv = ((o.vapidPrivateKey as string | undefined) ?? '').trim();
+  // Half a key pair cannot sign anything the push service would accept, and
+  // regenerating one half silently would orphan every existing subscription.
+  if ((pub === '') !== (priv === '')) {
+    throw new Error(`data/config.json: push.vapidPublicKey and push.vapidPrivateKey must be set together (or both left empty to generate)`);
+  }
+  return { enabled: o.enabled !== false, subject, vapidPublicKey: pub, vapidPrivateKey: priv };
 }
 
 /**
@@ -404,6 +450,19 @@ export function saveTelegramDigest(digest: TelegramDigestConfig): void {
   }
   raw.telegram = { ...(raw.telegram ?? {}), digest: { ...digest } };
   fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n');
+}
+
+/**
+ * Persist a freshly generated VAPID pair. Rewrites ONLY push.vapidPublicKey /
+ * push.vapidPrivateKey on a re-read of the file, like saveTelegramNotify.
+ */
+export function savePushVapid(publicKey: string, privateKey: string): void {
+  const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new Error('data/config.json is not an object');
+  }
+  raw.push = { ...(raw.push ?? {}), vapidPublicKey: publicKey, vapidPrivateKey: privateKey };
+  fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n', { mode: 0o600 });
 }
 
 export function expandHome(p: string): string {

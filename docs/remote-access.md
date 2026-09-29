@@ -137,7 +137,7 @@ The tailnet already gives identity, and this phase covers the cases where the ta
 - iOS PWA meta (`apple-mobile-web-app-capable`, status-bar style). A service worker for the **shell only**; never cache `/api` or `/ws`.
 - **Self-host the Google Fonts** (`web/index.html:14-19`), so the remote page makes no third-party requests.
 - Telegram cards get an "Open in UI" link to `https://<mac>.<tailnet>.ts.net/tasks/<id>`. It resolves only on the tailnet, so a leaked link is useless.
-- Web Push (iOS 16.4+ for Home Screen PWAs) could later replace some Telegram pings. Not needed while the bot does it.
+- ~~Web Push (iOS 16.4+ for Home Screen PWAs) could later replace some Telegram pings.~~ Done beside the bot, not instead of it: `docs/push.md`. Its service worker is push-only (no fetch handler, no cache), which satisfies the shell-only rule above. `?task=<id>` is the deep link the Telegram "Open in UI" item can use.
 
 ## Operating it
 

@@ -23,6 +23,9 @@ import { ChatService } from './chat/service.ts';
 import { registerAgentRoutes } from './routes/agent.ts';
 import { registerChatRoutes } from './routes/chat.ts';
 import { registerQuestionRoutes } from './routes/questions.ts';
+import { registerPushRoutes } from './routes/push.ts';
+import { PushService } from './push/service.ts';
+import { PushNotifier } from './push/notifier.ts';
 import { registerCommandRoutes } from './routes/commands.ts';
 import { registerFeatureRoutes } from './routes/features.ts';
 import { registerInternalRoutes } from './routes/internal.ts';
@@ -294,6 +297,15 @@ registerFeatureRoutes(app, storage);
 registerStatsRoutes(app, storage, sessions, orchestrator);
 registerChatRoutes(app, chats);
 registerQuestionRoutes(app, orchestrator.questions);
+// Web Push to the Home Screen PWA (docs/push.md). Like the bot it reaches OUT
+// (to the browser vendors' push services); the routes only manage devices.
+const push = new PushService(storage, cfg.push);
+registerPushRoutes(app, storage, push);
+const pushNotifier = new PushNotifier({
+  storage,
+  push,
+  requestedReview: (taskId) => orchestrator.isRequestedReview(taskId),
+});
 registerTerminalWs(app, [sessions, commandSessions]);
 registerEventsWs(app);
 
@@ -368,6 +380,7 @@ const stop = async () => {
   // can leave. Bounded, and `recoverOnBoot` sweeps it anyway for the crash and
   // SIGKILL cases that cannot be waited on.
   await orchestrator.drainResumeGates();
+  pushNotifier.stop();
   // Awaited, unlike the others: the bot has an in-flight long poll to abort and
   // a last audit row to write, and both need the storage still open.
   await telegram.stop();
@@ -429,6 +442,7 @@ if (!servingSpa) {
   );
 }
 telegram.start();
+void pushNotifier.start();
 if (!supervised) {
   console.log(
     `  note: \`npm start\` runs the front door on :${cfg.host.port}, which serves the UI and proxies here,\n` +

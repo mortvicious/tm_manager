@@ -379,4 +379,25 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `CREATE UNIQUE INDEX IF NOT EXISTS tm_questions_tool_idx ON tm_questions(run_id, tool_use_id)`,
     ],
   },
+  {
+    id: 32,
+    // Web Push devices (docs/push.md): one row per subscribed browser, keyed on
+    // the push service's endpoint. FK-less like tm_events; `kinds` is a JSON
+    // array of PushKind — what this device wants to be pinged about.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_push_devices (
+        id TEXT PRIMARY KEY,
+        endpoint TEXT NOT NULL UNIQUE,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        label TEXT NOT NULL,
+        kinds TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_ok_at TEXT,
+        last_error TEXT,
+        fail_count INTEGER NOT NULL DEFAULT 0
+      )`,
+    ],
+  },
 ];
