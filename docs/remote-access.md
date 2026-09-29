@@ -1,6 +1,6 @@
 # Remote access — the web UI from anywhere, safely
 
-**Status: proposal (2026-09-29). No code has changed.** This page is the research and the plan for using the full mobile web UI (terminal included) away from the Mac. The Telegram bot stays as the break-glass surface. Implementation is sketched in § Plan and waits for the decisions in § Open decisions.
+**Status (2026-09-29): phase 0 done, phase 1 built and verified** (the identity gate in the front door, § Phase 1). Remote access stays OFF until you add the `remote` block and run `tailscale serve` (§ Going live). Phase 2 (passkey, remote capability profile, secret redaction) is not built. This page is the research, the plan, and the record of what was built for using the full mobile web UI (terminal included) away from the Mac. The Telegram bot stays as the break-glass surface.
 
 ## TL;DR
 
@@ -76,27 +76,50 @@ Phases in order. Each phase is independently useful and gets an adversarial revi
 
 Nothing is reachable after phase 0 alone. The app still 403s the tailnet name, which is the correct resting state.
 
-### Phase 1 — the identity gate (small code change, the minimum to go live)
+### Phase 1 — the identity gate (built 2026-09-29)
+
+**As built.** `server/src/remote.ts` (the pure gate), `server/src/host.ts` (applies it), `server/src/config.ts` (the `remote` block), and one API route for the audit row. The API's own Host/Origin rules and `net.ts` are unchanged.
 
 - **Config** (`server/data/config.json`, a file, not `tm_config`, which `GET /api/config` dumps):
-  `remote: { enabled: false, hostname: "<mac>.<tailnet>.ts.net", allowedLogins: ["you@github"] }`.
-  It is refused at boot if `lan.enabled` is also on; the two are mutually exclusive.
-- **`net.ts`**: accept Host === `remote.hostname` with an implicit or explicit port 443, and Origin === `https://<remote.hostname>`. The match is **exact**, never a `*.ts.net` suffix, which would admit any tailnet's (or any Funnel's) name. The DNS-rebinding guard is otherwise untouched.
-- **Front door (`host.ts`)**: the gate lives HERE, because the front door rewrites `Host` to `127.0.0.1:5175` and the API can no longer tell a remote request from a local one. For a request whose Host is the remote name:
-  - require the TCP peer to be loopback (`tailscale serve` connects from loopback) and `Tailscale-User-Login` ∈ `allowedLogins`, else 403;
-  - **strip** every `Tailscale-*` header before proxying;
-  - pass Origin through as today (the API needs the same exact-name Origin rule);
-  - cover the WS upgrade path the same way.
-- **Serve:** `tailscale serve --bg --https=443 http://127.0.0.1:5176`. It serves the **production front door only**. The Vite dev server (5173) is never exposed.
-- **Measured 2026-09-29** (Tailscale 1.102.4, a throwaway loopback echo server behind `serve`, iPhone iOS 18.7 Safari + Brave):
+
+  ```json
+  "remote": { "enabled": true, "hostname": "tm-m.tail04c8fe.ts.net", "allowedLogins": ["shindo.shitai@gmail.com"] }
+  ```
+
+  Defaults to `{ enabled: false, hostname: "", allowedLogins: [] }`. Validated at load: `hostname` must be a bare DNS name (no scheme, port, trailing dot, wildcard or IP literal; lowercased), and `allowedLogins` an array of non-empty strings (lowercased). With `enabled: true`, both must be non-empty. **Boot is refused when `remote.enabled` and LAN mode (`lan.enabled` or `TM_LAN=1`) are both on**: LAN mode binds every interface with no identity, which would leave a "remote-only" install wide open on the Wi-Fi.
+- **The gate, in the front door.** It lives there because the front door rewrites `Host` to `127.0.0.1:5175`, after which the API cannot tell a remote request from a local one. Every HTTP request and WS upgrade, `/host/*` included, goes through `checkRemote()` first:
+  - `Host` not EXACTLY `remote.hostname` (port-less, which is what serve sends, or `:443`) → not remote; the loopback/LAN rules apply exactly as before. `:80`, another name on the same tailnet, a trailing dot: all fall through to the old allowlist and get its 403. There is no `.ts.net` suffix rule anywhere.
+  - A remote-name request gets **403** unless `remote.enabled`, the TCP peer is loopback, `Tailscale-User-Login` is on `allowedLogins` (exact, case-insensitive; a repeated header joins to `a, b` and matches nothing), **and** the `Origin` is exactly `https://<hostname>`. The Origin is required on WS upgrades and on every method except GET/HEAD (a top-level navigation carries none); a present foreign Origin is refused on every method. A refused WS upgrade gets a bare `403` and the socket closes.
+  - Admitted: every `tailscale-*` header is stripped (for local requests too, so the API never sees identity it cannot verify), and the verified Origin is **rewritten to the front door's loopback origin** before the rest of the front door and the API judge it.
+- **Why rewrite the Origin rather than teach `net.ts` the remote origin.** The task allowed either. Rewriting keeps the decision about the remote name in ONE place, the gate that has just checked the identity and the exact Origin. The API's `isAllowedOriginHost` and the WS routes stay loopback/LAN-only and never trust a non-private name; there is no API code path that a direct hit on `127.0.0.1:5175` with `Origin: https://tm-m…` could exercise (measured: 403 `forbidden origin`; `Host: tm-m…` straight to the API: 403 `forbidden host`). The DNS-rebinding guard is intact: the only new accepted `Host` is one exact name, and only with a tailnet identity behind it. Recorded in `docs/decisions.md` 2026-09-29.
+- **Audit.** The first admitted request of each login per front-door boot writes one `tm_events` row: `kind: 'remote.login'`, `actor: 'remote'`, `data: { login, userAgent }`. It shows on the dashboard as "remote sign-in: <login>". The front door has no storage, so it POSTs to `POST /api/host/remote-login`. That route requires `x-tm-host-token`, a secret the front door mints at every boot into `server/data/host.token` (mode 0600). It is a file rather than the child's env, so an adopted API can read it too. The remote client the front door proxies for cannot read the file, so it cannot write sign-in rows. A failed hand-off (the API down) is retried on that login's next request. The boot log also prints `[host] remote sign-in: <login> (<user agent>)` once, and refusals at most once a minute per reason.
+- **Not a threat:** a local process sending forged `Tailscale-User-Login` to `127.0.0.1:5176`. It already has full loopback access to everything the gate protects. tailscaled strips client-sent copies on the tailnet path (measured below).
+- **Serve:** `tailscale serve --bg --https=443 http://127.0.0.1:5176`. It serves the **production front door only**. The Vite dev server (5173) is never exposed. Never `tailscale funnel`.
+- **Measured 2026-09-29, before the gate** (Tailscale 1.102.4, a throwaway loopback echo server behind `serve`, iPhone iOS 18.7 Safari + Brave):
   1. `serve` forwards the **original `Host`**, port-less (`tm-m.tail04c8fe.ts.net`), and adds `X-Forwarded-For` (the peer's 100.x address), `X-Forwarded-Host`, and `X-Forwarded-Proto: https`. The TCP peer is always `127.0.0.1`.
   2. **WebSocket upgrades carry the identity headers** too, with `Origin: https://<name>`, and the WS round-trip works end to end (open, message, clean close 1000).
   3. `Tailscale-User-Login` is the account's email login. `Tailscale-User-Name` and `-Profile-Pic` come with it, plus `Tailscale-Headers-Info`.
   4. A request from the **tagged** Mac to its own name arrives with **no** identity headers, and a forged `Tailscale-User-Login` sent by the client was **stripped**. So the gate refuses tagged nodes and forgeries by construction.
 
-  The cert is a real Let's Encrypt one for the MagicDNS name. After the gate is built, check with curl: from the phone → 200; from the tagged Mac over the tailnet name → 403; `tailscale funnel` briefly on → 403; local `127.0.0.1:5176` unchanged.
-- **Audit:** each new remote login ⇒ one `tm_events` row (`actor: 'remote'`, login, user agent), summarised rather than logged per request.
-- **Docs:** this page, plus `docs/host.md` and `SECURITY.md`. `SECURITY.md` has already drifted: it says loopback-only, ignoring LAN mode, and says the internal routes use the session token, where the code uses per-run tokens. Its "never tunnel it" line becomes "never publicly; tailnet via `serve` + gate only".
+  The cert is a real Let's Encrypt one for the MagicDNS name.
+- **Verified 2026-09-29, with the gate.** `npm run typecheck` and the web build are clean. A script over `checkRemote`/`isRemoteHost`/`stripTailscaleHeaders` covers 32 cases (exact name, `:443`, `:80`, trailing dot, suffix look-alikes, case, repeated login, non-loopback peer, disabled, every Origin case, WS vs HTTP, HEAD). Config validation was driven for eleven files: a scheme, a port, a wildcard, an IP, a trailing dot, empty logins, empty hostname, a non-boolean, a string for the list, disabled (accepted), and remote plus `TM_LAN=1` (refused). Then an **isolated instance** was run: a copy of the tree on API 5199 / front door 5198 with its own SQLite DB, never the live 5175/5176, and `tailscale serve --bg --https=443 http://127.0.0.1:5198` pointed at it for the test only.
+  - From the Mac over the tailnet name: `/api/health`, `/` and `/host/status` → **403** `no tailnet identity`; with a forged `Tailscale-User-Login` → **403** (tailscaled stripped it).
+  - `127.0.0.1:5198` → unchanged (200; a foreign-Origin POST is still 403, and a foreign-Origin WS is still closed 4403 by the API).
+  - With serve's headers simulated on loopback: an allowlisted login → 200, and a POST that reaches a real route gets past the API's Origin check (400 from body validation). Wrong login, no identity, `:80`, another `*.tail04c8fe.ts.net` name, a POST with no Origin, the loopback Origin, `http://` instead of `https://`, and a foreign Origin on a GET → 403. `/host/restart` with no Origin or a foreign Origin → 403. WS on `/ws/events`: the right Origin → open; a wrong, loopback or missing Origin, no identity or a wrong login → refused 403.
+  - Audit: many remote requests from one login produced exactly one `remote.login` row. `POST /api/host/remote-login` without the token, directly or through the remote proxy with a wrong token → 403.
+  - `remote.enabled: false` → the tailnet name gives **403** `remote access is disabled`; local unchanged.
+  - **iPhone** (the owner, over the tailnet): the SPA loaded, the task list loaded, the events socket connected, and a live terminal attached over `/ws/terminal/…` and streamed (a harmless `top` repo command in the isolated instance).
+  - Afterwards `tailscale serve --https=443 off` (`No serve config`), and the isolated instance stopped.
+  - Not exercised: `tailscale funnel`, deliberately never run. Funnel traffic carries no identity headers, so it falls to the `no tailnet identity` branch.
+
+#### Going live
+
+1. **Leave LAN mode.** The live install was started with `npm run start:lan` (`TM_LAN=1`). With `remote.enabled` that combination refuses to boot. Start with `npm start`, and make sure `lan.enabled` is absent or false (and that any launchd agent runs `npm start`, not `start:lan`).
+2. Add to `server/data/config.json`:
+   `"remote": { "enabled": true, "hostname": "tm-m.tail04c8fe.ts.net", "allowedLogins": ["shindo.shitai@gmail.com"] }`
+3. Restart the **front door** (Ctrl-C the `npm start` terminal, then `npm start` again) while no agent is working. The front door's own restart button restarts only the API, and the gate lives in the front door. The boot banner should print `remote: https://tm-m.tail04c8fe.ts.net (via \`tailscale serve\` → :5176) for shindo.shitai@gmail.com only`.
+4. `tailscale serve --bg --https=443 http://127.0.0.1:5176`
+5. Check: from the Mac, `curl -s https://tm-m.tail04c8fe.ts.net/api/health` → 403 `no tailnet identity`; the phone opens the board.
 
 ### Phase 2 — defence in depth: passkey + remote capability profile
 
@@ -128,6 +151,7 @@ The tailnet already gives identity, and this phase covers the cases where the ta
 - **iPhone:** enable VPN On Demand in the Tailscale app so it connects by itself when the page is opened; otherwise open the Tailscale app first.
 - **Lid closed:** `caffeinate` only stops idle sleep; lid-close still sleeps without an external display. The answers and their caveats are in `docs/telegram.md` § 6: lid open on the charger (recommended), or the undocumented `sudo pmset -a disablesleep 1` (verify with `pmset -g`; watch heat on a fanless Air).
 - **Disable remote quickly:** `tailscale serve reset` on the Mac, or `remote.enabled: false` and restart the front door. Either leaves local use untouched.
+- **Who signed in:** the dashboard's audit feed shows one "remote sign-in" row per login per front-door boot (`GET /api/events?kind=remote.login`).
 
 ## Open decisions
 

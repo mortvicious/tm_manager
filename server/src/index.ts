@@ -14,6 +14,7 @@ import { CommandRunner } from './commands/runner.ts';
 import { liveHeadless, onHeadlessChange, stopAllHeadless } from './claude/headless.ts';
 import { loadBootConfig, serverRoot } from './config.ts';
 import { isAllowedHost, isAllowedOriginHost, lanAddresses, setLanEnabled } from './net.ts';
+import { isHostToken } from './remote.ts';
 import { broadcast } from './events.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { SessionManager } from './pty/session-manager.ts';
@@ -187,6 +188,22 @@ const restartGuard = async () => {
   };
 };
 app.get('/api/server/restart-check', async () => restartGuard());
+
+// The front door's remote gate (server/src/remote.ts, docs/remote-access.md)
+// hands us the FIRST request of each tailnet login per front-door boot, because
+// the front door has no storage of its own. Guarded by the secret it minted
+// into data/host.token — the remote client it proxies for must not be able to
+// write sign-in rows, and it cannot read that file.
+const remoteLoginBody = z.object({ login: z.string().min(1).max(320), userAgent: z.string().max(300) }).strict();
+app.post('/api/host/remote-login', async (req, reply) => {
+  const token = req.headers['x-tm-host-token'];
+  if (!isHostToken(typeof token === 'string' ? token : undefined)) {
+    return reply.code(403).send({ error: 'forbidden' });
+  }
+  const { login, userAgent } = remoteLoginBody.parse(req.body ?? {});
+  await storage.appendEvent({ kind: 'remote.login', actor: 'remote', data: { login, userAgent } });
+  return { ok: true };
+});
 
 // Self-restart: spawn a detached copy of this process, then exit. The child
 // outlives us (detached+unref) and rebinds the port after we release it. Only

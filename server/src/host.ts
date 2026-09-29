@@ -29,6 +29,7 @@ import path from 'node:path';
 import type { HostStatus } from '@tm/shared';
 import { loadBootConfig, serverRoot } from './config.ts';
 import { isAllowedHost, isAllowedOriginHost, lanAddresses, setLanEnabled } from './net.ts';
+import { checkRemote, mintHostToken, stripTailscaleHeaders } from './remote.ts';
 
 const cfg = loadBootConfig();
 setLanEnabled(cfg.lan.enabled);
@@ -36,6 +37,8 @@ setLanEnabled(cfg.lan.enabled);
 const API_PORT = cfg.port;
 const HOST_PORT = cfg.host.port;
 const API_ORIGIN = `127.0.0.1:${API_PORT}`;
+/** What an admitted remote request's Origin becomes before the API judges it (see admitRemote). */
+const LOOPBACK_ORIGIN = `http://127.0.0.1:${HOST_PORT}`;
 const webDist = path.resolve(serverRoot, '../web/dist');
 const serverEntry = path.join(serverRoot, 'src/index.ts');
 /** `npm run dev` — the child is `tsx watch`, so a server edit still hot-reloads. */
@@ -286,6 +289,80 @@ function proxyUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffe
   proxied.end();
 }
 
+// ------------------------------------------------------------ remote gate
+
+// The gate itself is server/src/remote.ts; this is what the front door does
+// with its verdict. It lives HERE and not in the API because the proxy rewrites
+// Host to 127.0.0.1:<api>, after which the API cannot tell a request that came
+// through `tailscale serve` from one typed at the Mac.
+
+// Minted every boot, remote or not, so a file left by an earlier boot never stays valid.
+const hostToken = mintHostToken();
+
+/**
+ * An admitted remote request, made to look like what it now is — a request
+ * the front door vouches for — before any other rule reads it:
+ *
+ * - Origin: the gate has just checked it is EXACTLY `https://<remote.hostname>`,
+ *   so it is rewritten to this front door's own loopback origin. The API's
+ *   Origin rules (index.ts onRequest, the WS routes) and the /host check below
+ *   stay loopback/LAN-only and never learn a non-private name; the API has no
+ *   `remote` code path that a direct hit on 127.0.0.1:<api> could exercise.
+ * - the first request of each login this boot is audited (one row, not per request).
+ */
+function admitRemote(req: http.IncomingMessage, login: string): void {
+  if (req.headers.origin !== undefined) req.headers.origin = LOOPBACK_ORIGIN;
+  auditRemoteLogin(login, String(req.headers['user-agent'] ?? '').slice(0, 300));
+}
+
+/** login -> 'pending' while the API write is in flight, 'done' once it landed. */
+const remoteLogins = new Map<string, 'pending' | 'done'>();
+const loggedLogins = new Set<string>();
+
+function auditRemoteLogin(login: string, userAgent: string): void {
+  if (remoteLogins.has(login)) return;
+  remoteLogins.set(login, 'pending');
+  if (!loggedLogins.has(login)) {
+    loggedLogins.add(login);
+    console.log(`[host] remote sign-in: ${login} (${userAgent || 'no user agent'})`);
+  }
+  const payload = JSON.stringify({ login, userAgent });
+  const req = http.request(
+    {
+      host: '127.0.0.1',
+      port: API_PORT,
+      path: '/api/host/remote-login',
+      method: 'POST',
+      headers: {
+        host: API_ORIGIN,
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(payload),
+        'x-tm-host-token': hostToken,
+      },
+    },
+    (res) => {
+      res.resume();
+      // Anything but a 2xx (API down, an older API without the route) is
+      // retried on this login's next request rather than silently dropped.
+      if (res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 300) remoteLogins.set(login, 'done');
+      else remoteLogins.delete(login);
+    },
+  );
+  req.setTimeout(3000, () => req.destroy());
+  req.on('error', () => remoteLogins.delete(login));
+  req.end(payload);
+}
+
+/** Refusals are logged, but at most once a minute per reason: a tailnet peer can send a lot of requests. */
+const lastDenyLog = new Map<string, number>();
+function logDeny(reason: string, req: http.IncomingMessage): void {
+  const now = Date.now();
+  if (now - (lastDenyLog.get(reason) ?? 0) < 60_000) return;
+  lastDenyLog.set(reason, now);
+  const who = req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '?';
+  console.warn(`[host] remote request refused (${reason}) from ${who}: ${req.method} ${(req.url ?? '/').split('?')[0]}`);
+}
+
 // ------------------------------------------------------------------- static
 
 const MIME: Record<string, string> = {
@@ -526,11 +603,20 @@ async function control(req: http.IncomingMessage, res: http.ServerResponse, rout
 // -------------------------------------------------------------------- serve
 
 const server = http.createServer((req, res) => {
+  // The remote name first: it is the one Host the loopback/LAN allowlist below
+  // would refuse, and the one that must never fall through to it.
+  const gate = checkRemote(req.headers, req.socket.remoteAddress, req.method, false, cfg.remote);
+  if (gate.kind === 'deny') {
+    logDeny(gate.reason, req);
+    return json(res, 403, { error: `forbidden: ${gate.reason}` });
+  }
   // Same DNS-rebinding guard as the API, against THIS port: a hostile page whose
   // DNS re-resolves to 127.0.0.1 still arrives with its own Host header.
-  if (!isAllowedHost(req.headers.host, HOST_PORT)) {
+  if (gate.kind === 'local' && !isAllowedHost(req.headers.host, HOST_PORT)) {
     return json(res, 403, { error: 'forbidden host' });
   }
+  stripTailscaleHeaders(req.headers);
+  if (gate.kind === 'allow') admitRemote(req, gate.login);
   const url = req.url ?? '/';
   const route = url.split('?')[0];
   if (route === '/host' || route.startsWith('/host/')) {
@@ -550,10 +636,21 @@ const server = http.createServer((req, res) => {
 });
 
 server.on('upgrade', (req, socket, head) => {
-  if (!isAllowedHost(req.headers.host, HOST_PORT) || !isProxied((req.url ?? '/').split('?')[0])) {
+  const gate = checkRemote(req.headers, req.socket.remoteAddress, req.method, true, cfg.remote);
+  if (gate.kind === 'deny') {
+    logDeny(gate.reason, req);
+    socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    return;
+  }
+  if (
+    (gate.kind === 'local' && !isAllowedHost(req.headers.host, HOST_PORT)) ||
+    !isProxied((req.url ?? '/').split('?')[0])
+  ) {
     socket.destroy();
     return;
   }
+  stripTailscaleHeaders(req.headers);
+  if (gate.kind === 'allow') admitRemote(req, gate.login);
   proxyUpgrade(req, socket as net.Socket, head);
 });
 
@@ -589,6 +686,11 @@ await new Promise<void>((resolve, reject) => {
 console.log(`task-manager front door on http://127.0.0.1:${HOST_PORT}  → API 127.0.0.1:${API_PORT}`);
 if (cfg.lan.enabled) {
   for (const addr of lanAddresses()) console.log(`  LAN: http://${addr}:${HOST_PORT}  ⚠ anyone on this network can run commands here`);
+}
+if (cfg.remote.enabled) {
+  console.log(
+    `  remote: https://${cfg.remote.hostname} (via \`tailscale serve\` → :${HOST_PORT}) for ${cfg.remote.allowedLogins.join(', ')} only`,
+  );
 }
 if (!fs.existsSync(path.join(webDist, 'index.html'))) {
   console.warn(`  ⚠ web/dist not found — run \`npm run build\` (the front door picks it up without a restart).`);

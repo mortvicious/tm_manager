@@ -18,6 +18,15 @@ export interface BootConfig {
    * `TM_LAN=1` in the environment forces it on without editing this file.
    */
   lan: { enabled: boolean };
+  /**
+   * Remote access over the tailnet (docs/remote-access.md): `tailscale serve`
+   * forwards `https://<hostname>` to the front door, and the front door's gate
+   * (server/src/remote.ts) admits a request that addressed us by that name only
+   * when tailscaled stamped an allowlisted `Tailscale-User-Login` on it. OFF by
+   * default, and refused at boot together with LAN mode: LAN mode binds every
+   * interface with no identity at all, which is exactly what this is not.
+   */
+  remote: RemoteConfig;
   storage: {
     driver: 'sqlite' | 'postgres';
     sqlite: { file: string };
@@ -34,6 +43,14 @@ export interface BootConfig {
    * can reach the API.
    */
   telegram: TelegramConfig;
+}
+
+export interface RemoteConfig {
+  enabled: boolean;
+  /** The node's MagicDNS name, matched EXACTLY (`tm-m.tail04c8fe.ts.net`). */
+  hostname: string;
+  /** Tailscale logins (as `Tailscale-User-Login` carries them), case-insensitive. */
+  allowedLogins: string[];
 }
 
 export interface TelegramConfig {
@@ -133,6 +150,7 @@ const DEFAULT_CONFIG: BootConfig = {
   port: 5175,
   host: { port: 5176 },
   lan: { enabled: false },
+  remote: { enabled: false, hostname: '', allowedLogins: [] },
   storage: {
     driver: 'sqlite',
     sqlite: { file: 'data/taskman.db' },
@@ -240,6 +258,8 @@ export function loadBootConfig(): BootConfig {
       throw new Error(`data/config.json: telegram.notify.${cls} must be a boolean`);
     }
   }
+  const remote = parseRemote(raw.remote);
+
   // Deliberately NOT fatal: `enabled: true` with a missing token or user id is
   // a half-finished setup, and throwing here would take the whole server down
   // (under the front door, into a respawn loop) over the one subsystem that is
@@ -264,11 +284,21 @@ export function loadBootConfig(): BootConfig {
   if (hostPort === port) {
     throw new Error(`host.port (${hostPort}) must differ from the API port (${port})`);
   }
+  // Fatal, unlike a half-configured bot: LAN mode binds every interface with no
+  // identity check, so a "remote access" install that is also in LAN mode would
+  // be wide open on the Wi-Fi while its owner believes it is behind the tailnet.
+  if (remote.enabled && lanEnabled) {
+    throw new Error(
+      'data/config.json: remote.enabled and LAN mode (lan.enabled / TM_LAN=1) are mutually exclusive — ' +
+        'remote access keeps the loopback bind and goes through `tailscale serve` (docs/remote-access.md)',
+    );
+  }
   return {
     ...structuredClone(DEFAULT_CONFIG),
     ...raw,
     host: { port: hostPort },
     lan: { enabled: lanEnabled },
+    remote,
     storage: {
       ...structuredClone(DEFAULT_CONFIG.storage),
       ...(raw.storage ?? {}),
@@ -288,6 +318,49 @@ export function loadBootConfig(): BootConfig {
       chat: { ...DEFAULT_CONFIG.telegram.chat, ...(tg.chat ?? {}) },
     },
   };
+}
+
+/**
+ * A bare DNS name of two or more labels whose last label is alphabetic: no
+ * scheme, port, path, trailing dot, IP literal or wildcard. The gate compares
+ * the Host header against this string exactly, so anything looser here would
+ * be a name that can never match — or, worse, a pattern someone expected to.
+ */
+const DNS_NAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+function parseRemote(r: unknown): RemoteConfig {
+  if (r === undefined) return structuredClone(DEFAULT_CONFIG.remote);
+  if (typeof r !== 'object' || r === null || Array.isArray(r)) {
+    throw new Error(`data/config.json: remote must be an object`);
+  }
+  const o = r as Record<string, unknown>;
+  if (o.enabled !== undefined && typeof o.enabled !== 'boolean') {
+    throw new Error(`data/config.json: remote.enabled must be a boolean`);
+  }
+  if (o.hostname !== undefined && typeof o.hostname !== 'string') {
+    throw new Error(`data/config.json: remote.hostname must be a string`);
+  }
+  if (o.allowedLogins !== undefined && !(Array.isArray(o.allowedLogins) && o.allowedLogins.every((l) => typeof l === 'string'))) {
+    throw new Error(`data/config.json: remote.allowedLogins must be an array of strings`);
+  }
+  const enabled = o.enabled === true;
+  const hostname = ((o.hostname as string | undefined) ?? '').trim().toLowerCase();
+  const allowedLogins = ((o.allowedLogins as string[] | undefined) ?? []).map((l) => l.trim().toLowerCase());
+  if (hostname !== '' && !DNS_NAME.test(hostname)) {
+    throw new Error(
+      `data/config.json: remote.hostname must be a bare DNS name like "tm-m.tail04c8fe.ts.net" (no scheme, port or trailing dot), got "${o.hostname}"`,
+    );
+  }
+  if (allowedLogins.some((l) => l === '')) {
+    throw new Error(`data/config.json: remote.allowedLogins must not contain empty strings`);
+  }
+  if (enabled && hostname === '') {
+    throw new Error(`data/config.json: remote.enabled needs remote.hostname (the Mac's MagicDNS name)`);
+  }
+  if (enabled && allowedLogins.length === 0) {
+    throw new Error(`data/config.json: remote.enabled needs at least one entry in remote.allowedLogins`);
+  }
+  return { enabled, hostname, allowedLogins };
 }
 
 /**

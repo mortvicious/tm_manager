@@ -929,6 +929,8 @@ export type AuditKind =
   | 'boot.recovery'
   | 'agent.create'
   | 'sentry.sync'
+  /** a tailnet login passed the front door's remote gate for the first time this front-door boot (docs/remote-access.md) */
+  | 'remote.login'
   /** a command the Telegram bot handled for the allowlisted owner */
   | 'telegram.command'
   /** periodic SUMMARY of updates the single-user gate dropped — deliberately
@@ -955,7 +957,7 @@ export type AuditKind =
   | 'question.answered'
   | 'question.expired';
 
-/** actor: human | hook | orchestrator | system | analyze | telegram | agent:<runId8> */
+/** actor: human | hook | orchestrator | system | analyze | telegram | remote | agent:<runId8> */
 export interface AuditEvent {
   id: string; // time-sortable (ms hex prefix + random)
   at: string;

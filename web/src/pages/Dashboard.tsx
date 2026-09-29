@@ -107,6 +107,7 @@ const KIND_LABEL: Record<string, string> = {
   'task.created': 'created task',
   'task.transition': 'moved task',
   'task.edited': 'edited task',
+  'task.moved': 'regrouped task',
   'task.deleted': 'deleted task',
   'run.started': 'started agent',
   'run.killed': 'killed session',
@@ -122,6 +123,7 @@ const KIND_LABEL: Record<string, string> = {
   'boot.recovery': 'boot recovery',
   'agent.create': 'agent filed task',
   'sentry.sync': 'sentry sync',
+  'remote.login': 'remote sign-in',
 };
 
 function describeEvent(e: AuditEvent, taskTitle: (id: string | null) => string | null): string {
@@ -130,6 +132,7 @@ function describeEvent(e: AuditEvent, taskTitle: (id: string | null) => string |
   const d = (e.data ?? {}) as Record<string, unknown>;
   if (e.kind === 'task.transition') return `${d.from ?? '?'} → ${d.to ?? '?'}${title ? ` · ${title}` : ''}`;
   if (e.kind === 'config.changed') return `${base}: ${(d.keys as string[])?.join(', ') ?? ''}`;
+  if (e.kind === 'remote.login') return `${base}: ${d.login ?? '?'}`;
   if (e.kind === 'sentry.sync') return `${base}: ${d.created ?? 0} new of ${d.fetched ?? 0}`;
   return title ? `${base} · ${title}` : base;
 }

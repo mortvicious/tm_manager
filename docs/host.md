@@ -60,7 +60,8 @@ DNS-rebinding guard on a server whose terminal WebSocket is a code-execution
 surface. A second origin would have required weakening it.
 
 So the proxy rewrites **`Host`** (so the API's allowlist passes) and passes
-**`Origin`** through untouched (so the API still judges it) — exactly what
+**`Origin`** through untouched (so the API still judges it; the one exception is
+an admitted remote request, § The remote gate) — exactly what
 Vite's `changeOrigin: true` does in dev. End to end, a terminal or events
 socket opened through :5176 is still refused for a bad token, a foreign origin
 or a missing origin, because the API is still the one deciding.
@@ -73,6 +74,46 @@ loses `localhost` on macOS) and widens to private addresses only, mirroring
 
 No new dependency: `node:http` plus `node:net`. This is the process that has to
 still be running when nothing else is.
+
+## The remote gate (`tailscale serve` → here)
+
+Remote access (`docs/remote-access.md`) puts `tailscale serve` in front of this
+process: it terminates HTTPS for the Mac's MagicDNS name on the tailnet and
+forwards to `127.0.0.1:<host port>`, keeping the original port-less `Host` and
+stamping `Tailscale-User-Login` with the connecting person's identity. The gate
+lives HERE, not in the API, because the proxy rewrites `Host` to
+`127.0.0.1:<api>` and the API can no longer tell a request from the phone from
+one typed at the Mac.
+
+The decision is `checkRemote()` in `server/src/remote.ts`, run first on every
+request and every WS upgrade, `/host/*` included:
+
+1. `Host` is not EXACTLY `remote.hostname` (port-less or `:443`) → not a remote
+   request; the loopback/LAN rules above apply unchanged. `isAllowedHost` reads a
+   port-less Host as port 80, which is why the remote name has its own rule, and
+   the match is never a `.ts.net` suffix.
+2. Otherwise 403 (`{"error":"forbidden: <reason>"}`; a WS upgrade gets a bare
+   `403` and the socket closes) unless ALL of: `remote.enabled`; the TCP peer is
+   loopback; `Tailscale-User-Login` is on `remote.allowedLogins`
+   (case-insensitive, exact); and `Origin` is exactly `https://<hostname>` —
+   required on a WS upgrade and on every method but GET/HEAD, and refused on any
+   method when present and different.
+3. Admitted: every `tailscale-*` header is stripped (for local requests too),
+   and the Origin — just verified — is **rewritten to this front door's loopback
+   origin** (`http://127.0.0.1:<host port>`). The API's Origin checks and the
+   `/host/*` check below therefore stay loopback/LAN-only; the API has no remote
+   code path at all. See `docs/decisions.md` 2026-09-29 for why this and not a
+   `net.ts` entry.
+
+Refusals are logged at most once a minute per reason. The FIRST admitted request
+of each login per front-door boot is audited: this process has no storage, so it
+POSTs `{login, userAgent}` to `POST /api/host/remote-login`, which writes a
+`tm_events` row (`kind: 'remote.login'`, `actor: 'remote'`). That route takes an
+`x-tm-host-token` secret the front door mints at every boot into
+`server/data/host.token` (0600) — a file rather than the child's env so an
+adopted API can read it too — so the remote client this process proxies for
+cannot write sign-in rows. A failed hand-off (API down) is retried on that
+login's next request.
 
 ## Supervision
 
@@ -115,7 +156,9 @@ killing anything, so a down server is never blocked.
 
 The routes are guarded like the API's: `Host` allowlist on everything, `Origin`
 allowlist on non-GET, because a drive-by page must not be able to stop the
-server blind.
+server blind. Reached through the remote name they pass the remote gate first
+(identity + exact Origin, which is then required on every POST), so the
+tailnet name never exposes them unauthenticated.
 
 ## What the UI does with it
 
@@ -159,3 +202,6 @@ listen error is still fatal on the first try.
 | `/host/*` requests fail, no Start button | no front door in front of this page (`dev:web` alone, `start:api`) | run `npm start` or `npm run dev` |
 | `409` from `/host/stop` on an API that is up | it was adopted, not spawned here | stop it where you started it |
 | `409` naming agent sessions | the API's restart guard | stop the agents, or `{"force": true}` |
+| `403 forbidden: no tailnet identity` on the `ts.net` name | the request came from a tagged node (the Mac itself) or through Funnel — no `Tailscale-User-Login` | expected; open it from the phone |
+| `403 forbidden: remote access is disabled` | `remote.enabled` is false | set it in `data/config.json`, restart the front door |
+| front door refuses to boot: `remote.enabled and LAN mode … mutually exclusive` | `lan.enabled` or `TM_LAN=1` (`npm run start:lan`) with remote on | start with `npm start`; drop `lan.enabled` |
