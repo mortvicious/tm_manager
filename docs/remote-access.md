@@ -72,6 +72,8 @@ Phases in order. Each phase is independently useful and gets an adversarial revi
 6. macOS: firewall on with stealth mode; **leave LAN mode off** (`lan.enabled` absent, no `TM_LAN`).
 7. Mac-as-a-server basics are already a workbook: `docs/telegram.md` § Connect (launchd KeepAlive, `caffeinate`, power settings, and the FileVault reboot wall; after an unattended reboot nothing runs until someone unlocks the disk).
 
+**Done 2026-09-29**, except Tailnet Lock. The Mac is `tm-m`, tagged `tag:tm-host`. The policy applied is `tailscale-policy.hujson` in the task's artifacts: one grant, your user → `tag:tm-host` `tcp:443` + ICMP, no SSH, no `funnel` attribute, with tests denying 5173/5175/5176/22. HTTPS certificates are enabled.
+
 Nothing is reachable after phase 0 alone. The app still 403s the tailnet name, which is the correct resting state.
 
 ### Phase 1 — the identity gate (small code change, the minimum to go live)
@@ -86,13 +88,13 @@ Nothing is reachable after phase 0 alone. The app still 403s the tailnet name, w
   - pass Origin through as today (the API needs the same exact-name Origin rule);
   - cover the WS upgrade path the same way.
 - **Serve:** `tailscale serve --bg --https=443 http://127.0.0.1:5176`. It serves the **production front door only**. The Vite dev server (5173) is never exposed.
-- **Verify before relying on it** (unmeasured assumptions today):
-  1. Does `serve` forward the original `Host` (expected: `<mac>.<tailnet>.ts.net`) or rewrite it?
-  2. Are identity headers present on WebSocket upgrades?
-  3. What is the exact `Tailscale-User-Login` value for your account?
-  4. Does a request from a tagged node carry no user login? Expected yes; it must be refused.
+- **Measured 2026-09-29** (Tailscale 1.102.4, a throwaway loopback echo server behind `serve`, iPhone iOS 18.7 Safari + Brave):
+  1. `serve` forwards the **original `Host`**, port-less (`tm-m.tail04c8fe.ts.net`), and adds `X-Forwarded-For` (the peer's 100.x address), `X-Forwarded-Host`, and `X-Forwarded-Proto: https`. The TCP peer is always `127.0.0.1`.
+  2. **WebSocket upgrades carry the identity headers** too, with `Origin: https://<name>`, and the WS round-trip works end to end (open, message, clean close 1000).
+  3. `Tailscale-User-Login` is the account's email login. `Tailscale-User-Name` and `-Profile-Pic` come with it, plus `Tailscale-Headers-Info`.
+  4. A request from the **tagged** Mac to its own name arrives with **no** identity headers, and a forged `Tailscale-User-Login` sent by the client was **stripped**. So the gate refuses tagged nodes and forgeries by construction.
 
-  Measure all four with a throwaway echo server behind `serve` before writing the gate. Then check with curl: from the phone → 200; from another tailnet node or user → 403; `tailscale funnel` briefly on → 403; local `127.0.0.1:5176` unchanged.
+  The cert is a real Let's Encrypt one for the MagicDNS name. After the gate is built, check with curl: from the phone → 200; from the tagged Mac over the tailnet name → 403; `tailscale funnel` briefly on → 403; local `127.0.0.1:5176` unchanged.
 - **Audit:** each new remote login ⇒ one `tm_events` row (`actor: 'remote'`, login, user agent), summarised rather than logged per request.
 - **Docs:** this page, plus `docs/host.md` and `SECURITY.md`. `SECURITY.md` has already drifted: it says loopback-only, ignoring LAN mode, and says the internal routes use the session token, where the code uses per-run tokens. Its "never tunnel it" line becomes "never publicly; tailnet via `serve` + gate only".
 
