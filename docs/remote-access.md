@@ -1,6 +1,6 @@
 # Remote access — the web UI from anywhere, safely
 
-**Status (2026-09-29): phase 0 done, phase 1 built and verified** (the identity gate in the front door, § Phase 1). Remote access stays OFF until you add the `remote` block and run `tailscale serve` (§ Going live). Phase 2 (passkey, remote capability profile, secret redaction) is not built. This page is the research, the plan, and the record of what was built for using the full mobile web UI (terminal included) away from the Mac. The Telegram bot stays as the break-glass surface.
+**Status (2026-09-29): phase 0 done, phase 1 built, verified and LIVE** (the identity gate in the front door, § Phase 1; front door 5176 + remote listener 5177 on loopback, `tailscale serve` → 5177). Phase 2 (passkey, remote capability profile, secret redaction) is not built. This page is the research, the plan, and the record of what was built for using the full mobile web UI (terminal included) away from the Mac. The Telegram bot stays as the break-glass surface.
 
 ## TL;DR
 
@@ -72,7 +72,7 @@ Phases in order. Each phase is independently useful and gets an adversarial revi
 6. macOS: firewall on with stealth mode; **leave LAN mode off** (`lan.enabled` absent, no `TM_LAN`).
 7. Mac-as-a-server basics are already a workbook: `docs/telegram.md` § Connect (launchd KeepAlive, `caffeinate`, power settings, and the FileVault reboot wall; after an unattended reboot nothing runs until someone unlocks the disk).
 
-**Done 2026-09-29**, except Tailnet Lock. The Mac is `tm-m`, tagged `tag:tm-host`. The policy applied is `tailscale-policy.hujson` in the task's artifacts: one grant, your user → `tag:tm-host` `tcp:443` + ICMP, no SSH, no `funnel` attribute, with tests denying 5173/5175/5176/22. HTTPS certificates are enabled.
+**Done 2026-09-29**, Tailnet Lock included (`tailscale lock status`: ENABLED). The Mac is `tm-m`, tagged `tag:tm-host`. The policy applied is `tailscale-policy.hujson` in the task's artifacts: one grant, your user → `tag:tm-host` `tcp:443` + ICMP, no SSH, no `funnel` attribute, with tests denying 5173/5175/5176/22. HTTPS certificates are enabled.
 
 Nothing is reachable after phase 0 alone. The app still 403s the tailnet name, which is the correct resting state.
 
