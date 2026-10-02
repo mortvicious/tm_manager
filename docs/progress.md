@@ -330,3 +330,11 @@ Phase checklist (each phase ends with a docs update + adversarial review):
 - Verified with a scratch-DB assertion script (service, routes via Fastify inject, Telegram handlers), the hook shell loop under `/bin/sh -c` against pending/403/unreachable stubs, and a live `claude` 2.1.257 round trip under node-pty (`ANSWER=Beta`, no dialog drawn); `npm run typecheck` and `npm run build` clean.
 - **Review round 1 (1 blocker, 3 major, 9 minor), fixed**: unquoted `case` patterns (the quoted `pending` pattern never matched → forced deny after 5 min), `tool_use_id` required + unique index + race re-read, one failure increment per attempt, idle-run 409 → silent exit, Origin required on the human answer route, questions handed back verbatim, toast clip, `Other…` vs live wizard, Escape scoping, index-based picks, CSS tokens. Re-verified with six-pending / 409 / HTML-500 stub cases and the race/verbatim/Origin assertions.
 - **Not exercised**: the Postgres driver (SQL mirrored); a real Telegram send (handlers exercised in-process, the wire format unchanged).
+
+## Terminals (2026-10-02, `docs/terminals.md`)
+
+- **Shared**: `ShellSession`, `MAX_SHELL_SESSIONS`, the `shell.session`/`shell.closed` events, the `shell.session` audit kind.
+- **Server**: `shells/runner.ts` (`ShellRunner`, `resolveLoginShell`) on a fourth PTY pool; `routes/shells.ts` (`GET|POST /api/shells`, `DELETE /api/shells/:id`, Origin-guarded writes); `SessionManager.dispose` made public; `index.ts` wiring (WS attach, shutdown + restart `stopAll`, `shells` in restart-check); Telegram `/restart` names open shells.
+- **Web**: `/terminals` page (repo + count pickers, tabs | grid), `ShellPane` (embedded xterm), nav item, state/events wiring, drawer label for shells, restart confirm counts shells.
+- **Verified**: typecheck, scratch `vite build`, a route/runner harness on a real PTY pool (docs/terminals.md § Verification).
+- **Not exercised**: a browser pass and the live server.

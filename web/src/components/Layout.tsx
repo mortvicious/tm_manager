@@ -16,6 +16,7 @@ import {
   IconMore,
   IconQueue,
   IconRepo,
+  IconShell,
   IconSun,
   IconTerminal,
 } from './Icons.tsx';
@@ -178,7 +179,7 @@ function UsagePill() {
 }
 
 function ServerControl() {
-  const { connected, bootedAt, orch, commandRuns, host, refreshHost } = useApp();
+  const { connected, bootedAt, orch, commandRuns, shells, host, refreshHost } = useApp();
   const [restarting, setRestarting] = useState(false);
   const [starting, setStarting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -195,6 +196,7 @@ function ServerControl() {
   // (409), this is just the honest label. `headless` is absent on a server that
   // predates the field, which reads as "none" rather than blocking forever.
   const live = commandRuns.filter((r) => r.status === 'running').length;
+  const liveShells = shells.filter((s) => s.status === 'running').length;
   const headless = orch.headless ?? 0;
   const busyAgents = orch.running + headless;
   const blocked = busyAgents > 0;
@@ -226,8 +228,13 @@ function ServerControl() {
     if (blocked) return;
     if (
       !confirm(
-        live > 0
-          ? `Restart the task-manager server? ${live} running command(s) will be stopped.`
+        live > 0 || liveShells > 0
+          ? `Restart the task-manager server? ${[
+              live > 0 ? `${live} running command(s) will be stopped` : null,
+              liveShells > 0 ? `${liveShells} open terminal(s) will be closed` : null,
+            ]
+              .filter(Boolean)
+              .join(' and ')}.`
           : 'Restart the task-manager server?',
       )
     )
@@ -332,6 +339,7 @@ const NAV: NavItem[] = [
   { to: '/queue', label: 'Queue', icon: <IconTerminal />, primary: true },
   { to: '/features', label: 'Features', icon: <IconFeature />, primary: true },
   { to: '/chat', label: 'Chat', icon: <IconChat /> },
+  { to: '/terminals', label: 'Terminal', icon: <IconShell /> },
   { to: '/repos', label: 'Repos', icon: <IconRepo /> },
   { to: '/config', label: 'Config', icon: <IconConfig /> },
   { to: '/handbook', label: 'Handbook', icon: <IconBook /> },

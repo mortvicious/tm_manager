@@ -14,6 +14,7 @@ import { ConfigPage } from './pages/Config.tsx';
 import { HandbookPage } from './pages/Handbook.tsx';
 import { QueuePage } from './pages/Queue.tsx';
 import { ReposPage } from './pages/Repos.tsx';
+import { TerminalsPage } from './pages/Terminals.tsx';
 
 export function App() {
   const [openTask, setOpenTask] = useState<string | null>(null);
@@ -34,6 +35,7 @@ export function App() {
         <Route path="/chat/:id" element={<ChatPage />} />
         <Route path="/features" element={<FeaturesPage />} />
         <Route path="/features/:id" element={<FeaturePage onOpenTask={setOpenTask} />} />
+        <Route path="/terminals" element={<TerminalsPage onOpenTerminal={openTerm} />} />
         <Route path="/repos" element={<ReposPage onOpenTerminal={openTerm} />} />
         <Route path="/config" element={<ConfigPage />} />
         <Route path="/handbook" element={<HandbookPage />} />

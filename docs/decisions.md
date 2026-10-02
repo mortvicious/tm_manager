@@ -1,5 +1,13 @@
 # Decision log
 
+- **2026-10-02 — Plain shells per repo: the Terminal page (`docs/terminals.md`)**: user request ("PTY needed for each repo - not current Claude active sessions, pure terminal. Add terminal tab with repo selection with number of PTYs that user can create").
+  - **A fourth `SessionManager` pool, in-memory registry.** Same reasoning as repo commands: a shell lives for hours and must not count against agent concurrency or the agents' spawn cap, and a persisted "running" PTY is a lie after a restart. Rejected: reusing the commands pool (its runs are typed as saved commands, and a shell would eat a dev server's slot).
+  - **The user's login shell with `-l`, never a command string.** `$SHELL` → passwd shell → platform default; argv only. `-l` because a launchd-started server has a bare `PATH`.
+  - **Cap 10 open entries, exited ones included**, equal to the pool's `MAX_LIVE_SESSIONS`, so the user sees "close one first" and never the pool's error. All-or-nothing for a multi-open. 1–4 per click.
+  - **Exited shells stay until closed**, so `exit` does not throw the output away; closing kills and disposes.
+  - **Never blocks a restart, never touched by `/killall`** — reported in restart-check as `shells` beside `services`.
+  - **Origin required on open/close** (the audit says `human`; a worker's curl has none).
+  - **Embedded panes on desktop, the drawer on phones.** The drawer's mobile key row and compose bar are what make a shell usable on a soft keyboard; duplicating them in the page was rejected. Rejected: routing desktop through the single drawer too — the request was several terminals side by side.
 - **2026-09-29 — Web Push for the Home Screen PWA, hand-rolled on `node:crypto`, per-device kinds, beside the Telegram bot (`docs/push.md`)**: user request ("allow notifications, push notifications for status updates and all other stuff like questions, etc on mobile PWA").
   - **No `web-push` dependency.** The protocol is one ECDH, three HKDFs, one AES-GCM and one ES256 signature (about 150 lines). It is checked byte-for-byte against RFC 8291 Appendix A, and against Apple's live service: our JWT is accepted (`BadDeviceToken` for a fake token), a forged one is refused (`BadJwtToken`). This avoids pulling a dependency tree into a process that holds the PTYs.
   - **Beside the bot, not instead of it.** A separate `PushNotifier` on the same event bus, with the same triggers and re-checks, started from `index.ts`, not from the bot. The bot is off by default and tied to one Telegram user; push has to work without it.

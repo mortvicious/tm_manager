@@ -193,6 +193,13 @@ command text is tokenized and spawned as argv — never through a shell. Runs ar
 in-memory by design (a PTY dies with the server, and `tm_runs` means "agent").
 Restarting the server is refused while agents are working.
 
+## Terminals (`docs/terminals.md`)
+
+Plain login shells per repo (`/terminals` page): `$SHELL -l` with cwd = the repo,
+1–4 per click, at most 10 open, in a FOURTH `SessionManager` pool so they never
+touch agent concurrency. In memory only (`ShellRunner`), attachable at
+`/ws/terminal/sh-<uuid>`, killed on restart/shutdown but never blocking it.
+
 ## Phases (docs/ update = exit criterion of every phase)
 
 1. **Skeleton**: workspaces, CLAUDE.md, `.claude/settings.local.json` (concise), docs/ skeleton, shared types, config loader, SQLite driver + migrations, repos/tasks REST. Test: curl.

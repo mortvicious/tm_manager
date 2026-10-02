@@ -12,6 +12,7 @@ import { sessionToken } from './auth.ts';
 import { ActivityWatcher } from './claude/activity.ts';
 import { CommandRunner } from './commands/runner.ts';
 import { liveHeadless, onHeadlessChange, stopAllHeadless } from './claude/headless.ts';
+import { ShellRunner } from './shells/runner.ts';
 import { loadBootConfig, serverRoot } from './config.ts';
 import { isAllowedHost, isAllowedOriginHost, lanAddresses, setLanEnabled } from './net.ts';
 import { isHostToken } from './remote.ts';
@@ -27,6 +28,7 @@ import { registerPushRoutes } from './routes/push.ts';
 import { PushService } from './push/service.ts';
 import { PushNotifier } from './push/notifier.ts';
 import { registerCommandRoutes } from './routes/commands.ts';
+import { registerShellRoutes } from './routes/shells.ts';
 import { registerFeatureRoutes } from './routes/features.ts';
 import { registerInternalRoutes } from './routes/internal.ts';
 import { registerProposalRoutes } from './routes/proposals.ts';
@@ -68,8 +70,16 @@ const commandSessions = new SessionManager(
   () => scrollbackBytes,
   () => sessionTtlMs,
 );
+// Plain shells per repo (docs/terminals.md) — a FOURTH pool, for the reason
+// commands have their own: a shell stays open for hours and must never touch
+// agent concurrency or the agents' spawn cap.
+const shellSessions = new SessionManager(
+  () => scrollbackBytes,
+  () => sessionTtlMs,
+);
 const orchestrator = new Orchestrator(storage, sessions, `http://127.0.0.1:${cfg.port}`);
 const commandRunner = new CommandRunner(storage, commandSessions);
+const shellRunner = new ShellRunner(storage, shellSessions);
 // Chat (docs/chat.md): a free-form conversation with claude in a repo, shared
 // by the SPA and the phone. It owns no PTY and no run row — every turn is a
 // headless `claude -p --resume` child, registered with the same headless
@@ -177,6 +187,8 @@ const restartGuard = async () => {
   const { running } = await orchestrator.status();
   const headless = liveHeadless();
   const services = commandRunner.running().length;
+  // Like services: reported so the confirm can say what dies, never blocking.
+  const shells = shellRunner.running().length;
   const blocked = running > 0 || headless.length > 0;
   const parts = [
     running > 0 ? `${running} agent session(s)` : null,
@@ -188,6 +200,7 @@ const restartGuard = async () => {
     running,
     headless: headless.length,
     services,
+    shells,
   };
 };
 app.get('/api/server/restart-check', async () => restartGuard());
@@ -224,12 +237,14 @@ app.post('/api/server/restart', async (req, reply) => {
       running: guard.running,
       headless: guard.headless,
       services: guard.services,
+      shells: guard.shells,
     });
   }
   // Dev servers are children of this process: kill them deliberately instead
   // of orphaning them onto the port the restarted server's repos will want.
   // Headless agents only ever exist here on the force path — same reasoning.
   commandRunner.stopAll();
+  shellRunner.stopAll();
   stopAllHeadless();
   // Abort the in-flight long poll NOW so the socket is not still open when the
   // teardown below runs; that teardown awaits the same (idempotent) stop, so
@@ -292,6 +307,7 @@ registerOrchestratorRoutes(app, storage, orchestrator);
 registerInternalRoutes(app, storage, sessions, orchestrator);
 registerAgentRoutes(app, storage, orchestrator);
 registerCommandRoutes(app, storage, commandRunner);
+registerShellRoutes(app, storage, shellRunner);
 registerProposalRoutes(app, storage);
 registerFeatureRoutes(app, storage);
 registerStatsRoutes(app, storage, sessions, orchestrator);
@@ -306,7 +322,7 @@ const pushNotifier = new PushNotifier({
   push,
   requestedReview: (taskId) => orchestrator.isRequestedReview(taskId),
 });
-registerTerminalWs(app, [sessions, commandSessions]);
+registerTerminalWs(app, [sessions, commandSessions, shellSessions]);
 registerEventsWs(app);
 
 // The Telegram bot (docs/telegram.md) reaches OUT — it registers no route and
@@ -371,6 +387,7 @@ const stop = async () => {
   // what makes them release their ports before the next boot. Headless agents
   // do NOT die with us — they would keep spending tokens for nobody.
   commandRunner.stopAll();
+  shellRunner.stopAll();
   stopAllHeadless();
   // A resume gate (docs/token-budget.md § The fourth) sits between "task marked
   // running" and "run row created", so a task inside one has nothing in

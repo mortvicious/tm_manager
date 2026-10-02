@@ -607,6 +607,8 @@ export interface RestartCheck {
   running: number;
   headless: number;
   services: number;
+  /** open shell terminals (docs/terminals.md) — like services, killed but never blocking */
+  shells?: number;
 }
 
 /**
@@ -708,5 +710,6 @@ export function renderRestartCheck(check: RestartCheck): string {
   // Dev servers do not block a restart, but they DO die with it — the phone is
   // the one surface where that is invisible unless it is said.
   if (check.services > 0) lines.push(`repo commands that will be stopped: <b>${check.services}</b>`);
+  if ((check.shells ?? 0) > 0) lines.push(`shell terminals that will be closed: <b>${check.shells}</b>`);
   return lines.map(bullet).join('\n');
 }

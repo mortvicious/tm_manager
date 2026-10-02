@@ -162,6 +162,38 @@ export interface Repo {
 }
 
 /**
+ * A plain interactive shell in a repo's directory (docs/terminals.md) — the
+ * user's login shell in a real PTY, nothing else: no claude, no task, no saved
+ * command. Like CommandRun it is in-memory only (never a `tm_runs` row) and
+ * lives in its OWN SessionManager pool, so it never counts against agent
+ * concurrency. Kept in the list after its shell exits until the user closes it.
+ */
+export type ShellSessionStatus = 'running' | 'exited' | 'killed';
+
+export interface ShellSession {
+  /** also the PTY session id — attach at /ws/terminal/:id */
+  id: string;
+  repoId: string;
+  /** snapshotted so the tab still renders after the repo is gone */
+  repoName: string;
+  /** "zsh 2": the shell's basename + the lowest number free in this repo */
+  title: string;
+  /** 1-based, unique among this repo's open shells */
+  index: number;
+  cwd: string;
+  /** absolute path of the shell binary */
+  shell: string;
+  status: ShellSessionStatus;
+  pid: number | null;
+  exitCode: number | null;
+  startedAt: string;
+  endedAt: string | null;
+}
+
+/** Open shells (any repo, live or exited-but-not-closed) the server keeps at once. */
+export const MAX_SHELL_SESSIONS = 10;
+
+/**
  * A saved shell command a repo can run on demand ("pnpm start:dev"), stored
  * per repo and executed in a real PTY exactly like an agent session.
  * `service` = long-running (dev server, watcher) — those are what the header
@@ -922,6 +954,7 @@ export type AuditKind =
   | 'repo.changed'
   | 'command.changed'
   | 'command.run'
+  | 'shell.session'
   | 'config.changed'
   | 'orchestrator.toggle'
   | 'schedule.overflow-claim'
@@ -1141,6 +1174,8 @@ export type ServerEvent =
   | { type: 'command.updated'; command: RepoCommand }
   | { type: 'command.deleted'; commandId: string }
   | { type: 'command.run'; run: CommandRun }
+  | { type: 'shell.session'; session: ShellSession }
+  | { type: 'shell.closed'; id: string }
   | { type: 'chat.updated'; chat: Chat }
   | { type: 'chat.deleted'; chatId: string }
   | { type: 'chat.message'; message: ChatMessage }

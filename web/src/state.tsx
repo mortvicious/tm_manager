@@ -13,6 +13,7 @@ import type {
   Chat,
   ChatMessage,
   CommandRun,
+  ShellSession,
   Dispatch,
   Question,
   Feature,
@@ -60,6 +61,8 @@ interface AppState {
   /** command executions this server knows about — running ones first-class,
    *  finished ones kept briefly for the launcher's history */
   commandRuns: CommandRun[];
+  /** open plain shells, every repo (docs/terminals.md) */
+  shells: ShellSession[];
   /** live audit events received this session (cap 200, newest last) */
   auditEvents: AuditEvent[];
   orch: OrchestratorStatus;
@@ -103,6 +106,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [chatMessages, setChatMessages] = useState<Record<string, ChatMessage[]>>({});
   const [commands, setCommands] = useState<RepoCommand[]>([]);
   const [commandRuns, setCommandRuns] = useState<CommandRun[]>([]);
+  const [shells, setShells] = useState<ShellSession[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [orch, setOrch] = useState<OrchestratorStatus>({ enabled: false, running: 0, concurrency: 2, headless: 0 });
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -131,6 +135,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api.listChats().then(setChats).catch(() => {});
     api.listCommands().then(setCommands).catch(() => {});
     api.listCommandRuns().then(setCommandRuns).catch(() => {});
+    api.listShells().then(setShells).catch(() => {});
     api.orchestrator().then(setOrch).catch(() => {});
     api.getConfig().then(setSettings).catch(() => {});
   }, []);
@@ -372,6 +377,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
               return next;
             });
             break;
+          case 'shell.session':
+            setShells((cur) => {
+              const i = cur.findIndex((s) => s.id === e.session.id);
+              if (i === -1) return [...cur, e.session];
+              const next = cur.slice();
+              next[i] = e.session;
+              return next;
+            });
+            break;
+          case 'shell.closed':
+            setShells((cur) => cur.filter((s) => s.id !== e.id));
+            break;
           case 'orchestrator.status':
             setOrch(e.status);
             break;
@@ -428,6 +445,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         loadChat,
         commands,
         commandRuns,
+        shells,
         auditEvents,
         orch,
         settings,

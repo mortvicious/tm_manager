@@ -9,8 +9,8 @@ import { IconChevron, IconX } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
 import { attachTouchScroll } from './termTouchScroll.ts';
 
-const b64ToBytes = (b64: string): Uint8Array => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-const bytesToB64 = (bytes: Uint8Array): string => {
+export const b64ToBytes = (b64: string): Uint8Array => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+export const bytesToB64 = (bytes: Uint8Array): string => {
   let s = '';
   for (const b of bytes) s += String.fromCharCode(b);
   return btoa(s);
@@ -50,7 +50,7 @@ export function TerminalDrawer({
   expandSignal?: number;
   onClose: () => void;
 }) {
-  const { token, runs, tasks, commandRuns, activity, settings } = useApp();
+  const { token, runs, tasks, commandRuns, shells, activity, settings } = useApp();
   const hostRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   // Set by the xterm effect; lets expand/resize refit without re-running it.
@@ -226,14 +226,28 @@ export function TerminalDrawer({
   // its saved definition; either may be gone (finished, pruned) — degrade to id.
   const run = runs.find((r) => r.id === runId) ?? null;
   const cmdRun = run ? null : commandRuns.find((r) => r.id === runId) ?? null;
+  const shell = run || cmdRun ? null : shells.find((s) => s.id === runId) ?? null;
   const task = run?.taskId ? tasks.find((t) => t.id === run.taskId) ?? null : null;
-  const name = task?.title ?? (cmdRun ? `${cmdRun.name} — ${cmdRun.repoName}` : `session ${runId.slice(0, 8)}`);
+  const name =
+    task?.title ??
+    (cmdRun
+      ? `${cmdRun.name} — ${cmdRun.repoName}`
+      : shell
+        ? `${shell.title} — ${shell.repoName}`
+        : `session ${runId.slice(0, 8)}`);
   // An idle run's PTY is still 'running' but the agent is done — not green.
-  const live = run ? run.status === 'running' && !run.idle : cmdRun ? cmdRun.status === 'running' : status === 'live';
+  const live = run
+    ? run.status === 'running' && !run.idle
+    : cmdRun
+      ? cmdRun.status === 'running'
+      : shell
+        ? shell.status === 'running' && status === 'live'
+        : status === 'live';
   const inReview = task?.status === 'review';
   const dotClass = inReview ? 'review' : live ? 'running' : 'off';
   const activityLine =
-    activity[runId]?.text ?? (cmdRun ? cmdRun.command : status === 'closed' ? 'session ended' : 'no recent activity');
+    activity[runId]?.text ??
+    (cmdRun ? cmdRun.command : shell ? shell.cwd : status === 'closed' ? 'session ended' : 'no recent activity');
 
   // Keeps focus (and therefore the soft keyboard) on the terminal: a tap that
   // moves focus to the button would dismiss the keyboard on every keypress.

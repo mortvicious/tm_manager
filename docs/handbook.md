@@ -92,6 +92,10 @@ They are **not** run through a shell, so `&&`, `|`, `>` and friends are refused 
 
 Services die when the server stops or restarts — deliberately, so their ports are released.
 
+## Terminal — your own shells in a repo
+
+**Terminal** (under *More* on a phone) opens your login shell in a repo's directory — no agent, just a terminal. Pick the repo, pick how many (1–4), **New terminal**. Each one is a tab; **grid** shows them side by side. × closes one (and kills whatever runs in it). Up to 10 can be open across all repos. A shell you `exit` stays as a tab with its output until you close it. On a phone, tapping a tab opens it full screen with the Esc/Tab/Ctrl key row. Like services, terminals close when the server restarts.
+
 ## Chat — asking, instead of tasking
 
 **Chat** in the sidebar (and `/chat` on Telegram) is a conversation with claude inside one of your repos. Full details: `docs/chat.md`.

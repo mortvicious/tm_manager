@@ -56,6 +56,14 @@ export const IconTerminal = () => (
   </svg>
 );
 
+/** A terminal window: the plain-shell tab, distinct from Queue's prompt glyph. */
+export const IconShell = () => (
+  <svg {...p}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M7 9l3 3-3 3M12 15h5" />
+  </svg>
+);
+
 export const IconPlay = () => (
   <svg {...p}>
     <path d="M6 4l14 8-14 8z" fill="currentColor" stroke="none" />

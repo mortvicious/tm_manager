@@ -3582,3 +3582,159 @@ tr.repo-open > td {
   background: currentColor;
   animation: pulse 0.9s var(--tm-ease-in-out) infinite;
 }
+
+/* ---------- Terminal page: plain shells per repo (docs/terminals.md) ---------- */
+
+.shell-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+  margin-bottom: var(--tm-space-3);
+}
+
+.shell-bar .shell-repo {
+  min-width: 180px;
+  max-width: 280px;
+}
+
+.shell-bar .shell-count {
+  width: auto;
+}
+
+.shell-cap {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+.shell-layout {
+  display: inline-flex;
+  gap: var(--tm-space-1);
+}
+
+.shell-err {
+  color: var(--tm-status-failed);
+  font-size: var(--tm-text-sm);
+  margin-bottom: var(--tm-space-3);
+}
+
+.shell-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  margin-bottom: var(--tm-space-2);
+}
+
+.shell-tab {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-bg-raised);
+  overflow: hidden;
+}
+
+.shell-tab.on {
+  border-color: var(--tm-accent);
+  background: var(--tm-accent-subtle);
+}
+
+.shell-tab button {
+  background: none;
+  border: 0;
+  color: var(--tm-text);
+  font: inherit;
+  cursor: pointer;
+  min-height: 32px;
+}
+
+.shell-tab-main {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: 0 var(--tm-space-3);
+  font-size: var(--tm-text-sm);
+}
+
+.shell-tab-state {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+.shell-tab-x {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--tm-space-2);
+  color: var(--tm-text-faint);
+  border-left: 1px solid var(--tm-border) !important;
+}
+
+.shell-tab-x:hover {
+  color: var(--tm-status-failed);
+}
+
+.shell-hint {
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-sm);
+}
+
+.shell-panes.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(440px, 1fr));
+  gap: var(--tm-space-3);
+}
+
+.shell-pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--tm-terminal-bg);
+  border: 1px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-md);
+  overflow: hidden;
+}
+
+/* tab mode keeps every pane mounted; the hidden ones measure 0 and skip refits */
+.shell-pane.hidden {
+  display: none;
+}
+
+.shell-panes.tabs .shell-pane {
+  height: max(320px, calc(100dvh - 260px));
+}
+
+.shell-panes.grid .shell-pane {
+  height: 380px;
+}
+
+.shell-pane-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: 2px var(--tm-space-2) 2px var(--tm-space-3);
+  border-bottom: 1px solid var(--tm-gray-7);
+  color: var(--tm-gray-4);
+  font-size: var(--tm-text-xs);
+  background: color-mix(in srgb, var(--tm-terminal-bg) 60%, var(--tm-gray-8));
+}
+
+.shell-pane-head .btn.ghost {
+  color: var(--tm-gray-4);
+}
+
+.shell-pane-cwd {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--tm-gray-5);
+}
+
+.shell-pane-body {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 2px 8px 8px;
+}
+
+.shell-orphans {
+  margin-top: var(--tm-space-5);
+}

@@ -252,7 +252,8 @@ export class SessionManager {
     }
   }
 
-  private dispose(runId: string): void {
+  /** Ends the session (if live) and forgets it: buffer dropped, attached sockets closed. */
+  dispose(runId: string): void {
     const s = this.sessions.get(runId);
     if (!s) return;
     if (s.exit === null) {

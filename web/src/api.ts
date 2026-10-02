@@ -18,6 +18,7 @@ import type {
   RepoScripts,
   Run,
   RunActivity,
+  ShellSession,
   StatsOverview,
   Task,
   UsageSnapshot,
@@ -131,6 +132,9 @@ export const api = {
   listCommandRuns: () => req<CommandRun[]>('GET', '/api/command-runs'),
   stopCommandRun: (runId: string) => req<{ ok: true }>('POST', `/api/command-runs/${runId}/stop`),
   clearCommandRuns: () => req<{ ok: true; cleared: number }>('POST', '/api/command-runs/clear'),
+  listShells: () => req<ShellSession[]>('GET', '/api/shells'),
+  openShells: (repoId: string, count = 1) => req<ShellSession[]>('POST', '/api/shells', { repoId, count }),
+  closeShell: (id: string) => req<{ ok: true }>('DELETE', `/api/shells/${id}`),
 
   listTasks: () => req<Task[]>('GET', '/api/tasks').then((l) => l.map(normalizeTask)),
   createTask: (b: TaskWrite & { title: string }) =>
