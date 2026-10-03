@@ -33,7 +33,7 @@ New table + one column on tasks (migration N):
 
 - `tm_features(id, repo_id, title, request TEXT, status, analysis TEXT /*JSON: latest plan*/, review TEXT /*JSON: findings/verdict per round*/, analysis_rounds INT, error, created_at, updated_at)`
 - `tm_tasks` gains nullable `feature_id` and `feature_phase INT` (0-based phase index). Existing `priority`/`parent_id` untouched — a feature is **not** modeled as a parent task: parent/child means "split of one task" with all-children-resolve semantics; a feature needs phase ordering, a request document, and an approval gate, which don't fit that machinery. Tasks within a feature can still be split by workers as usual (their children inherit `feature_id`/`feature_phase`).
-- Task `source`: new enum value `feature` (provenance chip in Board filters alongside human/agent/sentry/analyze).
+- Task `source`: new enum value `feature` (provenance chip in the Board search's `source` facet alongside human/agent/sentry/analyze; a `feature` facet narrows to one feature's tasks — `docs/search.md`).
 
 Payloads TEXT not JSONB, `tm_` prefix, dialect-neutral SQL — per the storage rules.
 

@@ -151,13 +151,16 @@ look as though the feature were missing.
     title, and a swatch saves at once. Both write the ROOT row (`PATCH
     groupName|groupColor`), the only row the server lets carry them. A refusal
     shows above the board and the field stays open with the text intact.
-  - **Filter.** A single click on the name still filters the board to the group.
+  - **Filter.** A single click on the name still filters the board to the group
+    (a `group` chip in the Board search, `docs/search.md`, replacing any other
+    group chip).
   - **Drop target.** A task dropped on the header is appended to the group.
 - **Inside a group the order is always the manual one** (§ Order), whatever the
   sort control says; the sort decides where each group and each lone task sits.
   **`sort: queue order`** sorts those by position too, which is the order the
   queue claims in.
-- **`all groups` filter** and a fourth grouping mode, **`group: task group`** —
+- **A `group` facet in the Board search** (type the group's name, or
+  `group:<name>`) and a fourth grouping mode, **`group: task group`** —
   one section per tree, biggest first, with everything else under `ungrouped`.
   In that mode the in-panel block headers are suppressed (the section header
   already names the group) and the section header carries the group's colour.

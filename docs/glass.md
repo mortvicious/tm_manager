@@ -116,12 +116,13 @@ Glass), and the `::view-transition` duration.
     keep their hue without a rule per hue.
   - The iOS switch is 51×31, tinted with the accent, and its knob stretches
     while held. `.seg` is a segmented control with a raised thumb.
-  - The Board's toolbars are capsules. On a phone the toolbar is Filters
-    (leading) and New (trailing), and **sort lives in the Filters sheet**, under
-    group-by (`Board.tsx`, gated on `useLook()`). The user found the sort picker
-    square beside the capsules and offered hiding it (2026-10-03). A sort is set
-    once and left, so it doesn't need a toolbar slot. On a desktop the bar has
-    room, so its filter and sort pickers stay and become glass capsules.
+  - The Board's search is a capsule (`docs/search.md`). On a phone the toolbar
+    is Search (leading) and New (trailing). Sort, group-by and every filter live
+    behind the search in both designs; the old rule kept only the Glass phone
+    toolbar free of the sort picker (2026-10-03). Open on a desktop, the search
+    is Spotlight in thick glass that grows out of the top (`tm-pop-in`) and
+    leaves through `exitGhost`. On a phone its sheet is Liquid Glass, with an iOS
+    search field (`--tm-glass-lens`) inside.
   - Selects draw their chevron from two `currentColor` gradient triangles,
     because WebKit ignores radius on a native select.
 - **Type.** On a phone the base is 15pt and titles are 34pt large titles. The
@@ -129,7 +130,7 @@ Glass), and the `::view-transition` duration.
   Classic hides.
 - **Overlays.**
   - **Every sheet is Liquid Glass** (`--tm-glass-thick` + rim + blur): the
-    menus, Filters, the question, New task and the task panel on a phone
+    menus, Search, the question, New task and the task panel on a phone
     (`docs/mobile.md` § Sheets). A content-height sheet floats inside the
     screen's corners (its position beats the library's inline styles with
     `!important`); a tall one is a card from the bottom edge. The More sheet

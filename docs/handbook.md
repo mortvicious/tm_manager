@@ -151,17 +151,21 @@ Top to bottom: **active** (everything running or waiting on you), **drafts** (th
 
 Each row ends with its **age** — how long ago it was filed (drafts) or last touched (everywhere else); hover it for the exact times. A task filed in the **last 24 hours** carries an accent edge down the left of the row; anything older than two weeks has its age dimmed.
 
-Three ways to see less: the **sort** selector (last touched / newest filed / oldest filed / title A–Z) reorders every section, **clicking a section header folds it** (done and cancelled start folded), and **essentials** in the top right strips the board to titles and status badges only — no tags, no ages, no history. Sort, folds and essentials are remembered in the browser; the filters below reset each visit.
+Three ways to see less: the **sort** selector (last touched / newest filed / oldest filed / title A–Z / queue order, in the search's foot — see below) reorders every section, **clicking a section header folds it** (done and cancelled start folded), and **essentials** in the top right strips the board to titles and status badges only — no tags, no ages, no history. Sort, folds, essentials and the search are remembered in the browser.
 
 ## Categories, filtering & grouping
 
-Every task can carry a free-text **category** ("UI", "Estimator", "Auth"…). You set one in the create form or the task panel; **agents assign them too** — the Analyze run labels each task by domain, and workers can categorize tasks they file. The Board header filters by repo, source (human / agent / sentry / analyze / feature), category and group, and groups by status, category, repo, or task group.
+Every task can carry a free-text **category** ("UI", "Estimator", "Auth"…). You set one in the create form or the task panel; **agents assign them too** — the Analyze run labels each task by domain, and workers can categorize tasks they file.
+
+## Searching the Board
+
+One **search** at the top of the Board does all the narrowing: click the field (or press `⌘K`, or `/`; on a phone tap **Search**) and type. The board filters as you type — every word must start a word somewhere in the task: title, description, summary, id, parent, group, repo, status, source, category, feature, model or date. Suggestions under the field turn words into **chips**: a repo, a status, a live state (needs attention, asks you, in my queue, held…), a source (human / agent / sentry / analyze / feature), a category, a group, a feature, a date (`today`, `last 7 days`, `sep 30`, `since sep 1`…). A **Smart filter** line reads the whole input at once — `done yesterday` → status done + updated yesterday. Chips of the same kind widen (status review **or** failed), different kinds narrow. Power users can type the chips directly: `status:review repo:nest created:today` (the whole syntax: `docs/search.md`). The search's foot (on a phone: its **View** section) holds **group by** (status, category, repo, task group) and **sort**. Closed, the search shows what it narrows by as chips under the title — tap one to drop it.
 
 ## Finding a task by id
 
 Every task has an id (a UUID). The task panel shows its first 8 characters next to the status — **click it to copy the full id** — and the same id is what commits carry as their `Task:` trailer and what Telegram's `/task <id>` takes.
 
-To jump to a task from an id, type it into the **Task id…** field at the end of the Board bar (on a phone: the top of the **Filters** sheet) and press Enter. It takes the full id or any unique prefix of **at least 4 characters**, case-insensitive; a leading `#`, a pasted `Task: ` trailer and a trailing `…` are ignored. A match opens the task panel whatever the board's filters hide. A prefix that several tasks share lists them (newest first, up to 6) to pick from; one that matches nothing says so. The rules are the same as Telegram's, so a short id copied from the phone works here. The `?task=<id>` deep link accepts a short id the same way.
+To jump to a task from an id, type it into the **search** and press Enter: an id is the search's first suggestion (**Go to**). It takes the full id or any unique prefix of **at least 4 characters**, case-insensitive; a leading `#`, a pasted `Task: ` trailer and a trailing `…` are ignored. It opens the task panel whatever the board's filters hide. A prefix that several tasks share lists them (newest first, up to 6) to pick from. The rules are the same as Telegram's, so a short id copied from the phone works here. `under:<id>` (or the **under #…** suggestion) narrows the board to everything below a task. The `?task=<id>` deep link accepts a short id the same way.
 
 ## Task groups
 

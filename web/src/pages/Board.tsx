@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   EFFORT_LEVELS,
   MODEL_OPTIONS,
@@ -10,12 +10,22 @@ import {
   type TaskStatus,
 } from '@tm/shared';
 import { api } from '../api.ts';
-import { useLook } from '../appearance.ts';
 import { useApp } from '../state.tsx';
+import {
+  absorbTyped,
+  buildHaystacks,
+  compileQuery,
+  isSearching,
+  isToken,
+  tokenLive,
+  type SearchContext,
+  type SearchToken,
+} from '../boardSearch.ts';
+import { SearchChips, SearchPanel, SearchTrigger, useSearchHotkey } from '../components/BoardSearch.tsx';
 import { DispatchStrip } from '../components/DispatchStrip.tsx';
 import { GroupHead } from '../components/GroupHead.tsx';
 import { GroupPicker } from '../components/GroupPicker.tsx';
-import { IconChevron, IconFilter, IconPlus, IconX } from '../components/Icons.tsx';
+import { IconChevron, IconPlus } from '../components/Icons.tsx';
 import { useIsMobile } from '../components/Layout.tsx';
 import {
   PresetChip,
@@ -27,10 +37,9 @@ import {
 } from '../components/PresetPicker.tsx';
 import { ReviewerChip, ReviewerFields, globalReviewModel, reviewIsOn } from '../components/ReviewerPicker.tsx';
 import { liveReviewRun } from '../components/RunKind.tsx';
-import { FullSheet, Sheet } from '../components/Sheet.tsx';
+import { FullSheet } from '../components/Sheet.tsx';
 import { StatusBadge } from '../components/StatusBadge.tsx';
 import { DragGhost, useTaskDrag, type DropZone } from '../components/TaskDrag.tsx';
-import { TaskIdFinder } from '../components/TaskIdFinder.tsx';
 import { TaskRow } from '../components/TaskRow.tsx';
 import { TimeAgo, isNew, useNow } from '../components/TimeAgo.tsx';
 
@@ -355,7 +364,6 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
   );
 }
 
-type Provenance = 'all' | 'human' | 'agent' | 'sentry' | 'analyze' | 'feature';
 type GroupBy = 'status' | 'category' | 'repo' | 'group';
 type SortKey = 'updated' | 'created' | 'oldest' | 'title' | 'manual';
 
@@ -376,50 +384,46 @@ const comparator = (sort: SortKey) => {
   return byRecency(sort === 'created' ? 'createdAt' : 'updatedAt');
 };
 
-const provenanceOf = (t: Task): Exclude<Provenance, 'all'> => {
-  // feature wins over agent: a feature-generated task is the plan's, not a
-  // worker's follow-up (its children keep featureId but are still 'agent').
-  if (t.source === 'feature') return 'feature';
-  if (t.createdByRun) return 'agent';
-  if (t.source === 'sentry') return 'sentry';
-  if (t.source === 'auto') return 'analyze';
-  return 'human';
-};
-
 const PREFS_KEY = 'tm.board';
 /** Terminal buckets start folded away — they are history, not work. */
 const DEFAULT_COLLAPSED = HISTORY.map((s) => `status:${s}`);
 
-type DispatchFilter = 'all' | 'with' | 'pending';
-const PROVENANCES: Provenance[] = ['all', 'human', 'agent', 'sentry', 'analyze', 'feature'];
 const GROUP_BYS: GroupBy[] = ['status', 'category', 'repo', 'group'];
-const DISPATCH_FILTERS: DispatchFilter[] = ['all', 'with', 'pending'];
 
 interface Prefs {
   sort: SortKey;
   focus: boolean;
   collapsed: string[];
   showAllDrafts: boolean;
-  /* filters — kept across reloads (a phone reloads a home-screen app often);
-     ids that no longer exist fall back to 'all' at render, see BoardPage */
-  repo: string;
-  prov: Provenance;
-  cat: string;
-  group: string;
-  dispatch: DispatchFilter;
+  /* the search (docs/search.md) — kept across reloads (a phone reloads a
+     home-screen app often); tokens naming something gone read as absent at
+     render, see BoardPage */
+  tokens: SearchToken[];
+  text: string;
   groupBy: GroupBy;
 }
 
-const BASE_FILTERS = {
-  repo: 'all',
-  prov: 'all',
-  cat: 'all',
-  group: 'all',
-  dispatch: 'all',
-  groupBy: 'status',
-} as const satisfies Pick<Prefs, 'repo' | 'prov' | 'cat' | 'group' | 'dispatch' | 'groupBy'>;
+const BASE_FILTERS: Pick<Prefs, 'tokens' | 'text' | 'groupBy'> = { tokens: [], text: '', groupBy: 'status' };
 
-const str = (v: unknown, fallback: string) => (typeof v === 'string' && v ? v : fallback);
+/**
+ * The single-valued filters the board kept before the search (`repo`, `prov`,
+ * `cat`, `group`, `dispatch`, each `'all'` when off) become tokens, so an
+ * upgrade keeps what the board was narrowed to.
+ */
+function legacyTokens(p: Record<string, unknown>): SearchToken[] {
+  const out: SearchToken[] = [];
+  const take = (field: string, kind: SearchToken['kind']) => {
+    const v = p[field];
+    if (typeof v === 'string' && v && v !== 'all') out.push({ kind, value: v });
+  };
+  take('repo', 'repo');
+  take('prov', 'source');
+  take('cat', 'cat');
+  take('group', 'group');
+  take('dispatch', 'dispatch');
+  return out;
+}
+
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[], fallback: T): T =>
   allowed.includes(v as T) ? (v as T) : fallback;
 
@@ -434,17 +438,14 @@ const loadPrefs = (): Prefs => {
   try {
     const raw = localStorage.getItem(PREFS_KEY);
     if (!raw) return base;
-    const p = JSON.parse(raw) as Partial<Prefs>;
+    const p = JSON.parse(raw) as Partial<Prefs> & Record<string, unknown>;
     return {
       sort: SORTS.some((s) => s.key === p.sort) ? (p.sort as SortKey) : base.sort,
       focus: typeof p.focus === 'boolean' ? p.focus : base.focus,
       collapsed: Array.isArray(p.collapsed) ? p.collapsed.filter((c): c is string => typeof c === 'string') : base.collapsed,
       showAllDrafts: typeof p.showAllDrafts === 'boolean' ? p.showAllDrafts : base.showAllDrafts,
-      repo: str(p.repo, base.repo),
-      prov: oneOf(p.prov, PROVENANCES, base.prov),
-      cat: str(p.cat, base.cat),
-      group: str(p.group, base.group),
-      dispatch: oneOf(p.dispatch, DISPATCH_FILTERS, base.dispatch),
+      tokens: Array.isArray(p.tokens) ? p.tokens.filter(isToken) : legacyTokens(p),
+      text: typeof p.text === 'string' ? p.text : base.text,
       groupBy: oneOf(p.groupBy, GROUP_BYS, base.groupBy),
     };
   } catch {
@@ -517,41 +518,19 @@ export function BoardPage({
   onOpenTask: (id: string) => void;
   onOpenTerminal: (runId: string) => void;
 }) {
-  const { tasks, repos, runs, settings, refresh, dispatches, questions } = useApp();
+  const { tasks, repos, runs, settings, refresh, dispatches, questions, features } = useApp();
   // default ON so the board is coloured before /api/config answers, matching
   // DEFAULT_SETTINGS['board.groupColors']
   const groupColors = settings?.['board.groupColors'] ?? true;
   const repoName = (id: string | null) => repos.find((r) => r.id === id)?.name;
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
-  const { sort, focus, showAllDrafts, groupBy, prov: filterProv } = prefs;
+  const { sort, focus, showAllDrafts, groupBy, text: searchText } = prefs;
   const mobile = useIsMobile();
-  // Glass keeps the phone toolbar to Filters and New: sort moves into the sheet
-  const glass = useLook().design === 'glass';
   const presets = useTaskPresets();
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const now = useNow();
   const setPref = <K extends keyof Prefs>(k: K, v: Prefs[K]) => setPrefs((p) => ({ ...p, [k]: v }));
-  const setFilterRepo = (v: string) => setPref('repo', v);
-  const setFilterProv = (v: Provenance) => setPref('prov', v);
-  const setFilterCat = (v: string) => setPref('cat', v);
-  const setFilterGroup = (v: string) => setPref('group', v);
-  const setFilterDispatch = (v: DispatchFilter) => setPref('dispatch', v);
   const setGroupBy = (v: GroupBy) => setPref('groupBy', v);
-  // A persisted filter can outlive what it names (repo removed, group
-  // dissolved, last dispatch pruned). Its select would then be hidden or
-  // blank while it silently empties the board, so it reads as 'all'. The
-  // checks wait for data: an empty list at boot means "not loaded yet".
-  const filterRepo =
-    prefs.repo === 'all' || repos.length === 0 || repos.some((r) => r.id === prefs.repo) ? prefs.repo : 'all';
-  const filterCat =
-    prefs.cat === 'all' || prefs.cat === 'none' || tasks.length === 0 || tasks.some((t) => t.category === prefs.cat)
-      ? prefs.cat
-      : 'all';
-  const filterGroup =
-    prefs.group === 'all' || tasks.length === 0 || tasks.some((t) => t.groupId === prefs.group && t.id !== prefs.group)
-      ? prefs.group
-      : 'all';
-  const filterDispatch: DispatchFilter = dispatches.length === 0 ? 'all' : prefs.dispatch;
 
   useEffect(() => {
     try {
@@ -561,13 +540,7 @@ export function BoardPage({
     }
   }, [prefs]);
 
-  const collapsed = useMemo(() => new Set(prefs.collapsed), [prefs.collapsed]);
-  const toggleFold = (id: string) =>
-    setPrefs((p) => {
-      const next = new Set(p.collapsed);
-      if (!next.delete(id)) next.add(id);
-      return { ...p, collapsed: [...next] };
-    });
+  const savedFolds = useMemo(() => new Set(prefs.collapsed), [prefs.collapsed]);
 
   const categories = useMemo(
     () => [...new Set(tasks.map((t) => t.category).filter(Boolean))].sort() as string[],
@@ -585,20 +558,6 @@ export function BoardPage({
     }
     return { any, pending };
   }, [dispatches]);
-
-  const filtered = useMemo(
-    () =>
-      tasks.filter(
-        (t) =>
-          (filterRepo === 'all' || t.repoId === filterRepo) &&
-          (filterProv === 'all' || provenanceOf(t) === filterProv) &&
-          (filterCat === 'all' || (filterCat === 'none' ? !t.category : t.category === filterCat)) &&
-          (filterGroup === 'all' || t.groupId === filterGroup) &&
-          (filterDispatch === 'all' ||
-            (filterDispatch === 'with' ? dispatchTouched.any.has(t.id) : dispatchTouched.pending.has(t.id))),
-      ),
-    [tasks, filterRepo, filterProv, filterCat, filterGroup, filterDispatch, dispatchTouched],
-  );
 
   // Every task tree on the board, keyed by root id: the name/colour to draw it
   // with and its FULL size, so a section showing part of a group can say so.
@@ -631,6 +590,59 @@ export function BoardPage({
     () => [...groupIndex.values()].filter((g) => g.size > 1).sort((a, b) => a.label.localeCompare(b.label)),
     [groupIndex],
   );
+
+  const attention = useCallback(
+    (t: Task) => t.status === 'running' && runs.some((r) => r.taskId === t.id && r.needsAttention && r.status === 'running'),
+    [runs],
+  );
+  // the slice is the pending set (docs/questions.md)
+  const asking = useMemo(() => new Set(questions.map((q) => q.taskId)), [questions]);
+
+  // The search (docs/search.md). Dates are judged against the minute clock, so
+  // "today" rolls over at midnight without a reload.
+  const searchCtx = useMemo<SearchContext>(
+    () => ({ tasks, repos, features, groups: groupIndex, dispatched: dispatchTouched, attention, asking, now: new Date(now) }),
+    [tasks, repos, features, groupIndex, dispatchTouched, attention, asking, now],
+  );
+  const haystacks = useMemo(() => buildHaystacks(searchCtx), [searchCtx]);
+  // A persisted token can outlive what it names (repo removed, group
+  // dissolved, last dispatch pruned); it would silently empty the board
+  // behind a chip naming nothing, so it reads as absent.
+  const tokens = useMemo(() => prefs.tokens.filter((t) => tokenLive(t, searchCtx)), [prefs.tokens, searchCtx]);
+  const searching = isSearching(tokens, searchText);
+  // a phone narrowed to one repo does not need that repo's name on every row
+  const oneRepo = tokens.filter((t) => t.kind === 'repo').length === 1;
+  const filtered = useMemo(() => {
+    const match = compileQuery(tokens, searchText, searchCtx, haystacks);
+    return tasks.filter(match);
+  }, [tasks, tokens, searchText, searchCtx, haystacks]);
+  const setSearch = (next: { tokens: SearchToken[]; text: string }) => setPrefs((p) => ({ ...p, ...next }));
+  const openSearch = useCallback(() => setSearchOpen(true), []);
+  // closing folds typed `key:value` words into chips — the committed form
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setPrefs((p) => ({ ...p, ...absorbTyped(p.tokens, p.text, searchCtx) }));
+  };
+  useSearchHotkey(openSearch, !searchOpen);
+  /** A tree's group chip filters the board to that group, replacing any other group. */
+  const filterToGroup = (id: string) =>
+    setPrefs((p) => ({ ...p, tokens: [...p.tokens.filter((t) => t.kind !== 'group'), { kind: 'group', value: id }] }));
+  // While searching every section and group block shows OPEN — a match folded
+  // away is a match not found. Folding then is per-search and forgotten after.
+  const [searchFolds, setSearchFolds] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    if (!searching) setSearchFolds(new Set());
+  }, [searching]);
+  const collapsed = searching ? searchFolds : savedFolds;
+  const toggleFold = (id: string) => {
+    const flip = (from: Iterable<string>) => {
+      const next = new Set(from);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    };
+    if (searching) setSearchFolds((prev) => flip(prev));
+    else setPrefs((p) => ({ ...p, collapsed: [...flip(p.collapsed)] }));
+  };
 
   const byId = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
   // Manual position (docs/grouping.md § Order): the keys from a task's group
@@ -755,11 +767,6 @@ export function BoardPage({
     [filtered],
   );
 
-  const attention = (t: Task) =>
-    t.status === 'running' && runs.some((r) => r.taskId === t.id && r.needsAttention && r.status === 'running');
-  // the slice is the pending set (docs/questions.md)
-  const asking = useMemo(() => new Set(questions.map((q) => q.taskId)), [questions]);
-
   const sortField = SORTS.find((s) => s.key === sort)!.field;
 
   // Drag and drop (docs/grouping.md § Drag and drop). The server resolves the
@@ -881,7 +888,7 @@ export function BoardPage({
       all.push(['source', <span key="source" className="chip">{t.source}</span>]);
     }
     // a phone filtered to one repo does not need that repo's name on every row
-    if (repo && ctx !== 'repo' && !(mobile && filterRepo !== 'all')) {
+    if (repo && ctx !== 'repo' && !(mobile && oneRepo)) {
       all.push(['repo', <span key="repo" className="chip">{repo}</span>]);
     }
     if (!mobile) return all.map(([, node]) => node);
@@ -980,7 +987,7 @@ export function BoardPage({
             collapsed={folded}
             dropClass={dropClass(g.id, 'group')}
             onToggle={() => toggleFold(foldId)}
-            onFilter={() => setFilterGroup(g.id)}
+            onFilter={() => filterToGroup(g.id)}
             onRename={(groupName) => patchGroup(g.id, { groupName })}
             onColor={(groupColor) => patchGroup(g.id, { groupColor }).catch(() => {})}
           />
@@ -989,66 +996,18 @@ export function BoardPage({
       );
     });
 
-  const draftsShown = showAllDrafts ? drafts : drafts.slice(0, DRAFT_LIMIT);
+  // a search shows every match: a capped strip would hide some of them
+  const draftsShown = showAllDrafts || searching ? drafts : drafts.slice(0, DRAFT_LIMIT);
 
-  // The filter controls, written once: desktop lays them out in the bar,
-  // phones stack them in the Filters sheet.
-  const filterSelects = (
-    <>
-      <select className="field" aria-label="Repo" value={filterRepo} onChange={(e) => setFilterRepo(e.target.value)}>
-        <option value="all">all repos</option>
-        {repos.map((r) => (
-          <option key={r.id} value={r.id}>
-            {r.name}
-          </option>
-        ))}
-      </select>
-      <select className="field" aria-label="Source" value={filterProv} onChange={(e) => setFilterProv(e.target.value as Provenance)}>
-        <option value="all">all sources</option>
-        <option value="human">human</option>
-        <option value="agent">agent</option>
-        <option value="sentry">sentry</option>
-        <option value="analyze">analyze</option>
-        <option value="feature">feature</option>
-      </select>
-      <select className="field" aria-label="Category" value={filterCat} onChange={(e) => setFilterCat(e.target.value)}>
-        <option value="all">all categories</option>
-        {categories.map((c) => (
-          <option key={c} value={c}>
-            {c}
-          </option>
-        ))}
-        <option value="none">uncategorized</option>
-      </select>
-      {dispatches.length > 0 && (
-        <select
-          className="field"
-          aria-label="Dispatches"
-          value={filterDispatch}
-          onChange={(e) => setFilterDispatch(e.target.value as DispatchFilter)}
-        >
-          <option value="all">dispatches: any</option>
-          <option value="with">has dispatches</option>
-          <option value="pending">pending dispatches</option>
-        </select>
-      )}
-      {namedGroups.length > 0 && (
-        <select className="field" aria-label="Task group" value={filterGroup} onChange={(e) => setFilterGroup(e.target.value)}>
-          <option value="all">all groups</option>
-          {namedGroups.map((g) => (
-            <option key={g.id} value={g.id}>
-              {g.label} ({g.size})
-            </option>
-          ))}
-        </select>
-      )}
-      <select className="field" aria-label="Group by" value={groupBy} onChange={(e) => setGroupBy(e.target.value as GroupBy)}>
-        <option value="status">group: status</option>
-        <option value="category">group: category</option>
-        <option value="repo">group: repo</option>
-        <option value="group">group: task group</option>
-      </select>
-    </>
+  // The view controls, written once: the search panel's foot on a desktop,
+  // its View section on a phone (docs/search.md).
+  const groupBySelect = (
+    <select className="field" aria-label="Group by" value={groupBy} onChange={(e) => setGroupBy(e.target.value as GroupBy)}>
+      <option value="status">group: status</option>
+      <option value="category">group: category</option>
+      <option value="repo">group: repo</option>
+      <option value="group">group: task group</option>
+    </select>
   );
   const sortSelect = (
     <select
@@ -1064,6 +1023,34 @@ export function BoardPage({
       ))}
     </select>
   );
+  const viewControls = (
+    <>
+      {groupBySelect}
+      {sortSelect}
+      {mobile && (
+        <div className="sheet-field-row">
+          <span className="muted">Rows</span>
+          <span className="seg" role="group" aria-label="View">
+            <button
+              className={`btn ${focus ? '' : 'primary'}`}
+              aria-pressed={!focus}
+              onClick={() => setPrefs((p) => ({ ...p, focus: false }))}
+            >
+              full
+            </button>
+            <button
+              className={`btn ${focus ? 'primary' : ''}`}
+              aria-pressed={focus}
+              title="Titles and status only: no tags, ages or history"
+              onClick={() => setPrefs((p) => ({ ...p, focus: true }))}
+            >
+              essentials
+            </button>
+          </span>
+        </div>
+      )}
+    </>
+  );
   const focusToggle = (
     <button
       className={`btn ${focus ? 'primary' : ''}`}
@@ -1075,38 +1062,39 @@ export function BoardPage({
     </button>
   );
 
-  // Phones: what the sheet hides must still be visible, so every filter that
-  // is narrowing the board prints as a chip that clears it.
-  const activeFilters: { id: string; label: string; clear: () => void }[] = [];
-  if (filterRepo !== 'all') {
-    activeFilters.push({ id: 'repo', label: repoName(filterRepo) ?? 'repo', clear: () => setFilterRepo('all') });
-  }
-  if (filterProv !== 'all') activeFilters.push({ id: 'prov', label: filterProv, clear: () => setFilterProv('all') });
-  if (filterCat !== 'all') {
-    activeFilters.push({ id: 'cat', label: filterCat === 'none' ? 'uncategorized' : filterCat, clear: () => setFilterCat('all') });
-  }
-  if (filterGroup !== 'all') {
-    activeFilters.push({
-      id: 'group',
-      label: groupIndex.get(filterGroup)?.label ?? 'group',
-      clear: () => setFilterGroup('all'),
-    });
-  }
-  if (filterDispatch !== 'all') {
-    activeFilters.push({
-      id: 'dispatch',
-      label: filterDispatch === 'with' ? 'has dispatches' : 'pending dispatches',
-      clear: () => setFilterDispatch('all'),
-    });
-  }
+  // What the closed search narrows by stays on screen as chips; a grouping
+  // other than the default is one too, since its control is behind the search.
+  const viewChips: { id: string; label: string; clear: () => void }[] = [];
   if (groupBy !== 'status') {
-    activeFilters.push({
+    viewChips.push({
       id: 'groupBy',
       label: `group: ${groupBy === 'group' ? 'task group' : groupBy}`,
       clear: () => setGroupBy('status'),
     });
   }
+  const canReset = prefs.tokens.length > 0 || searchText !== '' || groupBy !== 'status';
   const resetFilters = () => setPrefs((p) => ({ ...p, ...BASE_FILTERS }));
+  const trigger = (
+    <SearchTrigger
+      tokens={tokens}
+      text={searchText}
+      ctx={searchCtx}
+      mobile={mobile}
+      expanded={searchOpen}
+      onOpen={openSearch}
+    />
+  );
+  const chips = (
+    <SearchChips
+      tokens={tokens}
+      text={searchText}
+      ctx={searchCtx}
+      extra={viewChips}
+      shown={filtered.length}
+      total={tasks.length}
+      onChange={setSearch}
+    />
+  );
 
   return (
     <div className="board">
@@ -1115,85 +1103,38 @@ export function BoardPage({
           {/* Glass gives the phone board a large title like every other page; Classic hides it */}
           <h1 className="page-title glass-only">Board</h1>
           <div className="board-toolbar">
-            <button
-              className={`btn filters-btn ${activeFilters.length > 0 ? 'on' : ''}`}
-              aria-expanded={filtersOpen}
-              onClick={() => setFiltersOpen(true)}
-            >
-              <IconFilter /> Filters
-              {activeFilters.length > 0 && <span className="count">{activeFilters.length}</span>}
-            </button>
-            {!glass && sortSelect}
+            {trigger}
             <NewTaskForm onCreated={refresh} mobile />
           </div>
-          {activeFilters.length > 0 && (
-            <div className="filter-chips">
-              {activeFilters.map((f) => (
-                <button key={f.id} className="chip filter-chip" title="Clear this filter" onClick={f.clear}>
-                  {f.label}
-                  <IconX />
-                </button>
-              ))}
-            </div>
-          )}
-          {filtersOpen && (
-            <Sheet label="Filters" title="Filters & view" onClose={() => setFiltersOpen(false)}>
-              <div className="sheet-fields">
-                <TaskIdFinder
-                  tasks={tasks}
-                  inline
-                  onOpenTask={(id) => {
-                    setFiltersOpen(false);
-                    onOpenTask(id);
-                  }}
-                />
-                {filterSelects}
-                {glass && sortSelect}
-                <div className="sheet-field-row">
-                  <span className="muted">View</span>
-                  <span className="seg" role="group" aria-label="View">
-                    <button
-                      className={`btn ${focus ? '' : 'primary'}`}
-                      aria-pressed={!focus}
-                      onClick={() => setPrefs((p) => ({ ...p, focus: false }))}
-                    >
-                      full
-                    </button>
-                    <button
-                      className={`btn ${focus ? 'primary' : ''}`}
-                      aria-pressed={focus}
-                      title="Titles and status only: no tags, ages or history"
-                      onClick={() => setPrefs((p) => ({ ...p, focus: true }))}
-                    >
-                      essentials
-                    </button>
-                  </span>
-                </div>
-              </div>
-              <div className="sheet-buttons">
-                <button className="btn" disabled={activeFilters.length === 0} onClick={resetFilters}>
-                  Reset
-                </button>
-                <button className="btn primary" onClick={() => setFiltersOpen(false)}>
-                  Done
-                </button>
-              </div>
-            </Sheet>
-          )}
+          {chips}
         </>
       ) : (
         <>
           <h1 className="page-title">
             Board
             <span style={{ flex: 1 }} />
+            {trigger}
             {focusToggle}
           </h1>
-          <div className="board-bar">
-            {filterSelects}
-            {sortSelect}
-            <TaskIdFinder tasks={tasks} onOpenTask={onOpenTask} />
-          </div>
+          {chips}
         </>
+      )}
+      {searchOpen && (
+        <SearchPanel
+          tokens={tokens}
+          text={searchText}
+          ctx={searchCtx}
+          hay={haystacks}
+          mobile={mobile}
+          shown={filtered.length}
+          total={tasks.length}
+          view={viewControls}
+          canReset={canReset}
+          onReset={resetFilters}
+          onChange={setSearch}
+          onClose={closeSearch}
+          onOpenTask={onOpenTask}
+        />
       )}
       {boardErr && (
         <div className="board-err warn-text" role="alert">
@@ -1214,7 +1155,9 @@ export function BoardPage({
       {filtered.length === 0 && tasks.length > 0 && (
         <div className="empty panel" style={{ marginTop: 20 }}>
           <div className="big">Nothing matches</div>
-          adjust the filters above
+          <button className="btn" onClick={resetFilters}>
+            Clear the search
+          </button>
         </div>
       )}
       {active.length > 0 && (
@@ -1229,7 +1172,8 @@ export function BoardPage({
           collapsed={collapsed.has('drafts')}
           onToggle={() => toggleFold('drafts')}
           action={
-            drafts.length > DRAFT_LIMIT && (
+            drafts.length > DRAFT_LIMIT &&
+            !searching && (
               <button
                 className="btn ghost section-toggle"
                 aria-expanded={showAllDrafts}
@@ -1250,7 +1194,7 @@ export function BoardPage({
         // pinned at the top, once inside its category/repo.
         if (groupBy === 'status' && ((ACTIVE as string[]).includes(label) || label === 'draft')) return null;
         // essentials mode drops finished history entirely
-        if (focus && groupBy === 'status' && (HISTORY as string[]).includes(label)) return null;
+        if (focus && !searching && groupBy === 'status' && (HISTORY as string[]).includes(label)) return null;
         const id = `${groupBy}:${label}`;
         // under `group: task group` the key is the group id — show its name
         const heading = groupBy === 'group' ? (groupIndex.get(label)?.label ?? label) : label;
@@ -1267,7 +1211,8 @@ export function BoardPage({
           </Section>
         );
       })}
-      {!focus && recent.length > 0 && (
+      {/* a lookup list — while searching the sections above ARE the lookup */}
+      {!focus && !searching && recent.length > 0 && (
         <Section label="Recent" count={recent.length} collapsed={collapsed.has('recent')} onToggle={() => toggleFold('recent')}>
           <div className="panel">{recent.map((r) => row(r.task, 'recent'))}</div>
         </Section>

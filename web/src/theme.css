@@ -1895,105 +1895,403 @@ button.badge.badge-link:hover {
   transform: rotate(-90deg);
 }
 
-/* board filter/sort toolbar — wraps instead of crowding the page title */
-.board-bar {
+/* ---- board search (docs/search.md): one field, Spotlight behind it ---- */
+
+/* collapsed: a field-shaped button in the page title */
+.bs-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  width: min(340px, 40vw);
+  min-width: 0;
+  height: 32px;
+  padding: 0 var(--tm-space-2) 0 var(--tm-space-3);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-inset);
+  color: var(--tm-text-faint);
+  font-family: var(--tm-font-body);
+  font-size: var(--tm-text-sm);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-align: left;
+  cursor: text;
+  transition:
+    border-color var(--tm-dur-fast) var(--tm-ease-out),
+    color var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.bs-trigger:hover {
+  border-color: var(--tm-border-strong);
+  color: var(--tm-text-muted);
+}
+
+.bs-trigger:focus-visible {
+  outline: none;
+  border-color: var(--tm-accent);
+  box-shadow: 0 0 0 3px var(--tm-accent-subtle);
+}
+
+.bs-trigger > svg {
+  flex: none;
+}
+
+.bs-trigger.on {
+  border-color: var(--tm-accent);
+  color: var(--tm-text);
+}
+
+.bs-trigger.on > svg {
+  color: var(--tm-accent);
+}
+
+.bs-trigger-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bs-count {
+  flex: none;
+  padding: 0 6px;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-accent);
+  color: var(--tm-accent-contrast);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
+.bs-kbd,
+.bs-keys kbd {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-bg-raised);
+  color: var(--tm-text-faint);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  line-height: 1.5;
+}
+
+/* the chips under the closed search: wrap on a desktop, scroll on a phone */
+.app:not(.mobile) .bs-chips {
+  flex-wrap: wrap;
+  overflow: visible;
+  margin-top: calc(-1 * var(--tm-space-2));
+}
+
+.bs-chips .filter-chip {
+  max-width: 320px;
+  font-family: var(--tm-font-body);
+}
+
+.bs-chips .bs-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bs-facet {
+  flex: none;
+  opacity: 0.7;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
+.bs-chips-count {
+  flex: none;
+  align-self: center;
+  padding: 0 var(--tm-space-1);
+  color: var(--tm-text-faint);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
+/* open, desktop: a Spotlight panel near the top, centred on the window
+   (above a task panel, so ⌘K works with one open; under an agent's question) */
+.overlay.bs-overlay {
+  z-index: 37;
+}
+
+.bs-pop {
+  position: fixed;
+  top: max(10vh, var(--tm-space-8));
+  left: 0;
+  right: 0;
+  z-index: 38;
+  display: flex;
+  flex-direction: column;
+  width: min(680px, calc(100vw - 2 * var(--tm-space-5)));
+  max-height: min(72vh, 680px);
+  margin: 0 auto;
+  overflow: hidden;
+  background: var(--tm-bg-raised);
+  border: 1px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-lg);
+  box-shadow: var(--tm-shadow-lg);
+  animation: fade var(--tm-dur-base) var(--tm-ease-out);
+}
+
+/* the field: magnifier, chips, the input, a clear button — one line that wraps */
+.bs-field {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--tm-space-2);
-  margin: 0 0 var(--tm-space-4);
+  gap: var(--tm-space-1) var(--tm-space-2);
+  padding: var(--tm-space-3) var(--tm-space-4);
+  border-bottom: 1px solid var(--tm-border);
+  cursor: text;
 }
 
-.board-bar select.field {
-  width: auto;
-  min-width: 150px;
-  font-size: var(--tm-text-sm);
+.bs-field > svg {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--tm-text-faint);
 }
 
-/* find a task by id (TaskIdFinder): the bar's last item, pushed right; the
-   outcome drops under it on desktop and sits in flow in the phone sheet */
-.id-find {
-  position: relative;
-  margin-left: auto;
-}
-
-.id-find .field {
-  width: 180px;
-  font-size: var(--tm-text-sm);
-}
-
-.id-find.inline {
-  margin-left: 0;
-}
-
-.id-find.inline .field {
-  width: 100%;
-  font-size: var(--tm-text-input);
-}
-
-.id-find-out {
-  position: absolute;
-  top: calc(100% + var(--tm-space-2));
-  right: 0;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: var(--tm-space-1);
-  width: 380px;
-  max-width: calc(100vw - var(--tm-sidebar-w) - var(--tm-space-5));
-  padding: var(--tm-space-2);
-  font-size: var(--tm-text-sm);
-  background: var(--tm-bg-raised);
-  border: 1px solid var(--tm-border);
-  border-radius: var(--tm-radius-lg);
-  box-shadow: var(--tm-shadow-lg);
-}
-
-.id-find.inline .id-find-out {
-  position: static;
-  width: auto;
-  max-width: none;
-  margin-top: var(--tm-space-2);
-  box-shadow: none;
-  background: var(--tm-bg-inset);
-}
-
-.id-find-out > span {
-  padding: var(--tm-space-1) var(--tm-space-2);
-}
-
-.id-find-hit {
-  display: flex;
-  align-items: center;
-  gap: var(--tm-space-2);
-  min-width: 0;
-  padding: var(--tm-space-1) var(--tm-space-2);
-  border: none;
-  border-radius: var(--tm-radius-md);
+.bs-input {
+  flex: 1 1 160px;
+  min-width: 120px;
+  padding: var(--tm-space-1) 0;
+  border: 0;
+  outline: none;
   background: transparent;
   color: var(--tm-text);
-  font: inherit;
-  text-align: left;
+  font-family: var(--tm-font-body);
+  font-size: var(--tm-text-lg);
+}
+
+.bs-input::placeholder {
+  color: var(--tm-text-faint);
+}
+
+/* the browser's own clear cross would sit beside ours */
+.bs-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.bs-token {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+  max-width: 100%;
+  padding: 2px 6px 2px 8px;
+  border: 0;
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-accent-subtle);
+  color: var(--tm-accent);
+  font-family: var(--tm-font-body);
+  font-size: var(--tm-text-sm);
   cursor: pointer;
 }
 
-.id-find.inline .id-find-hit {
-  min-height: var(--tm-tap-dense);
+.bs-token .bs-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.id-find-hit:hover,
-.id-find-hit:focus-visible {
+.bs-token svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+
+.bs-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--tm-radius-pill);
   background: var(--tm-bg-overlay);
+  color: var(--tm-text-muted);
+  cursor: pointer;
 }
 
-.id-find-hit .mono {
+.bs-clear svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* suggestions */
+.bs-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--tm-space-1) var(--tm-space-2) var(--tm-space-2);
+}
+
+.bs-section {
+  padding: var(--tm-space-2) var(--tm-space-2) var(--tm-space-1);
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.bs-opt {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  min-height: 34px;
+  padding: var(--tm-space-1) var(--tm-space-2);
+  border-radius: var(--tm-radius-md);
+  color: var(--tm-text);
+  font-size: var(--tm-text-sm);
+  cursor: pointer;
+}
+
+/* the macOS selection: the accent fill, everything on it in its contrast */
+.bs-opt[aria-selected='true'] {
+  background: var(--tm-accent);
+  color: var(--tm-accent-contrast);
+}
+
+.bs-opt[aria-selected='true'] :is(.bs-opt-id, .bs-opt-hint, .bs-opt-status, .bs-opt-rest, .bs-opt-icon) {
+  color: inherit;
+}
+
+.bs-opt[aria-selected='true'] .bs-tok-prev {
+  background: var(--tm-accent-strong);
+  color: inherit;
+}
+
+.bs-opt-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--tm-text-faint);
+}
+
+.bs-opt-id {
   flex: none;
   color: var(--tm-accent);
 }
 
-.id-find-hit .title {
+.bs-opt-label {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bs-opt-tokens {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+}
+
+.bs-tok-prev {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--tm-space-1);
+  min-width: 0;
+  padding: 1px 8px;
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-accent-subtle);
+  color: var(--tm-accent);
+}
+
+.bs-tok-prev .bs-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bs-opt-rest {
+  color: var(--tm-text-muted);
+}
+
+.bs-opt-hint {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--tm-space-2);
+  color: var(--tm-text-faint);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
+.bs-opt-repo {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bs-opt-status.st-running,
+.bs-opt-status.st-waiting {
+  color: var(--tm-status-running);
+}
+
+.bs-opt-status.st-review {
+  color: var(--tm-status-review);
+}
+
+.bs-opt-status.st-done {
+  color: var(--tm-status-done);
+}
+
+.bs-opt-status.st-published {
+  color: var(--tm-status-published);
+}
+
+.bs-opt-status.st-failed,
+.bs-opt-status.st-blocked {
+  color: var(--tm-status-failed);
+}
+
+.bs-enter {
+  flex: none;
+  font-size: var(--tm-text-xs);
+  opacity: 0.8;
+}
+
+.bs-empty {
+  padding: var(--tm-space-4) var(--tm-space-2);
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-sm);
+}
+
+/* the foot: the view controls the old bar held, and the keys */
+.bs-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2) var(--tm-space-4);
+  border-top: 1px solid var(--tm-border);
+  background: var(--tm-bg-inset);
+}
+
+.bs-foot-view {
+  display: flex;
+  gap: var(--tm-space-2);
+}
+
+.bs-foot select.field {
+  width: auto;
+  font-size: var(--tm-text-xs);
+}
+
+.bs-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-xs);
   white-space: nowrap;
 }
 
@@ -3761,17 +4059,6 @@ tr.repo-open > td {
 
 /* ---- board ---- */
 
-.app.mobile .board-bar {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--tm-space-2);
-}
-
-.app.mobile .board-bar .field {
-  width: 100%;
-  min-width: 0;
-}
-
 /* The title gives up its line before anything else, so chips wrap under it
    instead of squeezing it to nothing. */
 .app.mobile .task-row {
@@ -4046,7 +4333,7 @@ tr.repo-open > td {
 
 /* ======== mobile board rework (docs/mobile.md § Board, § Task panel, § Terminal) ======== */
 
-/* ---- board toolbar: Filters · sort · New, one line ---- */
+/* ---- board toolbar: Search · New, one line ---- */
 
 .app.mobile .board-toolbar {
   display: flex;
@@ -4060,27 +4347,7 @@ tr.repo-open > td {
   gap: var(--tm-space-1);
 }
 
-.app.mobile .board-toolbar > select.field {
-  flex: 1 1 auto;
-  width: auto;
-  min-width: 0;
-}
-
-.filters-btn .count {
-  padding: 0 6px;
-  border-radius: var(--tm-radius-pill);
-  background: var(--tm-accent);
-  color: var(--tm-accent-contrast);
-  font-family: var(--tm-font-mono);
-  font-size: var(--tm-text-xs);
-}
-
-.filters-btn.on {
-  color: var(--tm-accent);
-  border-color: var(--tm-accent);
-}
-
-/* what the sheet narrows stays on screen: one chip per filter, tap to clear */
+/* what the closed search narrows by stays on screen: one chip per token, tap to clear */
 .filter-chips {
   display: flex;
   gap: var(--tm-space-1);
@@ -4107,6 +4374,110 @@ tr.repo-open > td {
 .filter-chip svg {
   width: 12px;
   height: 12px;
+}
+
+/* ---- board search on a phone: the iOS search field, a tall sheet behind it ---- */
+
+.app.mobile .board-toolbar > .bs-trigger {
+  flex: 1 1 auto;
+  width: auto;
+  height: auto;
+  min-height: 40px;
+  border-color: transparent;
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-inset);
+  font-size: var(--tm-text-md);
+}
+
+.app.mobile .board-toolbar > .bs-trigger.on {
+  border-color: var(--tm-accent);
+}
+
+.bs-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: 0 0 var(--tm-space-1) var(--tm-space-1);
+}
+
+.bs-sheet-title {
+  font-weight: 600;
+  font-size: var(--tm-text-lg);
+}
+
+.bs-sheet-count {
+  flex: 1;
+  color: var(--tm-text-faint);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
+.bs-done {
+  min-height: var(--tm-tap-dense);
+  color: var(--tm-accent);
+}
+
+.bs-sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-1) calc(var(--tm-space-4) + env(safe-area-inset-right, 0px))
+    calc(env(safe-area-inset-bottom, 0px) + var(--tm-space-6)) calc(var(--tm-space-4) + env(safe-area-inset-left, 0px));
+}
+
+.bs-sheet-body .bs-field {
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 0;
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-inset);
+}
+
+.bs-sheet-body .bs-field > svg {
+  width: 17px;
+  height: 17px;
+}
+
+/* 16px, or iOS zooms the page on focus */
+.bs-sheet-body .bs-input {
+  font-size: var(--tm-text-input);
+}
+
+/* the sheet's own scroller scrolls the list: no nested scroller (docs/mobile.md § Sheets) */
+.bs-sheet-body .bs-list {
+  overflow: visible;
+  padding: 0;
+}
+
+.bs-sheet-body .bs-opt {
+  min-height: var(--tm-tap-dense);
+  font-size: var(--tm-text-md);
+}
+
+/* a phone's line is the title's: the repo gives way, the status stays */
+.bs-sheet-body .bs-opt-repo {
+  display: none;
+}
+
+.bs-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  padding-top: var(--tm-space-2);
+  border-top: 1px solid var(--tm-border);
+}
+
+.bs-view .bs-section {
+  padding-left: 0;
+}
+
+.bs-view .field {
+  width: 100%;
+  min-width: 0;
+}
+
+.bs-view .bs-reset {
+  justify-content: center;
+  min-height: var(--tm-tap);
 }
 
 /* ---- rows: title line + meta line, one primary action and ⋯ ---- */

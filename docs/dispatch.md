@@ -193,9 +193,9 @@ decisions:
   one) — capped at 3 rows, essentials mode shows pending only. An `fyi` row
   carries an `fyi` chip and drops the pulse on its `pending` label: it is not
   waiting on anybody, so it must not read as something that is due. The sender row
-  carries an accented `⇢ n pending` chip while its dispatches wait. A
-  `dispatches: any / has dispatches / pending dispatches` filter joins the
-  board bar whenever any dispatch exists.
+  carries an accented `⇢ n pending` chip while its dispatches wait. The Board
+  search offers a `dispatches` facet (`has dispatches` / `pending dispatches`,
+  typed `dispatch:pending`) whenever any dispatch exists (`docs/search.md`).
 - **Task panel**: a *Dispatches* section shows both directions as
   collapsible entries — direction, peer, intent, status, age and the first
   line of the message on one row; the whole message (pre-wrapped) when the

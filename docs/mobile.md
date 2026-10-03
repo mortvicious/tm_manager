@@ -177,7 +177,7 @@ healthy. It now says so on boot and answers `/` with the two commands that fix i
 
 **On a phone every overlay is a sheet.** `components/Sheet.tsx` is the one
 bottom sheet, built on **react-modal-sheet 5.6.0** + **motion 12.42.2** (pinned
-exactly, the same pair neko-frontend uses). The More menu, the board's filters,
+exactly, the same pair neko-frontend uses). The More menu, the board's search,
 a row's actions, the task panel and its `⋯` overflow, New task, the agent's
 question, and both repo-command menus all open one. Desktop keeps its side
 panel, centred question modal and popovers; the branch is `useIsMobile()` in each
@@ -250,34 +250,29 @@ component.
 ## Board
 
 **Toolbar.** One line replaces the page title, the seven filter selects and the
-New button: `[Filters · n] [sort ▾] [+ New]`. That was about 340px of screen,
-40% of a phone, before the first task.
+New button: `[🔍 Search · n] [+ New]`. That was about 340px of screen, 40% of a
+phone, before the first task.
 
-- **Filters** opens a sheet holding the same `filterSelects` fragment the desktop
-  bar renders: repo, source, category, dispatches, task group, group-by. Below
-  them are a `full | essentials` view toggle and Reset/Done. One fragment feeds
-  both layouts, so a new filter cannot be added to one and forgotten in the
-  other.
-- **Find by id** (`TaskIdFinder`) heads the Filters sheet, full width with the
-  outcome (too short / no match / the candidates of an ambiguous prefix) in
-  flow under the field; desktop puts it at the right end of the bar with the
-  outcome in a popover. A hit closes the sheet and opens the task panel. It is
-  not in `filterSelects` because it filters nothing: it ignores every filter
-  (`docs/handbook.md` § Finding a task by id).
-- **Sort** stays a native select in the toolbar. The OS picker is the dropdown.
-  In Glass it moves into the Filters sheet, under group-by, and the toolbar is
-  Filters and New only (`docs/glass.md` § What Glass changes).
-- **What the sheet narrows stays on screen.** Every active filter, plus a
-  non-default group-by, prints as a chip under the toolbar. Tapping a chip clears
-  it, and the Filters button shows the count.
-- **Filters persist** in `localStorage['tm.board']` with sort, focus and the
-  folded set. This applies to desktop too. A home-screen app reloads often, and
-  filters that are lost on reload were a desktop default nobody chose. A
-  persisted value can outlive what it names: a deleted repo, a dissolved group,
-  the last dispatch pruned. Such a value reads as `all` at render time
-  (`filterRepo`/`filterCat`/`filterGroup`/`filterDispatch` in `BoardPage`)
-  rather than silently emptying the board behind a hidden or blank select. The
-  checks wait for data, because an empty list at boot means "not loaded yet".
+- **Search** (`docs/search.md`) is the iOS search field. A tap opens a tall
+  sheet: the field at the top, live suggestions under it (go to an id, the text
+  as a search, a smart reading of the whole input, facet values, matching
+  tasks), then a **View** section with group-by, sort, a `full | essentials`
+  toggle and **Reset search & view**. **Done** is in the head. Every filter
+  the desktop bar used to hold (repo, source, category, dispatches, task group),
+  and the old Find by id field, are suggestions and chips of this one search now.
+  The desktop uses the same `SearchPanel` as a Spotlight panel, so a new facet
+  cannot reach one layout and miss the other.
+- **What the search narrows stays on screen.** Every chip and the text, plus a
+  non-default group-by, print as chips under the toolbar with `n of N`. Tapping
+  a chip clears it, and the Search button shows the count and a summary.
+- **The search persists** in `localStorage['tm.board']` (as `tokens` + `text`)
+  with sort, focus and the folded set. This applies to desktop too. A
+  home-screen app reloads often, and filters that are lost on reload were a
+  desktop default nobody chose. A persisted chip can outlive what it names: a
+  deleted repo, a dissolved group, the last dispatch pruned. Such a chip reads
+  as absent at render time (`tokenLive` in `boardSearch.ts`) rather than
+  silently emptying the board behind a chip naming nothing. The checks wait for
+  data, because an empty list at boot means "not loaded yet".
 - **New task** is a `FullSheet` (a full-height sheet) holding the unchanged form.
   It no longer pushes every list down by a screen and a half. Closing it keeps
   what was typed.
