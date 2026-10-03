@@ -10,6 +10,7 @@ import {
   type TaskStatus,
 } from '@tm/shared';
 import { api } from '../api.ts';
+import { useLook } from '../appearance.ts';
 import { useApp } from '../state.tsx';
 import { DispatchStrip } from '../components/DispatchStrip.tsx';
 import { GroupHead } from '../components/GroupHead.tsx';
@@ -523,6 +524,8 @@ export function BoardPage({
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   const { sort, focus, showAllDrafts, groupBy, prov: filterProv } = prefs;
   const mobile = useIsMobile();
+  // Glass keeps the phone toolbar to Filters and New: sort moves into the sheet
+  const glass = useLook().design === 'glass';
   const presets = useTaskPresets();
   const [filtersOpen, setFiltersOpen] = useState(false);
   const now = useNow();
@@ -1119,7 +1122,7 @@ export function BoardPage({
               <IconFilter /> Filters
               {activeFilters.length > 0 && <span className="count">{activeFilters.length}</span>}
             </button>
-            {sortSelect}
+            {!glass && sortSelect}
             <NewTaskForm onCreated={refresh} mobile />
           </div>
           {activeFilters.length > 0 && (
@@ -1136,6 +1139,7 @@ export function BoardPage({
             <Sheet label="Filters" title="Filters & view" onClose={() => setFiltersOpen(false)}>
               <div className="sheet-fields">
                 {filterSelects}
+                {glass && sortSelect}
                 <div className="sheet-field-row">
                   <span className="muted">View</span>
                   <span className="seg" role="group" aria-label="View">

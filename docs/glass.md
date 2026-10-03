@@ -47,8 +47,12 @@ block; mirrored in `docs/tm-design-tokens.html`):
   Dark uses the plain dark variants. Light uses the **increased-contrast**
   variants wherever a hue is text, because plain systemGreen on white is about
   2.2:1.
-- Accent is system blue. Running is mint (the closest system hue to Classic's
-  teal).
+- The accent is **Classic's teal** (`--tm-teal-5` dark, `--tm-teal-7` light).
+  It is the app's own colour, so it is the one hue that isn't Apple's. The
+  first cut used system blue, and the user asked for the teal back
+  (2026-10-03). Running, the switch and the wallpaper's leading glow take it
+  too. Light running is a shade darker (`#0c817b`, 4.7:1 on white against
+  teal-7's 3.7:1), because badge text is small.
 - SF via `-apple-system` (`ui-monospace`/SF Mono for code), larger radii, and
   springs (`--tm-ease-spring`, `--tm-ease-smooth`). The springs are sampled
   from a damped spring into CSS `linear()`, with cubic fallbacks.
@@ -103,8 +107,14 @@ Glass), and the `::view-transition` duration.
     with `:hover` twins so a phone never keeps a tapped button lit.
   - Badges and chips are tinted with their own `currentColor`, so tag chips
     keep their hue without a rule per hue.
-  - The iOS switch is 51×31, and its knob stretches while held. `.seg` is a
-    segmented control with a raised thumb.
+  - The iOS switch is 51×31, tinted with the accent, and its knob stretches
+    while held. `.seg` is a segmented control with a raised thumb.
+  - The Board's toolbars are capsules. On a phone the toolbar is Filters
+    (leading) and New (trailing), and **sort lives in the Filters sheet**, under
+    group-by (`Board.tsx`, gated on `useLook()`). The user found the sort picker
+    square beside the capsules and offered hiding it (2026-10-03). A sort is set
+    once and left, so it doesn't need a toolbar slot. On a desktop the bar has
+    room, so its filter and sort pickers stay and become glass capsules.
   - Selects draw their chevron from two `currentColor` gradient triangles,
     because WebKit ignores radius on a native select.
 - **Type.** On a phone the base is 15pt and titles are 34pt large titles. The

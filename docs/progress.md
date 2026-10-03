@@ -559,3 +559,7 @@ concise markdown, grouped by completion date, Russian or English.
   - Playwright WebKit (iPhone viewport) and Chromium screenshots in both schemes, plus the Classic regression compare.
   - Exit ghosts created and removed, and the phone header fit with a question chip (docs/glass.md § Verification).
 - **Not exercised**: a real iPhone (headless WebKit never paints `backdrop-filter`), the terminal drawer's look.
+- **Follow-up (same day)**:
+  - The Glass accent is Classic's teal again, and running, the switch and the wallpaper glow follow it.
+  - In Glass, the phone's sort moved into the Filters sheet, and the desktop board bar's pickers are capsules.
+  - Verified with a typecheck, a scratch build, and WebKit phone and Chromium desktop screenshots in both schemes. Classic's phone toolbar still carries its sort.

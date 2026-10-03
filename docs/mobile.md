@@ -209,6 +209,8 @@ New button: `[Filters · n] [sort ▾] [+ New]`. That was about 340px of screen,
   both layouts, so a new filter cannot be added to one and forgotten in the
   other.
 - **Sort** stays a native select in the toolbar. The OS picker is the dropdown.
+  In Glass it moves into the Filters sheet, under group-by, and the toolbar is
+  Filters and New only (`docs/glass.md` § What Glass changes).
 - **What the sheet narrows stays on screen.** Every active filter, plus a
   non-default group-by, prints as a chip under the toolbar. Tapping a chip clears
   it, and the Filters button shows the count.
