@@ -64,10 +64,22 @@ Migration 4: `ALTER TABLE tm_tasks ADD COLUMN created_by_run TEXT`, `ADD COLUMN 
 
 **Post-implementation notes (impl review):** children enqueued while the queue was on freeze if the queue is disabled before claim — same behavior as all queued work, the poller gives up per instructions rule 5. A human enqueueing an agent-filed same-repo draft while its creator is still live can put two agents in one tree — wait for the creator to finish. `orchestrator.model` is reserved for upcoming review/coordination agents (dashboard round).
 
+### 6. Close and move (2026-10-03, `server/src/routes/agent-tasks.ts`)
+
+```
+POST /api/agent/tasks/:id/close  { status: "done"|"cancelled", reason }   → { task: {id, status}, via }
+POST /api/agent/tasks/:id/move   { place, targetId? }                       → { task: {id, parentId, groupId, groupPath} }
+```
+
+- **Reach**, checked for the task and for a move's target: the caller's own task (move only), a task it filed (any of its task's runs), the task that filed it, its group, its repo, its shared space's repos, or a task named by id (8-char prefix) in its task's description when a human wrote that description (`source: 'manual'`, no `created_by_run`, no feature). Otherwise 403.
+- **Close** accepts `draft|queued|failed|review` without an open review round (`review_state` `pending|reviewing|fixing` → 409), never the caller's own task. It is a conditional `transitionTask` from the status read (a race → 409). `error` is cleared on `done`, and `resultSummary` = the reason when the row has none. Afterwards an `agent.close` audit row, `closeTaskSessions`, then `resolveCompletion` (as `system`, like `completeTask`). Cap `AGENT_CLOSE_RUN_CAP` = 20 per run, counted from the audit rows and templated into the sheet as `{{closeRunCap}}`.
+- **Move** is `moveTask` from `task-actions.ts` with the agent actor, so the places, `reparentRefusal` and the `task.moved` audit are the board's. One extra 409: the resolved new parent is a `blocked` split parent. Group name/colour are not settable by agents.
+- Why and what was rejected: `docs/decisions.md` 2026-10-03.
+
 ### Out of scope (explicitly)
 
 - PTY-to-PTY message injection.
-- Agents editing/cancelling/completing tasks (they create and read only; state transitions stay human/machine-owned as today).
+- Agents editing tasks. ~~Cancelling/completing~~: since 2026-10-03 an agent may close a PARKED task, see § Close and move.
 - Cross-machine coordination.
 
 ## Review questions for the adversarial pass

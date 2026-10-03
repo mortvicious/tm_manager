@@ -961,6 +961,8 @@ export type AuditKind =
   | 'schedule.spawn-fail'
   | 'boot.recovery'
   | 'agent.create'
+  /** an agent closed a parked task as done/cancelled without a run (docs/agent-api-design.md § Close and move) */
+  | 'agent.close'
   | 'sentry.sync'
   /** a tailnet login passed the front door's remote gate for the first time this front-door boot (docs/remote-access.md) */
   | 'remote.login'

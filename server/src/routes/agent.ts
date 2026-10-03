@@ -9,6 +9,7 @@ import { broadcast } from '../events.ts';
 import { onEvent } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 import type { Orchestrator } from '../orchestrator.ts';
+import { AGENT_CLOSE_RUN_CAP, registerAgentTaskRoutes } from './agent-tasks.ts';
 
 // Agent-facing API (docs/agent-api-design.md, review-hardened R1–R11).
 // Auth: the per-run token from the worker's env. The token IS the identity —
@@ -116,10 +117,13 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
       .readFileSync(p, 'utf8')
       .replaceAll('{{taskCreationCap}}', String(cap))
       .replaceAll('{{dispatchRunCap}}', String(DISPATCH_RUN_CAP))
-      .replaceAll('{{dispatchPairCap}}', String(DISPATCH_PAIR_CAP));
+      .replaceAll('{{dispatchPairCap}}', String(DISPATCH_PAIR_CAP))
+      .replaceAll('{{closeRunCap}}', String(AGENT_CLOSE_RUN_CAP));
     return reply.type('text/markdown').send(md);
   });
 
+  // Close and move (docs/agent-api-design.md § Close and move) — same prefix too.
+  registerAgentTaskRoutes(app, storage, orchestrator, authRun);
   app.post('/api/agent/tasks', async (req, reply) => {
     const run = await authRun(req);
     if (!run) return reply.code(403).send({ error: 'forbidden' });

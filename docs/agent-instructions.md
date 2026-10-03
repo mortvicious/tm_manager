@@ -19,6 +19,11 @@ Through them you can file follow-up tasks and coordinate work in OTHER repos.
   Say whether you need that agent to DO something (`intent: "needs_action"`)
   or are only telling it something (`intent: "fyi"`) — see below.
 
+- Tasks you file for one change belong together: **group them** (see
+  Grouping tasks). A task that is already carried out or has been replaced:
+  **close it** (see Closing tasks) instead of writing "please mark done" in
+  your summary.
+
 - A DECISION is not a task and not a dispatch. When a choice would materially
   change the outcome (architecture or library, an ambiguous or conflicting
   requirement, a destructive step, scope that could go two ways), ask with the
@@ -106,6 +111,80 @@ to re-send as `needs_action`. (You can check one you sent with
 `GET /api/agent/dispatches/<id>` if you have other work to finish meanwhile.)
 Write dispatch messages like task descriptions: full contracts, not references
 to your own conversation — the target session cannot see it.
+
+## Grouping tasks
+
+A **group** is one task tree: a root task and everything under it, drawn as one
+block on the board. Grouping is not cosmetic. Tasks in one group **run in
+order** (the queue takes the group root first, then its members in board order),
+and **a group is a coordination channel**: any task may dispatch to a task in its
+own group. Group work that belongs together:
+
+- the tasks you file for ONE change (a backend task and its frontend
+  follow-up, or the steps of one migration), together with your own task, so
+  each agent can dispatch to the others;
+- an existing task that your task replaces or continues, so the human reviews
+  them side by side.
+
+Do not group unrelated follow-ups just because you filed them, and never use
+grouping to jump the queue.
+
+```bash
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
+  "$TM_CALLBACK_URL/api/agent/tasks/<id>/move" -d '{"place": "into", "targetId": "<task id>"}'
+# → { "task": { "id", "parentId", "groupId", "groupPath" } }
+```
+
+`place` is the board's drag and drop:
+
+| place | effect |
+|---|---|
+| `into` | join the target's group flat (right after the target; a lone target becomes the root of a new group). **The usual choice.** |
+| `group` | append to the end of the target's group |
+| `child` | become the target's last child, nested under it |
+| `before` / `after` | sit beside the target as its sibling (reorders, and joins its group) |
+| `ungroup` | leave the group and become a root again (no `targetId`) |
+
+The subtree always moves with the task. Typical flow: file the follow-up with
+`POST /api/agent/tasks`, then move it `into` your own task (`taskId` from
+`/api/agent/context`). Both the moved task and the target must be **within
+your reach** (see Closing tasks). Refusals: 403 out of reach. 409 when the
+move would put a task under a `blocked` split parent, which waits on every
+child. Use `linkToParent` on create for a split sibling instead. Also 409 when
+it would pull a child out from under one. Names and colours of groups stay
+the human's.
+
+## Closing tasks that need no run
+
+When a task is **already carried out** (your work or someone else's covered
+it), or has been **replaced or made unnecessary**, close it instead of asking
+the human to:
+
+```bash
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
+  "$TM_CALLBACK_URL/api/agent/tasks/<full task id>/close" -d '{
+    "status": "done",
+    "reason": "Carried out by 4d6ad9c6 (commit 1a2b3c4): fresh access before saved-search calls"
+  }'
+# → { "task": { "id", "status" }, "via": "<why it was within your reach>" }
+```
+
+- `"status": "done"` means the work already exists, and `"cancelled"` means it
+  was replaced or is not needed. `reason` is required: it is the evidence (a
+  commit, a task id, the replacing task) and goes into the task's summary and
+  the audit log.
+- **Only parked tasks**: `draft`, `queued`, `failed`, or `review` with no
+  automatic review round open. A `running`/`waiting` task has a live turn and
+  is the human's to cancel. A `blocked` split parent is resolved by its
+  children. Your own task lands on its own. Never close it.
+- **Your reach** is a task you filed, the task that filed yours, your group,
+  your repo, a repo of your shared space, or a task that your human-written
+  brief names by id. Anything else answers 403. Mention it in your summary for
+  the human.
+- Be sure before you close. Verify the work is really there (read the code or
+  the commit), not only that some other task claims it. Max {{closeRunCap}}
+  closes per session.
+- List every task you closed or moved in your final summary (id + why).
 
 ## Rules (server-enforced — do not work around refusals)
 

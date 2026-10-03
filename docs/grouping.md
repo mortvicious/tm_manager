@@ -80,6 +80,11 @@ trees are 1–2 deep, so the sweep count is slack, not a limit on new rows.
   **only on a group root** — 400 otherwise, naming the root as the fix. It also
   400s a `parentId` that points at a missing task or at one of this task's own
   descendants.
+- `POST /api/agent/tasks/:id/move` — the same move for a worker agent
+  (token auth, `docs/agent-api-design.md` § Close and move). Both ends must be
+  within the agent's reach, and it additionally refuses to put a task under a
+  `blocked` split parent. How agents are told to group is in
+  `docs/agent-instructions.md` § Grouping tasks.
 - A re-parent broadcasts `task.updated` for every row in the destination group
   (the moved subtree changed too), and a delete broadcasts the promoted
   subtrees, so a second browser tab regroups without a refresh.
