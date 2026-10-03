@@ -83,7 +83,10 @@ Glass), and the `::view-transition` duration.
     share one grid cell). The page scrolls under it.
   - Under the bar sits `.edge-top`, iOS 26's scroll-edge effect: a masked blur
     that is invisible over the wallpaper and appears only once content slides
-    beneath it.
+    beneath it. On desktop its mask also fades it in across `.main`'s left
+    gutter (`--tm-space-5`). Flush against the sidebar pane, its tint drew a
+    hard dark block beside the pane's top that read as a broken sidebar
+    shadow.
   - Header controls are glass capsules.
   - On desktop the sidebar is an inset glass pane.
 - **Tab bar (phone).** A floating capsule over the home-indicator inset, with a
@@ -95,6 +98,10 @@ Glass), and the `::view-transition` duration.
     the terminal drawer still clear it.
 - **Lists.** Board sections are inset-grouped glass cards with hairline (0.5px)
   separators.
+  - The card clips its rows (`overflow: hidden`), which drops a flex item's
+    automatic minimum height to 0. So it also carries `flex-shrink: 0`.
+    Without that, the task panel's flex-column body squeezed the Files list to
+    its 2px border once the panel overflowed, and the attached files vanished.
   - Section titles are bold, in the case given. The built-in labels are
     written "Active", "Drafts" and "Recent" (Classic uppercases them anyway);
     repo, category and group names are left as they are. On a phone the

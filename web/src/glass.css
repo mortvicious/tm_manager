@@ -110,6 +110,21 @@
   mask-image: linear-gradient(to bottom, currentColor 45%, transparent);
 }
 
+/* Desktop: the layer starts flush against the sidebar pane, and its tint drew a
+   hard-edged dark block beside the pane's top (read as a broken sidebar
+   shadow). It fades in across .main's gutter instead — the page's content
+   starts where it is at full strength. */
+[data-design='glass'] .app:not(.mobile) .edge-top {
+  -webkit-mask-image:
+    linear-gradient(to bottom, currentColor 45%, transparent),
+    linear-gradient(to right, transparent, currentColor var(--tm-space-5));
+  mask-image:
+    linear-gradient(to bottom, currentColor 45%, transparent),
+    linear-gradient(to right, transparent, currentColor var(--tm-space-5));
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+
 [data-design='glass'] .app.mobile .edge-top {
   height: calc(var(--tm-head-h) + env(safe-area-inset-top, 0px) + var(--tm-space-6));
 }
@@ -207,9 +222,13 @@
   box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
 }
 
-/* an inset-grouped list: the rows' own backgrounds keep to the corners */
+/* an inset-grouped list: the rows' own backgrounds keep to the corners.
+   flex-shrink: overflow other than visible drops a flex item's automatic
+   min-height to 0, so in a column that overflows (the task panel's body) the
+   list was squeezed to its 2px border — the panel's Files list vanished. */
 [data-design='glass'] .panel:has(> .task-row, > .task-group) {
   overflow: hidden;
+  flex-shrink: 0;
 }
 
 /* ---------- buttons: capsules; a press shrinks, the release springs back ---------- */
