@@ -5,10 +5,12 @@ import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { CommandsLauncher } from './Commands.tsx';
 import { EmulatorLauncher } from './Emulator.tsx';
+import { Sheet } from './Sheet.tsx';
 import { useLocation } from 'react-router-dom';
 import {
   IconBoard,
   IconBook,
+  IconShared,
   IconChat,
   IconConfig,
   IconFeature,
@@ -16,6 +18,7 @@ import {
   IconMore,
   IconQueue,
   IconRepo,
+  IconReport,
   IconShell,
   IconSun,
   IconTerminal,
@@ -191,14 +194,14 @@ function ServerControl() {
     return h > 0 ? `${h}h ${m}m` : `${m}m`;
   })();
   // Restarting kills every agent: workers lose their sessions and boot recovery
-  // fails their tasks, and a headless analysis/review/plan dies mid-run. So the
-  // button is CLOSED while any agent is working — the server refuses it too
-  // (409), this is just the honest label. `headless` is absent on a server that
+  // fails their tasks, and an aux session (review, plan, chat, …) dies mid-run.
+  // So the button is CLOSED while any agent is working — the server refuses it
+  // too (409), this is just the honest label. `aux` is absent on a server that
   // predates the field, which reads as "none" rather than blocking forever.
   const live = commandRuns.filter((r) => r.status === 'running').length;
   const liveShells = shells.filter((s) => s.status === 'running').length;
-  const headless = orch.headless ?? 0;
-  const busyAgents = orch.running + headless;
+  const auxLive = orch.aux ?? 0;
+  const busyAgents = orch.running + auxLive;
   const blocked = busyAgents > 0;
   // Two different "not connected"s, and the difference is what the button
   // should offer. The front door is a separate process (docs/host.md), so when
@@ -305,7 +308,7 @@ function ServerControl() {
           className="btn ghost"
           title={
             blocked
-              ? `${busyAgents} agent(s) are working (${orch.running} session(s), ${headless} headless) — restarting would kill them and fail their tasks. Stop them first.`
+              ? `${busyAgents} agent(s) are working (${orch.running} worker session(s), ${auxLive} aux session(s)) — restarting would kill them and fail their tasks. Stop them first.`
               : live > 0
                 ? `Restart the task-manager server (${live} running command(s) will be stopped)`
                 : 'Restart the task-manager server'
@@ -339,6 +342,8 @@ const NAV: NavItem[] = [
   { to: '/queue', label: 'Queue', icon: <IconTerminal />, primary: true },
   { to: '/features', label: 'Features', icon: <IconFeature />, primary: true },
   { to: '/chat', label: 'Chat', icon: <IconChat /> },
+  { to: '/reports', label: 'Reports', icon: <IconReport /> },
+  { to: '/shared', label: 'Shared', icon: <IconShared /> },
   { to: '/terminals', label: 'Terminal', icon: <IconShell /> },
   { to: '/repos', label: 'Repos', icon: <IconRepo /> },
   { to: '/config', label: 'Config', icon: <IconConfig /> },
@@ -360,13 +365,13 @@ function RunCount() {
     <span
       className="runcount"
       title={
-        (orch.headless ?? 0) > 0
-          ? `${orch.running} of ${orch.concurrency} worker slots in use · ${orch.headless} headless agent(s) (analysis / review / feature plan) — those run outside the worker budget`
+        (orch.aux ?? 0) > 0
+          ? `${orch.running} of ${orch.concurrency} worker slots in use · ${orch.aux} aux session(s) (review / plan / analysis / chat / report …) — those run outside the worker budget`
           : `${orch.running} of ${orch.concurrency} worker slots in use`
       }
     >
       running {orch.running}/{orch.concurrency}
-      {(orch.headless ?? 0) > 0 ? ` · +${orch.headless}` : ''}
+      {(orch.aux ?? 0) > 0 ? ` · +${orch.aux}` : ''}
     </span>
   );
 }
@@ -395,35 +400,25 @@ function QuestionChip() {
 }
 
 function MoreSheet({ onClose, onOpenTerminal }: { onClose: () => void; onOpenTerminal: (runId: string) => void }) {
-  // Escape closes it like the slide-over; a phone keyboard has one too.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
   return (
-    <>
-      <div className="overlay sheet-overlay" onClick={onClose} />
-      <div className="more-sheet" role="dialog" aria-label="Menu">
-        <div className="sheet-grip" />
-        <div className="sheet-nav">
-          {NAV.map((n) => (
-            <NavLink key={n.to} to={n.to} end={n.to === '/'} className={navClass} onClick={onClose}>
-              {n.icon} {n.label}
-            </NavLink>
-          ))}
-        </div>
-        <div className="sheet-tools">
-          <UsagePill />
-          <ServerControl />
-          <div className="sheet-tool-row">
-            <CommandsLauncher onOpenTerminal={onOpenTerminal} />
-            <ThemeToggle />
-          </div>
-        </div>
-        <div className="sheet-foot mono">{servedFrom()}</div>
+    <Sheet label="Menu" onClose={onClose}>
+      <div className="sheet-nav">
+        {NAV.map((n) => (
+          <NavLink key={n.to} to={n.to} end={n.to === '/'} className={navClass} onClick={onClose}>
+            {n.icon} {n.label}
+          </NavLink>
+        ))}
       </div>
-    </>
+      <div className="sheet-tools">
+        <UsagePill />
+        <ServerControl />
+        <div className="sheet-tool-row">
+          <CommandsLauncher onOpenTerminal={onOpenTerminal} />
+          <ThemeToggle />
+        </div>
+      </div>
+      <div className="sheet-foot mono">{servedFrom()}</div>
+    </Sheet>
   );
 }
 
@@ -451,15 +446,7 @@ export function Layout({ children, onOpenTerminal }: { children: ReactNode; onOp
   // A sheet left open across a breakpoint change or a navigation would sit over
   // a layout that no longer has a tab bar under it.
   useEffect(() => setMoreOpen(false), [mobile, pathname]);
-  // The sheet owns the scroll while it is up, or the page scrolls behind it.
-  useEffect(() => {
-    if (!moreOpen) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, [moreOpen]);
+  // Scroll lock and Escape live in <Sheet>, shared with every other sheet.
 
   return (
     <div className={`app${mobile ? ' mobile' : ''}`}>

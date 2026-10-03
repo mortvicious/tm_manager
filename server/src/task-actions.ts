@@ -1,6 +1,7 @@
-import { GROUP_COLOR_COUNT, type EffortLevel, type Task, type TaskStatus } from '@tm/shared';
+import { GROUP_COLOR_COUNT, TASK_MOVE_PLACES, type EffortLevel, type TaskMovePlace, type Task, type TaskStatus } from '@tm/shared';
 import type { ActionResult, OrchestratorApi } from './app-types.ts';
 import { broadcast } from './events.ts';
+import type { MoveAnchor } from './storage/group.ts';
 import type { NewTask, Storage } from './storage/types.ts';
 
 // The task lifecycle moves, once. Every one of these used to live inline in
@@ -43,6 +44,8 @@ export interface TaskEdit {
   effort?: EffortLevel | null;
   category?: string | null;
   review?: boolean | null;
+  reviewModel?: string | null;
+  reviewEffort?: EffortLevel | null;
   autoPublish?: boolean;
   groupName?: string | null;
   groupColor?: number | null;
@@ -81,12 +84,9 @@ export async function editTask(
     return err(400, 'only the root task of a group can be named or coloured — patch the root instead');
   }
   const moving = patch.parentId !== undefined && (patch.parentId ?? null) !== cur.parentId;
-  if (moving && patch.parentId) {
-    const parent = await storage.getTask(patch.parentId);
-    if (!parent) return err(400, 'parent task not found');
-    if (parent.groupPath.split('/').includes(id)) {
-      return err(400, 'a task cannot be moved under its own descendant');
-    }
+  if (moving) {
+    const refused = await reparentRefusal(storage, cur, patch.parentId ?? null);
+    if (refused) return refused;
   }
   const task = await storage.updateTask(id, patch);
   if (!task) return err(404, 'task not found');
@@ -103,6 +103,97 @@ export async function editTask(
       if (t.id !== task.id) broadcast({ type: 'task.updated', task: t });
     }
   }
+  return { task };
+}
+
+/**
+ * Why `task` may not take `parentId` as its new parent, or null when it may.
+ * Shared by the PATCH and the move so the two cannot disagree.
+ */
+async function reparentRefusal(storage: Storage, task: Task, parentId: string | null): Promise<ActionResult | null> {
+  if (parentId === task.id) return err(400, 'a task cannot be its own parent');
+  if (parentId) {
+    const parent = await storage.getTask(parentId);
+    if (!parent) return err(400, 'parent task not found');
+    if (parent.groupPath.split('/').includes(task.id)) {
+      return err(400, 'a task cannot be moved under its own descendant');
+    }
+  }
+  // A blocked split parent resolves when its LAST child lands — pulling a child
+  // out from under it could leave it waiting on nothing forever.
+  if (task.parentId) {
+    const from = await storage.getTask(task.parentId);
+    if (from?.status === 'blocked') {
+      return err(409, 'its parent is blocked waiting on its split children — unblock the parent first');
+    }
+  }
+  return null;
+}
+
+/** Where a dropped task goes, relative to `targetId` (docs/grouping.md § Drag and drop). */
+export type MovePlace = TaskMovePlace;
+export const MOVE_PLACES = TASK_MOVE_PLACES;
+
+/**
+ * POST /api/tasks/:id/move — one drop on the board:
+ * - `before`/`after`: a sibling of the target, next to it (the target's parent
+ *   becomes this task's parent, so dropping beside a group member joins it)
+ * - `into`: join the target's group FLAT — right after the target when it has
+ *   a parent, otherwise as the target's last child (a lone task starts a group)
+ * - `child`: the target's last child, at any depth (the task panel's picker)
+ * - `group`: last child of the target's group root ("append to group")
+ * - `ungroup`: become a root, keeping its key
+ * The subtree always moves with the task. Every changed row is broadcast.
+ */
+export async function moveTask(
+  deps: TaskActionDeps,
+  id: string,
+  input: { place: MovePlace; targetId?: string | null },
+  actor: string,
+): Promise<ActionResult> {
+  const { storage } = deps;
+  const cur = await storage.getTask(id);
+  if (!cur) return err(404, 'task not found');
+  let parentId: string | null = null;
+  let anchor: MoveAnchor = 'keep';
+  // already a root: nothing to write, and nothing worth an audit row
+  if (input.place === 'ungroup' && !cur.parentId) return { task: cur };
+  if (input.place !== 'ungroup') {
+    if (!input.targetId) return err(400, `targetId is required for place "${input.place}"`);
+    if (input.targetId === id) return err(400, 'a task cannot be dropped onto itself');
+    const target = await storage.getTask(input.targetId);
+    if (!target) return err(400, 'target task not found');
+    if (input.place === 'before' || input.place === 'after') {
+      parentId = target.parentId;
+      anchor = { id: target.id, side: input.place };
+    } else if (input.place === 'into') {
+      parentId = target.parentId ?? target.id;
+      anchor = target.parentId ? { id: target.id, side: 'after' } : 'end';
+    } else if (input.place === 'child') {
+      parentId = target.id;
+      anchor = 'end';
+    } else {
+      parentId = target.groupId;
+      anchor = 'end';
+    }
+  }
+  if (parentId !== cur.parentId) {
+    const refused = await reparentRefusal(storage, cur, parentId);
+    if (refused) return refused;
+  }
+  let rows: Task[] | null;
+  try {
+    rows = await storage.moveTask(id, parentId, anchor, actor);
+  } catch (e) {
+    // The driver re-checks inside its transaction; a row that changed between
+    // the checks above and the write lands here instead of as a 500.
+    return err(409, e instanceof Error ? e.message : String(e));
+  }
+  if (!rows) return err(404, 'task not found');
+  const task = rows.find((t) => t.id === id);
+  if (!task) return err(404, 'task not found');
+  broadcast({ type: 'task.updated', task });
+  for (const t of rows) if (t.id !== id) broadcast({ type: 'task.updated', task: t });
   return { task };
 }
 
@@ -130,6 +221,11 @@ export async function enqueueTask(
   // between (a stale timestamp would also put a retried task at the head).
   // Only once the status is known to be accepted, though — a refused call must
   // not quietly move a waiting member into the global queue (review R3).
+  // A task held by Undo start is already `queued`: Enqueue releases it into
+  // the GLOBAL queue (dropping any custom mark, as enqueue always does).
+  if (cur.status === 'queued' && cur.queueHeldAt) {
+    return releaseTask(deps, id, actor, { toGlobal: true });
+  }
   if (!from.includes(cur.status)) return err(409, `cannot enqueue from status '${cur.status}'`);
   if (cur.customQueueAt && !(await storage.updateTask(id, { customQueueAt: null }))) {
     return err(404, 'task not found');
@@ -160,6 +256,8 @@ export async function queueAddTask(deps: TaskActionDeps, id: string, actor: stri
   const cur = await storage.getTask(id);
   if (!cur) return err(404, 'task not found');
   if (!cur.repoId) return err(409, 'assign a repo before queueing this task');
+  // Held by Undo start: a member goes back to waiting in its OLD place.
+  if (cur.status === 'queued' && cur.customQueueAt && cur.queueHeldAt) return releaseTask(deps, id, actor);
   if (cur.status === 'queued' && cur.customQueueAt) return err(409, 'already in the queue');
   if (cur.status !== 'queued' && !ENQUEUE_FROM.includes(cur.status)) {
     return err(409, `cannot add to the queue from status '${cur.status}'`);
@@ -170,7 +268,9 @@ export async function queueAddTask(deps: TaskActionDeps, id: string, actor: stri
   // Membership FIRST, then the status transition: a row that is `queued`
   // without the mark belongs to the global claim loop, which must never see
   // this one even for an instant.
-  const marked = await storage.updateTask(id, { customQueueAt: new Date().toISOString() });
+  // A held global-queue task moving over is released by the move (the click
+  // is the human saying "run it", at the back of the custom queue).
+  const marked = await storage.updateTask(id, { customQueueAt: new Date().toISOString(), queueHeldAt: null });
   if (!marked) return err(404, 'task not found');
   let task = marked;
   if (cur.status !== 'queued') {
@@ -229,6 +329,18 @@ export async function queueRemoveTask(deps: TaskActionDeps, id: string, actor: s
   return { task };
 }
 
+/**
+ * "Review now" (docs/design.md § Adversarial review): run the adversarial
+ * reviewer over the task's current diff on demand. Returns at once with the
+ * row marked `pending`; the verdict lands on the row (and over /ws/events)
+ * minutes later. Status is never changed here — findings go back to a live
+ * worker only for a task in `review`, exactly as the automatic round does.
+ */
+export async function reviewTask(deps: TaskActionDeps, id: string, actor: string): Promise<ActionResult> {
+  if (!deps.orchestrator) return err(503, 'orchestrator not ready');
+  return deps.orchestrator.reviewNow(id, actor);
+}
+
 /** blocked → review: the explicit "the subtasks are dealt with" move. */
 export async function unblockTask(deps: TaskActionDeps, id: string, actor: string): Promise<ActionResult> {
   const task = await deps.storage.transitionTask(id, ['blocked'], 'review', actor, { error: null });
@@ -257,6 +369,52 @@ export async function completeTask(deps: TaskActionDeps, id: string, actor: stri
   // before these moves came out of it — parameterising the actor must not
   // quietly re-attribute the follow-on rows.
   await deps.orchestrator?.resolveCompletion(task);
+  return { task };
+}
+
+/**
+ * "Undo start" (docs/queue.md § Undo start): stop a running task and put it
+ * back where it was before the turn — not `cancelled`, not `failed`.
+ */
+export async function undoTask(deps: TaskActionDeps, id: string, actor: string): Promise<ActionResult> {
+  if (!deps.orchestrator) return err(503, 'orchestrator not ready');
+  return deps.orchestrator.undoStart(id, actor);
+}
+
+/**
+ * Release a task held by Undo start: it stays `queued` in its old place and
+ * the next claim may take it. `toGlobal` (Enqueue on a held task) also drops
+ * its custom-queue mark, which is what Enqueue means everywhere else.
+ */
+export async function releaseTask(
+  deps: TaskActionDeps,
+  id: string,
+  actor: string,
+  opts: { toGlobal?: boolean } = {},
+): Promise<ActionResult> {
+  const { storage } = deps;
+  const cur = await storage.getTask(id);
+  if (!cur) return err(404, 'task not found');
+  if (cur.status !== 'queued' || !cur.queueHeldAt) return err(409, 'task is not held');
+  // The undone turn's PTY dies asynchronously; a claim racing it would find the
+  // session still live and bounce the task to review (startWorker's guard).
+  if (await deps.orchestrator?.hasLiveSession(id)) {
+    return err(409, 'the stopped session is still shutting down — try again in a moment');
+  }
+  const task = await storage.updateTask(id, {
+    queueHeldAt: null,
+    ...(opts.toGlobal ? { customQueueAt: null } : {}),
+  });
+  if (!task) return err(404, 'task not found');
+  await storage.appendEvent({
+    kind: 'task.undo',
+    actor,
+    taskId: id,
+    repoId: task.repoId,
+    data: { action: 'release', queue: task.customQueueAt ? 'custom' : 'global' },
+  });
+  broadcast({ type: 'task.updated', task });
+  deps.orchestrator?.maybeSchedule();
   return { task };
 }
 

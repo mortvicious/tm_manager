@@ -426,7 +426,7 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
               className="btn"
               disabled={busy !== null}
               onClick={() => act('analyze', () => api.analyzeFeature(feature.id, note))}
-              title="Run the headless analysis + adversarial plan review"
+              title="Run the planning session + adversarial plan review (each is a terminal in Queue → Active sessions)"
             >
               {feature.analysis ? 'Re-analyze' : 'Analyze'}
             </button>
@@ -566,7 +566,7 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
       {feature.status === 'analyzing' && (
         <div className="empty panel" style={{ marginBottom: 18 }}>
           <div className="big">Analyzing…</div>
-          A headless planning run is decomposing the request; a second run then reviews the plan adversarially. This
+          A planning session (a terminal you can open from Queue → Active sessions) is decomposing the request; a second run then reviews the plan adversarially. This
           page updates itself when the plan lands.
         </div>
       )}

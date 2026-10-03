@@ -2,13 +2,15 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import type { AppSettings, Run } from '@tm/shared';
-import { DEFAULT_SETTINGS } from '@tm/shared';
+import type { Run } from '@tm/shared';
 import { serverRoot } from '../config.ts';
 import { broadcast } from '../events.ts';
 import { onEvent } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 import type { Orchestrator } from '../orchestrator.ts';
+import { spaceForRepo } from '../spaces/service.ts';
+import { maxSpawnDepth, perRunCap, QUEUED_AGENT_CEILING } from './agent-caps.ts';
+import { registerAgentSharedRoutes, SHARED_NOTE_RUN_CAP } from './agent-shared.ts';
 import { AGENT_CLOSE_RUN_CAP, registerAgentTaskRoutes } from './agent-tasks.ts';
 
 // Agent-facing API (docs/agent-api-design.md, review-hardened R1–R11).
@@ -32,7 +34,6 @@ const createBody = z
   })
   .strict();
 
-const QUEUED_AGENT_CEILING = 10;
 
 // Dispatch caps (docs/dispatch.md). Per-run bounds one turn's chatter; the
 // per-pair cap bounds A⇄B ping-pong across resumed turns (each resume is a NEW
@@ -57,14 +58,6 @@ const dispatchBody = z
   })
   .strict();
 
-/** Per-run creation cap: `agent.taskCreationCap`, sanitised (a hand-edited or
- *  legacy config row must not disable the guard or make it unreachable). */
-function perRunCap(settings: AppSettings): number {
-  const raw = settings['agent.taskCreationCap'] as unknown;
-  if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_SETTINGS['agent.taskCreationCap'];
-  return Math.min(100, Math.max(1, Math.floor(raw)));
-}
-
 export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orchestrator: Orchestrator) {
   const authRun = async (req: FastifyRequest): Promise<Run | null> => {
     const token = String(req.headers['x-tm-token'] ?? '');
@@ -86,8 +79,10 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
     const repos = await storage.listRepos();
     const task = run.taskId ? await storage.getTask(run.taskId) : null;
     const repo = run.repoId ? await storage.getRepo(run.repoId) : null;
-    const cap = perRunCap(await storage.getSettings());
+    const settings = await storage.getSettings();
+    const cap = perRunCap(settings);
     const filed = await storage.countTasksCreatedByRun(run.id);
+    const space = await spaceForRepo(storage, run.repoId);
     const dispatched = await storage.countDispatchesByRun(run.id);
     // the task whose session filed THIS task — the natural dispatch-back address
     const creatorRun = task?.createdByRun ? await storage.getRun(task.createdByRun) : null;
@@ -96,6 +91,7 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
       repoId: run.repoId,
       repoRole: repo?.role ?? null,
       spawnDepth: task?.spawnDepth ?? 0,
+      maxSpawnDepth: maxSpawnDepth(settings),
       taskCreationCap: cap,
       tasksCreated: filed,
       tasksRemaining: Math.max(0, cap - filed),
@@ -104,6 +100,8 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
       dispatchesRemaining: Math.max(0, DISPATCH_RUN_CAP - dispatched),
       filedByTaskId: creatorRun?.taskId ?? null,
       repos: repos.map((r) => ({ id: r.id, name: r.name, role: r.role })),
+      // docs/shared-spaces.md — GET /api/agent/shared has the ledger
+      sharedSpace: space ? { id: space.id, name: space.name, path: space.path, repoIds: space.repoIds } : null,
     };
   });
 
@@ -112,34 +110,43 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
   app.get('/api/agent/instructions', async (_req, reply) => {
     const p = path.resolve(serverRoot, '../docs/agent-instructions.md');
     if (!fs.existsSync(p)) return reply.code(404).send({ error: 'instructions not found' });
-    const cap = perRunCap(await storage.getSettings());
+    const settings = await storage.getSettings();
+    const cap = perRunCap(settings);
     const md = fs
       .readFileSync(p, 'utf8')
       .replaceAll('{{taskCreationCap}}', String(cap))
+      .replaceAll('{{maxSpawnDepth}}', String(maxSpawnDepth(settings)))
+      .replaceAll('{{sharedNoteRunCap}}', String(SHARED_NOTE_RUN_CAP))
       .replaceAll('{{dispatchRunCap}}', String(DISPATCH_RUN_CAP))
       .replaceAll('{{dispatchPairCap}}', String(DISPATCH_PAIR_CAP))
       .replaceAll('{{closeRunCap}}', String(AGENT_CLOSE_RUN_CAP));
     return reply.type('text/markdown').send(md);
   });
 
+  // Shared spaces (docs/shared-spaces.md): the cross-repo request/note ledger.
+  // Same prefix, so the token hook above covers these too.
+  registerAgentSharedRoutes(app, storage, orchestrator, authRun);
   // Close and move (docs/agent-api-design.md § Close and move) — same prefix too.
   registerAgentTaskRoutes(app, storage, orchestrator, authRun);
+
   app.post('/api/agent/tasks', async (req, reply) => {
     const run = await authRun(req);
     if (!run) return reply.code(403).send({ error: 'forbidden' });
     const body = createBody.parse(req.body);
     const callerTask = run.taskId ? await storage.getTask(run.taskId) : null;
 
-    // Depth cap (R4): agents two hops from human intent may not create more.
+    // Depth cap (R4): agents `agent.maxSpawnDepth` hops from human intent may
+    // not create more.
+    const settings = await storage.getSettings();
+    const maxDepth = maxSpawnDepth(settings);
     const depth = (callerTask?.spawnDepth ?? 0) + 1;
-    if (depth > 2) {
-      return reply
-        .code(403)
-        .send({ error: 'depth limit: this task is already 2 hops from a human — do not create tasks; finish your turn' });
+    if (depth > maxDepth) {
+      return reply.code(403).send({
+        error: `depth limit: this task is already ${maxDepth} hops from a human — do not create tasks; finish your turn`,
+      });
     }
 
     // Per-run cap (R8-adjacent): hard stop, do not retry.
-    const settings = await storage.getSettings();
     const cap = perRunCap(settings);
     if ((await storage.countTasksCreatedByRun(run.id)) >= cap) {
       return reply

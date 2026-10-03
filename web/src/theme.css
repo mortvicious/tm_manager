@@ -97,6 +97,9 @@
 
 /* ---- semantic: dark (default — this is a terminal tool) ---- */
 [data-theme='dark'] {
+  /* native widgets — the date inputs on the reports page draw their own
+     calendar and would otherwise render light-on-light in the dark theme */
+  color-scheme: dark;
   --tm-bg: var(--tm-gray-10);
   --tm-bg-raised: var(--tm-gray-9);
   --tm-bg-overlay: var(--tm-gray-8);
@@ -145,6 +148,7 @@
 
 /* ---- semantic: light ---- */
 [data-theme='light'] {
+  color-scheme: light;
   --tm-bg: var(--tm-gray-0);
   --tm-bg-raised: #ffffff;
   --tm-bg-overlay: #ffffff;
@@ -426,7 +430,8 @@ textarea {
 
 input.field,
 textarea.field,
-select.field {
+select.field,
+button.field {
   width: 100%;
   padding: 7px 10px;
   border-radius: var(--tm-radius-md);
@@ -443,7 +448,8 @@ textarea.field::placeholder {
 
 input.field:focus,
 textarea.field:focus,
-select.field:focus {
+select.field:focus,
+button.field:focus-visible {
   border-color: var(--tm-accent);
 }
 
@@ -536,9 +542,30 @@ select.field:focus {
   color: var(--tm-status-review);
 }
 
+/* while the reviewer's terminal is live the badge opens it
+   (docs/design.md § PTY sessions) */
+button.badge.badge-link {
+  background: none;
+  cursor: pointer;
+}
+
+button.badge.badge-link:hover {
+  background: var(--tm-accent-subtle);
+}
+
 .badge.s-autoreview .dot,
 .badge.s-fixing .dot {
   animation: pulse 1.6s var(--tm-ease-in-out) infinite;
+}
+
+/* a live session between two of its own turns (docs/design.md § Waiting):
+   the running hue, but breathing slowly rather than working */
+.badge.s-waiting {
+  color: var(--tm-status-running);
+}
+
+.badge.s-waiting .dot {
+  animation: pulse 2.4s var(--tm-ease-in-out) infinite;
 }
 
 /* ---------- adversarial review panel + collapsible entries ---------- */
@@ -1024,8 +1051,8 @@ select.field:focus {
   align-items: center;
   gap: var(--tm-space-2);
   width: 100%;
-  padding: 5px var(--tm-space-4);
-  border: none;
+  min-height: 30px;
+  padding: 2px var(--tm-space-2) 2px var(--tm-space-1);
   border-bottom: 1px solid var(--tm-border);
   background: color-mix(in srgb, var(--tm-group, var(--tm-border)) var(--tm-group-tint), transparent);
   color: var(--tm-group, var(--tm-text-faint));
@@ -1034,12 +1061,67 @@ select.field:focus {
   font-weight: 500;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  text-align: left;
+  transition: background var(--tm-dur-fast) var(--tm-ease-out), box-shadow var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+/* a folded group is just its header line */
+.task-group.folded .task-group-head {
+  border-bottom: none;
+}
+
+.task-group-head button {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
   cursor: pointer;
 }
 
-.task-group-head:hover {
-  background: color-mix(in srgb, var(--tm-group, var(--tm-border)) calc(var(--tm-group-tint) * 2), transparent);
+.task-group-head .group-fold,
+.task-group-head .group-icon {
+  flex: none;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--tm-radius-sm);
+  color: var(--tm-text-faint);
+}
+
+.task-group-head .group-fold:hover,
+.task-group-head .group-icon:hover:not(:disabled) {
+  background: var(--tm-bg-overlay);
+  color: var(--tm-group, var(--tm-text));
+}
+
+.task-group-head .caret {
+  display: inline-flex;
+  transition: transform var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.task-group-head .caret.closed {
+  transform: rotate(-90deg);
+}
+
+/* the pencil stays out of the way until the header is hovered or focused */
+.task-group-head .group-icon {
+  opacity: 0;
+}
+
+.task-group-head:hover .group-icon,
+.task-group-head .group-icon:focus-visible,
+.task-group-head:has(.group-rename) .group-icon {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .task-group-head .group-icon {
+    opacity: 1;
+  }
 }
 
 .task-group-head .name {
@@ -1047,6 +1129,11 @@ select.field:focus {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.task-group-head .name:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .task-group-head .count {
@@ -1057,11 +1144,298 @@ select.field:focus {
   color: var(--tm-text-muted);
 }
 
-.task-group-head .part {
+.task-group-head .part,
+.task-group-head .summary {
   flex: none;
   color: var(--tm-text-faint);
   letter-spacing: 0;
   text-transform: none;
+}
+
+.task-group-head .summary {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-group-head .grow {
+  flex: 1;
+}
+
+.task-group-head .group-rename {
+  flex: 1 1 12ch;
+  min-width: 8ch;
+  height: 24px;
+  padding: 0 var(--tm-space-2);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.task-group-head .group-swatches {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+  flex: none;
+}
+
+.task-group-head .group-swatch-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-group);
+  box-shadow: inset 0 0 0 1px var(--tm-border-strong);
+}
+
+.task-group-head .group-swatch-dot.on {
+  box-shadow: 0 0 0 2px var(--tm-bg-raised), 0 0 0 3px var(--tm-group);
+}
+
+.task-group-head .group-swatch-auto {
+  padding: 0 var(--tm-space-1);
+  border-radius: var(--tm-radius-sm);
+  color: var(--tm-text-faint);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.task-group-head .group-swatch-auto.on {
+  background: var(--tm-bg-overlay);
+  color: var(--tm-text);
+}
+
+/* ---------- board drag and drop (docs/grouping.md § Drag and drop) ----------
+   The grip is the only place a drag starts; rows and group headers are drop
+   targets by data attribute. Before/after draw a line on the row's edge, into
+   (join the group) and a group header (append to it) light the whole target.
+   The [data-drop-task] in the row selectors outranks `.task-row.fresh`, whose
+   accent edge is also a box-shadow and sits later in this file. */
+.task-row .drag-grip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  margin-right: calc(-1 * var(--tm-space-2));
+  margin-left: calc(-1 * var(--tm-space-2));
+  color: var(--tm-text-faint);
+  cursor: grab;
+  touch-action: none;
+  opacity: 0;
+  transition: opacity var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.task-row:hover .drag-grip,
+.task-row .drag-grip:focus-visible {
+  opacity: 1;
+}
+
+.task-row .drag-grip:hover {
+  color: var(--tm-text);
+}
+
+@media (hover: none) {
+  .task-row .drag-grip {
+    opacity: 1;
+  }
+}
+
+.task-row.dragging {
+  opacity: 0.4;
+}
+
+.task-row[data-drop-task].drop-before {
+  box-shadow: inset 0 2px 0 var(--tm-accent);
+}
+
+.task-row[data-drop-task].drop-after {
+  box-shadow: inset 0 -2px 0 var(--tm-accent);
+}
+
+.task-row[data-drop-task].drop-into,
+.task-group-head.drop-group {
+  background: var(--tm-accent-subtle);
+  box-shadow: inset 0 0 0 1px var(--tm-accent);
+}
+
+.task-row[data-drop-task].drop-refused,
+.task-group-head.drop-refused {
+  box-shadow: inset 0 0 0 1px var(--tm-status-failed);
+}
+
+.drag-ghost {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 320px;
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-accent);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-raised);
+  box-shadow: var(--tm-shadow-md);
+  pointer-events: none;
+  transform: translate(var(--tm-space-3), var(--tm-space-3));
+}
+
+.drag-ghost.refused {
+  border-color: var(--tm-status-failed);
+}
+
+.drag-ghost .title {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drag-ghost .hint {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drag-ghost.refused .hint {
+  color: var(--tm-status-failed);
+}
+
+/* a refused move or rename, above the board */
+.board-err {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  margin: 0 0 var(--tm-space-3);
+}
+
+/* ---------- group picker (new-task form, task panel) ---------- */
+.group-picker {
+  position: relative;
+}
+
+.group-picker-value {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.group-picker-value[aria-expanded='true'] {
+  border-color: var(--tm-accent);
+}
+
+.group-picker-value .text,
+.group-picker-opt .text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-picker-value .caret,
+.group-picker-opt .caret {
+  display: inline-flex;
+  color: var(--tm-text-faint);
+  transition: transform var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.group-picker-value .caret.closed,
+.group-picker-opt .caret.closed {
+  transform: rotate(-90deg);
+}
+
+.group-picker .dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-group, var(--tm-border-strong));
+}
+
+.group-picker .dot.none {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--tm-border-strong);
+}
+
+.group-picker-pop {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-2);
+  padding: var(--tm-space-2);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-inset);
+}
+
+.group-picker-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.group-picker-opt {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-1) var(--tm-space-2);
+  padding-left: calc(var(--tm-space-2) + var(--tm-depth, 0) * 18px);
+  border-radius: var(--tm-radius-sm);
+  cursor: pointer;
+}
+
+.group-picker-opt.active {
+  background: var(--tm-bg-overlay);
+}
+
+.group-picker-opt.selected .text {
+  color: var(--tm-accent);
+}
+
+.group-picker-opt.child .text {
+  color: var(--tm-text-muted);
+}
+
+.group-picker-opt .expand {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--tm-radius-sm);
+  background: transparent;
+}
+
+.group-picker-opt button.expand:hover {
+  background: var(--tm-bg-raised);
+  color: var(--tm-text);
+}
+
+.group-picker-opt .meta {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+.group-picker-empty {
+  padding: var(--tm-space-1) var(--tm-space-2);
 }
 
 /* the task's line of ancestry in the slide-over: root / … / this task */
@@ -1537,6 +1911,68 @@ table.tbl tr:last-child td {
 .preset-codexFree {
   --tm-preset: var(--tm-preset-codexFree);
 }
+/* custom presets (Config → Presets) have no token of their own: each picks a
+   group palette slot, so they stay inside the same seven hues as groups */
+.preset-color-1 {
+  --tm-preset: var(--tm-group-1);
+}
+.preset-color-2 {
+  --tm-preset: var(--tm-group-2);
+}
+.preset-color-3 {
+  --tm-preset: var(--tm-group-3);
+}
+.preset-color-4 {
+  --tm-preset: var(--tm-group-4);
+}
+.preset-color-5 {
+  --tm-preset: var(--tm-group-5);
+}
+.preset-color-6 {
+  --tm-preset: var(--tm-group-6);
+}
+.preset-color-7 {
+  --tm-preset: var(--tm-group-7);
+}
+
+/* Config → Presets editor */
+.preset-edit-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: 7px 0;
+  border-top: 1px solid var(--tm-border);
+}
+.preset-swatches {
+  display: flex;
+  gap: var(--tm-space-1);
+}
+.preset-swatch {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: var(--tm-radius-pill);
+  border: 2px solid transparent;
+  background: var(--tm-preset);
+  cursor: pointer;
+}
+.preset-swatch.on {
+  border-color: var(--tm-text);
+}
+.preset-edit-hint {
+  flex: 1;
+  min-width: 120px;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+}
+.preset-edit-add {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  padding-top: var(--tm-space-2);
+}
 
 /* `--tm-preset` is unset on the start row, so it falls back to the accent */
 .btn.preset-btn.on,
@@ -1642,6 +2078,7 @@ table.tbl tr:last-child td {
 
 .term-drawer.compact .term-head,
 .term-drawer.compact .term-keys,
+.term-drawer.compact .term-compose,
 .term-drawer.compact .term-body {
   display: none;
 }
@@ -2711,6 +3148,193 @@ tr.repo-open > td {
   text-align: center;
 }
 
+/* ---- shared sheet parts (components/Sheet.tsx, docs/mobile.md § Sheets) ---- */
+
+/* the portal wrapper: no box of its own, so it never becomes a grid item of `.app` */
+.sheet-root {
+  display: contents;
+}
+
+.sheet-title {
+  padding: 0 var(--tm-space-1);
+  font-weight: 600;
+  font-size: var(--tm-text-md);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sheet-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* what kills or discards sits apart, under a rule — never one slip from Open */
+.sheet-actions.danger-zone {
+  padding-top: var(--tm-space-2);
+  border-top: 1px solid var(--tm-border);
+}
+
+.sheet-action {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  width: 100%;
+  min-height: var(--tm-tap);
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 0;
+  border-radius: var(--tm-radius-md);
+  background: transparent;
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sheet-action:active:not(:disabled) {
+  background: var(--tm-bg-overlay);
+}
+
+.sheet-action:disabled {
+  cursor: default;
+}
+
+/* disabled dims the action, never its reason — the hint is the answer to "why not?" */
+.sheet-action:disabled .sheet-action-icon,
+.sheet-action:disabled .sheet-action-label {
+  color: var(--tm-text-faint);
+}
+
+.sheet-action-icon {
+  flex: none;
+  display: inline-flex;
+  justify-content: center;
+  width: 20px;
+  color: var(--tm-text-muted);
+}
+
+.sheet-action-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sheet-action-label {
+  font-weight: 500;
+}
+
+.sheet-action-hint {
+  font-size: var(--tm-text-xs);
+  line-height: 1.35;
+  color: var(--tm-text-faint);
+}
+
+.sheet-action.primary .sheet-action-icon,
+.sheet-action.primary .sheet-action-label {
+  color: var(--tm-accent);
+}
+
+.sheet-action.danger .sheet-action-icon,
+.sheet-action.danger .sheet-action-label {
+  color: var(--tm-status-failed);
+}
+
+.sheet-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+}
+
+.sheet-fields .field {
+  width: 100%;
+  min-width: 0;
+}
+
+.sheet-field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tm-space-3);
+  padding-top: var(--tm-space-1);
+}
+
+.seg {
+  display: inline-flex;
+  gap: var(--tm-space-1);
+}
+
+.sheet-buttons {
+  display: flex;
+  gap: var(--tm-space-2);
+}
+
+.sheet-buttons .btn {
+  flex: 1 1 0;
+  justify-content: center;
+  min-height: var(--tm-tap);
+}
+
+/* a whole-screen form (New task): above the slide-over, under sheets and the question modal */
+.full-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 33;
+  display: flex;
+  flex-direction: column;
+  background: var(--tm-bg);
+  animation: sheet-up var(--tm-dur-base) var(--tm-ease-out);
+}
+
+.full-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: calc(var(--tm-space-2) + env(safe-area-inset-top, 0px)) calc(var(--tm-space-2) + env(safe-area-inset-right, 0px))
+    var(--tm-space-2) calc(var(--tm-space-4) + env(safe-area-inset-left, 0px));
+  border-bottom: 1px solid var(--tm-border);
+  background: var(--tm-bg-raised);
+}
+
+.full-sheet-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: var(--tm-text-lg);
+}
+
+.full-sheet-head .btn {
+  min-width: var(--tm-tap);
+  min-height: var(--tm-tap);
+  justify-content: center;
+}
+
+.full-sheet-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: var(--tm-space-3) calc(var(--tm-space-3) + env(safe-area-inset-right, 0px))
+    calc(var(--tm-space-6) + env(safe-area-inset-bottom, 0px)) calc(var(--tm-space-3) + env(safe-area-inset-left, 0px));
+}
+
+/* ---- task panel wrappers: no-ops on desktop, the hooks phones reorder by ---- */
+
+.so-chips {
+  display: contents;
+}
+
+/* ReviewPanel renders nothing for a never-reviewed task; the empty wrapper must not cost a gap */
+.so-review:empty {
+  display: none;
+}
+
+.so-save {
+  display: flex;
+}
+
 .brand-mini {
   font-family: var(--tm-font-mono);
   font-size: var(--tm-text-sm);
@@ -2860,7 +3484,6 @@ tr.repo-open > td {
   row-gap: 2px;
 }
 
-.app.mobile .task-group-head,
 .app.mobile .section-head {
   flex-wrap: wrap;
   row-gap: var(--tm-space-1);
@@ -3095,6 +3718,482 @@ tr.repo-open > td {
   row-gap: var(--tm-space-1);
 }
 
+/* ======== mobile board rework (docs/mobile.md § Board, § Task panel, § Terminal) ======== */
+
+/* ---- board toolbar: Filters · sort · New, one line ---- */
+
+.app.mobile .board-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  margin: 0 0 var(--tm-space-3);
+}
+
+.app.mobile .board-toolbar > .btn {
+  flex: none;
+  gap: var(--tm-space-1);
+}
+
+.app.mobile .board-toolbar > select.field {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+.filters-btn .count {
+  padding: 0 6px;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-accent);
+  color: var(--tm-accent-contrast);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
+.filters-btn.on {
+  color: var(--tm-accent);
+  border-color: var(--tm-accent);
+}
+
+/* what the sheet narrows stays on screen: one chip per filter, tap to clear */
+.filter-chips {
+  display: flex;
+  gap: var(--tm-space-1);
+  margin: 0 0 var(--tm-space-3);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.filter-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.filter-chip {
+  flex: none;
+  gap: var(--tm-space-1);
+  min-height: 30px;
+  border-color: transparent;
+  background: var(--tm-accent-subtle);
+  color: var(--tm-accent);
+  cursor: pointer;
+}
+
+.filter-chip svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* ---- rows: title line + meta line, one primary action and ⋯ ---- */
+
+.app.mobile .task-row.m {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'grip main act'
+    'grip meta meta'
+    'grip err err';
+  align-items: center;
+  column-gap: var(--tm-space-2);
+  row-gap: 6px;
+  padding: var(--tm-space-2) var(--tm-space-1) var(--tm-space-2) 0;
+}
+
+.app.mobile .task-row.m.no-grip {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'main act'
+    'meta meta'
+    'err err';
+  padding-left: var(--tm-space-3);
+}
+
+.app.mobile .task-row.m .drag-grip {
+  grid-area: grip;
+  align-self: stretch;
+}
+
+.app.mobile .task-row.m .task-main {
+  grid-area: main;
+}
+
+/* two lines of title before the ellipsis — one line cut most titles in half */
+.app.mobile .task-row.m .title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.app.mobile .task-row.m .row-actions {
+  grid-area: act;
+  align-self: start;
+  margin: 0;
+  gap: 0;
+}
+
+.app.mobile .task-row.m .quick.primary-act {
+  color: var(--tm-accent);
+}
+
+/* One line, always: the tags give way (ellipsis) before the badge or the age does. */
+.app.mobile .task-row.m .row-meta {
+  grid-area: meta;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.app.mobile .task-row.m .row-meta > * {
+  flex: none;
+}
+
+/* status first: it is what the eye looks for on the second line */
+.app.mobile .task-row.m .row-meta .badge {
+  order: -1;
+}
+
+.app.mobile .task-row.m .row-meta .age {
+  margin-left: auto;
+}
+
+/* block, not inline-flex: an ellipsis needs a block box (the preset chip's dot rides inline) */
+.app.mobile .task-row.m .row-meta > .chip:not(.more-chip) {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 3ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the first tag is the repo whenever there is one: the second gives way first */
+.app.mobile .task-row.m .row-meta > .chip:not(.more-chip) + .chip:not(.more-chip) {
+  flex-shrink: 4;
+}
+
+/* the meta line indents with the title it belongs to */
+.app.mobile .task-row.m.nested .row-meta {
+  padding-left: calc(var(--tm-depth, 1) * 12px);
+}
+
+.app.mobile .task-row.m .row-err {
+  grid-area: err;
+  max-width: 100%;
+  white-space: normal;
+}
+
+.more-chip {
+  color: var(--tm-text-faint);
+}
+
+/* ---- section heads ride the top while their list scrolls under them ----
+   Board only: each head sticks within its own Section wrapper, so the next
+   one pushes it off. Elsewhere heads share one parent and would pile up. */
+
+.app.mobile .board .section-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  margin: var(--tm-space-4) calc(-1 * var(--tm-space-3)) var(--tm-space-2);
+  padding: 0 var(--tm-space-3);
+  background: var(--tm-bg);
+}
+
+/* ---- group heads: one line; the name gives way, the counts do not ---- */
+
+.app.mobile .task-group-head {
+  flex-wrap: nowrap;
+  min-height: var(--tm-tap-dense);
+}
+
+.app.mobile .task-group-head:has(.group-rename) {
+  flex-wrap: wrap;
+  row-gap: var(--tm-space-1);
+}
+
+.app.mobile .task-group-head .group-fold,
+.app.mobile .task-group-head .group-icon {
+  width: 34px;
+  height: 34px;
+}
+
+/* block, not the head's inline-flex button face: an ellipsis needs a block box */
+.app.mobile .task-group-head .name {
+  display: block;
+  flex: 0 1 auto;
+  white-space: nowrap;
+}
+
+/* ---- task panel: pinned head + action bar, the rest scrolls ---- */
+
+/* line 1: status · title · close; line 2: the chips, scrolling sideways */
+.app.mobile .slideover-head {
+  flex-wrap: wrap;
+  gap: var(--tm-space-1) var(--tm-space-2);
+}
+
+.so-title {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/* the short id is desktop detail; the title is right below */
+.app.mobile .slideover-head > .mono.muted,
+.app.mobile .slideover-head > .spacer {
+  display: none;
+}
+
+.app.mobile .so-chips {
+  display: flex;
+  order: 1;
+  flex: 1 1 100%;
+  gap: var(--tm-space-1);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.app.mobile .so-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.app.mobile .so-chips .chip {
+  flex: none;
+}
+
+.app.mobile .so-chips.plain {
+  display: none;
+}
+
+.app.mobile .slideover-head > .btn.ghost {
+  flex: none;
+  min-width: var(--tm-tap);
+  min-height: var(--tm-tap);
+  justify-content: center;
+}
+
+.so-bar {
+  display: flex;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2) calc(var(--tm-space-4) + env(safe-area-inset-right, 0px)) var(--tm-space-2)
+    calc(var(--tm-space-4) + env(safe-area-inset-left, 0px));
+  border-bottom: 1px solid var(--tm-border);
+  background: var(--tm-bg-raised);
+}
+
+.so-bar .btn {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: var(--tm-tap);
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.so-bar .so-more {
+  flex: 0 0 auto;
+  min-width: var(--tm-tap);
+}
+
+.so-bar .so-more:only-child {
+  flex: 1 1 auto;
+}
+
+/* Reading order on a phone: what happened, then your answer to it, then the
+   task itself. Everything unlisted keeps order 0, i.e. its desktop order. */
+.app.mobile .slideover-body > .group-path {
+  order: -7;
+}
+
+.app.mobile .slideover-body > .so-alert {
+  order: -6;
+}
+
+.app.mobile .slideover-body > .so-question {
+  order: -5;
+}
+
+.app.mobile .slideover-body > .so-stats {
+  order: -4;
+}
+
+.app.mobile .slideover-body > .so-review {
+  order: -3;
+}
+
+.app.mobile .slideover-body > .so-summary {
+  order: -2;
+}
+
+.app.mobile .slideover-body > .so-followup {
+  order: -1;
+}
+
+/* the bar and the sheet ARE the action row on a phone */
+.app.mobile .slideover-body > .so-actions {
+  display: none;
+}
+
+/* Save rides the bottom edge from anywhere in the panel while there is
+   something to save. Last in the order, so it rests below everything. */
+.app.mobile .slideover-body > .so-save {
+  order: 50;
+  position: sticky;
+  /* sticky insets count from inside the body's bottom padding; reach past it to the edge */
+  bottom: calc(-1 * (var(--tm-space-6) + env(safe-area-inset-bottom, 0px)));
+  z-index: 2;
+  margin: 0 calc(-1 * var(--tm-space-4));
+  padding: var(--tm-space-2) var(--tm-space-4) calc(var(--tm-space-2) + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--tm-border);
+  background: var(--tm-bg-raised);
+}
+
+.app.mobile .so-save .btn {
+  flex: 1;
+  justify-content: center;
+  min-height: var(--tm-tap);
+}
+
+.so-settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  width: 100%;
+  min-height: var(--tm-tap);
+  padding: 0 var(--tm-space-3);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-inset);
+  color: var(--tm-text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.so-settings-toggle .label {
+  margin: 0;
+}
+
+.so-settings-toggle .caret {
+  display: inline-flex;
+  transition: transform var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.so-settings-toggle .caret.closed {
+  transform: rotate(-90deg);
+}
+
+.so-settings-sum {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+/* the files list's remove ✕ is a 2px-padded glyph on desktop */
+.app.mobile .slideover-body .task-row .btn.ghost {
+  min-width: var(--tm-tap-dense);
+  justify-content: center;
+}
+
+/* ---- terminal: the whole screen, sized to what the keyboard leaves ---- */
+
+/* The compacted bar keeps its own height; the drawer's phone height below it
+   would otherwise win on specificity and leave an empty 58svh box. */
+.app.mobile .term-drawer.compact {
+  height: auto;
+}
+
+/* --tm-vv-* are written by TerminalDrawer from `visualViewport`: the box the
+   phone keyboard leaves. Before the first measure it is the full screen. */
+.app.mobile .term-drawer.full {
+  top: var(--tm-vv-top, 0px);
+  bottom: auto;
+  left: 0;
+  right: 0;
+  height: var(--tm-vv-h, 100dvh);
+  z-index: 32;
+  border-top: 0;
+}
+
+.app.mobile .term-drawer.full .term-head {
+  flex-wrap: nowrap;
+  gap: var(--tm-space-2);
+  padding: calc(var(--tm-space-1) + env(safe-area-inset-top, 0px)) calc(var(--tm-space-1) + env(safe-area-inset-right, 0px))
+    var(--tm-space-1) calc(var(--tm-space-3) + env(safe-area-inset-left, 0px));
+}
+
+.app.mobile .term-head .term-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--tm-gray-2);
+}
+
+.app.mobile .term-head .badge {
+  flex: none;
+}
+
+.app.mobile .term-head .btn.ghost {
+  flex: none;
+  min-width: var(--tm-tap-dense);
+  justify-content: center;
+  color: var(--tm-gray-3);
+}
+
+.term-font {
+  display: inline-flex;
+  flex: none;
+}
+
+/* under the terminal now, beside the thumb: the rule moves to its top edge */
+.app.mobile .term-drawer.full .term-keys {
+  border-bottom: 0;
+  border-top: 1px solid var(--tm-gray-7);
+}
+
+.term-compose {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2) calc(var(--tm-space-2) + env(safe-area-inset-right, 0px))
+    max(var(--tm-space-2), env(safe-area-inset-bottom, 0px)) calc(var(--tm-space-2) + env(safe-area-inset-left, 0px));
+  border-top: 1px solid var(--tm-gray-7);
+  background: color-mix(in srgb, var(--tm-terminal-bg) 60%, var(--tm-gray-8));
+}
+
+.term-compose .field {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--tm-tap-dense);
+  max-height: 30svh;
+  resize: none;
+  line-height: 1.35;
+  background: var(--tm-terminal-bg);
+  border-color: var(--tm-gray-7);
+  color: var(--tm-terminal-text);
+}
+
+.term-compose .btn {
+  flex: none;
+  min-width: var(--tm-tap);
+  min-height: var(--tm-tap-dense);
+  justify-content: center;
+}
+
 /* ---- repo commands popover ---- */
 
 .app.mobile .cmd-pop {
@@ -3152,8 +4251,9 @@ tr.repo-open > td {
 }
 
 /* ---- Chat (docs/chat.md) ------------------------------------------------ */
-/* A transcript, not a terminal: the turns are headless `claude -p --resume`
-   runs, so there is nothing to attach xterm to. Every value below resolves to
+/* A transcript, not a terminal: each turn runs in its own aux terminal (open it
+   from the runs list), but this page shows the conversation read from the Stop
+   hook, so there is no xterm here. Every value below resolves to
    a --tm-* token; the only exception the sheet allows is xterm's own theme,
    and there is no xterm here. */
 
@@ -3581,6 +4681,265 @@ tr.repo-open > td {
   border-radius: 50%;
   background: currentColor;
   animation: pulse 0.9s var(--tm-ease-in-out) infinite;
+}
+
+/* ---------- reports (docs/reports.md) ---------- */
+
+/* Multi-select chips: the repo picker and the range picker. Same `.on` recipe
+   as the preset/start rows, without their two-line column layout. */
+.btn.pick-btn {
+  padding: 4px 12px;
+  font-size: var(--tm-text-sm);
+}
+
+.btn.pick-btn.on {
+  border-color: var(--tm-accent);
+  background: color-mix(in srgb, var(--tm-accent) var(--tm-group-tint), transparent);
+  color: var(--tm-accent);
+}
+
+.pick-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+}
+
+.report-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  padding: 10px var(--tm-space-4);
+  border-bottom: 1px solid var(--tm-border);
+  cursor: pointer;
+  transition: background var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.report-row:last-child {
+  border-bottom: none;
+}
+
+.report-row:hover {
+  background: var(--tm-bg-overlay);
+}
+
+.report-row .report-title {
+  font-weight: 600;
+}
+
+.report-row .report-sub {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+  margin-top: 2px;
+}
+
+.chip.report-status.ready {
+  color: var(--tm-ok);
+  border-color: color-mix(in srgb, var(--tm-ok) 40%, transparent);
+}
+
+.chip.report-status.failed {
+  color: var(--tm-bad);
+  border-color: color-mix(in srgb, var(--tm-bad) 40%, transparent);
+}
+
+.chip.report-status.running,
+.chip.report-status.pending {
+  color: var(--tm-live);
+  border-color: color-mix(in srgb, var(--tm-live) 40%, transparent);
+}
+
+/* a phone row wraps, and a thumb needs more than a 14px sliver to grab */
+.app.mobile .task-row .drag-grip {
+  align-self: stretch;
+  width: 22px;
+  margin: 0 calc(-1 * var(--tm-space-1)) 0 calc(-1 * var(--tm-space-2));
+  opacity: 1;
+}
+
+/* ---- run kinds (docs/design.md § PTY sessions): every claude is a terminal,
+   the badge says which. Workers stay plain; the read-only roles share the
+   review hue, the session-mutating ones (compact, chat) the running hue. ---- */
+.chip.run-kind {
+  border-color: currentColor;
+}
+
+.chip.run-kind.k-review,
+.chip.run-kind.k-plan-review {
+  color: var(--tm-status-review);
+}
+
+.chip.run-kind.k-plan,
+.chip.run-kind.k-analysis,
+.chip.run-kind.k-report,
+.chip.run-kind.k-commit {
+  color: var(--tm-accent);
+}
+
+.chip.run-kind.k-compact,
+.chip.run-kind.k-chat {
+  color: var(--tm-status-running);
+}
+
+.aux-runs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+}
+
+.aux-run {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+}
+
+.aux-run-live {
+  color: var(--tm-status-running);
+  font-weight: 600;
+}
+
+/* ---- Shared spaces (docs/shared-spaces.md) ---- */
+.shared-form {
+  padding: var(--tm-space-3) var(--tm-space-4);
+  margin-top: var(--tm-space-3);
+}
+
+.shared-gap {
+  margin-top: var(--tm-space-3);
+}
+
+.shared-gap-sm {
+  margin-top: var(--tm-space-2);
+}
+
+.shared-pad {
+  padding: var(--tm-space-2) var(--tm-space-3);
+}
+
+.shared-small {
+  font-size: var(--tm-text-xs);
+}
+
+.shared-nowrap {
+  white-space: nowrap;
+}
+
+.shared-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-2);
+}
+
+.shared-head {
+  margin-top: 0;
+}
+
+.shared-spacer {
+  flex: 1;
+}
+
+.shared-path {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+  word-break: break-all;
+}
+
+.shared-intro {
+  max-width: 720px;
+}
+
+.shared-textarea {
+  min-height: 140px;
+  resize: vertical;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
+.shared-resolution {
+  flex: 1;
+  min-width: 180px;
+}
+
+.shared-row-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.shared-detail {
+  padding: var(--tm-space-2) var(--tm-space-4) var(--tm-space-3);
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.shared-group {
+  padding: var(--tm-space-3) var(--tm-space-4) 0;
+  margin: 0;
+}
+
+.chip.shared-status.open {
+  color: var(--tm-live);
+  border-color: color-mix(in srgb, var(--tm-live) 40%, transparent);
+}
+
+.chip.shared-status.filed {
+  color: var(--tm-accent);
+  border-color: color-mix(in srgb, var(--tm-accent) 40%, transparent);
+}
+
+.chip.shared-status.done {
+  color: var(--tm-ok);
+  border-color: color-mix(in srgb, var(--tm-ok) 40%, transparent);
+}
+
+.chip.shared-status.dismissed {
+  color: var(--tm-text-muted);
+}
+
+.shared-files {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 2fr;
+  gap: var(--tm-space-3);
+  margin-top: var(--tm-space-3);
+  align-items: start;
+}
+
+.app.mobile .shared-files {
+  grid-template-columns: 1fr;
+}
+
+.shared-file-list {
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.shared-file {
+  padding: var(--tm-space-1) var(--tm-space-3);
+  font-size: var(--tm-text-xs);
+  cursor: pointer;
+  word-break: break-all;
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.shared-file:hover {
+  background: var(--tm-bg-overlay);
+}
+
+.shared-file.on {
+  color: var(--tm-accent);
+}
+
+.shared-file-view {
+  min-width: 0;
+}
+
+.shared-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  font-size: var(--tm-text-xs);
+  max-height: 70vh;
+  overflow: auto;
 }
 
 /* ---------- Terminal page: plain shells per repo (docs/terminals.md) ---------- */

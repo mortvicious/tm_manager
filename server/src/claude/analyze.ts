@@ -1,8 +1,7 @@
-import { execFile } from 'node:child_process';
 import { z } from 'zod';
 import type { Repo, Task } from '@tm/shared';
 import { broadcast } from '../events.ts';
-import { registerHeadless } from './headless.ts';
+import { READ_ONLY_DISALLOWED, READ_ONLY_TOOLS, acceptJson, aux, resultInstruction } from './aux.ts';
 import type { Storage } from '../storage/types.ts';
 
 // Structured output contract for the analysis agent.
@@ -107,7 +106,7 @@ function buildPrompt(repo: Repo, tasks: Task[]): string {
     ``,
     `Rules: only reference targetTaskId values from the list above. Every proposal needs a short rationale`,
     `grounded in what you actually found in the repo. Prefer few high-value proposals over many trivial ones.`,
-    `Do not spawn more than 3 subagents. Return via the structured output schema.`,
+    `Do not spawn more than 3 subagents. Return via the fenced JSON result block described below.`,
   ].join('\n');
 }
 
@@ -126,65 +125,35 @@ export async function startAnalysis(
   // Role split (user policy 2026-08-24): analysis runs on the orchestrator-tier
   // model (fable), workers do the heavy lifting on opus.
   const model = settings['analysis.model'];
-  const run = await storage.createRun({
+
+  // A read-only aux terminal (kind `analysis`, subject = the repo), with the
+  // same `dontAsk` + denials the `-p` run had (docs/design.md § PTY sessions).
+  // Fire-and-forget: the route answers with the run id once the PTY is up,
+  // and the proposals land over the event bus when the session settles.
+  const { runId, done } = await aux().start({
+    kind: 'analysis',
+    subjectId: repo.id,
     repoId: repo.id,
-    mode: 'analyze',
+    label: `analysis: ${repo.name}`,
+    cwd: repo.path,
     model,
     effort: settings['agent.effort'],
+    prompt: buildPrompt(repo, tasks) + '\n' + resultInstruction(JSON_SCHEMA),
+    tools: READ_ONLY_TOOLS,
+    disallowedTools: READ_ONLY_DISALLOWED,
+    permission: 'dontAsk',
+    lean: true,
+    timeoutMs: 10 * 60_000,
+    accept: acceptJson(proposalSchema),
   });
 
-  const args = [
-    '-p',
-    '--model',
-    model,
-    '--effort',
-    settings['agent.effort'],
-    '--permission-mode',
-    'dontAsk',
-    '--disallowedTools',
-    'Edit',
-    'Write',
-    'NotebookEdit',
-    'Bash',
-    '--output-format',
-    'json',
-    '--json-schema',
-    JSON_SCHEMA,
-  ];
-
-  // Hoisted BEFORE execFile: spawn errors fire on process.nextTick, which
-  // drains before promise microtasks — a `const finish` defined after an
-  // await would still be in its TDZ and crash the server (review R1).
-  const finish = async (err: Error | null, stdout: string) => {
-    const endedAt = new Date().toISOString();
+  void done.then(async (res) => {
     try {
-      // A user kill (R4) must not be clobbered back to plain 'exited'.
-      const cur = await storage.getRun(run.id);
-      if (cur?.status === 'killed') return;
-      // Parse the result ENVELOPE, not raw stdout (review M2). The envelope
-      // carries `structured_output` already parsed against our schema.
-      let envelope: any = null;
-      try {
-        envelope = JSON.parse(stdout);
-      } catch {
-        // fall through to error handling
-      }
-      if (err && !envelope) {
-        await storage.updateRun(run.id, { status: 'exited', exitCode: 1, endedAt });
-        console.error('analyze failed:', err.message.slice(0, 500));
+      if (res.status !== 'ok' || !res.value) {
+        if (res.status !== 'aborted') console.error('analyze failed:', (res.error ?? 'no result').slice(0, 500));
         return;
       }
-      if (!envelope || envelope.is_error || !envelope.structured_output) {
-        await storage.updateRun(run.id, { status: 'exited', exitCode: 1, endedAt });
-        console.error('analyze returned no structured output:', String(envelope?.result).slice(0, 300));
-        return;
-      }
-      const parsed = proposalSchema.safeParse(envelope.structured_output);
-      if (!parsed.success) {
-        await storage.updateRun(run.id, { status: 'exited', exitCode: 1, endedAt });
-        console.error('analyze output failed validation:', parsed.error.message.slice(0, 500));
-        return;
-      }
+      const parsed = { data: res.value };
       const validTaskIds = new Set(tasks.map((t) => t.id));
       // Categories apply DIRECTLY (metadata, reversible, audited) — but never
       // clobber a category a human or worker already set.
@@ -209,7 +178,7 @@ export async function startAnalysis(
         // kinds that require a target are dropped when the model hallucinated an id
         if (!taskId && p.kind !== 'new_task') continue;
         const proposal = await storage.createProposal({
-          runId: run.id,
+          runId,
           repoId: repo.id,
           taskId,
           kind: p.kind,
@@ -226,117 +195,15 @@ export async function startAnalysis(
           kind: 'proposal.created',
           actor: 'analyze',
           taskId: proposal.taskId,
-          runId: run.id,
+          runId,
           repoId: repo.id,
           data: { kind: proposal.kind },
         });
       }
-      const u = envelope.usage ?? {};
-      await storage.updateRun(run.id, {
-        status: 'exited',
-        exitCode: 0,
-        endedAt,
-        sessionId: envelope.session_id ?? null,
-        stats: {
-          inputTokens: u.input_tokens ?? 0,
-          outputTokens: u.output_tokens ?? 0,
-          cacheReadTokens: u.cache_read_input_tokens ?? 0,
-          cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
-          costUsd: Math.round((envelope.total_cost_usd ?? 0) * 1000) / 1000,
-          contextPct: 0,
-          contextTokens: 0,
-        },
-      });
     } catch (e) {
       console.error('analyze finalize error:', e);
-      await storage.updateRun(run.id, { status: 'exited', exitCode: 1, endedAt }).catch(() => {});
-    }
-  };
-
-  const child = execFile(
-    'claude',
-    args,
-    {
-      cwd: repo.path,
-      timeout: 10 * 60_000,
-      maxBuffer: 64 * 1024 * 1024, // -p envelopes can be large (review M1)
-      env: cleanEnv(),
-    },
-    (err, stdout) => {
-      void finish(err, stdout);
-    },
-  );
-  // stdin errors (EPIPE when claude exits before draining) would otherwise be
-  // an unhandled 'error' event → process crash (review R1).
-  child.stdin?.on('error', () => {});
-  child.stdin?.write(buildPrompt(repo, tasks));
-  child.stdin?.end();
-  trackHeadlessChild(run.id, child, `analysis of ${repo.name}`);
-  await storage.updateRun(run.id, { pid: child.pid ?? null });
-
-  return { runId: run.id };
-}
-
-// Live headless children by runId — lets the kill route stop a burning run
-// (R4). Shared with the feature-analysis pipeline, which spawns several
-// `claude -p` processes under ONE run row; registering each in turn keeps a
-// single Kill button honest.
-const analyzeChildren = new Map<string, ReturnType<typeof execFile>>();
-
-/**
- * Subscribers notified when a headless run's CHILD PROCESS actually exits.
- *
- * A PTY run announces its death on the event bus (`run.exited`, broadcast from
- * `Orchestrator.handleExit`). A headless one has no PTY, so nothing on the bus
- * ever says it is gone — the run row is updated by whatever awaited the child,
- * which is not the same thing and is not observable as an event. Anything that
- * needs to WAIT for a headless kill to land (the Telegram red button's
- * "have exited" follow-up) has no other signal, so this is it: the one place
- * that already knows, `trackHeadlessChild`'s own exit handler.
- */
-const headlessExitListeners = new Set<(runId: string) => void>();
-
-export function onHeadlessRunExit(cb: (runId: string) => void): () => void {
-  headlessExitListeners.add(cb);
-  return () => headlessExitListeners.delete(cb);
-}
-
-export function trackHeadlessChild(runId: string, child: ReturnType<typeof execFile>, label = 'analysis'): void {
-  analyzeChildren.set(runId, child);
-  child.on('exit', () => {
-    if (analyzeChildren.get(runId) === child) analyzeChildren.delete(runId);
-    // Listener throws are swallowed for the same reason broadcast() swallows
-    // them: a subscriber's bug must not break process bookkeeping.
-    for (const l of headlessExitListeners) {
-      try {
-        l(runId);
-      } catch {
-        /* ignore */
-      }
     }
   });
-  // Also joins the pool the restart guard reads: a headless agent has no PTY,
-  // so nothing else would notice it is working (docs/commands.md).
-  registerHeadless(child, label);
-}
 
-export function killAnalysis(runId: string): boolean {
-  const child = analyzeChildren.get(runId);
-  if (!child || child.exitCode !== null) return false;
-  child.kill('SIGTERM');
-  // Same escalation as PTY sessions: a wedged claude -p must not outlive the
-  // kill by more than 5s (final review F3).
-  setTimeout(() => {
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-  }, 5000).unref();
-  return true;
-}
-
-// Same env hygiene as PTY workers: strip inherited claude session markers.
-function cleanEnv(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && !k.startsWith('CLAUDE_CODE_') && k !== 'CLAUDECODE') env[k] = v;
-  }
-  return env;
+  return { runId };
 }

@@ -70,6 +70,45 @@ const STANDING_RULES = [
 ].join(' ');
 
 /**
+ * The ship gate (docs/design.md § Adversarial review, "Review before ship").
+ * The review round runs at the worker's Stop, so a worker that pushes and
+ * deploys in its own turn — which some repos' CLAUDE.md require — ships
+ * before the reviewer has read a line. When the task will be reviewed, every
+ * worker turn except the publish turn carries this rule, and the publish turn
+ * (PUBLISH_INSTRUCTION, step 5) runs the held-back deploy/verify steps.
+ * A local commit never ships, and the reviewer reads the task's commits
+ * (by their trailer, commitTrailerRule) as well as the working tree.
+ */
+const SHIP_GATE_RULE = [
+  'Ship gate — this overrides the repo\'s CLAUDE.md and any other instruction to push or deploy:',
+  'this task is adversarially reviewed BEFORE it ships, so in this session do NOT `git push`, deploy',
+  '(Vercel, ECS, any release step) or verify against production. Committing locally is fine (the',
+  "reviewer reads this task's commits and the working tree). Then stop: after the review, the",
+  'Publish turn pushes and runs the deploy/verify steps.',
+].join(' ');
+
+/**
+ * How the reviewer finds this task's commits (docs/design.md § Adversarial
+ * review, "What the reviewer reads"): `git log --all --grep` on this trailer,
+ * so work committed on any branch or worktree counts and a second worker's
+ * commits in the same repo never do. On EVERY turn — the publish turn is the
+ * one that commits most often — and never on SHIP_GATE_RULE's condition.
+ */
+export function commitTrailerRule(taskId: string): string {
+  return `Every commit you make for this task — merge and squash commits included — ends its message with the trailer line \`Task: ${taskId}\` (e.g. \`git commit --trailer "Task: ${taskId}"\`); the reviewer finds this task's commits by it.`;
+}
+
+/**
+ * Whether this task's change is reviewed before it ships — the same test the
+ * Stop hook uses to mark the landing `pending` (routes/internal.ts), so the
+ * prompt never promises a review that will not run. Auto-publish skips the
+ * review round by design, so it keeps the repo's own push behaviour.
+ */
+export function shipHeldForReview(task: Pick<Task, 'review' | 'autoPublish'>, settings: AppSettings): boolean {
+  return !task.autoPublish && (task.review ?? settings['review.enabled']);
+}
+
+/**
  * What the AskUserQuestion hook prints when it cannot reach the server at all
  * (docs/questions.md). A deny, not a silent exit: exiting 0 with no output
  * would let the tool run and draw its dialog in a terminal nobody watches.
@@ -105,12 +144,52 @@ export const PUBLISH_INSTRUCTION = [
   '3. Commit with a concise message: an imperative summary under 70 chars, and if the change set is',
   '   non-trivial a blank line plus 1-4 short bullets. Skip this step if there is nothing staged.',
   '4. Push the current branch: `git push`, or `git push -u origin HEAD` when it has no upstream.',
+  "5. Only if the push succeeded: run the post-push steps this repo's own instructions (CLAUDE.md)",
+  '   require — a deploy, a live verification. They were held back until review; if there are none,',
+  '   skip this. A failing deploy or check is reported, not fixed in this turn.',
   '',
   'Do NOT write, edit or refactor any code in this turn, do not amend or rebase existing commits, do',
   'not force-push, do not create branches or pull requests, and do not spawn subagents. If a step',
   'fails (rejected push, no remote, protected branch), stop and report the exact error instead of',
-  'working around it. Finish by printing the commit sha (if you made one) and the push result.',
+  'working around it. Finish by printing the commit sha (if you made one), the push result and the',
+  'result of any step 5.',
 ].join('\n');
+
+const PUBLISH_UP_TO_HEAD = 'Publish the work you did for this task — ONLY up to its own last commit.';
+
+/**
+ * The publish turn of a STACKED task (docs/queue.md § Stacked tasks): later
+ * tasks in this checkout, not yet approved, have work on top of this one —
+ * their commits after `sha`, or their edits in the working tree — so the
+ * ordinary `git add -A` + `git push` would ship them too. This task's own
+ * leftovers were already committed under its trailer by the queue's hand-off,
+ * so the turn pushes exactly `sha` and stages nothing. Recognised as a publish
+ * turn by `isPublishInstruction` (identity for PUBLISH_INSTRUCTION, this
+ * fixed first line for the variant).
+ */
+export function publishUpToInstruction(p: { sha: string; remote: string; mergeRef: string }): string {
+  return [
+    PUBLISH_UP_TO_HEAD,
+    'Later tasks in this checkout have unapproved work on top of yours (commits after it and/or edits in',
+    'the working tree), so do this in THIS session, yourself, with the Bash tool:',
+    '',
+    `1. Push exactly your last commit: \`git push ${p.remote} ${p.sha}:${p.mergeRef}\`.`,
+    '2. Only if the push succeeded: run the post-push steps this repo\'s own instructions (CLAUDE.md)',
+    '   require — but ONLY steps that act on what was pushed (a CI/deploy triggered by the push, a live',
+    '   check of it). Do NOT deploy or build from the local working tree: it contains the later tasks\'',
+    '   unapproved work. Report any step you skipped for that reason.',
+    '',
+    'Do NOT stage, commit, stash, reset, checkout, amend, rebase or force-push anything, do not touch the',
+    'working tree, do not create branches or pull requests, and do not spawn subagents. If the push fails',
+    '(rejected, non-fast-forward, no remote), stop and report the exact error instead of working around',
+    'it. Finish by printing the push result and the result of any step 2.',
+  ].join('\n');
+}
+
+/** Is this follow-up text a publish turn (either form)? */
+export function isPublishInstruction(text: string | undefined): boolean {
+  return text === PUBLISH_INSTRUCTION || (!!text && text.startsWith(PUBLISH_UP_TO_HEAD));
+}
 
 // A resumed session keeps its original prompt, so this only re-anchors the caps
 // in case the conversation was compacted along the way. Keep it in lockstep with
@@ -138,26 +217,45 @@ function buildWorkerPrompt(opts: {
   followUp?: string;
   resumeSessionId?: string;
   dispatchNote?: string;
+  /** The shared-space block (docs/shared-spaces.md); a context note like `dispatchNote`. */
+  sharedNote?: string;
   previousSummary?: string;
+  /** shipHeldForReview(): add SHIP_GATE_RULE (never on the publish turn). */
+  shipGate: boolean;
 }): string {
   const { task } = opts;
   // Strict identity on purpose: the publish turn is recognised by BEING the
-  // publish instruction. That is why an `fyi` backlog travels as its own
+  // publish instruction (or the stacked variant's fixed first line). That is why an `fyi` backlog travels as its own
   // `dispatchNote` and is never concatenated onto `followUp` — doing that
   // would silently turn every publish turn into an ordinary one.
-  const isPublishTurn = opts.followUp === PUBLISH_INSTRUCTION;
+  const isPublishTurn = isPublishInstruction(opts.followUp);
   const resumeBody = opts.followUp ?? DEFAULT_PROCEED;
   // The note goes FIRST (context the turn may need) and never last: the last
   // thing a resumed agent reads must stay the instruction it has to act on.
-  const note = opts.dispatchNote ? [opts.dispatchNote, ''] : [];
+  // The shared-space block is the same kind of context and follows the same
+  // rule (never concatenated onto `followUp`, never last).
+  const note = [
+    ...(opts.dispatchNote ? [opts.dispatchNote, ''] : []),
+    ...(opts.sharedNote && !isPublishTurn ? [opts.sharedNote, ''] : []),
+  ];
+  // The publish turn is the one turn that SHOULD push — the gate is exactly
+  // what it lifts.
+  const gate = opts.shipGate && !isPublishTurn;
   return opts.resumeSessionId
     ? [
         `# Continuing task: ${task.title}`,
         '',
         ...note,
         ...(isPublishTurn ? [RESUME_REMINDER, '', resumeBody] : [resumeBody, '', RESUME_REMINDER]),
+        '',
+        commitTrailerRule(task.id),
+        ...(gate ? ['', SHIP_GATE_RULE] : []),
       ].join('\n')
     : [
+        // The shared-space block LEADS a fresh prompt: it is what to read
+        // before planning, and between a long description and the standing
+        // rules it was read past (docs/shared-spaces.md § What a worker gets).
+        opts.sharedNote && !isPublishTurn ? `${opts.sharedNote}\n\n` : '',
         `# Task: ${task.title}`,
         task.description ? `\n${task.description}` : '',
         opts.followUp
@@ -171,6 +269,8 @@ function buildWorkerPrompt(opts: {
           : '',
         opts.dispatchNote ? `\n\n${opts.dispatchNote}` : '',
         `\n\n${STANDING_RULES}`,
+        `\n\n${commitTrailerRule(task.id)}`,
+        gate ? `\n\n${SHIP_GATE_RULE}` : '',
       ].join('');
 }
 
@@ -264,6 +364,12 @@ export function buildWorkerInvocation(opts: {
    */
   dispatchNote?: string;
   /**
+   * The repo's shared space (docs/shared-spaces.md): its folder becomes
+   * `$TM_SHARED_DIR` and an extra `--add-dir` (so the agent may write its
+   * knowledge there), and `note` is the turn's block of open requests.
+   */
+  shared?: { dir: string; note?: string };
+  /**
    * Continue an existing claude session instead of starting a fresh one
    * (`claude --resume <id>`) — the "proceed" flow. The agent keeps its whole
    * conversation, so the prompt carries only the new instruction.
@@ -284,6 +390,12 @@ export function buildWorkerInvocation(opts: {
     TM_TOKEN: opts.token,
     TM_CALLBACK_URL: opts.callbackUrl,
     TM_ARTIFACTS_DIR: opts.artifactsDir,
+    // The CLI loads CLAUDE.md from `--add-dir` folders only with this set, and
+    // the shared folder's generated CLAUDE.md is how the map reaches the
+    // agent's context without it having to choose to open a file
+    // (docs/shared-spaces.md § What a worker gets). The shared folder is the
+    // only --add-dir a worker gets, so no other directory's memory comes in.
+    ...(opts.shared ? { TM_SHARED_DIR: opts.shared.dir, CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1' } : {}),
   };
 
   if (isCodexModel(model)) {
@@ -292,7 +404,9 @@ export function buildWorkerInvocation(opts: {
       followUp: opts.followUp,
       resumeSessionId: opts.resumeSessionId,
       dispatchNote: opts.dispatchNote,
+      sharedNote: opts.shared?.note,
       previousSummary: opts.previousSummary,
+      shipGate: shipHeldForReview(task, settings),
     });
     // `-c model_reasoning_effort` has no Codex-CLI-wide free/paid distinction
     // worth encoding yet, so effort is not forwarded — "free" is entirely a
@@ -369,6 +483,19 @@ export function buildWorkerInvocation(opts: {
       Notification: [
         { hooks: [{ type: 'command', command: hookCurl('/api/internal/runs/$TM_RUN_ID/needs-attention') }] },
       ],
+      // The `waiting` status (docs/design.md § Waiting): Stop fires at the end
+      // of EVERY turn, including one the agent ends with a background subagent
+      // still running — the CLI re-invokes the session when that child returns.
+      // These two let the server count the children still out, so that Stop
+      // parks the task as `waiting` instead of handing a half-done tree to the
+      // reviewer. Both fire for background subagents as well as foreground
+      // ones; foreground ones simply come and go inside the turn.
+      SubagentStart: [
+        { hooks: [{ type: 'command', command: hookCurl('/api/internal/runs/$TM_RUN_ID/subagent-start') }] },
+      ],
+      SubagentStop: [
+        { hooks: [{ type: 'command', command: hookCurl('/api/internal/runs/$TM_RUN_ID/subagent-stop') }] },
+      ],
     },
   };
 
@@ -427,6 +554,11 @@ export function buildWorkerInvocation(opts: {
   const allowed = settings['agent.allowedTools'];
   if (allowed.length > 0) args.push(`--allowedTools=${allowed.join(' ')}`);
 
+  // The shared space folder lives outside the repo; without this a write there
+  // is an out-of-workspace edit the permission layer may stop on. `=` form on
+  // purpose: `--add-dir` is variadic and would otherwise swallow the prompt.
+  if (opts.shared) args.push(`--add-dir=${opts.shared.dir}`);
+
   // A resumed session already holds the task, the rules and everything it did
   // before — restating them would only bury the new instruction.
   // Exception: the publish turn is deliberately narrower than the standing
@@ -438,7 +570,9 @@ export function buildWorkerInvocation(opts: {
     followUp: opts.followUp,
     resumeSessionId: opts.resumeSessionId,
     dispatchNote: opts.dispatchNote,
+    sharedNote: opts.shared?.note,
     previousSummary: opts.previousSummary,
+    shipGate: shipHeldForReview(task, settings),
   });
   args.push(prompt);
 

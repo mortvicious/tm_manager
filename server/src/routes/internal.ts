@@ -1,6 +1,8 @@
 import type { ReviewState } from '@tm/shared';
 import type { FastifyInstance } from 'fastify';
+import { aux } from '../claude/aux.ts';
 import { summarizeRun } from '../claude/stats.ts';
+import { shipHeldForReview } from '../claude/worker.ts';
 import { broadcast } from '../events.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
@@ -26,6 +28,42 @@ export function appendFixNote(original: string, note: string, round: number): st
     out = base + next.map((n) => FIX_NOTE_MARK + n).join('');
   }
   return out.slice(0, RESULT_SUMMARY_MAX);
+}
+
+/**
+ * The CLI's own list of this session's background subagents still out, as
+ * Stop and SubagentStop payloads carry it (`background_tasks: [{ id, type,
+ * status, … }]`, measured on 2.1.266). Only `subagent` entries are
+ * children; background shells are read separately (`runningShells`), because
+ * a shell has no stop hook and may never end. null when the payload has no
+ * such list (an older CLI): the caller falls back to the hook count.
+ */
+export function runningSubagents(body: unknown): string[] | null {
+  return runningBackground(body, 'subagent');
+}
+
+/**
+ * The same list's still-running background SHELLS (`run_in_background` Bash:
+ * `{ id, type: 'shell', status: 'running', command, description }`, measured
+ * on the real CLI). They hold a task in `waiting` only for a bounded time —
+ * see `Orchestrator.waitDecision`. null when the payload has no list.
+ */
+export function runningShells(body: unknown): string[] | null {
+  return runningBackground(body, 'shell');
+}
+
+function runningBackground(body: unknown, kind: 'subagent' | 'shell'): string[] | null {
+  if (typeof body !== 'object' || body === null) return null;
+  const list = (body as Record<string, unknown>).background_tasks;
+  if (!Array.isArray(list)) return null;
+  const ids: string[] = [];
+  for (const t of list) {
+    if (typeof t !== 'object' || t === null) continue;
+    const { id, type, status } = t as Record<string, unknown>;
+    if (type !== kind || typeof id !== 'string' || !id) continue;
+    if (status === 'running' || status === 'pending') ids.push(id);
+  }
+  return ids;
 }
 
 export function registerInternalRoutes(
@@ -85,8 +123,16 @@ export function registerInternalRoutes(
   // First Stop after spawn = the agent finished its turn → task leaves
   // `running`. Later Stops (user chatting in the attached terminal) no-op via
   // the conditional transition.
-  app.post('/api/internal/runs/:id/stop', async (req) => {
-    const { id } = req.params as { id: string };
+  //
+  // `replayOf` is set when no hook fired at all: a park held by background
+  // shells ran out of wait budget (`agent.shellWaitMinutes`) and the
+  // orchestrator hands the park's own payload back, stamped with when the
+  // park began. The same decision is taken again — it lands the turn unless
+  // something still counts — but only for THAT park: nothing about the turn
+  // itself is new (no flush sleep, no attention/question sweep, which belong
+  // to a real turn end), and the landing accepts `waiting` alone, so a
+  // session that started talking meanwhile is never landed under its feet.
+  const settleStop = async (id: string, body: unknown, replayOf: number | null): Promise<{ ok: boolean }> => {
     // Stale-hook guard (review R3a): a user chatting in an OLD idle session
     // fires Stops that must never touch the task again — especially not while
     // a NEWER run is working on it.
@@ -96,27 +142,35 @@ export function registerInternalRoutes(
       const latest = (await storage.listRuns({ taskId: preRun.taskId }))[0];
       if (latest && latest.id !== id) return { ok: true };
     }
-    // The final assistant message may not be flushed to the transcript yet
-    // when the Stop hook fires — give the writer a moment (observed in test).
-    await new Promise((r) => setTimeout(r, 1500));
-    // Re-check after the sleep: a kill→retry→claim can complete inside it (M1).
-    if (sessions.isIdle(id)) return { ok: true };
-    if (preRun?.taskId) {
-      const latest = (await storage.listRuns({ taskId: preRun.taskId }))[0];
-      if (latest && latest.id !== id) return { ok: true };
+    if (replayOf === null) {
+      // The final assistant message may not be flushed to the transcript yet
+      // when the Stop hook fires — give the writer a moment (observed in test).
+      await new Promise((r) => setTimeout(r, 1500));
+      // Re-check after the sleep: a kill→retry→claim can complete inside it (M1).
+      if (sessions.isIdle(id)) return { ok: true };
+      if (preRun?.taskId) {
+        const latest = (await storage.listRuns({ taskId: preRun.taskId }))[0];
+        if (latest && latest.id !== id) return { ok: true };
+      }
     }
-    const info = await recordRunInfo(id, req.body);
+    const info = await recordRunInfo(id, body);
     if (!info) return { ok: false };
     const run = info.run;
 
-    if (run.needsAttention) {
-      const cleared = await storage.updateRun(id, { needsAttention: false });
-      if (cleared) broadcast({ type: 'run.needs-attention', run: cleared });
+    if (replayOf !== null) {
+      // A flag raised during the park means the session is mid-turn and
+      // blocked on a human — its turn end is still to come, as a real Stop.
+      if (run.needsAttention) return { ok: true };
+    } else {
+      if (run.needsAttention) {
+        const cleared = await storage.updateRun(id, { needsAttention: false });
+        if (cleared) broadcast({ type: 'run.needs-attention', run: cleared });
+      }
+      // The turn is over, so a question of this run that is still pending was
+      // abandoned (Esc in an attached terminal cancels the waiting hook) — the
+      // human must not keep being asked (docs/questions.md).
+      await orchestrator.questions.expireForRun(id, 'the agent finished its turn without the answer');
     }
-    // The turn is over, so a question of this run that is still pending was
-    // abandoned (Esc in an attached terminal cancels the waiting hook) — the
-    // human must not keep being asked (docs/questions.md).
-    await orchestrator.questions.expireForRun(id, 'the agent finished its turn without the answer');
 
     if (run.taskId && run.mode === 'worker') {
       const settings = await storage.getSettings();
@@ -124,6 +178,71 @@ export function registerInternalRoutes(
       // then moves it to `published` if git agrees the work really is pushed.
       const publishRun = orchestrator.isPublishRun(id);
       const pre = await storage.getTask(run.taskId);
+      // `waiting` (docs/design.md § Waiting): Stop fires at the end of EVERY
+      // turn, including one the agent ends with a background subagent of its
+      // own still running — the CLI re-invokes the session when that child
+      // returns, so this is a pause inside the work, not its end. Landing it
+      // handed a half-done tree to the reviewer ("nothing implemented",
+      // blocker, fix round) and told the human "review" about a task whose
+      // own summary said it was still waiting. Park it instead: no review, no
+      // idling (the session keeps its slot and its repo — it is about to work
+      // again), the agent's last words as the summary so the panel says what
+      // it waits for. A publish turn is never parked: its Stop is settled by
+      // git. The decision is taken AFTER the flush sleep above, so a child
+      // that returned during it counts as returned. The payload's own
+      // `background_tasks` decides whether children are out whenever the CLI
+      // sends it; the hook count is only the fallback (it was fooled by the
+      // CLI's helper agents, which stop without ever starting).
+      // Background SHELLS hold the park too, each for a bounded time
+      // (`waitDecision`): a turn ended "waiting for Lighthouse to finish"
+      // was landed, reviewed, and its fix round killed the PTY — and the
+      // shell with it — before the agent ever saw the numbers.
+      const shellWaitMs = settings['agent.shellWaitMinutes'] * 60_000;
+      const wait = !publishRun
+        ? orchestrator.waitDecision(id, runningSubagents(body), runningShells(body), shellWaitMs)
+        : { children: 0, shells: 0, shellDeadline: null, snapshot: '', stale: false };
+      if ((wait.children > 0 && !wait.stale) || wait.shells > 0) {
+        if (replayOf !== null) {
+          // Still held (a later shell's budget, or a child still out): the
+          // same park goes on, now timed to the next deadline if any.
+          orchestrator.rearmShellWait(id, replayOf, wait.shellDeadline);
+          return { ok: true };
+        }
+        const parked = await storage.transitionTask(run.taskId, ['running', 'waiting'], 'waiting', 'hook', {
+          reviewState: null,
+          ...(info.lastAssistantText ? { resultSummary: info.lastAssistantText.slice(0, 4000) } : {}),
+        });
+        if (parked) {
+          const list = (body as { background_tasks?: unknown } | null)?.background_tasks;
+          orchestrator.parkedWaiting(id, parked.id, wait.snapshot, wait.shellDeadline, { background_tasks: list });
+          await storage.appendEvent({
+            kind: 'task.waiting',
+            actor: 'hook',
+            runId: id,
+            taskId: parked.id,
+            repoId: parked.repoId,
+            data: { children: wait.children, ...(wait.shells > 0 ? { shells: wait.shells } : {}) },
+          });
+          broadcast({ type: 'task.updated', task: parked });
+          broadcast({ type: 'orchestrator.status', status: await orchestrator.status() });
+        }
+        return { ok: true };
+      }
+      if (replayOf !== null) {
+        // Nothing counts any more. Only for the park that armed the timer —
+        // a newer one (a Stop that re-parked meanwhile) has its own.
+        if (orchestrator.parkedAt(id) !== replayOf) return { ok: true };
+      }
+      if (wait.stale) {
+        await storage.appendEvent({
+          kind: 'task.waiting',
+          actor: 'hook',
+          runId: id,
+          taskId: run.taskId,
+          repoId: run.repoId,
+          data: { children: wait.children, stale: true },
+        });
+      }
       // auto-publish overrides auto-complete: the task must pass THROUGH
       // review so the publish turn has something to pick up.
       const to = !publishRun && settings['orchestrator.autoComplete'] && !pre?.autoPublish ? 'done' : 'review';
@@ -131,8 +250,10 @@ export function registerInternalRoutes(
       // row that says `review` also says `pending` — a surface that reads the
       // status alone can never mistake an unreviewed change for a reviewed
       // one. Everything else (publish turns, auto-publish, review off) is
-      // simply not auto-reviewed: null.
-      const willReview = !publishRun && !pre?.autoPublish && (pre?.review ?? settings['review.enabled']);
+      // simply not auto-reviewed: null. The same test decides whether the
+      // worker's prompt held the push back for this review (shipHeldForReview).
+      const willReview =
+        !publishRun && shipHeldForReview({ review: pre?.review ?? null, autoPublish: pre?.autoPublish ?? false }, settings);
       const patch: { resultSummary?: string; reviewState: ReviewState | null } = {
         reviewState: willReview ? 'pending' : null,
       };
@@ -159,8 +280,30 @@ export function registerInternalRoutes(
       const release = () => orchestrator.releaseCustomQueue(taskId);
       let handedOff = false;
       try {
-      const task = await storage.transitionTask(run.taskId, ['running'], to, 'hook', patch);
+      // `waiting` too: a lost SubagentStop hook (the `stale` case above) or
+      // a transcript line the watcher has not polled yet leaves the row
+      // parked at the moment the agent's real last turn ends. A replay lands
+      // `waiting` only: a session that went back to work is not its to land.
+      const task = await storage.transitionTask(
+        run.taskId,
+        replayOf !== null ? ['waiting'] : ['running', 'waiting'],
+        to,
+        replayOf !== null ? 'system' : 'hook',
+        patch,
+      );
       if (task) {
+        orchestrator.dropWait(id);
+        if (replayOf !== null) {
+          // the shell(s) outlived their budget — a decision, not a gap
+          await storage.appendEvent({
+            kind: 'task.waiting',
+            actor: 'system',
+            runId: id,
+            taskId: task.id,
+            repoId: task.repoId,
+            data: { expired: 'shell-wait', waitedMs: Date.now() - replayOf },
+          });
+        }
         broadcast({ type: 'task.updated', task });
         sessions.markIdle(id); // frees the concurrency slot; PTY stays attachable
         const idled = await storage.updateRun(id, { idle: true, needsAttention: false });
@@ -205,11 +348,66 @@ export function registerInternalRoutes(
       }
     }
     return { ok: true };
+  };
+
+  // Aux sessions (review, plan, chat, … — docs/design.md § PTY sessions)
+  // share these routes and the per-run token guard, but none of the worker
+  // logic below: their hooks go to the aux runner, which decides the result.
+  // Checked by the run's mode, never by whether a runner entry exists, so a
+  // late hook from an aux session that already settled is swallowed here
+  // rather than mistaken for a worker's.
+  const auxHook = async (
+    id: string,
+    event: Parameters<ReturnType<typeof aux>['hook']>[1],
+    body: unknown,
+  ): Promise<boolean> => {
+    const run = await storage.getRun(id);
+    if (run?.mode !== 'aux') return false;
+    await aux().hook(id, event, body);
+    return true;
+  };
+
+  app.post('/api/internal/runs/:id/stop', async (req) => {
+    const { id } = req.params as { id: string };
+    if (await auxHook(id, 'stop', req.body)) return { ok: true };
+    return settleStop(id, req.body, null);
+  });
+  // StopFailure — the API refused the turn (`model_not_found`, rate limit,
+  // …). Only aux sessions inject it: it is how an unavailable reviewer model
+  // reaches the Fable→Opus fallback now that there is no `-p` envelope.
+  app.post('/api/internal/runs/:id/stop-failure', async (req) => {
+    const { id } = req.params as { id: string };
+    await auxHook(id, 'stop-failure', req.body);
+    return { ok: true };
+  });
+  orchestrator.onShellWaitExpired(async (runId, body, parkedAt) => {
+    await settleStop(runId, body, parkedAt);
+  });
+
+  // SubagentStart / SubagentStop (docs/design.md § Waiting): the count of a
+  // run's own children still out, which is what turns a Stop into a park.
+  // Fire-and-forget on the CLI side; `agent_id` is the child's instance id.
+  app.post('/api/internal/runs/:id/subagent-start', async (req) => {
+    const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as { agent_id?: unknown };
+    orchestrator.subagentStarted(id, typeof body.agent_id === 'string' && body.agent_id ? body.agent_id : null);
+    return { ok: true };
+  });
+  app.post('/api/internal/runs/:id/subagent-stop', async (req) => {
+    const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as { agent_id?: unknown };
+    await orchestrator.subagentStopped(
+      id,
+      typeof body.agent_id === 'string' && body.agent_id ? body.agent_id : null,
+      runningSubagents(req.body),
+    );
+    return { ok: true };
   });
 
   // Session started — record session identity right away (feeds live stats).
   app.post('/api/internal/runs/:id/session-start', async (req) => {
     const { id } = req.params as { id: string };
+    if (await auxHook(id, 'session-start', req.body)) return { ok: true };
     await recordRunInfo(id, req.body, { skipSummarize: true });
     return { ok: true };
   });
@@ -218,6 +416,7 @@ export function registerInternalRoutes(
   // in the orchestrator covers status transitions.
   app.post('/api/internal/runs/:id/session-end', async (req) => {
     const { id } = req.params as { id: string };
+    if (await auxHook(id, 'session-end', req.body)) return { ok: true };
     await recordRunInfo(id, req.body);
     return { ok: true };
   });
@@ -247,6 +446,7 @@ export function registerInternalRoutes(
   // Notification hook: permission prompt / idle in a hidden terminal.
   app.post('/api/internal/runs/:id/needs-attention', async (req) => {
     const { id } = req.params as { id: string };
+    if (await auxHook(id, 'notification', req.body)) return { ok: true };
     // Completed-idle sessions fire ~60s idle-prompt notifications forever —
     // those are noise, not "needs attention" (user report + review M3).
     if (sessions.isIdle(id)) return { ok: true };

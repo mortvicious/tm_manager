@@ -4,6 +4,10 @@ import type { RunStats } from '@tm/shared';
 
 // $/MTok: [input, output, cacheWrite, cacheRead]. Estimates for cost chips —
 // unknown models fall back to opus-class pricing.
+// priceFor PREFIX-matches in insertion order, so 'claude-opus-5' also prices
+// 'claude-opus-5-5' at the same opus rates (they are the same tier). If a
+// point release is ever priced differently, its row must go ABOVE the shorter
+// id or the shorter one wins the match.
 const PRICING: Record<string, [number, number, number, number]> = {
   'claude-opus-5': [15, 75, 18.75, 1.5],
   'claude-fable-5': [15, 75, 18.75, 1.5],

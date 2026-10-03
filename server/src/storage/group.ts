@@ -63,3 +63,67 @@ export function moveSubtreeParams(
   // substr() is 1-based in both dialects, so the tail starts one past the prefix.
   return [next.groupId, newPrefix, oldPrefix.length + 1, ts, `${oldPrefix}%`];
 }
+
+// ---- manual order (docs/grouping.md § Order) ----
+//
+// `sort_order` ranks a task among its SIBLINGS — the rows sharing its parent,
+// or all root rows. Keys are doubles: a move writes the midpoint between the
+// two neighbours at the drop point, so a drag touches one row. Only when the
+// neighbours are too close to split (or tied) is the sibling set renumbered.
+
+/** Where a move puts the row among its new siblings. */
+export type MoveAnchor =
+  /** next to this sibling */
+  | { id: string; side: 'before' | 'after' }
+  /** after everything (the global max + 1, which is also where a new row lands) */
+  | 'end'
+  /** leave the key alone — a plain re-parent */
+  | 'keep';
+
+/** The sibling set of a destination parent, minus the row being moved. Ordered. */
+export function siblingsQuery(parentId: string | null, movingId: string): { sql: string; params: unknown[] } {
+  return {
+    sql: `SELECT id, sort_order FROM tm_tasks WHERE ${parentId ? 'parent_id = ?' : 'parent_id IS NULL'} AND id <> ?
+          ORDER BY sort_order, created_at, id`,
+    params: parentId ? [parentId, movingId] : [movingId],
+  };
+}
+
+/** The key a new row (or a move to the end) takes. */
+export const NEXT_SORT_ORDER_SQL = `SELECT COALESCE(MAX(sort_order), 0) + 1 AS k FROM tm_tasks`;
+
+/**
+ * The moved row's new key next to `anchor`, or — when the gap cannot be split —
+ * the whole sibling set in its new order, to be renumbered 1..n. Throws when
+ * the anchor is not among the siblings (the caller's transaction rolls back).
+ */
+export function keyNextTo(
+  siblings: { id: string; sort_order: number | string }[],
+  movingId: string,
+  anchor: { id: string; side: 'before' | 'after' },
+): { key: number } | { renumber: string[] } {
+  const keys = siblings.map((s) => Number(s.sort_order));
+  const at = siblings.findIndex((s) => s.id === anchor.id);
+  if (at < 0) throw new Error('the drop target is not a sibling at the destination');
+  const lo = anchor.side === 'before' ? at - 1 : at;
+  const hi = lo + 1;
+  if (lo < 0) return { key: keys[hi] - 1 };
+  if (hi >= keys.length) return { key: keys[lo] + 1 };
+  const key = (keys[lo] + keys[hi]) / 2;
+  if (key > keys[lo] && key < keys[hi]) return { key };
+  const ids = siblings.map((s) => s.id);
+  ids.splice(hi, 0, movingId);
+  return { renumber: ids };
+}
+
+/**
+ * The global claim's ORDER BY after priority, over alias `t`: a group runs in
+ * its root's slot (root key, then group id so two tied groups never
+ * interleave), root first, then members by their own key. Exact for a flat
+ * group — which is what the board's drag produces; members nested deeper
+ * compare by their own key within the group rather than depth-first.
+ * JS twin: `compareClaimOrder` in shared/src/types.ts — edit them together.
+ */
+export const MANUAL_CLAIM_ORDER = `t.priority DESC,
+       COALESCE((SELECT g.sort_order FROM tm_tasks g WHERE g.id = t.group_id), t.sort_order), t.group_id,
+       CASE WHEN t.parent_id IS NULL THEN 0 ELSE 1 END, t.sort_order, t.created_at`;

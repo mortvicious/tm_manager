@@ -12,27 +12,33 @@ The thing that answers those questions is a terminal with `claude` open in the r
 
 ## What it is
 
-A chat is a row in `tm_chats` pointing at a repo, and a transcript in `tm_chat_messages`. Every turn is a headless run:
+A chat is a row in `tm_chats` pointing at a repo, and a transcript in `tm_chat_messages`. Every turn is **its own terminal**: an aux session of kind `chat` in the aux PTY pool (`docs/design.md` § PTY sessions):
 
 ```
-claude [--resume <sessionId>] -p --model <model> [--effort <effort>] \
-       --permission-mode dontAsk [--disallowedTools Edit Write NotebookEdit Bash] \
-       --output-format json
+claude [--resume <sessionId>] --model <model> [--effort <effort>] --settings <hooks> \
+       (--permission-mode dontAsk --disallowedTools=Edit,Write,NotebookEdit,Bash,AskUserQuestion,EnterPlanMode,ExitPlanMode
+        | --dangerously-skip-permissions --disallowedTools=AskUserQuestion,EnterPlanMode,ExitPlanMode) \
+       -- <message>
 ```
 
-with `cwd` set to the repo's path and the message on **stdin**, never in argv — a chat message is arbitrary text and has no business in a process listing. The reply comes back in the result envelope, and `envelope.session_id` is stored on the chat. That id is the conversation: turn one runs fresh because there is nothing to resume yet, and every turn after it carries `--resume`.
+`cwd` is the repo's path. The session id reported by the SessionStart hook is stored on the chat. That id is the conversation: turn one runs fresh because there is nothing to resume yet, and every turn after it carries `--resume`. The turn has a `tm_runs` row (`mode aux`, `kind chat`, `subject_id` = the chat). It shows in the runs list with a Terminal button, so a turn can be watched and typed into from the browser. The restart guard names it (`1 aux session(s) (chat: …)`), and `/killall` and shutdown end it with `aux().stopAll()`.
 
-This is the same shape `claude/analyze.ts` and `claude/review.ts` use, and it lands in the same headless registry (`claude/headless.ts`), so a chat turn is visible to the restart guard (`1 headless agent(s) (chat: …) still working`) and is taken down by `/killall`'s `stopAllHeadless()` like every other headless child. It owns **no run row and no PTY**: `tm_runs` means "agent", and a chat is not one.
+### Turns are terminals (and why the phone does not care)
 
-### Why not a PTY
+This section used to be "Why not a PTY", and it rejected the PTY for two reasons. Both are answered now, and neither answer needs the phone to see a terminal:
 
-The obvious alternative was a third `SessionManager` pool next to the agent and repo-command pools, `xterm.js` in the browser, and the terminal drawer for free. It was rejected for one reason that decides it: **Telegram cannot consume a PTY.** A phone showing raw xterm escape sequences is not a chat surface, and the phone is half of what this feature is for. Building the PTY version would have meant building the headless version too, for the phone, and then owning two mechanisms that both claim to be "the chat" — with no safe way to let a live PTY and a `--resume` turn share one session id.
+- **Telegram cannot consume a PTY.** It does not have to. The reply is the Stop hook's `last_assistant_message`, which is the same final text the `-p` envelope returned as `result`. So the phone and the chat page read the same string they always did, and neither ever sees an xterm byte. The terminal is an extra window onto the turn for the browser. It is not the channel the reply travels on.
+- **A live PTY and a `--resume` turn cannot share one session id.** They never do. The PTY lives for exactly one turn. It is ended once the Stop lands, and the turn's `done` resolves only after the process has exited. The next message's `--resume` is behind the same `beginChatTurn` lock as before, so there is never a second process on the session. After that point the terminal is a read-only replay of the ring buffer, until the pool's TTL disposes it.
+
+**Two things changed.**
+- **The message is now the positional argument (after `--`) rather than stdin**, because the interactive CLI reads its first prompt from argv. It is visible in `ps` to the same OS user, which is the same exposure the workers' task descriptions always had. `--` keeps a message that starts with `-` a prompt, and this was measured with `-- Remember the word…`.
+- **The interactive CLI offers tools `-p` did not**: a question dialog, and plan-mode approval. A turn sent from the phone has nobody at the terminal, so those tools would hold the chat's lock until the timeout. They are denied in both modes.
 
 One mechanism, two renderers. The browser gets a transcript with a composer; the phone gets messages. Neither is a terminal emulator, and neither needs to be: what you wanted from the terminal was the conversation, not the escape codes.
 
 ## Serial, and why that is in SQL
 
-A chat answers **one turn at a time**. Two surfaces are pointed at the same conversation, and two `claude -p --resume` children on one session id is a corrupted conversation, not a race you can retry.
+A chat answers **one turn at a time**. Two surfaces are pointed at the same conversation, and two `claude --resume` processes on one session id is a corrupted conversation, not a race you can retry.
 
 The lock is `tm_chats.status`, and it is taken by `beginChatTurn` — a single conditional `UPDATE … WHERE id = ? AND status IN ('idle','error') RETURNING *`. A chat already `thinking` returns null and its caller refuses with a 409. It is a first-class composite storage method for the same reason every other one is: there is deliberately no generic `transaction(fn)` in this codebase (`storage/types.ts`).
 
@@ -59,19 +65,21 @@ The pid write is fire-and-forget: a failed write must not take down a turn that 
 
 That command-line check, `pidLooksLikeOurs`, had to be fixed to match the **basename** of `ps -o comm=` rather than the whole string. On macOS `comm` is a full path, so the old whole-string test meant any binary that merely *lived* under a directory with a matching name read as "ours" — the chat recovery harness reproduced it by killing an unrelated process purely because the scratch path was `/private/tmp/claude-501/…`. Basenames still match every real case (`claude`, `claude.exe`, `node`, `bash`), so the change only ever narrows what may be signalled. The orchestrator's own sweep shares the helper and gets the same fix.
 
-Shutdown and `/killall` reach a chat turn through the headless registry, which now signals **`-pid` for children registered `group: true`**. Signalling the leader alone left the tools it had spawned running — the same grandchild problem `stop` hit, one layer up.
+Shutdown and `/killall` reach a chat turn through the aux runner (`aux().stopAll()`), which ends its PTY. (Before 2026-09-24 this was the headless registry signalling `-pid` for detached children. A PTY's claude is its own session leader, so the terminal's hang-up reaches the tools it started as well.)
 
 A second fence, `chat.concurrency` (default 2), bounds turns across **all** chats — a chat is serial on its own, and this is what stops six open chats from all running at once. It is deliberately not `orchestrator.concurrency`: a chat turn owns no task and must never take a worker slot. It is a *fence*, not a lock: it is counted before the per-chat lock is taken, so two requests landing in the same millisecond could both pass it. That is deliberate — the invariant that must hold absolutely is one turn per **session**, and that one is a single conditional UPDATE. Making the global count exact would mean serialising every chat behind one row for a limit whose only job is to stop a human from opening six tabs.
 
 ## Stopping a turn, and the grandchild problem
 
-`POST /api/chats/:id/stop` (the ⏹ button, `c:stop` on the phone) signals the turn. It signals the **process group**, and that detail is the difference between a stop that works and one that only appears to.
+`POST /api/chats/:id/stop` (the ⏹ button, `c:stop` on the phone) aborts the turn's aux session, and so does Kill in the runs list. Either way the turn records `stopped`. The runner ends the PTY: SIGHUP to the terminal's session, then SIGKILL 5 s later. The turn settles `aborted` and the lock is released. This was measured with a Kill mid-essay: the chat read `stopped`, the row was `killed`, and the next message was accepted.
+
+*History (the headless era, kept for the reasoning):* the stop signalled the **process group**, and that detail was the difference between a stop that works and one that only appears to.
 
 A turn's `claude` spawns children of its own — a `Bash` tool call is one — and they inherit its stdout. The reply is read to EOF on that pipe. Kill the `claude` alone and a surviving grandchild holds the pipe open: nothing ever reports the exit, the lock is never released, and the chat is unusable. So the child is spawned `detached` (its own group leader) and `killGroup` signals `-pid`; SIGTERM, then SIGKILL five seconds later if it is still the same child, matching `SessionManager.kill()`.
 
 The same escalation is the turn's real timeout. `TURN_TIMEOUT_MS` is fifteen minutes and it is enforced by our own watchdog rather than by the spawn's, because a timeout that signals only the child is the kill a live grandchild survives. A stop is recorded as `stopped` on the chat and on the assistant message — not as the raw command line, which is what a signalled child otherwise reports.
 
-That is also why this one module uses `spawn` where the rest of the headless code uses `execFile`: `execFile` does not forward `detached` to `spawn` at all, so `maxBuffer` is done by hand here (`MAX_STDOUT_CHARS`).
+That was also why this one module used `spawn` where the rest of the headless code used `execFile`. The PTY made both points moot: there is no pipe to hold open, and the turn's deadline (`TURN_TIMEOUT_MS`, still fifteen minutes) is the aux runner's own timer.
 
 ## Read and write
 
@@ -84,7 +92,7 @@ Every chat has a **mode**, and it is `read` by default:
 
 Read-only is the default because a chat points at a working tree an agent may be mid-task in, and "have a look at this" should not be able to change it. Write mode is the "same as sitting in the terminal" mode and is opted into per chat.
 
-**Why write mode is not `dontAsk`**, which is the natural thing to reach for and is wrong: a headless turn has nobody to answer a permission prompt, and `dontAsk` does not mean "do not need to ask" — it means *deny anything that would ask*. In a repo with no allow rules Edit, Write and Bash all prompt. Measured against the real CLI, a `dontAsk` write turn told to create a file answered
+**Why write mode is not `dontAsk`**, which is the natural thing to reach for and is wrong: a turn sent from the phone has nobody at its terminal to answer a permission prompt, and `dontAsk` does not mean "do not need to ask" — it means *deny anything that would ask*. In a repo with no allow rules Edit, Write and Bash all prompt. Measured against the real CLI, a `dontAsk` write turn told to create a file answered
 
 > I need permission to create the file. Claude Code is running in "don't ask mode", which means I can't proceed without your explicit approval.
 
@@ -174,6 +182,13 @@ FK-less, like `tm_events` and `tm_dispatches`; `deleteChat` removes both in one 
 
 ## Verification
 
+**2026-09-24, turns as terminals.** Run against the real CLI (2.1.280, Haiku 4.5) on an isolated copy with its own SQLite, port 5185 and a scratch repo:
+- Turn 1 (`-- Remember the word PAPAYA…`) replied `OK` and stored the session id.
+- Turn 2 resumed that session and answered `PAPAYA`. Its cost was the turn's own delta ($0.004 against $0.039), from the previous turn's transcript used as the baseline.
+- A chat pointed at a model that does not exist failed in 4 s with `model_not_found: …` (StopFailure), not after the 15-minute deadline.
+- Kill in the runs list mid-essay recorded `stopped` and closed the row as `killed`.
+- A SIGKILL of the server mid-turn left no claude behind; boot recovery cleared the lock.
+
 Driven against an isolated copy of the repo (own SQLite DB, port 5411, a scratch git repo, and a fake `claude` on `PATH` recording the exact argv, stdin and cwd of every spawn — this repo's own server was never touched):
 
 - migration 19 applies to a live DB and both tables land with their columns;
@@ -183,7 +198,7 @@ Driven against an isolated copy of the repo (own SQLite DB, port 5411, a scratch
 - `stop` on a turn whose child had spawned a grandchild released the lock **within one second** and recorded `stopped` — the same case took the full timeout before the process group was introduced, which is how the bug was found;
 - a chat seeded `thinking` with the server down is cleared at the next boot (`chat: cleared 1 turn(s) stranded by the last restart`) and accepts messages again;
 - `DELETE` removed the chat and all four of its messages, and answered 404 the second time;
-- the restart guard names a live chat turn: `1 headless agent(s) (chat: …) still working`;
+- the restart guard names a live chat turn: `1 headless agent(s) (chat: …) still working` (now `1 aux session(s) (chat: …)`);
 - against a 30-second turn, `send()` **returned in 3ms**, the lock was held while the caller was already free, `stop()` reached the still-running turn, `done` resolved strictly afterwards as `stopped`, and the lock was released — the property the Telegram loop depends on;
 - over a real `/ws/events` socket, one turn produced exactly `chat.updated:thinking | chat.message:user | chat.message:assistant | chat.updated:idle`;
 - a 30-assertion `tsx` harness over the Telegram surface: the `c:` codec parses its own payloads and **rejects `t:`/`w:`/`k:` ones, and all three of those codecs reject `c:`**; replies escape `<b>`, `&` and `"`, turn fences into `<pre>` and backticks into `<code>`, and close an unterminated fence; `/chat` refused when disabled, opening by repo name, reporting where you are, refusing an unknown repo; `/chats` marking the active chat; `/mode write` **refused without `telegram.chat.allowWrite` and allowed with it**, from both the command and the button; a button naming a missing chat refused rather than guessed; `/endchat` idempotent; and deleting the active chat clearing the mode on the next read.

@@ -159,7 +159,7 @@ stop, and the front door's own replacement would then lose to `EADDRINUSE`.
 
 `stop` and `restart` refuse while agents are working, and they do not restate
 the rule: they `GET /api/server/restart-check` and forward the API's own answer
-verbatim (`{blocked, error, running, headless, services}`). `{"force": true}`
+verbatim (`{blocked, error, running, aux, services}` — `aux` was `headless` before every claude became a terminal). `{"force": true}`
 is the override, same as the API's. An API that is not answering cannot be
 killing anything, so a down server is never blocked.
 
@@ -216,3 +216,4 @@ listen error is still fatal on the first try.
 | `403 forbidden: proxied requests are not served on the local port` over the `ts.net` name | serve points at `host.port` (5176) | `tailscale serve --bg --https=443 http://127.0.0.1:<remote.port>` (5177) |
 | `502` from serve with remote on | nothing on `remote.port`: the front door is down, or `remote.enabled` is false so the listener was never opened | start the front door; check the boot banner's `remote:` line |
 | front door refuses to boot: `remote.enabled and LAN mode … mutually exclusive` | `lan.enabled` or `TM_LAN=1` (`npm run start:lan`) with remote on | start with `npm start`; drop `lan.enabled` |
+| front door dies with `Error: write EPIPE` / `Unhandled 'error' event` on a `Socket` (fixed 2026-09-29) | a browser dropped a proxied WebSocket (tab closed, phone backgrounded) while the API was still streaming into it; Node's http server removes its own `error` listener from an upgraded socket, so the pipe's EPIPE had no handler | `proxyUpgrade` now owns an `error` listener on the client socket from the first line and tears both halves down on either side's close; `refuseUpgrade` does the same. Any new code that takes an upgraded socket must attach its own `error` listener |

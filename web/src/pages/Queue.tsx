@@ -1,10 +1,13 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { compareClaimOrder, type Run } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { IconTerminal } from '../components/Icons.tsx';
 import { Elapsed } from '../components/RunMeta.tsx';
 import { TaskRow } from '../components/TaskRow.tsx';
 import { customQueueWaiting } from '../components/QueueMark.tsx';
+import { KindBadge, runLink, runTitle } from '../components/RunKind.tsx';
 
 export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (runId: string) => void; onOpenTask: (id: string) => void }) {
   const { runs, tasks, refresh } = useApp();
@@ -13,8 +16,19 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
   const idle = runs.filter((r) => r.status === 'running' && r.idle);
   // Custom queue (docs/queue.md) first, in run order; the rest is the global queue.
   const custom = customQueueWaiting(tasks);
-  const queued = tasks.filter((t) => t.status === 'queued' && !t.customQueueAt);
-  const taskOf = (taskId: string | null) => tasks.find((t) => t.id === taskId);
+  // listed in the order the orchestrator claims them (docs/grouping.md § Order)
+  const queued = tasks
+    .filter((t) => t.status === 'queued' && !t.customQueueAt)
+    .sort(compareClaimOrder(new Map(tasks.map((t) => [t.id, t]))));
+  const navigate = useNavigate();
+  // Workers and aux sessions (review, plan, chat, …) side by side: every one
+  // is a terminal, told apart by its kind badge (docs/design.md § PTY sessions).
+  const open = (r: Run) => {
+    const link = runLink(r);
+    if (!link) return;
+    if ('taskId' in link) onOpenTask(link.taskId);
+    else navigate(link.path);
+  };
 
   const kill = async (id: string) => {
     if (!confirm('Kill this session?')) return;
@@ -43,7 +57,7 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
             <thead>
               <tr>
                 <th>Task</th>
-                <th>Mode</th>
+                <th>Kind</th>
                 <th>Elapsed</th>
                 <th>PID</th>
                 <th></th>
@@ -54,18 +68,18 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
                 <tr key={r.id}>
                   <td
                     data-label="Task"
-                    style={{ fontWeight: 600, cursor: r.taskId ? 'pointer' : undefined }}
-                    onClick={() => r.taskId && onOpenTask(r.taskId)}
+                    style={{ fontWeight: 600, cursor: runLink(r) ? 'pointer' : undefined }}
+                    onClick={() => open(r)}
                   >
-                    {taskOf(r.taskId)?.title ?? <span className="muted">({r.mode})</span>}
+                    {runTitle(r, tasks)}
                     {r.needsAttention && (
                       <span className="badge s-attention" style={{ marginLeft: 8 }}>
                         <span className="dot" /> needs attention
                       </span>
                     )}
                   </td>
-                  <td data-label="Mode">
-                    <span className="chip">{r.mode}</span>{' '}
+                  <td data-label="Kind">
+                    <KindBadge kind={r.kind} />{' '}
                     {r.model && <span className="chip">{r.model.replace('claude-', '')}</span>}
                   </td>
                   <td data-label="Elapsed">
@@ -80,13 +94,9 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
                     {r.pid ?? '—'}
                   </td>
                   <td className="row-actions-cell" style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    {r.mode === 'worker' && (
-                      <>
-                        <button className="btn" onClick={() => onOpenTerminal(r.id)}>
-                          <IconTerminal /> Terminal
-                        </button>{' '}
-                      </>
-                    )}
+                    <button className="btn" onClick={() => onOpenTerminal(r.id)}>
+                      <IconTerminal /> Terminal
+                    </button>{' '}
                     <button className="btn danger" onClick={() => kill(r.id)}>
                       Kill
                     </button>
@@ -105,8 +115,8 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
           </div>
           <div className="panel">
             {idle.map((r) => (
-              <div className="task-row" key={r.id} onClick={() => r.taskId && onOpenTask(r.taskId)}>
-                <span className="title">{taskOf(r.taskId)?.title ?? `(${r.mode})`}</span>
+              <div className="task-row" key={r.id} onClick={() => open(r)}>
+                <span className="title">{runTitle(r, tasks)}</span>
                 {r.stats && (
                   <span className="mono muted">
                     ${r.stats.costUsd.toFixed(3)} · ctx {Math.round(r.stats.contextPct)}%

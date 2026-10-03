@@ -135,7 +135,13 @@ deliberately **no** new `TaskStatus`:
   to reopen it is a schedule, not a status.
 
 `review` and `failed` are also precisely the two statuses `proceed()` already
-resumes from, so parking costs no transition at all. The status a turn landed
+resumes from, so parking costs no transition at all.
+
+(`waiting`, added 2026-09-07 — `docs/design.md` § Waiting — is the one real
+status since, and it passes the second test where a wake does not: a session
+with its own subagent still out is NOT in review, and every consumer that keys
+off `review` would act on a turn that is not over. It paid the full ripple
+listed above.) The status a turn landed
 in is never rewritten by the parker, and neither is `error`: flattening `failed`
 into `review` would hide a real nonzero exit behind a guess about its cause.
 

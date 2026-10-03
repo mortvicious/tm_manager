@@ -494,6 +494,7 @@ const RU_STATUS: Record<TaskStatus, string> = {
   draft: 'черновик',
   queued: 'в очереди',
   running: 'в работе',
+  waiting: 'ждёт субагентов',
   blocked: 'заблокировано',
   review: 'на ревью',
   published: 'опубликовано',
@@ -707,7 +708,7 @@ function statusClass(s: TaskStatus): string {
       ? 'warn'
       : s === 'done' || s === 'published'
         ? 'ok'
-        : s === 'running'
+        : s === 'running' || s === 'waiting'
           ? 'live'
           : 'mute';
 }

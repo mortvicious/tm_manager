@@ -25,6 +25,12 @@ export interface TelegramMessage {
   chat: TelegramChat;
   from?: TelegramUser;
   text?: string;
+  /**
+   * The inline keyboard the message carries. Read on a button press to learn
+   * WHICH surface was pressed — a board or a card redraws itself in place
+   * (docs/telegram.md § The board); anything else keeps the confirmation path.
+   */
+  reply_markup?: InlineKeyboardMarkup;
 }
 
 /** An inline-keyboard button press. Routed since task 2 (notifications). */
@@ -45,6 +51,16 @@ export interface InlineKeyboardButton {
 
 export interface InlineKeyboardMarkup {
   inline_keyboard: InlineKeyboardButton[][];
+}
+
+/**
+ * The persistent bottom keyboard. Its buttons send their TEXT as an ordinary
+ * message, so bot.ts maps the exact labels back to commands before parsing.
+ */
+export interface ReplyKeyboardMarkup {
+  keyboard: { text: string }[][];
+  is_persistent?: boolean;
+  resize_keyboard?: boolean;
 }
 
 export interface TelegramUpdate {

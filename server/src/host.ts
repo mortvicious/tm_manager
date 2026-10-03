@@ -261,8 +261,16 @@ function proxyUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffe
   socket.setNoDelay(true);
   const headers = { ...req.headers, host: API_ORIGIN };
   const proxied = http.request({ host: '127.0.0.1', port: API_PORT, method: req.method, path: req.url, headers });
+  // Once a socket is upgraded, Node's http server drops its own 'error' handler,
+  // so this listener is the only one. Without it, a browser that goes away while
+  // the API is still streaming (tab closed, phone backgrounded) EPIPEs inside
+  // the pipe below, the error is unhandled, and the front door dies.
+  socket.on('error', () => proxied.destroy());
   proxied.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
     upstreamSocket.setNoDelay(true);
+    socket.on('error', () => upstreamSocket.destroy());
+    socket.on('close', () => upstreamSocket.destroy());
+    upstreamSocket.on('close', () => socket.destroy());
     const lines = [`HTTP/1.1 ${upstreamRes.statusCode} ${upstreamRes.statusMessage}`];
     for (let i = 0; i < upstreamRes.rawHeaders.length; i += 2) {
       lines.push(`${upstreamRes.rawHeaders[i]}: ${upstreamRes.rawHeaders[i + 1]}`);
@@ -628,7 +636,7 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse): void {
 }
 
 const refuseUpgrade = (socket: net.Socket) =>
-  socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+  socket.on('error', () => socket.destroy()).end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
 
 const server = http.createServer((req, res) => {
   // Proxied traffic belongs on the remote listener. serve forwards the client's

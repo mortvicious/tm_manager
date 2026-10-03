@@ -1,4 +1,4 @@
-import { EFFORT_LEVELS, MODEL_OPTIONS, TASK_PRESETS, type EffortLevel, type Repo } from '@tm/shared';
+import { EFFORT_LEVELS, MODEL_OPTIONS, TASK_PRESETS, taskPresets, type EffortLevel, type Repo, type TaskPreset } from '@tm/shared';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { Storage } from '../storage/types.ts';
 import type { TaskEdit } from '../task-actions.ts';
@@ -43,6 +43,8 @@ interface FlowData {
   model?: string | null;
   effort?: EffortLevel | null;
   review?: boolean | null;
+  /** who reviews the change; null = the global review.model */
+  reviewModel?: string | null;
   autoPublish?: boolean;
   /** /edit and /proceed */
   taskId?: string;
@@ -87,7 +89,16 @@ export interface FlowDeps {
 }
 
 /** Fields /edit can set — the subset of the PATCH body worth a phone keyboard. */
-type EditField = 'title' | 'description' | 'category' | 'repo' | 'model' | 'effort' | 'review' | 'autopublish';
+type EditField =
+  | 'title'
+  | 'description'
+  | 'category'
+  | 'repo'
+  | 'model'
+  | 'effort'
+  | 'review'
+  | 'rmodel'
+  | 'autopublish';
 
 const EDIT_FIELDS: { id: EditField; label: string; free: boolean }[] = [
   { id: 'title', label: 'Title', free: true },
@@ -101,6 +112,7 @@ const EDIT_FIELDS: { id: EditField; label: string; free: boolean }[] = [
   { id: 'model', label: 'Model', free: false },
   { id: 'effort', label: 'Effort', free: false },
   { id: 'review', label: 'Review', free: false },
+  { id: 'rmodel', label: 'Reviewer model', free: false },
   { id: 'autopublish', label: 'Auto-publish', free: false },
 ];
 
@@ -184,9 +196,24 @@ function repoKeyboard(repos: Repo[], seq: number): InlineKeyboardMarkup {
   return grid(repos.map((r) => ({ text: r.name, callback_data: wz(seq, 'repo', r.id) })));
 }
 
-function presetKeyboard(seq: number): InlineKeyboardMarkup {
+/**
+ * Built-ins plus the Config page's custom presets (`presets.custom`), read per
+ * step so a preset saved in the browser is offered on the very next /new. A
+ * storage error degrades to the built-ins rather than failing the wizard.
+ */
+async function livePresets(deps: FlowDeps): Promise<TaskPreset[]> {
+  try {
+    return taskPresets(await deps.storage.getSettings());
+  } catch {
+    return TASK_PRESETS;
+  }
+}
+
+// Custom preset ids are `p-xxxx` (CUSTOM_PRESET_ID_RE): they fit the `w:` value
+// slot and can never be the literal `custom` below.
+function presetKeyboard(seq: number, presets: TaskPreset[]): InlineKeyboardMarkup {
   return grid([
-    ...TASK_PRESETS.map((p) => ({ text: `${p.label} (${p.hint})`, callback_data: wz(seq, 'preset', p.id) })),
+    ...presets.map((p) => ({ text: `${p.label} (${p.hint})`, callback_data: wz(seq, 'preset', p.id) })),
     { text: '⚙ Custom…', callback_data: wz(seq, 'preset', 'custom') },
   ], 1);
 }
@@ -203,6 +230,17 @@ function effortKeyboard(seq: number): InlineKeyboardMarkup {
     { text: 'default (config)', callback_data: wz(seq, 'effort', 'd') },
     ...EFFORT_LEVELS.map((e) => ({ text: e, callback_data: wz(seq, 'effort', e) })),
   ], 3);
+}
+
+/**
+ * The reviewer runs `claude -p`, so its shortlist is `MODEL_OPTIONS` alone —
+ * no Codex id. Indexed like the worker picker to stay inside 64 bytes.
+ */
+function reviewerModelKeyboard(seq: number): InlineKeyboardMarkup {
+  return grid([
+    { text: 'default (config)', callback_data: wz(seq, 'rmodel', 'd') },
+    ...MODEL_OPTIONS.map((m, i) => ({ text: m, callback_data: wz(seq, 'rmodel', String(i)) })),
+  ]);
 }
 
 function reviewKeyboard(seq: number): InlineKeyboardMarkup {
@@ -366,8 +404,9 @@ export async function handleFlowText(deps: FlowDeps, flows: FlowStore, text: str
     return step({ html: 'Description? (or skip)', keyboard: skipKeyboard(flows.seq()) });
   }
   if (flow.kind === 'new' && flow.step === 'desc') {
+    const presets = await livePresets(deps);
     flows.advance('preset', { description: body });
-    return step({ html: paramsPrompt(flow.data.title ?? ''), keyboard: presetKeyboard(flows.seq()) });
+    return step({ html: paramsPrompt(flow.data.title ?? ''), keyboard: presetKeyboard(flows.seq(), presets) });
   }
   if (flow.kind === 'draft' && flow.step === 'confirm') {
     // A second thought while the first is still waiting on its confirm button.
@@ -412,7 +451,7 @@ export async function handleFlowText(deps: FlowDeps, flows: FlowStore, text: str
 function paramsPrompt(title: string): string {
   return (
     `<b>${escapeHtml(title)}</b>\n\n` +
-    `Agent settings — pick a preset, or Custom to choose model, effort and review yourself.`
+    `Agent settings — pick a preset, or Custom to choose model, effort, review and reviewer yourself.`
   );
 }
 
@@ -534,8 +573,9 @@ export async function handleFlowButton(deps: FlowDeps, flows: FlowStore, b: Flow
     // returns `string | null`, never undefined — so a seeded flow goes to the
     // params step and an unseeded one never reaches here with a title.
     if (flow.data.title) {
+      const presets = await livePresets(deps);
       flows.advance('preset', { repoId: repo.id });
-      return deliver({ html: paramsPrompt(flow.data.title), keyboard: presetKeyboard(flows.seq()) });
+      return deliver({ html: paramsPrompt(flow.data.title), keyboard: presetKeyboard(flows.seq(), presets) });
     }
     flows.advance('title', { repoId: repo.id });
     return deliver({
@@ -546,8 +586,9 @@ export async function handleFlowButton(deps: FlowDeps, flows: FlowStore, b: Flow
 
   if (b.step === 'desc') {
     if (!expects('new', 'desc')) return expired();
+    const presets = await livePresets(deps);
     flows.advance('preset', { description: null });
-    return deliver({ html: paramsPrompt(flow.data.title ?? ''), keyboard: presetKeyboard(flows.seq()) });
+    return deliver({ html: paramsPrompt(flow.data.title ?? ''), keyboard: presetKeyboard(flows.seq(), presets) });
   }
 
   if (b.step === 'preset') {
@@ -556,8 +597,10 @@ export async function handleFlowButton(deps: FlowDeps, flows: FlowStore, b: Flow
       flows.advance('model');
       return deliver({ html: 'Model?', keyboard: modelKeyboard(flows.seq()) });
     }
-    const preset = TASK_PRESETS.find((p) => p.id === b.value);
-    if (!preset) return deliver({ html: '⚠ Unknown preset.' }, 'Unknown preset', false);
+    // Resolved at press time: a custom preset deleted since the keyboard was
+    // drawn is refused here, never applied from a stale copy.
+    const preset = (await livePresets(deps)).find((p) => p.id === b.value);
+    if (!preset) return deliver({ html: '⚠ Unknown preset — it may have been deleted on the Config page.' }, 'Unknown preset', false);
     flows.advance('autopub', { model: preset.model, effort: preset.effort, review: preset.review });
     return deliver({ html: autoPublishPrompt(), keyboard: autoPublishKeyboard(flows.seq()) });
   }
@@ -587,10 +630,28 @@ export async function handleFlowButton(deps: FlowDeps, flows: FlowStore, b: Flow
   if (b.step === 'review') {
     const review = b.value === 'd' ? null : b.value === 'on';
     if (expects('new', 'review')) {
-      flows.advance('autopub', { review });
-      return deliver({ html: autoPublishPrompt(), keyboard: autoPublishKeyboard(flows.seq()) });
+      // review explicitly off: nobody reviews, so there is no reviewer to ask for
+      if (review === false) {
+        flows.advance('autopub', { review, reviewModel: null });
+        return deliver({ html: autoPublishPrompt(), keyboard: autoPublishKeyboard(flows.seq()) });
+      }
+      flows.advance('rmodel', { review });
+      return deliver({ html: 'Reviewer model?', keyboard: reviewerModelKeyboard(flows.seq()) });
     }
     if (expects('edit', 'value') && flow.data.field === 'review') return deliver(await applyEditValue(deps, flows, flow, { review }));
+    return expired();
+  }
+
+  if (b.step === 'rmodel') {
+    const reviewModel = b.value === 'd' ? null : (MODEL_OPTIONS[Number(b.value)] ?? null);
+    if (b.value !== 'd' && reviewModel === null) return deliver({ html: '⚠ Unknown model.' }, 'Unknown model', false);
+    if (expects('new', 'rmodel')) {
+      flows.advance('autopub', { reviewModel });
+      return deliver({ html: autoPublishPrompt(), keyboard: autoPublishKeyboard(flows.seq()) });
+    }
+    if (expects('edit', 'value') && flow.data.field === 'rmodel') {
+      return deliver(await applyEditValue(deps, flows, flow, { reviewModel }));
+    }
     return expired();
   }
 
@@ -631,7 +692,9 @@ export async function handleFlowButton(deps: FlowDeps, flows: FlowStore, b: Flow
             ? effortKeyboard(flows.seq())
             : field.id === 'review'
               ? reviewKeyboard(flows.seq())
-              : autoPublishKeyboard(flows.seq());
+              : field.id === 'rmodel'
+                ? reviewerModelKeyboard(flows.seq())
+                : autoPublishKeyboard(flows.seq());
     return deliver({ html: `New <b>${escapeHtml(field.label.toLowerCase())}</b>?`, keyboard });
   }
 
@@ -651,7 +714,9 @@ function summary(d: FlowData, autoPublish: boolean): string {
     d.description ? escapeHtml(d.description.slice(0, 300)) + (d.description.length > 300 ? '…' : '') : '',
     ``,
     `model: <code>${escapeHtml(d.model ?? 'default')}</code> · effort: <code>${escapeHtml(d.effort ?? 'default')}</code>`,
-    `review: <code>${d.review === null || d.review === undefined ? 'default' : d.review ? 'on' : 'off'}</code> · auto-publish: <code>${autoPublish ? 'on' : 'off'}</code>`,
+    `review: <code>${d.review === null || d.review === undefined ? 'default' : d.review ? 'on' : 'off'}</code>` +
+      (d.review === false ? '' : ` · reviewer: <code>${escapeHtml(d.reviewModel ?? 'default')}</code>`) +
+      ` · auto-publish: <code>${autoPublish ? 'on' : 'off'}</code>`,
     ``,
     `On create:`,
   ].join('\n');
@@ -687,6 +752,7 @@ async function finishNew(deps: FlowDeps, flows: FlowStore, flow: Flow, onCreate:
       model: d.model ?? null,
       effort: d.effort ?? null,
       review: d.review ?? null,
+      reviewModel: d.review === false ? null : (d.reviewModel ?? null),
       autoPublish: d.autoPublish ?? false,
     },
     deps.actor,

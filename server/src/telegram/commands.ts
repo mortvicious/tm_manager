@@ -1,8 +1,8 @@
 import {
-  CUSTOM_QUEUE_IN_FLIGHT_STATUSES,
+  SHARED_FILING_STALLED,
   TERMINAL_TASK_STATUSES,
+  customQueueHoldsRepo,
   customQueueWaiting,
-  matchTaskPreset,
   type Feature,
   type Proposal,
   type Task,
@@ -25,16 +25,32 @@ import {
   queueAdd,
   queueRemove,
   rejectProposal,
+  releaseTask,
   retryTask,
+  reviewTask,
   runNowTask,
   setQueueEnabled,
   unblockTask,
+  undoTask,
   type ActionOutcome,
   type ButtonAction,
 } from './actions.ts';
 import { escapeHtml, type Reply, type ReplyLike } from './api.ts';
+import {
+  BoardMemory,
+  INBOX,
+  STATUS_ICON,
+  STATUS_VIEW,
+  TASK_STATUSES,
+  bottomKeyboard,
+  clip,
+  renderBoard,
+  renderCard,
+  type ActivitySource,
+  type BoardDeps,
+  type BoardState,
+} from './board.ts';
 import { listQuestionsReplies, type QuestionDeps } from './questions.ts';
-import { reviewClause } from './notifications.ts';
 import type { DigestControl } from './digest.ts';
 import { buildReport, resolveReportScope } from './report.ts';
 import {
@@ -48,6 +64,7 @@ import {
   surveyKillAll,
   type BotHooks,
 } from './emergency.ts';
+import { listNotes } from '../spaces/service.ts';
 import { chatCommand, chatsCommand, endChatCommand, modeCommand, type ChatDeps } from './chat.ts';
 import { FlowStore, startEdit, startFeature, startNew, startProceed } from './flows.ts';
 import { resolveFeature, resolveLiveRun, resolveProposal, resolveRepo, resolveTask, short } from './ids.ts';
@@ -97,6 +114,10 @@ export interface CommandContext {
   /** everything after the command word, trimmed; '' when there was none */
   args: string;
   message: TelegramMessage;
+  /** the board's live inputs (docs/telegram.md § The board): the activity
+   *  watcher's snapshot and the remembered search. Absent in a hand-built
+   *  context — the board then renders without narration. */
+  board?: { activity: ActivitySource | null; memory: BoardMemory };
 }
 
 export interface BotCommand extends BotCommandSpec {
@@ -104,18 +125,6 @@ export interface BotCommand extends BotCommandSpec {
 }
 
 // ---- rendering ----------------------------------------------------------
-
-const STATUS_ICON: Record<TaskStatus, string> = {
-  draft: '📝',
-  queued: '⏳',
-  running: '⚙️',
-  blocked: '⛔',
-  review: '📋',
-  published: '🚀',
-  done: '✅',
-  failed: '❌',
-  cancelled: '🚫',
-};
 
 const FEATURE_ICON: Record<string, string> = {
   draft: '📝',
@@ -157,30 +166,6 @@ function say(r: ActionOutcome): Reply {
   return { html: `${r.ok ? '✅' : '⚠'} ${escapeHtml(r.text)}`, ok: r.ok };
 }
 
-const TASK_STATUSES = Object.keys(STATUS_ICON) as TaskStatus[];
-
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-
-/** One line on where the adversarial review stands (docs/design.md § Adversarial review). */
-function reviewStateLine(t: Task): string | null {
-  switch (t.reviewState) {
-    case 'pending':
-    case 'reviewing':
-      return '🔍 <b>auto-review</b> in progress';
-    case 'fixing':
-      return `🔧 <b>fixing</b> review findings (round ${t.reviewRounds.length})`;
-    case 'passed':
-    case 'flagged':
-    case 'error':
-    case 'skipped': {
-      const clause = reviewClause(t);
-      return clause ? `<b>Review</b> · ${escapeHtml(clause)}` : null;
-    }
-    default:
-      return null;
-  }
-}
-
 // ---- id-taking commands -------------------------------------------------
 
 /**
@@ -207,20 +192,30 @@ function taskCommand(
 
 const deps = (ctx: CommandContext) => ({ storage: ctx.storage, orchestrator: ctx.orchestrator });
 
+/** A context built without a board (a harness) still renders one — just with no narration or memory. */
+const boardDeps = (ctx: CommandContext): BoardDeps => {
+  ctx.board ??= { activity: null, memory: new BoardMemory() };
+  return { storage: ctx.storage, orchestrator: ctx.orchestrator, ...ctx.board };
+};
+
 export const COMMANDS: BotCommand[] = [
   {
     command: 'start',
     description: 'What this bot is',
     async handler() {
-      return [
+      const html = [
         `<b>Task Manager</b> — the phone side of the board running on the Mac.`,
         ``,
         `This bot talks to the server in-process: it reads and steers the queue,`,
         `and /chat holds a conversation with claude inside one of your repos.`,
         `It still does not expose the agents' terminals — those stay on the Mac.`,
         ``,
-        `Send /status for the current state, /help for the commands.`,
+        `Send /status for the current state, /tasks for the board, /help for the commands.`,
+        `The buttons under the text box are shortcuts to the same commands.`,
       ].join('\n');
+      // The persistent bottom keyboard rides /start: Telegram keeps it until
+      // it is replaced, so one delivery is enough.
+      return { html, replyKeyboard: bottomKeyboard() };
     },
   },
   {
@@ -274,36 +269,70 @@ export const COMMANDS: BotCommand[] = [
     },
   },
   {
-    command: 'tasks',
-    description: 'List tasks — /tasks [status|repo]',
+    // docs/shared-spaces.md — read-only; the ledger is managed on the Shared page
+    command: 'shared',
+    description: 'Open cross-repo requests in shared spaces',
     async handler(ctx) {
-      const repos = await ctx.storage.listRepos();
-      const name = (id: string | null) => repos.find((r) => r.id === id)?.name;
-      const arg = ctx.args.trim().toLowerCase();
-      let tasks: Task[];
-      let head: string;
-      if (!arg) {
-        // The default is "what is live", not "everything": a board with a
-        // year of done rows would answer a question nobody asked.
-        tasks = (await ctx.storage.listTasks()).filter((t) => !TERMINAL_TASK_STATUSES.includes(t.status));
-        head = '<b>Open tasks</b>';
-      } else if ((TASK_STATUSES as string[]).includes(arg)) {
-        tasks = await ctx.storage.listTasks({ status: arg as TaskStatus });
-        head = `<b>Tasks — ${escapeHtml(arg)}</b>`;
-      } else {
-        const repo = await resolveRepo(ctx.storage, arg);
-        if (!repo.ok) {
-          return (
-            escapeHtml(repo.error) +
-            `\n\nOr use a status: <code>${TASK_STATUSES.join('</code> <code>')}</code>`
-          );
+      const [spaces, repos] = await Promise.all([ctx.storage.listSpaces(), ctx.storage.listRepos()]);
+      if (spaces.length === 0) return 'No shared space yet — set one up on the dashboard\'s Shared page.';
+      const name = (id: string | null) => (id ? repos.find((r) => r.id === id)?.name ?? short(id) : 'you');
+      const out: string[] = [];
+      for (const s of spaces) {
+        const open = await listNotes({ storage: ctx.storage }, { spaceId: s.id, kind: 'request', status: ['open', 'filed'], oldestFirst: true });
+        const shown = open.slice(0, 20);
+        // A filing whose task is a draft or failed waits on you (SHARED_FILING_STALLED).
+        const taskStatus = new Map<string, TaskStatus>();
+        for (const n of shown) {
+          if (n.status !== 'filed' || !n.taskId) continue;
+          const t = await ctx.storage.getTask(n.taskId);
+          if (t) taskStatus.set(n.id, t.status);
         }
-        tasks = await ctx.storage.listTasks({ repoId: repo.value.id });
-        head = `<b>Tasks — ${escapeHtml(repo.value.name)}</b>`;
+        const rows = shown.map((n) => {
+          const ts = taskStatus.get(n.id);
+          const stalled = ts !== undefined && SHARED_FILING_STALLED.includes(ts);
+          return (
+            `${stalled ? '⚠️' : n.status === 'filed' ? '📋' : '•'} <code>${short(n.id)}</code> ${escapeHtml(n.title)}\n` +
+            `  <i>${escapeHtml(name(n.fromRepoId))} → ${escapeHtml(name(n.toRepoId))}${n.taskId ? ` · task ${short(n.taskId)}${ts ? ` (${ts})` : ''}` : ''}</i>` +
+            (stalled ? `\n  <b>needs you:</b> ${ts === 'draft' ? 'enqueue' : 'retry or cancel'} its task` : '')
+          );
+        });
+        if (open.length > rows.length) rows.push(`…and ${open.length - rows.length} more on the Shared page.`);
+        out.push(`<b>${escapeHtml(s.name)}</b> — ${open.length} open`, `<i>${escapeHtml(s.path)}</i>`, listOf(rows, 'Nothing open.'), '');
       }
-      // Newest first: on a phone the thing you just filed is what you want.
-      tasks.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-      return [head, ``, listOf(tasks.map((t) => taskLine(t, name(t.repoId))), 'Nothing here.')].join('\n');
+      return out.join('\n').trim();
+    },
+  },
+  {
+    command: 'tasks',
+    description: 'The task board — /tasks [inbox|open|status|repo|text]',
+    async handler(ctx) {
+      const raw = ctx.args.trim();
+      const arg = raw.toLowerCase();
+      const board = boardDeps(ctx);
+      let state: BoardState;
+      if (!arg || arg === 'inbox') state = INBOX;
+      else if (arg === 'open') state = { view: 'op', repo: null, page: 0 };
+      else if ((TASK_STATUSES as string[]).includes(arg)) {
+        state = { view: STATUS_VIEW[arg as TaskStatus], repo: null, page: 0 };
+      } else {
+        const repo = await resolveRepo(ctx.storage, raw);
+        if (repo.ok) state = { view: 'op', repo: short(repo.value.id), page: 0 };
+        else {
+          // Neither a status nor a repo: a title search. Remembered in memory
+          // (one user, one search) because the text cannot ride a 64-byte
+          // button — the pages and chips of a search re-read it from here.
+          board.memory.search = clip(raw, 100);
+          state = { view: 's', repo: null, page: 0 };
+        }
+      }
+      return renderBoard(board, state);
+    },
+  },
+  {
+    command: 'now',
+    description: 'What the agents are doing right now',
+    async handler(ctx) {
+      return renderBoard(boardDeps(ctx), { view: 'ru', repo: null, page: 0 });
     },
   },
   {
@@ -313,36 +342,9 @@ export const COMMANDS: BotCommand[] = [
       if (!ctx.args) return 'Usage: <code>/task &lt;id&gt;</code>';
       const found = await resolveTask(ctx.storage, ctx.args.split(/\s+/)[0]);
       if (!found.ok) return escapeHtml(found.error);
-      const t = found.value;
-      const repo = t.repoId ? await ctx.storage.getRepo(t.repoId) : null;
-      const preset = matchTaskPreset({ model: t.model, effort: t.effort, review: t.review });
-      const lines = [
-        `${STATUS_ICON[t.status]} <b>${escapeHtml(t.title)}</b>`,
-        `<code>${short(t.id)}</code> · ${escapeHtml(t.status)}${repo ? ` · ${escapeHtml(repo.name)}` : ''}${t.category ? ` · ${escapeHtml(t.category)}` : ''}`,
-        ``,
-      ];
-      if (t.description) lines.push(escapeHtml(t.description), ``);
-      lines.push(
-        `model <code>${escapeHtml(t.model ?? 'default')}</code> · effort <code>${escapeHtml(t.effort ?? 'default')}</code> · ` +
-          `review <code>${t.review === null ? 'default' : t.review ? 'on' : 'off'}</code> · ` +
-          `auto-publish <code>${t.autoPublish ? 'on' : 'off'}</code>` +
-          (preset ? ` (${escapeHtml(preset.label)})` : ''),
-      );
-      if (t.customQueueAt) lines.push(await queueLine(ctx, t));
-      if (t.featureId) lines.push(`🧩 feature <code>${short(t.featureId)}</code> · phase ${(t.featurePhase ?? 0) + 1}`);
-      if (t.resultSummary) lines.push(``, `<b>Result</b>`, escapeHtml(clip(t.resultSummary, 1500)));
-      const review = reviewStateLine(t);
-      if (review) lines.push(``, review);
-      const last = t.reviewRounds[t.reviewRounds.length - 1];
-      if (last?.summary) lines.push(escapeHtml(clip(last.summary, 1500)));
-      else if (t.reviewSummary) lines.push(escapeHtml(clip(t.reviewSummary, 1500)));
-      if (t.error) lines.push(``, `⚠ ${escapeHtml(t.error)}`);
-      lines.push(``, `Updated ${escapeHtml(formatClock(t.updatedAt))}`);
-      return { html: lines.join('\n'), keyboard: taskActionKeyboard(t) };
+      return renderCard(boardDeps(ctx), found.value, INBOX);
     },
   },
-
-  // ---- creating and editing --------------------------------------------
   {
     command: 'new',
     description: 'New task — repo, title, settings, then draft/queue/run',
@@ -365,8 +367,17 @@ export const COMMANDS: BotCommand[] = [
   taskCommand('enqueue', 'Queue a task — /enqueue <id>', (ctx, t) => enqueueTask(deps(ctx), t.id, ctx.actor)),
   taskCommand('run', 'Run a task now — /run <id>', (ctx, t) => runNowTask(deps(ctx), t.id, ctx.actor)),
   taskCommand('cancel', 'Cancel a task — /cancel <id>', (ctx, t) => cancelTask(deps(ctx), t.id, ctx.actor)),
+  taskCommand('undo', 'Stop a running task and put it back where it was — /undo <id>', (ctx, t) =>
+    undoTask(deps(ctx), t.id, ctx.actor),
+  ),
+  taskCommand('release', 'Let the queue take a task Undo held — /release <id>', (ctx, t) =>
+    releaseTask(deps(ctx), t.id, ctx.actor),
+  ),
   taskCommand('retry', 'Retry a failed task — /retry <id>', (ctx, t) => retryTask(deps(ctx), t.id, ctx.actor)),
   taskCommand('unblock', 'Unblock a task — /unblock <id>', (ctx, t) => unblockTask(deps(ctx), t.id, ctx.actor)),
+  taskCommand('review', 'Run the adversarial reviewer now — /review <id>', (ctx, t) =>
+    reviewTask(deps(ctx), t.id, ctx.actor),
+  ),
   taskCommand('complete', 'Mark a reviewed task done — /complete <id>', (ctx, t) =>
     completeTask(deps(ctx), t.id, ctx.actor),
   ),
@@ -448,15 +459,17 @@ export const COMMANDS: BotCommand[] = [
         const repos = await ctx.storage.listRepos();
         const name = (id: string | null) => repos.find((r) => r.id === id)?.name;
         // The same two-part split the board makes: `queue #n` is only ever
-        // shown for a member that is still WAITING, while a member that is
-        // running, in review or blocked keeps its mark because it still holds
-        // its repo's place — it has no position left to report.
+        // shown for a member that is still WAITING (a held one says so),
+        // while a member that is running, blocked or in an open auto-review
+        // keeps its mark because it still holds its repo's place — it has no
+        // position left to report. A member whose review settled is listed
+        // nowhere: it is the human's now, and the queue has moved on.
         const waiting = customQueueWaiting(all);
         const inFlight = all
-          .filter((t) => t.customQueueAt && CUSTOM_QUEUE_IN_FLIGHT_STATUSES.includes(t.status))
+          .filter((t) => t.customQueueAt && customQueueHoldsRepo(t))
           .sort((a, b) => (a.customQueueAt ?? '').localeCompare(b.customQueueAt ?? ''));
         const out = [`<b>Custom queue</b> — serial, one task at a time, independent of /on /off`, ``];
-        out.push(listOf(waiting.map((t, i) => `<b>#${i + 1}</b> ${taskLine(t, name(t.repoId))}`), 'Nothing waiting.'));
+        out.push(listOf(waiting.map((t, i) => `<b>#${i + 1}</b> ${t.queueHeldAt ? '⏸ held · ' : ''}${taskLine(t, name(t.repoId))}`), 'Nothing waiting.'));
         if (inFlight.length) {
           out.push(``, `<b>Holding a place</b> (not waiting — they own their repo's tree)`, ``);
           out.push(listOf(inFlight.map((t) => taskLine(t, name(t.repoId))), ''));
@@ -794,60 +807,6 @@ function persistDigestSuffix(ctx: CommandContext): string {
   return err ? `\n⚠ Applied for this run, but not saved to config.json: ${escapeHtml(err)}` : '';
 }
 
-/**
- * Where a custom-queue member stands. The ordinal comes from the SHARED
- * `customQueueWaiting()` the board's `queue #n` chip uses, so `/task` and the
- * browser cannot tell the same task a different number — the mark survives
- * into `running`/`review`/`blocked` (the member still holds its repo's place),
- * and counting those would inflate every position by however many were in
- * flight.
- */
-async function queueLine(ctx: CommandContext, t: Task): Promise<string> {
-  const added = ` · added ${escapeHtml(formatClock(t.customQueueAt!))}`;
-  if (t.status === 'running') return `➕ holding the custom queue's single slot${added}`;
-  if (CUSTOM_QUEUE_IN_FLIGHT_STATUSES.includes(t.status)) {
-    return `➕ in the custom queue — holding its repo's place while it is ${escapeHtml(t.status)}${added}`;
-  }
-  const waiting = customQueueWaiting(await ctx.storage.listTasks());
-  const at = waiting.findIndex((m) => m.id === t.id) + 1;
-  if (at === 0) return `➕ in the custom queue${added}`;
-  return `➕ custom queue <b>#${at}</b> of ${waiting.length} waiting${added}`;
-}
-
-/**
- * The buttons a task's CURRENT status makes possible — never a button whose
- * action would immediately answer "cannot do that from status X".
- *
- * Built with `encodeAction`, never with the wire strings written out: that is
- * what actually enforces "a button here cannot exist without a case in
- * `runButtonAction`". Spelling `t:done:` by hand compiles fine and then fails
- * at PRESS time as "Unknown button" if a `WIRE` entry is ever renamed —
- * `notifications.ts` has always used the codec for exactly this reason.
- */
-function taskActionKeyboard(t: Task) {
-  const b: { text: string; callback_data: string }[] = [];
-  const add = (text: string, kind: ButtonAction['kind']) =>
-    b.push({ text, callback_data: encodeAction({ kind, id: t.id } as ButtonAction) });
-  if (t.status === 'review') {
-    add('✅ Done', 'task.done');
-    add('🚀 Publish', 'task.publish');
-    add('💬 Proceed', 'task.proceed');
-  }
-  if (t.status === 'blocked') add('⛔ Unblock', 'task.unblock');
-  if (['draft', 'failed', 'cancelled', 'review'].includes(t.status)) {
-    add('⏳ Queue', 'task.enqueue');
-    add('▶ Run now', 'task.run');
-  }
-  if (t.status === 'queued' || t.status === 'running') add('🚫 Cancel', 'task.cancel');
-  if (t.customQueueAt) add('➖ Leave queue', 'task.queueRemove');
-  else if (['draft', 'failed', 'cancelled', 'review', 'queued'].includes(t.status)) {
-    add('➕ Custom queue', 'task.queueAdd');
-  }
-  if (b.length === 0) return undefined;
-  const rows: { text: string; callback_data: string }[][] = [];
-  for (let i = 0; i < b.length; i += 2) rows.push(b.slice(i, i + 2));
-  return { inline_keyboard: rows };
-}
 
 function proposalLine(p: Proposal): string {
   const n = p.payload.options?.length ?? 0;

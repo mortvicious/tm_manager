@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
-import { onHeadlessRunExit } from '../claude/analyze.ts';
-import { liveHeadless, stopAllHeadless } from '../claude/headless.ts';
+import { aux } from '../claude/aux.ts';
 import { broadcast, onEvent } from '../events.ts';
 import { cancelTask as svcCancelTask } from '../task-actions.ts';
 import type { ActionDeps } from './actions.ts';
@@ -212,7 +211,7 @@ export async function surveyKillAll(deps: ActionDeps): Promise<KillAllSurvey> {
   const runs: KillTarget[] = [];
   for (const r of runRows) {
     const t = r.taskId ? await deps.storage.getTask(r.taskId) : null;
-    runs.push({ runId: r.id, mode: r.mode, taskId: r.taskId, title: t?.title ?? 'no task' });
+    runs.push({ runId: r.id, mode: r.mode, taskId: r.taskId, title: t?.title ?? r.label ?? 'no task' });
   }
   const queued = (await deps.storage.listTasks({ status: 'queued' })).map((t) => ({ id: t.id, title: t.title }));
   const features = (await deps.storage.listFeatures({ status: 'running' })).map((f) => ({ id: f.id, title: f.title }));
@@ -221,7 +220,10 @@ export async function surveyKillAll(deps: ActionDeps): Promise<KillAllSurvey> {
     const t = await deps.storage.getTask(d.toTaskId);
     dispatches.push({ id: d.id, toTaskId: d.toTaskId, toTitle: t?.title ?? '(deleted task)' });
   }
-  const headless = liveHeadless();
+  // Aux sessions (review, plan, chat, …) are ALSO in `runs` above — they are
+  // run rows now; this list is what the aux runner itself holds live, which
+  // step 5 of the kill sweeps regardless.
+  const headless = aux().liveLabels();
   return {
     queueEnabled: status.enabled,
     runs,
@@ -267,8 +269,9 @@ export interface KillAllReport {
  * 4. kill the live runs — ALL modes, not just `worker` like the web button:
  *    the phone's `/kill` listing already shows every mode and a red button
  *    that leaves an analysis burning tokens is a half-button;
- * 5. stop the headless `claude -p` children that own no run row at all
- *    (plan reviews, adversarial rounds) — the same call the restart path makes;
+ * 5. stop every aux session still live (review, plan, chat, report, …) —
+ *    the same call the restart path makes; most were already killed in 4 as
+ *    run rows, this catches one spawned between the survey and the kill;
  * 6. sweep once more, because 4 and 5 both have exit handlers that write.
  *
  * Two passes, not a loop: a fixed bound cannot spin, and anything a SECOND
@@ -361,13 +364,9 @@ export async function executeKillAll(deps: ActionDeps, actor: string): Promise<K
   };
 
   await sweep();
-  // After the run rows, so an `analyze` run is killed through `killRun` (which
-  // updates its row and its task) rather than losing its child underneath it.
-  const headlessBefore = liveHeadless();
-  if (headlessBefore.length > 0) {
-    stopAllHeadless();
-    report.headlessStopped = headlessBefore;
-  }
+  // After the run rows, so an aux session is killed through `killRun` (which
+  // audits it) first; this is the sweep for anything the survey missed.
+  report.headlessStopped = aux().stopAll();
   report.resweptSomething = (await sweep()) > 0;
 
   if (!before.queueEnabled) report.idle.push('the queue was already stopped');
@@ -375,7 +374,7 @@ export async function executeKillAll(deps: ActionDeps, actor: string): Promise<K
   if (before.queued.length === 0) report.idle.push('nothing was queued');
   if (before.features.length === 0) report.idle.push('no feature was running');
   if (before.dispatches.length === 0) report.idle.push('no dispatch was pending');
-  if (before.headless.length === 0) report.idle.push('no headless agents');
+  if (before.headless.length === 0) report.idle.push('no aux sessions');
 
   return report;
 }
@@ -435,8 +434,8 @@ export function renderKillAllSurvey(s: KillAllSurvey): string {
   out.push(
     bullet(
       s.headless.length === 0
-        ? 'stop headless agents <i>(none)</i>'
-        : `stop ${s.headless.length} headless agent(s): ${escapeHtml(s.headless.join(', '))}`,
+        ? 'stop aux sessions <i>(none)</i>'
+        : `stop ${s.headless.length} aux session(s): ${escapeHtml(s.headless.join(', '))}`,
     ),
   );
   return out.join('\n');
@@ -477,7 +476,7 @@ export function renderKillAllReport(r: KillAllReport): string {
     }
   }
   if (r.headlessStopped.length > 0) {
-    out.push(bullet(`stopped ${r.headlessStopped.length} headless agent(s): ${escapeHtml(r.headlessStopped.join(', '))}`));
+    out.push(bullet(`stopped ${r.headlessStopped.length} aux session(s): ${escapeHtml(r.headlessStopped.join(', '))}`));
   }
   if (r.resweptSomething) {
     out.push(bullet('<i>a cascade re-queued work while this ran; the second pass caught it</i>'));
@@ -501,7 +500,6 @@ export function renderKillAllReport(r: KillAllReport): string {
  */
 export class KillWatcher {
   private unsubscribe: (() => void) | null = null;
-  private unsubscribeHeadless: (() => void) | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly seen = new Set<string>();
   private pending = new Map<string, KillTarget>();
@@ -525,12 +523,8 @@ export class KillWatcher {
       if (e.type !== 'run.exited') return;
       this.sawExit(e.run.id);
     });
-    // A headless `analyze` run has no PTY, so it never reaches the bus — and
-    // `/killall` kills every mode, so waiting only on `run.exited` would report
-    // every killed analysis as a 60-second straggler that had in fact died
-    // immediately. This is the same process-exit fact, from the one place that
-    // knows it (claude/analyze.ts).
-    this.unsubscribeHeadless = onHeadlessRunExit((runId) => this.sawExit(runId));
+    // Aux sessions (analysis, review, …) are PTYs now and announce their exit
+    // on the bus like a worker, so `run.exited` is the whole signal.
   }
 
   /** Both signals mean the same thing: that run's process is gone. */
@@ -585,8 +579,6 @@ export class KillWatcher {
     this.armed = false;
     this.unsubscribe?.();
     this.unsubscribe = null;
-    this.unsubscribeHeadless?.();
-    this.unsubscribeHeadless = null;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.pending.clear();
@@ -605,7 +597,8 @@ export interface RestartCheck {
   blocked: boolean;
   error: string | null;
   running: number;
-  headless: number;
+  /** live aux sessions (review, plan, chat, …) — `headless` before 2026-09-24 */
+  aux: number;
   services: number;
   /** open shell terminals (docs/terminals.md) — like services, killed but never blocking */
   shells?: number;
@@ -706,7 +699,7 @@ export function requestHostRestart(hostPort: number, force: boolean, timeoutMs =
 }
 
 export function renderRestartCheck(check: RestartCheck): string {
-  const lines = [`running agent sessions: <b>${check.running}</b>`, `headless agents: <b>${check.headless}</b>`];
+  const lines = [`running agent sessions: <b>${check.running}</b>`, `aux sessions (review, plan, chat…): <b>${check.aux ?? 0}</b>`];
   // Dev servers do not block a restart, but they DO die with it — the phone is
   // the one surface where that is invisible unless it is said.
   if (check.services > 0) lines.push(`repo commands that will be stopped: <b>${check.services}</b>`);

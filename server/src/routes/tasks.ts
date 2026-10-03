@@ -8,14 +8,19 @@ import { broadcast } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 import {
   ENQUEUE_FROM,
+  MOVE_PLACES,
   RETRY_FROM,
   cancelTask,
+  releaseTask,
+  undoTask,
   completeTask,
   createTask,
   editTask,
   enqueueTask,
+  moveTask,
   queueAddTask,
   queueRemoveTask,
+  reviewTask,
   unblockTask,
 } from '../task-actions.ts';
 
@@ -35,6 +40,10 @@ const taskBody = z
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullish(),
     category: z.string().min(1).max(60).nullish(),
     review: z.boolean().nullish(),
+    // who reviews this task's change; null = the global review.model
+    // (docs/design.md § Adversarial review)
+    reviewModel: z.string().min(1).nullish(),
+    reviewEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullish(),
     // "allow auto-publish on end": skip the review gate and commit+push when
     // the worker finishes (docs/publish.md)
     autoPublish: z.boolean().optional(),
@@ -84,6 +93,19 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     const { id } = req.params as { id: string };
     const body = taskPatch.parse(req.body);
     const r = await editTask(deps(), id, body, 'human');
+    if ('error' in r) return reply.code(r.code).send({ error: r.error });
+    return r.task;
+  });
+
+  // One board drop: reorder beside a task, join its group, or leave a group
+  // (docs/grouping.md § Drag and drop).
+  const moveBody = z
+    .object({ place: z.enum(MOVE_PLACES), targetId: z.string().min(1).nullish() })
+    .strict();
+  app.post('/api/tasks/:id/move', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = moveBody.parse(req.body);
+    const r = await moveTask(deps(), id, body, 'human');
     if ('error' in r) return reply.code(r.code).send({ error: r.error });
     return r.task;
   });
@@ -295,6 +317,16 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     return reply.type('application/octet-stream').send(fs.createReadStream(full));
   });
 
+  // "Review now": run the adversarial reviewer itself, on demand, over the
+  // current diff (the unchanged-diff gate is bypassed). Answers at once with
+  // the row marked `pending`; the verdict arrives as task.updated.
+  app.post('/api/tasks/:id/review', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const r = await reviewTask(deps(), id, 'human');
+    if ('error' in r) return reply.code(r.code).send({ error: r.error });
+    return r.task;
+  });
+
   // Apply adversarial-review fixes to a completed task (old tasks that were
   // never reviewed, or reviewed but not fixed).
   app.post('/api/tasks/:id/apply-review', async (req, reply) => {
@@ -334,6 +366,22 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
       data: { phase: 'cancelled', dispatchId: id, fromTaskId: cancelled.fromTaskId },
     });
     return cancelled;
+  });
+
+  // Undo start (docs/queue.md § Undo start): stop the turn, restore the
+  // status it started from — `queued` comes back held until Release.
+  app.post('/api/tasks/:id/undo', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const r = await undoTask(deps(), id, 'human');
+    if ('error' in r) return reply.code(r.code).send({ error: r.error });
+    return r.task;
+  });
+
+  app.post('/api/tasks/:id/release', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const r = await releaseTask(deps(), id, 'human');
+    if ('error' in r) return reply.code(r.code).send({ error: r.error });
+    return r.task;
   });
 
   app.post('/api/tasks/:id/cancel', async (req, reply) => {

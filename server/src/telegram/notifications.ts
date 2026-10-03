@@ -4,7 +4,7 @@ import type { TelegramNotifyConfig } from '../config.ts';
 import { onEvent } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 import { encodeAction } from './actions.ts';
-import { escapeHtml } from './api.ts';
+import { escapeHtml, type Reply } from './api.ts';
 import { buildReport, type ReportDocument } from './report.ts';
 import type { InlineKeyboardMarkup } from './types.ts';
 import { questionMessages, settledNotice } from './questions.ts';
@@ -41,6 +41,8 @@ const SUMMARY_CLIP = 1500;
 
 interface PendingTask {
   review?: boolean;
+  /** a requested ("Review now") round settled on a task NOT in `review` */
+  reviewedElsewhere?: boolean;
   failed?: boolean;
   blocked?: boolean;
   published?: boolean;
@@ -52,6 +54,13 @@ export interface NotifierDeps {
   storage: Storage;
   notify: TelegramNotifyConfig;
   send(html: string, keyboard?: InlineKeyboardMarkup): Promise<void>;
+  /**
+   * Is a "Review now" round in flight for this task? A verdict on a `done`/
+   * `failed`/`blocked` task is only pinged when a human asked for it — the
+   * automatic round on a `done` (autoComplete) task stays as quiet as ever.
+   * Absent in a harness: no such pings.
+   */
+  requestedReview?(taskId: string): boolean;
   /**
    * Upload a report with the text as its caption (docs/telegram.md § Reports).
    * The feature-plan message uses it so an analyzed plan arrives as the same
@@ -115,6 +124,32 @@ export function taskReviewKeyboard(taskId: string): InlineKeyboardMarkup {
 }
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/**
+ * A pending proposal in full, with its decision buttons — the notification and
+ * the board's 💡 row (docs/telegram.md § The board) send the SAME message, so
+ * an options proposal is never accepted from a view that did not spell the
+ * options out.
+ */
+export function proposalMessage(fresh: Proposal): Reply {
+  const what = fresh.payload.title ?? fresh.payload.rationale;
+  const subtasks = fresh.payload.subtasks?.length ? ` · ${fresh.payload.subtasks.length} subtask(s)` : '';
+  const lines = [
+    `💡 <b>Proposal</b> (${escapeHtml(fresh.kind)}${escapeHtml(subtasks)}): ${escapeHtml(what)}`,
+    escapeHtml(fresh.payload.rationale),
+  ];
+  // The options ARE the decision — each one spelled out in full before a
+  // button can commit it (its approach lands in the task description).
+  for (const [i, o] of (fresh.payload.options ?? []).entries()) {
+    lines.push(
+      ``,
+      `<b>${i + 1}. ${escapeHtml(o.label)}</b>`,
+      escapeHtml(o.approach),
+      `<i>Tradeoffs:</i> ${escapeHtml(o.tradeoffs)}`,
+    );
+  }
+  return { html: lines.join('\n'), keyboard: proposalKeyboard(fresh) };
+}
 
 /**
  * A `solution_options` proposal is a CHOICE: one button per option, and no
@@ -277,11 +312,26 @@ export class TelegramNotifier {
     const prevReview = this.taskReview.get(t.id);
     this.taskStatus.set(t.id, t.status);
     this.taskReview.set(t.id, t.reviewState);
-    if (t.status === 'queued' || t.status === 'running') this.hadWork = true;
+    // `waiting` is a running session between two of its own turns — work, not a pause
+    if (t.status === 'queued' || t.status === 'running' || t.status === 'waiting') this.hadWork = true;
     else this.scheduleQueueCheck();
     const moved = prevStatus !== t.status;
     const reviewMoved = prevReview !== t.reviewState;
     if (!moved && !reviewMoved) return; // a content edit, not a transition
+    // A requested review settling on a task parked anywhere but `review` (the
+    // `review` arm below already pings that one, with its buttons). Asked
+    // synchronously: the settling broadcast is emitted from inside the round,
+    // while the orchestrator still holds the request.
+    if (
+      t.status !== 'review' &&
+      !moved &&
+      unsettled(prevReview) &&
+      t.reviewState &&
+      !unsettled(t.reviewState) &&
+      this.deps.requestedReview?.(t.id)
+    ) {
+      this.mark(t.id, (p) => (p.reviewedElsewhere = true));
+    }
     switch (t.status) {
       case 'review':
         // Announced once the reviewer has spoken — or was never going to.
@@ -361,6 +411,18 @@ export class TelegramNotifier {
       }
       keyboard = taskReviewKeyboard(task.id);
     }
+    if (n.review && p.reviewedElsewhere && task.status !== 'review' && task.reviewState && !unsettled(task.reviewState)) {
+      // "Review now" on a done/failed/blocked task: the verdict only — no
+      // Publish/Done buttons, the status was deliberately left alone.
+      const verdict = reviewClause(task);
+      lines.push(
+        `🔍 ${title} (${escapeHtml(task.status)}) was reviewed${verdict ? ` · ${escapeHtml(verdict)}` : ''}.`,
+      );
+      const last = task.reviewRounds[task.reviewRounds.length - 1];
+      if ((task.reviewState === 'passed' || task.reviewState === 'flagged') && last?.summary) {
+        lines.push(escapeHtml(clip(last.summary, SUMMARY_CLIP)));
+      }
+    }
     if (n.failed && p.failed && task.status === 'failed') {
       lines.push(`❌ ${title} <b>failed</b>${task.error ? `: ${escapeHtml(task.error)}` : '.'}`);
     }
@@ -392,23 +454,8 @@ export class TelegramNotifier {
     this.after(COALESCE_MS, async () => {
       const fresh = await this.deps.storage.getProposal(pr.id);
       if (!fresh || fresh.status !== 'pending' || !this.deps.notify.proposal) return;
-      const what = fresh.payload.title ?? fresh.payload.rationale;
-      const subtasks = fresh.payload.subtasks?.length ? ` · ${fresh.payload.subtasks.length} subtask(s)` : '';
-      const lines = [
-        `💡 <b>Proposal</b> (${escapeHtml(fresh.kind)}${escapeHtml(subtasks)}): ${escapeHtml(what)}`,
-        escapeHtml(fresh.payload.rationale),
-      ];
-      // The options ARE the decision — each one spelled out in full before a
-      // button can commit it (its approach lands in the task description).
-      for (const [i, o] of (fresh.payload.options ?? []).entries()) {
-        lines.push(
-          ``,
-          `<b>${i + 1}. ${escapeHtml(o.label)}</b>`,
-          escapeHtml(o.approach),
-          `<i>Tradeoffs:</i> ${escapeHtml(o.tradeoffs)}`,
-        );
-      }
-      await this.deps.send(lines.join('\n'), proposalKeyboard(fresh));
+      const msg = proposalMessage(fresh);
+      await this.deps.send(msg.html, msg.keyboard);
     });
   }
 

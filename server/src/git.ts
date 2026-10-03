@@ -1,11 +1,13 @@
 import { execFile } from 'node:child_process';
+import { z } from 'zod';
 import type { Repo } from '@tm/shared';
+import { READ_ONLY_DISALLOWED, acceptJson, aux, resultInstruction } from './claude/aux.ts';
 import type { Storage } from './storage/types.ts';
 
 // Repo git operations behind explicit UI buttons. Commit messages are written
-// by claude-opus-5 from the staged diff (user policy 2026-08-24).
+// by claude-opus-5-5 from the staged diff (user policy 2026-08-24).
 
-const COMMIT_MODEL = 'claude-opus-5';
+const COMMIT_MODEL = 'claude-opus-5-5';
 
 function run(cwd: string, cmd: string, args: string[], timeoutMs = 60_000): Promise<{ out: string; code: number }> {
   return new Promise((resolve) => {
@@ -54,7 +56,7 @@ export async function gitStatus(repo: Repo): Promise<GitStatus> {
   if (!branch || branch === 'HEAD') {
     branch = (await run(repo.path, 'git', ['symbolic-ref', '--short', '-q', 'HEAD'])).out.trim() || 'main';
   }
-  const status = await run(repo.path, 'git', ['status', '--porcelain']);
+  const status = await run(repo.path, 'git', ['status', '--porcelain', '--ignore-submodules=dirty']);
   const dirty = status.out ? status.out.split('\n').filter(Boolean).length : 0;
   const aheadRes = await run(repo.path, 'git', ['rev-list', '--count', '@{upstream}..HEAD']);
   const ahead = aheadRes.code === 0 ? Number(aheadRes.out.trim()) || 0 : 0;
@@ -80,7 +82,8 @@ export async function commitRepo(
     const diff = await run(repo.path, 'git', ['diff', '--cached']);
     const diffText = diff.out.slice(0, 30_000);
 
-    // Opus writes the message from the staged diff (headless, read-only).
+    // Opus writes the message from the staged diff, in a read-only aux
+    // terminal (kind `commit`, subject = the repo) the runs list can show.
     const prompt = [
       'Write a git commit message for the staged changes below.',
       'First line: concise imperative summary under 70 chars. If the change set is non-trivial,',
@@ -92,43 +95,27 @@ export async function commitRepo(
       '--- diff (truncated) ---',
       diffText,
     ].join('\n');
-    const gen = await new Promise<{ out: string; code: number }>((resolve) => {
-      const child = execFile(
-        'claude',
-        [
-          '-p',
-          '--model',
-          COMMIT_MODEL,
-          '--permission-mode',
-          'dontAsk',
-          '--disallowedTools',
-          'Edit',
-          'Write',
-          'NotebookEdit',
-          'Bash',
-          '--output-format',
-          'json',
-          '--json-schema',
-          JSON.stringify({
-            type: 'object',
-            properties: { message: { type: 'string' } },
-            required: ['message'],
-          }),
-        ],
-        { cwd: repo.path, timeout: 180_000, maxBuffer: 16 * 1024 * 1024, env: cleanEnv() },
-        (err, stdout) => resolve({ out: String(stdout ?? ''), code: err ? 1 : 0 }),
-      );
-      child.stdin?.on('error', () => {});
-      child.stdin?.write(prompt);
-      child.stdin?.end();
+    const gen = await aux().run({
+      kind: 'commit',
+      subjectId: repo.id,
+      repoId: repo.id,
+      label: `commit message: ${repo.name}`,
+      cwd: repo.path,
+      model: COMMIT_MODEL,
+      prompt: prompt + '\n' + resultInstruction({
+        type: 'object',
+        properties: { message: { type: 'string' } },
+        required: ['message'],
+      }),
+      // The diff is in the prompt; nothing to read, so no built-in tool at all.
+      tools: [],
+      disallowedTools: READ_ONLY_DISALLOWED,
+      permission: 'dontAsk',
+      lean: true,
+      timeoutMs: 180_000,
+      accept: acceptJson(z.object({ message: z.string() })),
     });
-    let message = '';
-    try {
-      const envelope = JSON.parse(gen.out);
-      message = String(envelope?.structured_output?.message ?? '').trim();
-    } catch {
-      // fall through
-    }
+    let message = gen.status === 'ok' ? (gen.value?.message ?? '').trim() : '';
     if (!message) {
       // never leave changes staged-but-uncommitted silently; fall back plainly
       message = `chore: update (${stat.out.trim().split('\n').pop()?.trim() ?? 'changes'})`;
@@ -205,7 +192,10 @@ export async function verifyPublished(repo: Repo): Promise<PublishCheck> {
   const head = headRes.code === 0 ? headRes.out.split('\n')[0].trim() || null : null;
   if (!head) return { ok: false, reason: 'the branch has no commits yet', branch, head: null };
 
-  const status = await run(repo.path, 'git', ['status', '--porcelain']);
+  // A submodule whose work tree is merely dirty (the CLI's own
+  // `.claude/worktrees/` once tracked as a gitlink is the common case) is not
+  // something this repo could commit — same filter as the review diff.
+  const status = await run(repo.path, 'git', ['status', '--porcelain', '--ignore-submodules=dirty']);
   const dirty = status.out ? status.out.split('\n').filter(Boolean).length : 0;
   if (dirty > 0) {
     return { ok: false, reason: `${dirty} uncommitted change(s) still in the working tree`, branch, head };
@@ -244,4 +234,129 @@ export async function publishRepo(
     message: commit.ok ? commit.message : null,
     output: push.output,
   };
+}
+
+// ---- stacked same-repo tasks (docs/queue.md § Stacked tasks) ----
+//
+// Since review stopped holding the custom queue, the next same-repo task
+// starts on top of an earlier one that is still waiting for the human. Two
+// things keep each task's work its own: the queue commits the earlier task's
+// leftovers under ITS trailer before the next one starts (`handoffCommit`),
+// and publishing reads the unpushed commits' `Task:` trailers so nothing ships
+// ahead of its own approval (`unpushedCommits`, used by Orchestrator.publish).
+
+/** Same exclusion as the review diff (claude/review.ts DIFF_EXCLUDES). */
+const TREE_PATHSPEC = ['--', '.', ':!.claude/worktrees'];
+const TRAILER_RE = /^Task:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*$/gim;
+
+export interface UnpushedCommit {
+  sha: string;
+  /** every `Task: <id>` trailer in the message (normally one) */
+  taskIds: string[];
+}
+
+export interface UnpushedState {
+  /** `origin/main`-style upstream, null when the branch has none */
+  upstream: string | null;
+  /** remote name and the remote ref a partial push targets (from branch.<b>.remote/merge) */
+  remote: string | null;
+  mergeRef: string | null;
+  /** oldest first; `@{upstream}..HEAD`, or everything not on any remote */
+  commits: UnpushedCommit[];
+}
+
+/** null = not a git repository / no commits — the ordinary publish path reports that. */
+export async function unpushedCommits(repo: Repo): Promise<UnpushedState | null> {
+  const head = await run(repo.path, 'git', ['rev-parse', '--verify', '-q', 'HEAD']);
+  if (head.code !== 0) return null;
+  const up = await run(repo.path, 'git', ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']);
+  const upstream = up.code === 0 ? up.out.split('\n')[0].trim() || null : null;
+  let remote: string | null = null;
+  let mergeRef: string | null = null;
+  if (upstream) {
+    const br = await run(repo.path, 'git', ['symbolic-ref', '--short', '-q', 'HEAD']);
+    const branch = br.code === 0 ? br.out.split('\n')[0].trim() : '';
+    if (branch) {
+      const r = await run(repo.path, 'git', ['config', '--get', `branch.${branch}.remote`]);
+      const m = await run(repo.path, 'git', ['config', '--get', `branch.${branch}.merge`]);
+      remote = r.code === 0 ? r.out.trim() || null : null;
+      mergeRef = m.code === 0 ? m.out.trim() || null : null;
+    }
+  }
+  const range = upstream ? ['@{upstream}..HEAD'] : ['HEAD', '--not', '--remotes'];
+  const log = await run(repo.path, 'git', ['log', '--reverse', '--topo-order', '--format=%H%x1f%B%x1e', ...range]);
+  if (log.code !== 0) return null;
+  const commits: UnpushedCommit[] = [];
+  for (const rec of log.out.split('\x1e')) {
+    const [sha, body = ''] = rec.split('\x1f');
+    if (!sha?.trim()) continue;
+    const taskIds = [...body.matchAll(TRAILER_RE)].map((m) => m[1].toLowerCase());
+    commits.push({ sha: sha.trim(), taskIds });
+  }
+  return { upstream, remote, mergeRef, commits };
+}
+
+/** Does any commit reachable from HEAD carry this task's trailer? */
+export async function hasTaskCommit(repo: Repo, taskId: string): Promise<boolean> {
+  const r = await run(repo.path, 'git', ['log', 'HEAD', '-1', '-F', `--grep=Task: ${taskId}`, '--format=%H']);
+  return r.code === 0 && r.out.trim().length > 0;
+}
+
+/**
+ * Commit whatever the working tree holds as `task`'s work — locally, never
+ * pushed — so the next queued task in this checkout starts on a clean tree
+ * and its review and publish see only its own change. The `Task:` trailer is
+ * what makes the commit the earlier task's for the reviewer and for publish
+ * ordering. Commit hooks run as usual (no `--no-verify`).
+ */
+export async function handoffCommit(
+  repo: Repo,
+  task: { id: string; title: string },
+): Promise<{ ok: true; sha: string | null } | { ok: false; error: string }> {
+  if (busy.has(repo.id)) return { ok: false, error: 'another git operation is running in this repo' };
+  busy.add(repo.id);
+  try {
+    const status = await run(repo.path, 'git', ['status', '--porcelain', '--ignore-submodules=dirty', ...TREE_PATHSPEC]);
+    if (status.code !== 0) return { ok: false, error: `git status failed: ${status.out.slice(0, 300)}` };
+    if (!status.out) return { ok: true, sha: null };
+    const add = await run(repo.path, 'git', ['add', '-A', ...TREE_PATHSPEC]);
+    if (add.code !== 0) return { ok: false, error: `git add failed: ${add.out.slice(0, 300)}` };
+    const staged = await run(repo.path, 'git', ['diff', '--cached', '--quiet', '--ignore-submodules=dirty']);
+    if (staged.code === 0) return { ok: true, sha: null };
+    const subject = `Hand-off: ${task.title}`.replace(/\s+/g, ' ').slice(0, 72);
+    const commit = await run(repo.path, 'git', [
+      'commit',
+      '-m',
+      subject,
+      '-m',
+      'Uncommitted work this task left in the checkout (a finished turn waiting for review, or one stopped part-way), committed locally by the task manager before the next queued task in this repo started. Not pushed.',
+      '-m',
+      `Task: ${task.id}`,
+    ]);
+    if (commit.code !== 0) return { ok: false, error: `git commit failed: ${commit.out.slice(0, 400)}` };
+    const sha = await run(repo.path, 'git', ['rev-parse', 'HEAD']);
+    return { ok: true, sha: sha.code === 0 ? sha.out.trim() : null };
+  } finally {
+    busy.delete(repo.id);
+  }
+}
+
+/** Direct (no session) partial publish: push exactly `sha` to the upstream ref. */
+export async function pushUpTo(
+  repo: Repo,
+  remote: string,
+  sha: string,
+  mergeRef: string,
+): Promise<{ ok: true } | { ok: false; code: number; error: string }> {
+  if (busy.has(repo.id)) return { ok: false, code: 409, error: 'another git operation is running in this repo' };
+  busy.add(repo.id);
+  try {
+    const push = await run(repo.path, 'git', ['push', remote, `${sha}:${mergeRef}`], 120_000);
+    if (push.code !== 0) return { ok: false, code: 500, error: `git push failed: ${push.out.slice(0, 400)}` };
+    // Refresh the remote-tracking ref the settle check reads.
+    await run(repo.path, 'git', ['fetch', '--quiet', remote], 60_000);
+    return { ok: true };
+  } finally {
+    busy.delete(repo.id);
+  }
 }

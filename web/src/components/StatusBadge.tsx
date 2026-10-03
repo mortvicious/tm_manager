@@ -2,6 +2,7 @@ import type { ReviewState, TaskStatus } from '@tm/shared';
 
 const cls: Partial<Record<TaskStatus, string>> = {
   running: 's-running',
+  waiting: 's-waiting',
   queued: 's-queued',
   published: 's-published',
   done: 's-done',
@@ -23,12 +24,15 @@ export function StatusBadge({
   attention,
   question,
   reviewState,
+  onOpenReviewer,
 }: {
   status: TaskStatus;
   attention?: boolean;
   /** the agent is waiting on an answer to its question (docs/questions.md) */
   question?: boolean;
   reviewState?: ReviewState | null;
+  /** set while the reviewer's terminal is live: the auto-review badge opens it */
+  onOpenReviewer?: () => void;
 }) {
   if (question) {
     return (
@@ -45,6 +49,23 @@ export function StatusBadge({
     );
   }
   if (status === 'review' && (reviewState === 'pending' || reviewState === 'reviewing')) {
+    // The reviewer is a terminal of its own (docs/design.md § PTY sessions):
+    // while it is live the badge is the way in.
+    if (onOpenReviewer) {
+      return (
+        <button
+          type="button"
+          className="badge s-autoreview badge-link"
+          title="the adversarial reviewer is reading this change — open its terminal"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenReviewer();
+          }}
+        >
+          <span className="dot" /> auto-review ↗
+        </button>
+      );
+    }
     return (
       <span className="badge s-autoreview" title="the adversarial reviewer is reading this change">
         <span className="dot" /> auto-review
@@ -55,6 +76,16 @@ export function StatusBadge({
     return (
       <span className="badge s-running s-fixing" title="the agent is fixing the adversarial reviewer's findings">
         <span className="dot" /> fixing
+      </span>
+    );
+  }
+  if (status === 'waiting') {
+    return (
+      <span
+        className="badge s-waiting"
+        title="the agent ended its turn with a background subagent still running — it resumes on its own when that child returns"
+      >
+        <span className="dot" /> waiting
       </span>
     );
   }

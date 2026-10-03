@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   isCodexModel,
+  REVIEW_BUSY_STATES,
+  REVIEW_NOW_FROM,
   type AppSettings,
   type Dispatch,
   type Repo,
@@ -16,6 +18,7 @@ import type { ActionResult, OrchestratorApi } from './app-types.ts';
 import {
   DEFAULT_PROCEED,
   PUBLISH_INSTRUCTION,
+  publishUpToInstruction,
   buildDispatchNote,
   buildDispatchTurn,
   buildWorkerInvocation,
@@ -28,10 +31,17 @@ import {
   compactSession,
   freshHandoff,
 } from './claude/compact.ts';
-import { publishRepo, verifyPublished } from './git.ts';
-import { killAnalysis } from './claude/analyze.ts';
-import { liveHeadless } from './claude/headless.ts';
-import { reviewWorkerChange, workerDiff } from './claude/review.ts';
+import {
+  handoffCommit,
+  hasTaskCommit,
+  publishRepo,
+  pushUpTo,
+  unpushedCommits,
+  verifyPublished,
+  type PublishCheck,
+} from './git.ts';
+import { aux } from './claude/aux.ts';
+import { headAt, readHeadBase, reviewWorkerChange, workerDiff, type ChangeScope } from './claude/review.ts';
 import { summarizeRun, summarizeTranscript, type TranscriptSummary } from './claude/stats.ts';
 import { liveWindow, readAccountUsage } from './claude/account-usage.ts';
 import {
@@ -42,6 +52,7 @@ import {
   type StallVerdict,
 } from './claude/limit.ts';
 import { needsFallbackModel, sessionUsagePct } from './claude/usage.ts';
+import { sharedPromptBlock, spaceForRepo, validateSpacePath, writeFolderDocs, writeSharedMemory } from './spaces/service.ts';
 import { broadcast } from './events.ts';
 import { MAX_LIVE_SESSIONS, pidLooksLikeOurs, type SessionManager } from './pty/session-manager.ts';
 import { artifactsRoot } from './config.ts';
@@ -78,6 +89,31 @@ const DISPATCH_TERMINAL_STATUSES: TaskStatus[] = ['done', 'published', 'cancelle
  * to `review` — rather than parked where nothing could resume it (review R1).
  */
 const WAKE_RESUMABLE_STATUSES: TaskStatus[] = ['review', 'failed'];
+
+/** `tm_runs.label` of a worker run that is a publish turn. */
+const PUBLISH_RUN_LABEL = 'publish';
+
+/**
+ * Tasks whose work has not been approved yet (docs/queue.md § Stacked tasks):
+ * their unpushed commits must not ride along on another task's publish.
+ * `queued`/`draft` are here for a task an Undo start put back (review round
+ * 2): its hand-off commit is unfinished work. done/published work may ride
+ * along; failed/cancelled leftovers are outside the rule (there is no way to
+ * approve them short of a retry, and they rode along before this rule too).
+ */
+const UNAPPROVED_STATUSES: TaskStatus[] = ['review', 'running', 'waiting', 'blocked', 'queued', 'draft'];
+
+type PublishPlan =
+  | { kind: 'full' }
+  | { kind: 'refuse'; reason: string }
+  | {
+      kind: 'partial';
+      /** this task's last unpushed commit; null = its commits are all pushed already */
+      upTo: string | null;
+      remote: string;
+      mergeRef: string;
+      upstream: string;
+    };
 
 /**
  * How long a live session must have written nothing to its transcript before a
@@ -136,6 +172,14 @@ export class Orchestrator implements OrchestratorApi {
    */
   private readonly pendingReviews = new Map<string, Promise<void>>();
   /**
+   * Who asked for the "Review now" round in flight (taskId → actor). Set with
+   * the `pendingReviews` lock by `reviewNow` and cleared with it, so it reads
+   * true exactly while a REQUESTED round runs — the Telegram notifier asks it
+   * whether a settle on a non-`review` status is worth a ping. In memory
+   * only: a requested round a restart re-runs is recorded without requester.
+   */
+  private readonly requestedReviews = new Map<string, string>();
+  /**
    * When each live run's needs-attention flag was raised (ms since epoch).
    * The flag is cleared the moment the transcript shows an assistant line
    * NEWER than this — the prompt was answered and the agent moved on — so a
@@ -149,8 +193,8 @@ export class Orchestrator implements OrchestratorApi {
    * late Stop would read a null/stale hash and spawn a second reviewer over
    * the same diff — the duplicate this whole gate exists to prevent, on the
    * very path that produces it most (a dispatch delivery resumes a task
-   * sitting in `review`: `deliverDispatches` holds only running/queued/
-   * blocked). It is remembered rather than dropped, because that Stop's turn
+   * sitting in `review`: `deliverDispatches` holds only running/waiting/
+   * queued/blocked). It is remembered rather than dropped, because that Stop's turn
    * MAY have edited something: the in-flight round is allowed to finish and
    * stamp its hash, then one more pass runs, which the hash gate makes free
    * when nothing changed and a real review when it did.
@@ -202,6 +246,47 @@ export class Orchestrator implements OrchestratorApi {
   private readonly wakeDueAt = new Map<string, number>();
   /** single-flight for the wake sweep — a pass can outlive its own interval */
   private wakeSweeping = false;
+  /**
+   * `waiting` (docs/design.md § Waiting): the subagents each live run has
+   * launched and not yet seen return, from the SubagentStart/SubagentStop
+   * hooks. Keyed by `agent_id`; a hook that carried none is counted in `anon`
+   * so two id-less children do not collapse into one. `returned` is every id
+   * whose SubagentStop has been seen, kept until the run ends: a Stop payload
+   * captured before a child's stop hook landed must not count it again.
+   * Consulted by the Stop route: a turn that ends with children still out is a
+   * wait, not a landing. When a hook payload carries the CLI's own
+   * `background_tasks` list, that list REPLACES the count (see `waitDecision`).
+   */
+  private readonly childrenInFlight = new Map<string, { ids: Set<string>; anon: number; returned: Set<string> }>();
+  /**
+   * Runs whose task is parked `waiting` right now: runId → the task, the
+   * children snapshot the park was decided on, and when. Cleared by
+   * `endWait` — the last child's stop (the CLI is about to re-invoke the
+   * session) or a transcript line newer than the park (it already did, or a
+   * human typed into the attached terminal). On the hook-count fallback only:
+   * a Stop that arrives while the entry is STILL here with the same snapshot
+   * means neither happened through our channels, so that turn is landed the
+   * ordinary way rather than parked again — a lost SubagentStop hook must not
+   * hold a task forever.
+   *
+   * `timer` is armed when background SHELLS helped hold the park: a shell has
+   * no stop hook and a dev server never exits, so at the earliest shell's
+   * deadline the Stop is replayed (`replay`, the park's own payload) through
+   * the route's handler, which lands the turn unless something still counts.
+   */
+  private readonly waitingRuns = new Map<
+    string,
+    { taskId: string; snapshot: string; at: number; timer: NodeJS.Timeout | null; replay: unknown }
+  >();
+  /**
+   * Background shells each live run has been seen waiting on: runId → shell
+   * id → when a Stop first listed it running. The wait budget
+   * (`agent.shellWaitMinutes`) is counted from here, NOT from each Stop, so a
+   * dev server cannot re-earn a fresh budget every turn. Cleared at run end.
+   */
+  private readonly shellsSeen = new Map<string, Map<string, number>>();
+  /** the Stop route's replay, called when a shell wait runs out (see above) */
+  private shellWaitHandler: ((runId: string, body: unknown, parkedAt: number) => Promise<void>) | null = null;
   /** runs whose rejected banner has already been audited once (see below) */
   private readonly stallSkipsAudited = new Set<string>();
 
@@ -527,6 +612,66 @@ export class Orchestrator implements OrchestratorApi {
     if (this.wakeDueAt.size) console.log(`auto wake-up: ${this.wakeDueAt.size} task(s) waiting on the usage window`);
   }
 
+  /**
+   * Stamps `Task.baseSha/baseRef/baseAt` when the row has none. At the first
+   * spawn (`atSpawn`, no worker run yet) that is HEAD now. A task that already
+   * ran without one (created before migration 29) gets HEAD as it stood at
+   * its first run's start instead — never HEAD now, which would hide
+   * everything it committed. Retries and fix rounds find it set and keep it.
+   * Best effort: no git, no base, and the reviewer falls back to trailers.
+   */
+  private async ensureBase(task: Task, repo: Repo, atSpawn: boolean): Promise<Task> {
+    if (task.baseSha) return task;
+    try {
+      const runs = await this.storage.listRuns({ taskId: task.id, mode: 'worker' });
+      const first = runs[runs.length - 1]; // newest first
+      let base: Pick<Task, 'baseSha' | 'baseRef' | 'baseAt'> | null = null;
+      if (first) {
+        const sha = await headAt(repo.path, first.startedAt);
+        if (sha) base = { baseSha: sha, baseRef: null, baseAt: first.startedAt };
+      } else if (atSpawn) {
+        const head = await readHeadBase(repo.path);
+        if (head) base = { baseSha: head.sha, baseRef: head.ref, baseAt: new Date().toISOString() };
+      }
+      if (!base) return task;
+      return (await this.storage.updateTask(task.id, base)) ?? task;
+    } catch (err) {
+      console.error(`task ${task.id}: could not record its base:`, err);
+      return task;
+    }
+  }
+
+  /**
+   * What `workerDiff` needs to find this task's commits. The window ends at
+   * the task's last landing (its latest transition out of running/waiting —
+   * the Stop that produced the change under review), or now while it still
+   * runs, so a Review now days later never counts a LATER task's commits.
+   * `soleWorker`: no other task's worker run overlapped the window in this
+   * repo, which is what makes base..HEAD safe to attribute.
+   * `includeUncommitted`: no other task's worker started here after the
+   * window, so the working tree can still be this task's.
+   */
+  private async changeScope(task: Task, repo: Repo): Promise<ChangeScope> {
+    const now = new Date().toISOString();
+    let until = now;
+    if (task.status !== 'running' && task.status !== 'waiting') {
+      const landings = (await this.storage.listEvents({ taskId: task.id, kind: 'task.transition', limit: 2000 }))
+        .filter((e) => e.data?.from === 'running' || e.data?.from === 'waiting')
+        .map((e) => e.at)
+        .sort();
+      if (landings.length) until = landings[landings.length - 1];
+    }
+    const others = (await this.storage.listRuns({ repoId: repo.id, mode: 'worker' })).filter((r) => r.taskId !== task.id);
+    const from = task.baseAt;
+    const soleWorker =
+      !!task.baseSha && !!from && !others.some((r) => r.startedAt <= until && (r.endedAt ?? now) >= from);
+    // The working tree is this task's leftovers only until someone else
+    // works in the checkout after it: a Review now of an older task must
+    // not judge a later task's uncommitted edits as its own.
+    const includeUncommitted = !others.some((r) => r.startedAt > until);
+    return { taskId: task.id, baseSha: task.baseSha, until, soleWorker, includeUncommitted };
+  }
+
   /** Drops a pending wake-up, in the row and in the map. */
   private async clearWake(taskId: string): Promise<void> {
     this.wakeDueAt.delete(taskId);
@@ -598,7 +743,7 @@ export class Orchestrator implements OrchestratorApi {
         if (run.taskId && run.mode === 'worker') {
           // Conditional: an idle-completed run's task sits in review — must
           // not be clobbered to failed (review M8).
-          const task = await this.storage.transitionTask(run.taskId, ['running'], 'failed', 'system', {
+          const task = await this.storage.transitionTask(run.taskId, ['running', 'waiting'], 'failed', 'system', {
             error: 'server restarted while the worker was running',
             reviewState: null, // a fix round that died with the server is not "fixing"
           });
@@ -615,8 +760,14 @@ export class Orchestrator implements OrchestratorApi {
     // "marked running but has no live session", and enqueue/retry refuse a
     // running task, so only Cancel would. Re-read AFTER the loop above, which
     // has already moved the tasks whose runs it failed.
+    // `waiting` is swept the same way: it is a live session between two of
+    // its own turns, and no session survives a restart.
     const stranded: string[] = [];
-    for (const task of await this.storage.listTasks({ status: 'running' })) {
+    const live = [
+      ...(await this.storage.listTasks({ status: 'running' })),
+      ...(await this.storage.listTasks({ status: 'waiting' })),
+    ];
+    for (const task of live) {
       const runs = await this.storage.listRuns({ taskId: task.id });
       if (runs.some((r) => r.status === 'running')) continue;
       // Ever had a worker? Then work may be sitting uncommitted in the tree and
@@ -624,7 +775,7 @@ export class Orchestrator implements OrchestratorApi {
       // Never ran at all, and there is nothing to review.
       const everRan = runs.some((r) => r.mode === 'worker');
       const to = everRan ? 'review' : 'failed';
-      const moved = await this.storage.transitionTask(task.id, ['running'], to, 'system', {
+      const moved = await this.storage.transitionTask(task.id, ['running', 'waiting'], to, 'system', {
         error: 'server stopped before this task had a live agent — nothing was running at boot',
         reviewState: null,
       });
@@ -644,10 +795,17 @@ export class Orchestrator implements OrchestratorApi {
     // says it was already judged). `fixing` on a task that is no longer
     // running is the same stranded state from the other side: the fix round
     // never Stopped, so the previous verdict is the latest word.
+    //
+    // `pending|reviewing` is a decision already taken — by the Stop hook
+    // (`willReview`) or by a human's "Review now" — so it is re-run as one
+    // (`forced`: no `review.enabled` re-check, and the wider REVIEW_NOW_FROM
+    // status set a requested round accepts). A requested round cleared the
+    // row's diff hash when it was asked for, which is what makes the re-run
+    // a real review rather than an unchanged-diff skip.
     for (const task of await this.storage.listTasks()) {
-      if (task.status === 'review' || task.status === 'done') {
+      if (REVIEW_NOW_FROM.includes(task.status)) {
         if (task.reviewState === 'pending' || task.reviewState === 'reviewing') {
-          void this.reviewCompletedRun(task.id);
+          void this.reviewCompletedRun(task.id, true);
         } else if (task.reviewState === 'fixing') {
           await this.setReviewState(task.id, settledReviewState(task.reviewRounds));
         }
@@ -676,9 +834,10 @@ export class Orchestrator implements OrchestratorApi {
       // session idles, which would overstate the count (review M2)
       running: this.sessions.liveCount(),
       concurrency: settings['orchestrator.concurrency'],
-      // Headless agents have no PTY, so liveCount() cannot see them; the
-      // restart guard needs them counted (docs/commands.md).
-      headless: liveHeadless().length,
+      // Aux sessions (review, plan, chat, …) live in their own PTY pool, so
+      // liveCount() cannot see them — by design, they take no worker slot —
+      // but the restart guard and the header need them counted.
+      aux: aux().liveCount(),
     };
   }
 
@@ -722,8 +881,10 @@ export class Orchestrator implements OrchestratorApi {
           // Overflow claim credit (agent-API review R1): a task filed by a
           // LIVE worker may start even at cap — otherwise two pollers waiting
           // on their own queued children deadlock the queue. Bounded: one
-          // overflow per live creating session, depth cap ≤ 2, so live
-          // sessions ≤ cap×3, under the PTY hard cap.
+          // overflow per live creating session along a chain of at most
+          // `agent.maxSpawnDepth` hops (default 6, docs/shared-spaces.md §
+          // Depth), and — the bound that actually holds at any depth — never
+          // past the PTY hard cap (the check right below).
           while (true) {
             // Never overflow into the PTY hard cap: at concurrency >= 4 the
             // cap x3 bound exceeds MAX_LIVE_SESSIONS and spawns would fail
@@ -789,8 +950,139 @@ export class Orchestrator implements OrchestratorApi {
    * is held between a finished turn and its review/publish follow-on, and
    * (d) the head's repo has no other live session working in it — a run-now
    * or dispatch turn in that repo makes the head WAIT, never skip: the order
-   * the human set is the order that runs.
+   * the human set is the order that runs. A member an agent filed (shared
+   * ledger) is additionally skipped inside the head SQL while its filer is
+   * unresolved or any task in the repo is working or mid-review — the filer
+   * idles in `review` with a dirty tree, which (d) alone does not see
+   * (storage/queue-sql.ts).
    */
+  /**
+   * Stacked tasks (docs/queue.md § Stacked tasks): the queue is about to start
+   * a task in this repo while the task that last worked here may still wait
+   * for the human in `review` with its edits uncommitted. Commit them under
+   * THAT task's trailer first, so the next task starts on a clean tree and its
+   * review and publish see only its own change. false = do not start anything
+   * in this repo this pass (a review round still open, or the commit failed —
+   * the reason goes on the earlier task, once).
+   */
+  private async handOffCheckout(repoId: string): Promise<boolean> {
+    const owner = await this.treeOwner(repoId);
+    if (!owner) return true;
+    // Still working (or inside a resume gate): its tree is not finished — wait.
+    if (owner.status === 'running' || owner.status === 'waiting') return false;
+    if (owner.status === 'review' && owner.reviewState && REVIEW_BUSY_STATES.includes(owner.reviewState)) return false;
+    // Any other status commits: `review` waiting for the human, and just as
+    // much a task an Undo start put back in `queued`/`draft` (review round 2 —
+    // its half-finished edits must not become the next task's), or a
+    // failed/cancelled one whose leftovers would otherwise read as the next
+    // task's in its review.
+    const repo = await this.storage.getRepo(repoId);
+    if (!repo) return true;
+    const res = await handoffCommit(repo, owner);
+    if (!res.ok) {
+      const error = `hand-off commit failed, so the next queued task in this repo waits: ${res.error}`;
+      if (owner.error !== error) {
+        const patched = await this.storage.updateTask(owner.id, { error });
+        if (patched) broadcast({ type: 'task.updated', task: patched });
+        console.warn(`task ${owner.id}: ${error}`);
+      }
+      return false;
+    }
+    if (res.sha) {
+      await this.storage.appendEvent({
+        kind: 'repo.changed',
+        actor: 'orchestrator',
+        taskId: owner.id,
+        repoId,
+        data: { action: 'handoff-commit', sha: res.sha },
+      });
+      if (owner.error?.startsWith('hand-off commit failed')) {
+        const patched = await this.storage.updateTask(owner.id, { error: null });
+        if (patched) broadcast({ type: 'task.updated', task: patched });
+      }
+    }
+    return true;
+  }
+
+  /** The task whose worker ran last in this repo — whose edits the working tree holds. */
+  private async treeOwner(repoId: string): Promise<Task | null> {
+    const runs = await this.storage.listRuns({ repoId, mode: 'worker' });
+    let newest: (typeof runs)[number] | null = null;
+    for (const r of runs) {
+      if (!r.taskId || r.label === PUBLISH_RUN_LABEL) continue; // a publish turn edits nothing
+      if (!newest || r.startedAt > newest.startedAt) newest = r;
+    }
+    return newest?.taskId ? this.storage.getTask(newest.taskId) : null;
+  }
+
+  /**
+   * Publish in order (docs/queue.md § Stacked tasks). Reads the unpushed
+   * commits' `Task:` trailers against the repo's UNAPPROVED tasks (review,
+   * running, waiting, blocked — done/published work may ride along, failed/
+   * cancelled leftovers are outside this rule):
+   *  - `refuse`: an unapproved task's commits sit before this task's work (its
+   *    last commit, or the working tree when this task owns it) — a push would
+   *    ship them;
+   *  - `partial`: unapproved work sits ON TOP (later commits, or a tree a later
+   *    task owns) — push exactly this task's last commit and stage nothing;
+   *  - `full`: the ordinary publish (commit the tree, push the branch).
+   */
+  private async publishPlan(task: Task, repo: Repo): Promise<PublishPlan> {
+    const u = await unpushedCommits(repo);
+    if (!u) return { kind: 'full' };
+    const peers = new Map(
+      (await this.storage.listTasks({ repoId: repo.id }))
+        .filter((t) => t.id !== task.id && UNAPPROVED_STATUSES.includes(t.status))
+        .map((t) => [t.id, t] as const),
+    );
+    const blockerOf = (taskIds: string[]): Task | undefined =>
+      taskIds.includes(task.id) ? undefined : taskIds.map((id) => peers.get(id)).find((t) => !!t);
+    const owner = await this.treeOwner(repo.id);
+    const ownsTree = owner?.id === task.id;
+    let lastOwn = -1;
+    u.commits.forEach((c, i) => {
+      if (c.taskIds.includes(task.id)) lastOwn = i;
+    });
+    const horizon = ownsTree ? u.commits.length - 1 : lastOwn;
+    for (let i = 0; i <= horizon; i++) {
+      const b = blockerOf(u.commits[i].taskIds);
+      if (b) {
+        const next =
+          b.status === 'review'
+            ? `Publish or Mark done "${b.title}" first`
+            : b.status === 'queued' || b.status === 'draft'
+              ? `"${b.title}" was stopped part-way (Undo start): run it to review (Release / Run now), then Publish or Mark done it first`
+              : `wait for "${b.title}" to reach review, then Publish or Mark done it first`;
+        return {
+          kind: 'refuse',
+          reason: `publish in order — "${b.title}" (${b.status}) has unpushed commits under this task's work, and pushing would ship them before you approved them. ${next}`,
+        };
+      }
+    }
+    const laterBlocked = u.commits.slice(horizon + 1).some((c) => !!blockerOf(c.taskIds));
+    const treeBlocked = !ownsTree && !!owner && peers.has(owner.id);
+    if (!laterBlocked && !treeBlocked) return { kind: 'full' };
+    if (!u.upstream || !u.remote || !u.mergeRef) {
+      return {
+        kind: 'refuse',
+        reason: 'later unapproved work sits on top of this task, and publishing only this task needs a branch with an upstream — push the branch once (git push -u) or publish the later task first',
+      };
+    }
+    if (lastOwn < 0 && !(await hasTaskCommit(repo, task.id))) {
+      return {
+        kind: 'refuse',
+        reason: `this task has no commits of its own, and the working tree belongs to "${owner?.title ?? 'a later task'}" — there is nothing to publish separately`,
+      };
+    }
+    return {
+      kind: 'partial',
+      upTo: lastOwn >= 0 ? u.commits[lastOwn].sha : null,
+      remote: u.remote,
+      mergeRef: u.mergeRef,
+      upstream: u.upstream,
+    };
+  }
+
   private async pumpCustomQueue(cap: number): Promise<void> {
     if (this.activeWorkers() >= cap) return;
     if (this.sessions.totalLiveCount() >= MAX_LIVE_SESSIONS) return;
@@ -798,6 +1090,7 @@ export class Orchestrator implements OrchestratorApi {
     if (!head) return;
     if (await this.customQueueHeld()) return;
     if (head.repoId && (await this.repoBusy(head.repoId))) return;
+    if (head.repoId && !(await this.handOffCheckout(head.repoId))) return;
     const task = await this.storage.claimNextCustomQueuedTask('orchestrator');
     if (!task) return; // a member is running (or the head changed underneath us)
     await this.startWorker(task);
@@ -845,6 +1138,50 @@ export class Orchestrator implements OrchestratorApi {
     const runningTasks = await this.storage.listTasks({ status: 'running' });
     const consumed = new Set(runningTasks.map((t) => t.createdByRun).filter(Boolean));
     return liveRuns.map((r) => r.id).filter((id) => !consumed.has(id));
+  }
+
+  /**
+   * Shared space (docs/shared-spaces.md): the folder every turn of a member
+   * repo gets as $TM_SHARED_DIR, plus the turn's block of open requests for
+   * the repo — all of them on a fresh session, only the ones newer than the
+   * resumed run's start on a resume, none on the publish turn. Best-effort by
+   * design: a ledger hiccup must never fail a spawn.
+   */
+  private async sharedContext(
+    task: Task,
+    purpose: 'work' | 'publish',
+    resumed: Run | null,
+  ): Promise<{ dir: string; note?: string } | undefined> {
+    try {
+      const space = await spaceForRepo(this.storage, task.repoId);
+      if (!space) return undefined;
+      // Re-checked per spawn: a repo registered or moved after the space was
+      // created could now sit inside the folder (or contain it), and
+      // --add-dir would then open another checkout to this agent.
+      const overlap = validateSpacePath(space.path, await this.storage.listRepos());
+      if ('error' in overlap) {
+        console.error(`shared space "${space.name}" skipped for this turn: ${overlap.error}`);
+        return undefined;
+      }
+      // A folder deleted by hand comes back with its generated README, so
+      // an agent is never pointed at an empty directory with no conventions.
+      if (!fs.existsSync(path.join(space.path, 'README.md'))) await writeFolderDocs(this.storage, space);
+      // Every spawn refreshes the folder's CLAUDE.md from INDEX.md (agents
+      // edit the map between turns); the CLI loads it at session start, the
+      // publish turn included.
+      else await writeSharedMemory(this.storage, space);
+      if (purpose === 'publish') return { dir: space.path };
+      const note = await sharedPromptBlock(
+        { storage: this.storage },
+        task,
+        space,
+        resumed ? { since: resumed.startedAt } : {},
+      );
+      return { dir: space.path, note };
+    } catch (e) {
+      console.error('shared space context failed (spawning without it):', e);
+      return undefined;
+    }
   }
 
   /** Any live non-idle worker session currently editing this repo? */
@@ -940,8 +1277,11 @@ export class Orchestrator implements OrchestratorApi {
         // and a finished task can still be asked to change something.)
         if (actionable.length === 0) continue;
 
-        // Hold (retry later): mid-turn / about to start / waiting on children.
-        if (['running', 'queued', 'blocked'].includes(target.status)) continue;
+        // Hold (retry later): mid-turn / between its own turns / about to
+        // start / waiting on children. `waiting` in particular: its session
+        // is live and about to be re-invoked by its own subagent, and a resume
+        // would kill that session and lose the child's result.
+        if (['running', 'waiting', 'queued', 'blocked'].includes(target.status)) continue;
         // A turn we already fired for this target has not spawned yet (it may
         // be compacting). Its status is still whatever it was, so without this
         // the next pass would deliver the same backlog a second time.
@@ -1159,10 +1499,11 @@ export class Orchestrator implements OrchestratorApi {
       transcriptPath: resumeFrom.transcriptPath,
       model,
       focus: compactFocus(task.title, followUp, purpose),
-      label: `compact ${task.title.slice(0, 60)}`,
+      label: `compact: ${task.title.slice(0, 60)}`,
       // Keyed by the task so `cancel()` can stop a compaction it is about to
       // make pointless, instead of paying for another two minutes of it.
       key: task.id,
+      repoId: repo.id,
     });
     if (result.outcome === 'aborted') {
       return { kind: 'abort', detail: { compactAborted: result.reason ?? 'stopped', cap } };
@@ -1313,11 +1654,19 @@ export class Orchestrator implements OrchestratorApi {
       this.gatesInFlight.delete(task.id);
     }
     task = still;
+    // The task's base, once: its first worker spawn (docs/design.md
+    // § Adversarial review, "What the reviewer reads"). Before createRun, so
+    // "no worker run yet" still means first.
+    task = await this.ensureBase(task, repo, true);
 
     const run = await this.storage.createRun({
       taskId: task.id,
       repoId: repo.id,
       mode: 'worker',
+      // Persisted mark of a publish turn: it edits nothing, so it never makes
+      // its task the owner of the working tree (`treeOwner`, docs/queue.md §
+      // Stacked tasks) — `publishRuns` is in memory and gone by settle time.
+      label: purpose === 'publish' ? PUBLISH_RUN_LABEL : null,
       model,
       effort: task.effort ?? settings['agent.effort'],
       runToken,
@@ -1338,6 +1687,8 @@ export class Orchestrator implements OrchestratorApi {
       // turn it takes anyway". Draining one layer up would have missed the
       // four callers that spawn without a follow-up (review round 1, major).
       const fyi = await this.pendingFyiDispatches(task.id);
+      const resumeSessionId = handoff.kind === 'fresh' ? undefined : resumeFrom?.sessionId ?? undefined;
+      const shared = await this.sharedContext(task, purpose, resumeSessionId ? resumeFrom ?? null : null);
       const inv = buildWorkerInvocation({
         task: { ...task, model },
         settings,
@@ -1347,7 +1698,8 @@ export class Orchestrator implements OrchestratorApi {
         artifactsDir,
         followUp,
         dispatchNote: fyi.note,
-        resumeSessionId: handoff.kind === 'fresh' ? undefined : resumeFrom?.sessionId ?? undefined,
+        shared,
+        resumeSessionId,
         previousSummary: handoff.previousSummary,
       });
       const session = this.sessions.spawn({
@@ -1584,7 +1936,54 @@ export class Orchestrator implements OrchestratorApi {
       data: { phase: 'start' },
     });
 
+    // Publish in order (docs/queue.md § Stacked tasks). A refusal is written
+    // on the task because auto-publish discards this result.
+    const plan = await this.publishPlan(task, repo);
+    if (plan.kind === 'refuse') {
+      const patched = await this.storage.updateTask(taskId, { error: `publish held: ${plan.reason}` });
+      if (patched) broadcast({ type: 'task.updated', task: patched });
+      await this.storage.appendEvent({
+        kind: 'task.publish',
+        actor,
+        taskId,
+        repoId: repo.id,
+        data: { phase: 'refused', reason: plan.reason.slice(0, 300) },
+      });
+      return { error: plan.reason, code: 409 };
+    }
     const resumeFrom = await this.findResumableRun(taskId, task.repoId);
+    if (plan.kind === 'partial') {
+      // Its commits are already on the remote: nothing to push, git decides.
+      if (!plan.upTo) {
+        const settled = await this.settlePublish(taskId, ['review'], actor, 'direct');
+        if (!settled) return { error: 'task left review while publishing — check its status', code: 409 };
+        if (settled.status !== 'published') return { error: settled.error ?? 'publish did not complete', code: 409 };
+        return { task: settled };
+      }
+      if (resumeFrom) {
+        return this.followUp(
+          taskId,
+          publishUpToInstruction({ sha: plan.upTo, remote: plan.remote, mergeRef: plan.mergeRef }),
+          actor,
+          'resume',
+          'publish',
+        );
+      }
+      if (await this.hasLiveSession(taskId)) {
+        return { error: 'the agent session is still live — wait for it to finish, then publish', code: 409 };
+      }
+      const pushed = await pushUpTo(repo, plan.remote, plan.upTo, plan.mergeRef);
+      if (!pushed.ok) {
+        const patched = await this.storage.updateTask(taskId, { error: `publish failed: ${pushed.error}` });
+        if (patched) broadcast({ type: 'task.updated', task: patched });
+        return { error: pushed.error, code: pushed.code };
+      }
+      const settled = await this.settlePublish(taskId, ['review'], actor, 'direct');
+      if (!settled) return { error: 'task left review while publishing — check its status', code: 409 };
+      if (settled.status !== 'published') return { error: settled.error ?? 'publish did not complete', code: 409 };
+      return { task: settled };
+    }
+
     if (resumeFrom) return this.followUp(taskId, PUBLISH_INSTRUCTION, actor, 'resume', 'publish');
 
     // Fallback path. A session we cannot resume may still be ALIVE (it has no
@@ -1618,6 +2017,27 @@ export class Orchestrator implements OrchestratorApi {
    * back to `review` with the reason on the task, so the human sees exactly
    * what is missing instead of a task that claims to be shipped.
    */
+  /**
+   * Is this task shipped? The whole-tree test (`verifyPublished`) for an
+   * ordinary publish; for a STACKED one (docs/queue.md § Stacked tasks, the
+   * same plan `publish` used, recomputed from git) only this task's own
+   * commits must be on the remote — the later tasks' work above them, and the
+   * tree they own, stay local on purpose.
+   */
+  private async publishedCheck(task: Task, repo: Repo): Promise<PublishCheck> {
+    const plan = await this.publishPlan(task, repo);
+    if (plan.kind !== 'partial') {
+      const full = await verifyPublished(repo);
+      // A refusal can only mean something moved underneath the turn; say so
+      // rather than report the tree state the plan would have avoided.
+      return plan.kind === 'refuse' && !full.ok ? { ...full, reason: plan.reason } : full;
+    }
+    if (plan.upTo) {
+      return { ok: false, reason: `this task's commits up to ${plan.upTo.slice(0, 8)} are not on ${plan.upstream} yet`, branch: null, head: plan.upTo.slice(0, 8) };
+    }
+    return { ok: true, reason: null, branch: plan.upstream, head: null };
+  }
+
   async settlePublish(
     taskId: string,
     from: TaskStatus[],
@@ -1628,7 +2048,7 @@ export class Orchestrator implements OrchestratorApi {
     if (!task) return null;
     const repo = task.repoId ? await this.storage.getRepo(task.repoId) : null;
     const check = repo
-      ? await verifyPublished(repo)
+      ? await this.publishedCheck(task, repo)
       : { ok: false, reason: 'task has no repo', branch: null, head: null };
     const updated = await this.storage.transitionTask(taskId, from, check.ok ? 'published' : 'review', actor, {
       error: check.ok ? null : `publish did not complete: ${check.reason}`,
@@ -1719,7 +2139,7 @@ export class Orchestrator implements OrchestratorApi {
       await this.storage.updateRun(run.id, { status: 'killed', endedAt: new Date().toISOString() });
       await this.storage.appendEvent({ kind: 'run.killed', actor, runId: run.id, taskId });
     }
-    const task = await this.storage.transitionTask(taskId, ['running', 'queued'], 'cancelled', actor);
+    const task = await this.storage.transitionTask(taskId, ['running', 'waiting', 'queued'], 'cancelled', actor);
     if (!task) return { error: 'task is not running or queued', code: 409 };
     broadcast({ type: 'task.updated', task });
     // cancelled counts as resolved for split parents (review F2).
@@ -1734,6 +2154,78 @@ export class Orchestrator implements OrchestratorApi {
     await this.resolveCompletion(task);
     this.maybeSchedule();
     return { task };
+  }
+
+  /**
+   * "Undo start" (docs/queue.md § Undo start): stop a running turn WITHOUT
+   * cancelling or failing the task — kill its session exactly as `cancel()`
+   * does, then put the task back in the status it had before the turn started
+   * (`statusBeforeStart`). Back in `queued` it keeps its place (sort key and
+   * custom-queue mark are untouched) but is HELD: every claim skips a row with
+   * `queue_held_at` set, or the queue would start it again on the very next
+   * pass. The working tree is left as the killed turn left it — nothing is
+   * reverted — and the next start is a fresh session.
+   */
+  async undoStart(taskId: string, actor = 'human'): Promise<ActionResult> {
+    const cur = await this.storage.getTask(taskId);
+    if (!cur) return { error: 'task not found', code: 404 };
+    if (cur.status !== 'running' && cur.status !== 'waiting') {
+      return { error: 'task is not running', code: 409 };
+    }
+    const to = await this.statusBeforeStart(taskId);
+    abortCompaction(taskId); // same reason as cancel(): a gate has no run row yet
+    const runs = await this.storage.listRuns({ taskId, status: 'running' });
+    for (const run of runs) {
+      // Marked `killed` right behind the kill, so handleExit's stale-exit guard
+      // leaves the task to the transition below instead of failing it.
+      this.sessions.kill(run.id);
+      await this.storage.updateRun(run.id, { status: 'killed', endedAt: new Date().toISOString() });
+      await this.storage.appendEvent({ kind: 'run.killed', actor, runId: run.id, taskId });
+    }
+    const task = await this.storage.transitionTask(taskId, ['running', 'waiting'], to, actor, {
+      error: null,
+      // `fixing` described the turn that just died; any other verdict belongs
+      // to the status we are returning to and stays.
+      ...(cur.reviewState === 'fixing' ? { reviewState: null } : {}),
+      queueHeldAt: to === 'queued' ? new Date().toISOString() : null,
+    });
+    if (!task) {
+      const now = await this.storage.getTask(taskId);
+      return { error: `task is no longer running (now '${now?.status ?? 'deleted'}')`, code: 409 };
+    }
+    this.fixRounds.delete(taskId);
+    await this.storage.appendEvent({
+      kind: 'task.undo',
+      actor,
+      taskId,
+      repoId: task.repoId,
+      data: { action: 'undo', from: cur.status, to, held: to === 'queued', killedRuns: runs.map((r) => r.id) },
+    });
+    broadcast({ type: 'task.updated', task });
+    // No resolveCompletion: the task goes back to where it already was — a
+    // parent or feature phase saw that status before this turn and nothing
+    // about it is newly settled. The queue may move on to the next item.
+    this.maybeSchedule();
+    return { task };
+  }
+
+  /**
+   * The status a task had before its current turn began: the `from` of its
+   * newest transition INTO `running` that did not come from `running`/`waiting`
+   * (a wait ending, or a follow-up into a live turn, is the same turn). The
+   * claim composites write that row too. A terminal status is fine to return
+   * to — a follow-up on a done task undoes back to done — but never `running`
+   * or `waiting`; with no usable row the task goes back to the queue, held.
+   */
+  private async statusBeforeStart(taskId: string): Promise<TaskStatus> {
+    const rows = await this.storage.listEvents({ taskId, kind: 'task.transition', limit: 500 });
+    for (const e of rows) {
+      const from = e.data?.from as TaskStatus | null | undefined;
+      if (e.data?.to !== 'running' || !from) continue;
+      if (from === 'running' || from === 'waiting') continue;
+      return from;
+    }
+    return 'queued';
   }
 
   /** Completing a task closes its terminals — idle sessions must not pile up
@@ -1751,19 +2243,26 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   async killRun(runId: string, actor = 'human'): Promise<boolean> {
-    let killed = this.sessions.kill(runId);
-    if (!killed) {
-      // Analyze runs have no PTY session — kill the execFile child (review R4).
-      const run = await this.storage.getRun(runId);
-      if (run?.mode === 'analyze' && run.status === 'running') {
-        killed = killAnalysis(runId);
+    // An aux session (review, plan, chat, …) lives in the aux pool and is
+    // settled by its runner: stopping it resolves the caller's pending result
+    // as `aborted`, and the runner closes the row as `killed` itself. Its
+    // `taskId` is always null, so no task is ever cancelled from here.
+    if (aux().isLive(runId)) {
+      const killed = aux().abort(runId);
+      if (killed) {
+        await this.storage.appendEvent({ kind: 'run.killed', actor, runId });
+        // So the caller (the kill route) answers with the closed row. Bounded
+        // by the runner's own exit wait, which never hangs.
+        await aux().whenDone(runId);
       }
+      return killed;
     }
+    const killed = this.sessions.kill(runId);
     if (killed) {
       const run = await this.storage.updateRun(runId, { status: 'killed', endedAt: new Date().toISOString() });
       await this.storage.appendEvent({ kind: 'run.killed', actor, runId, taskId: run?.taskId ?? null });
       if (run?.taskId) {
-        const task = await this.storage.transitionTask(run.taskId, ['running'], 'cancelled', actor);
+        const task = await this.storage.transitionTask(run.taskId, ['running', 'waiting'], 'cancelled', actor);
         if (task) {
           broadcast({ type: 'task.updated', task });
           await this.resolveCompletion(task); // 'system', same rule as cancel()
@@ -1781,6 +2280,9 @@ export class Orchestrator implements OrchestratorApi {
     const wasPublish = this.publishRuns.delete(runId);
     this.stallSkipsAudited.delete(runId);
     this.forgetAttention(runId);
+    this.childrenInFlight.delete(runId);
+    this.dropWait(runId);
+    this.shellsSeen.delete(runId);
     // Nothing will collect an answer for this run any more — stop asking the
     // human (docs/questions.md). Before the row is touched, so a consumer that
     // reacts to `run.exited` never sees a live question under a dead run.
@@ -1868,8 +2370,9 @@ export class Orchestrator implements OrchestratorApi {
       }
       // Exit before any Stop hook: nonzero → failed; zero → review (someone
       // ended the session deliberately; a human should look).
+      // `waiting` too: the session that was going to be re-invoked is gone.
       const to = exitCode === 0 ? 'review' : 'failed';
-      const task = await this.storage.transitionTask(run.taskId, ['running'], to, 'system', {
+      const task = await this.storage.transitionTask(run.taskId, ['running', 'waiting'], to, 'system', {
         error: exitCode === 0 ? null : `worker exited with code ${exitCode} before finishing`,
         // no Stop, so no reviewer runs for this landing — and a fix round that
         // died mid-turn is not "fixing" any more either
@@ -1901,14 +2404,14 @@ export class Orchestrator implements OrchestratorApi {
    * REVIEWS EACH DIFF ONCE. The reviewer reads `git diff HEAD`, which carries
    * every uncommitted change in the repo — so a Stop that changed no code (a
    * dispatch reply, an answered question, a follow-up turn that only talked)
-   * still saw a non-empty diff and paid for a full headless run that re-read
+   * still saw a non-empty diff and paid for a full review session that re-read
    * the previous turn's work. The diff is now hashed and the hash stored on
    * the task: an unchanged hash means there is nothing new to judge, so the
    * previous verdict stands, the task simply stays in `review`, and no
    * `claude -p` is spawned. Both skips are recorded as `run.reviewed` rows
    * carrying `skipped`, so the audit trail shows a decision, not a gap.
    */
-  async reviewCompletedRun(taskId: string): Promise<void> {
+  async reviewCompletedRun(taskId: string, forced = false): Promise<void> {
     // SINGLE-FLIGHT PER TASK. Two Stops for one task can overlap (see
     // `reviewRecheck`), and the second must not start its own reviewer while
     // the first is still deciding what the hash should be. The overlapping
@@ -1924,20 +2427,80 @@ export class Orchestrator implements OrchestratorApi {
     // Registered synchronously on call (the hook route fires this void,
     // milliseconds after the running → review transition), cleared however the
     // round ends. What other surfaces read is the persisted `reviewState`.
-    const p = this.reviewLoop(taskId).finally(() => this.pendingReviews.delete(taskId));
+    const p = this.reviewLoop(taskId, forced).finally(() => this.pendingReviews.delete(taskId));
     this.pendingReviews.set(taskId, p);
     return p;
+  }
+
+  /**
+   * "Review now" (POST /api/tasks/:id/review, Telegram /review): run the
+   * adversarial reviewer on demand over the task's CURRENT diff. The same
+   * round as the automatic one — same lock, state steps, round history and
+   * `run.reviewed` rows — with three differences: the unchanged-diff gate is
+   * bypassed (the human asked for a fresh verdict; done by clearing
+   * `review_diff_hash` in the same write that marks `pending`, so a restart
+   * mid-round re-runs it for real too), `review.enabled` is not consulted,
+   * and `blocked`/`failed` are accepted. Findings go back to the worker only
+   * where the automatic round would send them — `review` with a live
+   * session, under a fresh `review.maxRounds` budget; anywhere else the
+   * verdict is recorded and the status is left alone.
+   */
+  async reviewNow(taskId: string, actor = 'human'): Promise<ActionResult> {
+    const task = await this.storage.getTask(taskId);
+    if (!task) return { error: 'task not found', code: 404 };
+    if (!task.repoId) return { error: 'assign a repo first — there is nothing to diff', code: 409 };
+    if (!REVIEW_NOW_FROM.includes(task.status)) {
+      return {
+        error: `cannot review a task in '${task.status}' — only ${REVIEW_NOW_FROM.join('/')} tasks have a change to judge`,
+        code: 409,
+      };
+    }
+    if (!(await this.storage.getRepo(task.repoId))) return { error: 'repo not found', code: 409 };
+    // Synchronous from the lock check to its registration: two presses cannot
+    // both get past here.
+    if (this.pendingReviews.has(taskId)) return { error: 'review already in progress', code: 409 };
+    this.fixRounds.delete(taskId); // a requested round starts a fresh fix-loop budget
+    this.requestedReviews.set(taskId, actor);
+    const marked = this.storage.updateTask(taskId, { reviewState: 'pending', reviewDiffHash: null });
+    const p = marked
+      .then(async (row) => {
+        if (!row) return;
+        broadcast({ type: 'task.updated', task: row });
+        await this.storage.appendEvent({
+          kind: 'task.review-requested',
+          actor,
+          taskId,
+          repoId: row.repoId,
+          data: { status: row.status, previousState: task.reviewState, previousHash: task.reviewDiffHash },
+        });
+        await this.reviewLoop(taskId, true);
+      })
+      .catch((err) => console.error('requested review failed:', err))
+      .finally(() => {
+        this.pendingReviews.delete(taskId);
+        this.requestedReviews.delete(taskId);
+      });
+    this.pendingReviews.set(taskId, p);
+    const updated = await marked;
+    if (!updated) return { error: 'task not found', code: 404 };
+    return { task: updated };
+  }
+
+  /** Is a "Review now" round for this task in flight right now? */
+  isRequestedReview(taskId: string): boolean {
+    return this.requestedReviews.has(taskId);
   }
 
   /**
    * One review round, plus one more pass for a Stop that landed while it ran.
    * Never throws: it runs off the Stop-hook path with nobody to catch it.
    */
-  private async reviewLoop(taskId: string): Promise<void> {
+  private async reviewLoop(taskId: string, forced = false): Promise<void> {
     try {
-      for (;;) {
+      for (let pass = 0; ; pass++) {
         this.reviewRecheck.delete(taskId);
-        await this.runReviewRound(taskId);
+        // only the first pass is the forced one; a recheck is a Stop's pass
+        await this.runReviewRound(taskId, forced && pass === 0);
         if (!this.reviewRecheck.has(taskId)) return;
         // Another pass is only worth it while the task is still parked in
         // review. If the round just started a fix round the task is `running`
@@ -1948,39 +2511,78 @@ export class Orchestrator implements OrchestratorApi {
       }
     } catch (err) {
       console.error('adversarial review failed:', err);
+      // A throw mid-round (storage, git) would otherwise strand the row on
+      // pending/reviewing until the next boot — a badge that says "reviewing"
+      // forever and a disabled "Review now" button. Nothing was judged.
+      try {
+        const t = await this.storage.getTask(taskId);
+        if (t?.reviewState === 'pending' || t?.reviewState === 'reviewing') await this.setReviewState(taskId, 'error');
+      } catch {
+        // boot recovery is the last resort
+      }
     } finally {
       this.reviewRecheck.delete(taskId);
     }
   }
 
-  /** One pass of the gate: decide from the diff hash, then review or skip. */
-  private async runReviewRound(taskId: string): Promise<void> {
+  /**
+   * One pass of the gate: decide from the diff hash, then review or skip.
+   * `forced` = a review was explicitly decided (a "Review now" request, or a
+   * pending/reviewing row boot recovery found): `review.enabled` is not
+   * re-checked and REVIEW_NOW_FROM is the accepted status set.
+   */
+  private async runReviewRound(taskId: string, forced = false): Promise<void> {
     const task = await this.storage.getTask(taskId);
     if (!task || !task.repoId) return;
     // Only a task that is parked (review, or done under autoComplete) has a
     // change to judge; anything else means a human or a newer turn took over
-    // between the Stop and this pass.
-    if (task.status !== 'review' && task.status !== 'done') return;
+    // between the Stop and this pass. A requested round also accepts
+    // blocked/failed. A pending/reviewing mark left on a status this pass
+    // will not review is released back to the last verdict, or it would read
+    // "auto-review" (and disable Review now) until the next boot.
+    const from: TaskStatus[] = forced ? REVIEW_NOW_FROM : ['review', 'done'];
+    if (!from.includes(task.status)) {
+      if (task.reviewState === 'pending' || task.reviewState === 'reviewing') {
+        await this.setReviewState(taskId, task.reviewRounds.length ? settledReviewState(task.reviewRounds) : null);
+      }
+      return;
+    }
+    const requestedBy = forced ? (this.requestedReviews.get(taskId) ?? null) : null;
     const settings = await this.storage.getSettings();
     // per-task override wins; null falls back to the global setting
-    if (!(task.review ?? settings['review.enabled'])) {
+    if (!forced && !(task.review ?? settings['review.enabled'])) {
       if (task.reviewState === 'pending') await this.setReviewState(taskId, null);
       return;
     }
     const repo = await this.storage.getRepo(task.repoId);
-    if (!repo) return;
+    if (!repo) {
+      // repo row deleted under a parked task: nothing can be diffed
+      if (task.reviewState === 'pending') {
+        await this.setReviewState(taskId, task.reviewRounds.length ? settledReviewState(task.reviewRounds) : null);
+      }
+      return;
+    }
     await this.setReviewState(taskId, 'reviewing');
 
-    // One git read per Stop, hashed before truncation; the reviewer reuses it.
-    const { diff, hash } = await workerDiff(repo);
+    // One git read per round, hashed before truncation; the reviewer reuses
+    // it. The change is the TASK's — its commits plus the uncommitted rest —
+    // not merely the working tree (docs/design.md § Adversarial review).
+    const scoped = await this.ensureBase(task, repo, false);
+    const change = await workerDiff(repo, await this.changeScope(scoped, repo));
+    const { hash } = change;
     if (!hash) {
-      // Read-only turn on a clean tree — the old code returned silently here.
+      // This task changed nothing: no commits of its own, a clean tree.
       await this.storage.appendEvent({
         kind: 'run.reviewed',
         actor: 'system',
         taskId,
         repoId: repo.id,
-        data: { skipped: 'empty-diff', state: 'skipped' },
+        data: {
+          skipped: 'empty-diff',
+          state: 'skipped',
+          base: scoped.baseSha,
+          ...(requestedBy ? { requestedBy } : {}),
+        },
       });
       this.fixRounds.delete(taskId);
       await this.setReviewState(taskId, 'skipped');
@@ -1996,7 +2598,7 @@ export class Orchestrator implements OrchestratorApi {
         actor: 'system',
         taskId,
         repoId: repo.id,
-        data: { skipped: 'unchanged-diff', state },
+        data: { skipped: 'unchanged-diff', state, ...(requestedBy ? { requestedBy } : {}) },
       });
       this.fixRounds.delete(taskId);
       await this.setReviewState(taskId, state);
@@ -2008,11 +2610,16 @@ export class Orchestrator implements OrchestratorApi {
     const result = await reviewWorkerChange(
       repo,
       task,
-      settings['review.model'],
-      diff,
+      // per-task reviewer wins; null falls back to the global setting
+      { model: task.reviewModel ?? settings['review.model'], effort: task.reviewEffort ?? null },
+      change,
       fixRound > 0 && lastRound ? { fixRound, findings: lastRound.findings } : null,
     );
-    if (!result) return;
+    if (!result) {
+      // nothing survived truncation to judge — settle rather than strand `reviewing`
+      await this.setReviewState(taskId, 'skipped');
+      return;
+    }
 
     // work → review → work: hand blocker/major findings back to the SAME live
     // worker session to fix, then it Stops and re-reviews. Bounded rounds so
@@ -2038,6 +2645,7 @@ export class Orchestrator implements OrchestratorApi {
       fixRound,
       diffHash: hash,
       error: result.error,
+      requestedBy,
     };
     const state: ReviewState = canLoop
       ? 'fixing'
@@ -2066,6 +2674,9 @@ export class Orchestrator implements OrchestratorApi {
         round: round.round,
         fixRound,
         state,
+        commits: change.commits.length,
+        attribution: change.attribution,
+        ...(requestedBy ? { requestedBy } : {}),
       },
     });
 
@@ -2118,9 +2729,14 @@ export class Orchestrator implements OrchestratorApi {
    * line is the one that CAUSED the prompt, still being caught up on.
    */
   async attentionProgress(runId: string, at: string): Promise<void> {
+    const t = Date.parse(at);
+    // Same test for a parked wait: a line newer than the park means the
+    // session is talking again — re-invoked by its child, or a human typed
+    // into the attached terminal. The Stop's own last line is older.
+    const waiting = this.waitingRuns.get(runId);
+    if (waiting && Number.isFinite(t) && t > waiting.at) await this.endWait(runId, 'transcript-progress');
     const flagged = this.attentionAt.get(runId);
     if (flagged === undefined) return;
-    const t = Date.parse(at);
     if (!Number.isFinite(t) || t <= flagged) return;
     this.attentionAt.delete(runId);
     const run = await this.storage.getRun(runId);
@@ -2140,6 +2756,210 @@ export class Orchestrator implements OrchestratorApi {
   /** The run is over one way or another — forget its flag time. */
   private forgetAttention(runId: string): void {
     this.attentionAt.delete(runId);
+  }
+
+  // ---- waiting lifecycle (docs/design.md § Waiting) ------------------------
+
+  private children(runId: string): { ids: Set<string>; anon: number; returned: Set<string> } {
+    let c = this.childrenInFlight.get(runId);
+    if (!c) {
+      c = { ids: new Set<string>(), anon: 0, returned: new Set<string>() };
+      this.childrenInFlight.set(runId, c);
+    }
+    return c;
+  }
+
+  /**
+   * The CLI's list of still-running background subagents replaces the hook
+   * count, less any id whose SubagentStop has already been seen. `anon` goes
+   * too: an id-less start is exactly what the list now accounts for.
+   */
+  private reconcileChildren(runId: string, running: string[]): void {
+    const c = this.children(runId);
+    c.ids = new Set(running.filter((id) => !c.returned.has(id)));
+    c.anon = 0;
+  }
+
+  /** SubagentStart hook: one more child of this run is out. */
+  subagentStarted(runId: string, agentId: string | null): void {
+    const c = this.children(runId);
+    if (agentId) {
+      c.ids.add(agentId);
+      // a child continued after it returned (SendMessage) is out again
+      c.returned.delete(agentId);
+    } else c.anon++;
+  }
+
+  /**
+   * SubagentStop hook: a child returned. When it was the last one the CLI is
+   * about to re-invoke the session with its result, so a task parked
+   * `waiting` on it goes back to `running` here rather than a poll later.
+   * `stillRunning` is the payload's own `background_tasks` (running
+   * subagents; it still lists the child that is stopping), null when the CLI
+   * sent none.
+   */
+  async subagentStopped(runId: string, agentId: string | null, stillRunning: string[] | null): Promise<void> {
+    const c = this.children(runId);
+    if (agentId) {
+      c.returned.add(agentId);
+      // An id we never saw start is NOT one of our children: the CLI fires
+      // SubagentStop for its own helper agents (`agent_type: ''`, no
+      // SubagentStart — measured on 2.1.266). Letting it stand for "any one
+      // child" erased the live Explore agent the task was waiting on, and the
+      // next Stop landed a half-done tree in review.
+      c.ids.delete(agentId);
+    } else if (c.anon > 0) c.anon--;
+    if (stillRunning) this.reconcileChildren(runId, stillRunning);
+    // Not while shells also hold the park: the last CHILD returning says
+    // nothing about them (and a helper agent's stop, which fires at any time,
+    // would otherwise flip an idle session to `running` and drop the shell
+    // timer with it). The CLI re-invoking the session is seen anyway, as a
+    // newer transcript line.
+    if (this.pendingChildren(runId) === 0 && !this.waitingRuns.get(runId)?.timer) {
+      await this.endWait(runId, 'children-done');
+    }
+  }
+
+  /** How many subagents this run has launched and not yet seen return. */
+  pendingChildren(runId: string): number {
+    const c = this.childrenInFlight.get(runId);
+    return c ? c.ids.size + c.anon : 0;
+  }
+
+  /**
+   * The Stop route's question: should this turn's end park the task rather
+   * than land it? Yes when children are still out — unless the task is
+   * ALREADY parked on exactly this set of children, which means the previous
+   * wait never ended through either channel (the child's stop hook or a newer
+   * transcript line) and yet the agent produced a Stop: most likely a lost
+   * hook, and re-parking would hold the task forever. That turn lands the
+   * ordinary way and the decision is audited as `stale`.
+   *
+   * `stillRunning` is the Stop payload's `background_tasks` (running
+   * subagents), null when the CLI sent none. When present it is the answer —
+   * the CLI's own ledger at the moment the turn ended, not a count rebuilt
+   * from fire-and-forget hooks — and `stale` never applies: that guard exists
+   * for a LOST hook, and a turn that ends twice in a row on the same live
+   * child ("Launched." then "Waiting for the Explore agent…", seconds apart,
+   * before the watcher polls either line) is the ordinary case, not one.
+   *
+   * `shells` is the same payload's running background shells (null without
+   * a list). A shell the agent ended its turn to wait for re-invokes the
+   * session when it exits, exactly like a child — landing that turn is what
+   * handed a half-finished task to the reviewer, whose fix round then killed
+   * the PTY and the shell with it. But a shell has no stop hook and a dev
+   * server never exits, so each one counts only for `shellWaitMs` from the
+   * first Stop that listed it; `shellDeadline` is the earliest moment one
+   * still counting stops counting (null when none does), for the park's timer.
+   */
+  waitDecision(
+    runId: string,
+    stillRunning: string[] | null,
+    shells: string[] | null = null,
+    shellWaitMs = 0,
+  ): { children: number; shells: number; shellDeadline: number | null; snapshot: string; stale: boolean } {
+    if (stillRunning) this.reconcileChildren(runId, stillRunning);
+    const c = this.childrenInFlight.get(runId);
+    const ids = c ? [...c.ids].sort() : [];
+    const snapshot = `${ids.join(',')}|${c?.anon ?? 0}`;
+    const children = this.pendingChildren(runId);
+    const stale = !stillRunning && children > 0 && this.waitingRuns.get(runId)?.snapshot === snapshot;
+    let counted = 0;
+    let shellDeadline: number | null = null;
+    if (shells?.length) {
+      const now = Date.now();
+      let seen = this.shellsSeen.get(runId);
+      if (!seen) {
+        seen = new Map<string, number>();
+        this.shellsSeen.set(runId, seen);
+      }
+      for (const id of shells) {
+        if (!seen.has(id)) seen.set(id, now);
+        const deadline = seen.get(id)! + shellWaitMs;
+        if (deadline <= now) continue;
+        counted++;
+        if (shellDeadline === null || deadline < shellDeadline) shellDeadline = deadline;
+      }
+    }
+    return { children, shells: counted, shellDeadline, snapshot, stale };
+  }
+
+  /**
+   * The Stop route parked the task: remember on what, and since when. With a
+   * `shellDeadline`, the Stop's `replay` payload is handed back to the route
+   * at that moment so the turn can land if nothing counts any more.
+   */
+  parkedWaiting(runId: string, taskId: string, snapshot: string, shellDeadline: number | null = null, replay: unknown = null): void {
+    this.dropWait(runId);
+    const entry = { taskId, snapshot, at: Date.now(), timer: null as NodeJS.Timeout | null, replay };
+    this.waitingRuns.set(runId, entry);
+    if (shellDeadline !== null) this.armShellWait(runId, entry, shellDeadline);
+  }
+
+  /**
+   * A replayed Stop found shells (or children) that still count: keep the
+   * SAME park — its `at` is what a newer transcript line is measured against —
+   * and wait for the next deadline instead.
+   */
+  rearmShellWait(runId: string, parkedAt: number, shellDeadline: number | null): void {
+    const w = this.waitingRuns.get(runId);
+    if (!w || w.at !== parkedAt) return;
+    if (w.timer) clearTimeout(w.timer);
+    w.timer = null;
+    if (shellDeadline !== null) this.armShellWait(runId, w, shellDeadline);
+  }
+
+  private armShellWait(runId: string, w: { at: number; timer: NodeJS.Timeout | null; replay: unknown }, deadline: number): void {
+    // +1s so the replay's own `deadline <= now` test cannot land on the near
+    // side of the boundary and re-arm for a zero-length wait.
+    w.timer = setTimeout(() => {
+      if (this.waitingRuns.get(runId) !== w) return;
+      // `timer` stays set (spent) through the replay: it is also the "shells
+      // hold this park" mark `subagentStopped` reads.
+      const handler = this.shellWaitHandler;
+      if (!handler) return;
+      handler(runId, w.replay, w.at).catch((e) => console.error('[waiting] shell-wait replay failed:', e));
+    }, Math.max(0, deadline - Date.now()) + 1000);
+    w.timer.unref();
+  }
+
+  /** Registered once by the Stop route (routes/internal.ts). */
+  onShellWaitExpired(handler: (runId: string, body: unknown, parkedAt: number) => Promise<void>): void {
+    this.shellWaitHandler = handler;
+  }
+
+  /** When this run's current park began, or null when it is not parked. */
+  parkedAt(runId: string): number | null {
+    return this.waitingRuns.get(runId)?.at ?? null;
+  }
+
+  /** Forget a park without touching the task: the turn landed, or the run is over. */
+  dropWait(runId: string): void {
+    const w = this.waitingRuns.get(runId);
+    if (!w) return;
+    if (w.timer) clearTimeout(w.timer);
+    this.waitingRuns.delete(runId);
+  }
+
+  /**
+   * `waiting → running`: the wait is over. Conditional, so a task a human
+   * cancelled or a run that exited meanwhile is left as it is.
+   */
+  private async endWait(runId: string, resumed: 'children-done' | 'transcript-progress'): Promise<void> {
+    const w = this.waitingRuns.get(runId);
+    if (!w) return;
+    this.dropWait(runId);
+    const task = await this.storage.transitionTask(w.taskId, ['waiting'], 'running', 'system');
+    if (!task) return;
+    await this.storage.appendEvent({
+      kind: 'task.waiting',
+      actor: 'system',
+      runId,
+      taskId: task.id,
+      repoId: task.repoId,
+      data: { resumed, waitedMs: Date.now() - w.at },
+    });
+    broadcast({ type: 'task.updated', task });
   }
 
   /**

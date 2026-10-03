@@ -34,6 +34,10 @@ It also overrides `orchestrator.autoComplete`: an auto-publishing task always pa
 
 Auto-publish is per task, stored on the row (`tm_tasks.auto_publish`), and shown on the board as a blue **auto-publish** chip so it is visible before the task ever runs.
 
+## The ship gate — the worker does not push a reviewed change
+
+The gate above assumes the worker leaves its change unshipped, but some repos' CLAUDE.md tell every agent to push and deploy on its own. So when the task's change will be adversarially reviewed (`shipHeldForReview`: review on for the task or globally, and not auto-publish), every worker turn except this publish turn carries a server-injected rule that overrides the repo's CLAUDE.md: no push, no deploy, no production check. Local commits are fine: the reviewer reads the task's commits (by their `Task: <id>` trailer) as well as the working tree. The push **and** the repo's post-push deploy/verify steps then happen here, in the publish turn (step 5 of `PUBLISH_INSTRUCTION`). Tasks with review off, and auto-publish tasks, keep the repo's own behaviour. Details: `docs/design.md` § Adversarial review, *Review before ship*.
+
 ## What actually happens
 
 ```
@@ -43,14 +47,14 @@ POST /api/tasks/:id/publish
   │    yes → followUp(PUBLISH_INSTRUCTION, mode: 'resume', purpose: 'publish')
   │          → the same session, in the same terminal, runs add/commit/push
   │          → its Stop hook fires → task → review → settlePublish(['review'])
-  │    no  → publishRepo(): commit (message written headless by opus) + push,
+  │    no  → publishRepo(): commit (message written by opus in a `commit` aux terminal) + push,
   │          in-process, then settlePublish(['review'])
   └─ settlePublish → verifyPublished(repo)
        ok    → `published` (+ resolveCompletion: parents and feature phases)
        not ok→ back to `review`, with the reason on `task.error`
 ```
 
-`PUBLISH_INSTRUCTION` (in `server/src/claude/worker.ts`) is deliberately narrow: stage, commit, push, report. No code changes, no amend/rebase, no force-push, no branches or PRs, no subagents. A failing step is reported, not worked around.
+`PUBLISH_INSTRUCTION` (in `server/src/claude/worker.ts`) is deliberately narrow: stage, commit, push, then (only if the push succeeded) the post-push deploy/verify steps the repo's own CLAUDE.md requires, which the ship gate held back. Then it reports. No code changes, no amend/rebase, no force-push, no branches or PRs, no subagents. A failing step is reported, not worked around. `verifyPublished` checks git only: whether a deploy worked is in the agent's report, not in the status.
 
 ### `verifyPublished` — the ground truth
 
@@ -96,3 +100,16 @@ It is not re-enqueueable and not re-completable (`complete` stays `review → do
 ## Audit trail
 
 Every attempt writes `task.publish` events: `phase: 'start'`, then `'published'` / `'incomplete'` / `'failed'` with the delivery (`session` or `direct`), the reason, the branch and the short HEAD. The commit and push themselves also write the usual `repo.changed` events.
+
+## Stacked tasks (2026-09-29)
+
+When the custom queue has started a later same-repo task on top of one still
+waiting in review, publishing follows queue order (`docs/queue.md` § Stacked
+tasks): a task whose unpushed commits sit on top of an unapproved task's is
+refused (`publish held: publish in order — …`, written on the task so an
+auto-publish shows it), and a task with unapproved work on top of it publishes
+*partially* — `publishUpToInstruction` pushes exactly its last commit
+(`git push <remote> <sha>:<merge ref>`), stages nothing, and deploys nothing
+from the local tree; `settlePublish` then only requires the task's own commits
+on the remote. Everything else is the ordinary publish above.
+

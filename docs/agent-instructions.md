@@ -186,16 +186,70 @@ curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
   closes per session.
 - List every task you closed or moved in your final summary (id + why).
 
+## Shared space (repos that work on one product)
+
+If `GET /api/agent/context` shows a `sharedSpace`, your repo belongs to a set of
+repos (for example a backend and its frontends) that share a knowledge folder,
+`$TM_SHARED_DIR`, and a ledger of cross-repo **requests** and **notes**. Other
+repos' agents never read your conversation or your `$TM_ARTIFACTS_DIR`, so
+this is how they learn anything from you:
+
+- **Read before you plan.** A copy of `INDEX.md` is in your context (the
+  folder's `CLAUDE.md`). Before your plan, read the files it points to for your
+  task's area, plus your repo's page under `repos/`. Your plan names what you
+  read, or says none apply. What other repos shipped, decided or left unpushed
+  lives there, not in your repo's history.
+- **Knowledge** goes into the folder: `knowledge/<topic>.md`, `repos/<repo>.md`.
+  Keep `INDEX.md` current. `README.md`, `REQUESTS.md` and `CLAUDE.md` are
+  generated, so do not edit them.
+- **Work another repo must do** because of your change or finding is a
+  **request**. Write one instead of a report nobody reads. The target repo's
+  next agent sees it at the start of its task, checks it and files it:
+
+```bash
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
+  "$TM_CALLBACK_URL/api/agent/shared/notes" -d '{
+    "kind": "request",
+    "to": "<repo name, id or role>",
+    "title": "Adopt the new `status` field on GET /v2/orders",
+    "body": "<the contract: what changed, exactly what to do, examples, how to verify>",
+    "files": ["knowledge/api-contracts.md"]
+  }'
+```
+
+  A `note` (`"kind": "note"`, `to` optional) is durable knowledge for every
+  member. There is a cap of {{sharedNoteRunCap}} per session. A duplicate
+  open request answers 409 with the id of the existing one: add to that one
+  instead (`POST …/shared/notes/<id>/append {"text": "…"}`).
+- **Requests addressed to YOUR repo** are listed at the top of your task. Also
+  run `GET /api/agent/shared`. Triage them before you finish, but never
+  instead of your task:
+  - **Already done here?** Resolve it with the evidence:
+    `POST …/shared/notes/<id>/resolve {"status":"done","resolution":"<commit/file/endpoint>"}`.
+    Use `"dismissed"` when it is not needed.
+  - **Not done?** File it: `POST …/shared/notes/<id>/file {}`. This creates the
+    task in YOUR repo and puts it in the serial custom queue. It starts only
+    once your task is published, done or cancelled and nothing else in this
+    repo is working, even while the global queue is stopped. It still counts toward your
+    creation and depth caps. If `agent.allowEnqueue` is off or the agent
+    queue is full, it lands as a draft, and the `note` says so. Do not
+    implement it inside your current task unless it is squarely in scope.
+  - The request closes by itself when that task lands done/published.
+- Mention every request you wrote, filed or resolved in your final summary.
+
 ## Rules (server-enforced — do not work around refusals)
 
 1. **Max {{taskCreationCap}} tasks per session** (the `agent.taskCreationCap` setting; `GET /api/agent/context` reports `taskCreationCap`/`tasksRemaining`). A 403 means stop creating and finish your turn.
-2. **Depth cap**: if your own task was agent-created twice over, you cannot create more.
+2. **Depth cap**: a task {{maxSpawnDepth}} agent hops from a human (`spawnDepth` in `/api/agent/context`, next to `maxSpawnDepth`) cannot create more.
 3. **`enqueue: true` may be honored or downgraded to `draft`** (the response's
    `note` says why: the enqueue setting is off, the queue is stopped, the
    ceiling is reached, or the target is your own repo). A draft means a human
    will review it — that is a SUCCESS, not an error. Never retry to force it.
 4. **Same-repo follow-ups always land as drafts** — two agents must never edit
-   one working tree at once.
+   one working tree at once. (The one exception is filing a shared-space
+   request addressed to your repo — see below: that task goes to the serial
+   custom queue, which holds it until your task is published, done or
+   cancelled.)
 5. Poll with `waitMs` (long-poll), not sleep loops. If the polled task isn't
    finished after a few polls, write what you're waiting for into your final
    summary and finish your turn — the human will reconcile.

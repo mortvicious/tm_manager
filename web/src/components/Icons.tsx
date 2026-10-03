@@ -110,6 +110,25 @@ export const IconBook = () => (
   </svg>
 );
 
+export const IconReport = () => (
+  <svg {...p}>
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <path d="M14 2v6h6" />
+    <path d="M8 13h5" />
+    <path d="M8 17h8" />
+  </svg>
+);
+
+export const IconShared = () => (
+  <svg {...p}>
+    <circle cx="6" cy="12" r="2.5" />
+    <circle cx="18" cy="6" r="2.5" />
+    <circle cx="18" cy="18" r="2.5" />
+    <path d="M8.2 10.9 15.8 7.1" />
+    <path d="M8.2 13.1 15.8 16.9" />
+  </svg>
+);
+
 export const IconSun = () => (
   <svg {...p}>
     <circle cx="12" cy="12" r="4" />
@@ -185,5 +204,38 @@ export const IconMore = () => (
     <circle cx="5" cy="12" r="1.7" />
     <circle cx="12" cy="12" r="1.7" />
     <circle cx="19" cy="12" r="1.7" />
+  </svg>
+);
+
+/** drag grip — six dots, filled so they read at 15px */
+export const IconGrip = () => (
+  <svg {...p} stroke="none" fill="currentColor">
+    <circle cx="9" cy="6" r="1.6" />
+    <circle cx="15" cy="6" r="1.6" />
+    <circle cx="9" cy="12" r="1.6" />
+    <circle cx="15" cy="12" r="1.6" />
+    <circle cx="9" cy="18" r="1.6" />
+    <circle cx="15" cy="18" r="1.6" />
+  </svg>
+);
+
+/** Mobile board toolbar: the filter sheet. */
+export const IconFilter = () => (
+  <svg {...p}>
+    <path d="M4 5h16l-6 7.5V19l-4-2v-4.5z" />
+  </svg>
+);
+
+export const IconPlus = () => (
+  <svg {...p}>
+    <path d="M12 5v14M5 12h14" />
+  </svg>
+);
+
+/** Terminal: jump back to the live end of the scrollback. */
+export const IconArrowDown = () => (
+  <svg {...p}>
+    <path d="M12 4v15" />
+    <path d="M6 13l6 6 6-6" />
   </svg>
 );

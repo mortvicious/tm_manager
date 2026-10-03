@@ -1,6 +1,6 @@
-import { execFile, type ChildProcess } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
-import { headlessStoppedSince, registerHeadless } from './headless.ts';
+import { READ_ONLY_DISALLOWED, aux } from './aux.ts';
 
 /**
  * Compacting a session before resuming it (docs/token-budget.md § The fourth).
@@ -11,9 +11,13 @@ import { headlessStoppedSince, registerHeadless } from './headless.ts';
  * later turn re-reads it. Most of those bytes are stale — old heredocs, tool
  * output, screenshots — not knowledge.
  *
- * The CLI can be told to compact non-interactively: a `-p` turn whose prompt IS
- * the `/compact` slash command runs the compaction and nothing else. Measured
- * against v2.1.257 on two real 175k/191k sessions:
+ * The CLI compacts when a turn's prompt IS the `/compact` slash command, and it
+ * runs the compaction and nothing else. It used to be a `-p` turn; it is now an
+ * interactive terminal of its own (aux kind `compact`, docs/design.md § PTY
+ * sessions) that the human can watch — measured on 2.1.280: the positional
+ * `/compact <focus>` runs, SessionStart fires again with `source: "compact"`,
+ * the boundary lands, no Stop fires. Measured against v2.1.257 (`-p`) on two
+ * real 175k/191k sessions:
  *
  *   claude -p --resume <id> "/compact <focus>"
  *     → transcript gains {type:'system', subtype:'compact_boundary',
@@ -72,7 +76,7 @@ export interface CompactResult {
  * 1–3 minute turn on someone else's behalf; when that someone cancels, there is
  * no reason to keep buying it, and no reason to make them wait for it either.
  */
-const inFlight = new Map<string, { child: ChildProcess; abort: () => void }>();
+const inFlight = new Map<string, { abort: () => void }>();
 
 /**
  * Stop the compaction running for `key`, if any. Idempotent, and safe to call
@@ -86,9 +90,9 @@ export function abortCompaction(key: string): boolean {
 }
 
 /**
- * Stop every in-flight compaction — shutdown. `stopAllHeadless()` already
- * signals these children (they are in the registry) and `headlessStoppedSince`
- * already makes their results `aborted`; this exists so a caller that wants to
+ * Stop every in-flight compaction — shutdown. `aux().stopAll()` already
+ * ends these sessions (they are aux runs) and `aux().stoppedSince` already
+ * makes their results `aborted`; this exists so a caller that wants to
  * WAIT for them has a way to be sure they are on their way down first.
  */
 export function abortAllCompactions(): number {
@@ -234,121 +238,72 @@ export function freshHandoff(opts: {
  * decision the caller makes differently, not an error that should sink the turn
  * the user asked for.
  */
-export function compactSession(opts: {
+export async function compactSession(opts: {
   cwd: string;
   sessionId: string;
   transcriptPath: string;
   model: string;
   focus: string;
-  /** what this child is doing, for the restart guard's refusal message */
+  /** runs-list label of the compaction's terminal */
   label: string;
-  /** caller key (the task id) that `abortCompaction` can stop this by */
-  key?: string;
+  /** the task the session belongs to — the run's subject, and the abort key */
+  key: string;
+  repoId: string | null;
 }): Promise<CompactResult> {
   const startedAt = Date.now();
-  const args = [
-    '-p',
-    '--resume',
-    opts.sessionId,
-    '--model',
-    opts.model,
-    // A `/compact` turn calls no tools; these are belt-and-braces against a
-    // session that somehow answers the slash command as prose instead. No
-    // `--effort`: compaction is a fixed summarisation procedure, and buying
-    // extended thinking for it is exactly the spend this gate exists to avoid.
-    '--permission-mode',
-    'dontAsk',
-    '--disallowedTools',
-    'Edit',
-    'Write',
-    'NotebookEdit',
-    'Bash',
-    '--output-format',
-    'json',
-    `/compact ${opts.focus}`,
-  ];
-  return new Promise((resolve) => {
-    // Our own deadline rather than execFile's `timeout`, because that one kills
-    // with the same SIGTERM an abort does and we would not be able to tell a
-    // ten-minute hang (a real failure) from `/killall` (not one).
-    let timedOut = false;
-    let stopped = false;
-    // eslint-disable-next-line prefer-const -- assigned below, read in `abort`
-    let timer: NodeJS.Timeout;
-    const child = execFile(
-      'claude',
-      args,
-      { cwd: opts.cwd, maxBuffer: 32 * 1024 * 1024, env: cleanEnv() },
-      (err) => {
-        clearTimeout(timer);
-        if (opts.key) inFlight.delete(opts.key);
-        // Aborted takes precedence over everything, including a boundary that
-        // did land: the caller must not treat a killed run as an outcome it may
-        // act on. `headlessStoppedSince` covers the global sweeps (/killall,
-        // forced restart) whether or not the child died by signal; `stopped`
-        // covers a targeted `abortCompaction`.
-        if (stopped || headlessStoppedSince(startedAt)) {
-          resolve({ outcome: 'aborted', ok: false, preTokens: null, postTokens: null, reason: 'stopped' });
-          return;
-        }
-        if (timedOut) {
-          resolve({
-            outcome: 'failed',
-            ok: false,
-            preTokens: null,
-            postTokens: null,
-            reason: `timed out after ${Math.round(COMPACT_TIMEOUT_MS / 1000)}s`,
-          });
-          return;
-        }
-        if (err) {
-          resolve({
-            outcome: 'failed',
-            ok: false,
-            preTokens: null,
-            postTokens: null,
-            reason: String(err.message ?? err).slice(0, 300),
-          });
-          return;
-        }
-        const b = readBoundary(opts.transcriptPath, startedAt);
-        if (!b) {
-          resolve({
-            outcome: 'failed',
-            ok: false,
-            preTokens: null,
-            postTokens: null,
-            reason: 'no compact_boundary in transcript',
-          });
-          return;
-        }
-        resolve({ outcome: 'compacted', ok: true, preTokens: b.pre, postTokens: b.post });
-      },
-    );
-    timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        // already gone; the callback is on its way
-      }
-    }, COMPACT_TIMEOUT_MS);
-    // This compaction owns no run row — it happens between the previous run and
-    // the one about to spawn — so, like the adversarial reviewer, the registry
-    // is the only thing that knows it is working.
-    registerHeadless(child, opts.label);
-    if (opts.key) {
-      inFlight.set(opts.key, {
-        child,
-        abort: () => {
-          stopped = true;
-          try {
-            child.kill('SIGTERM');
-          } catch {
-            // already gone; `stopped` still makes the pending result an abort
-          }
-        },
-      });
-    }
+  const ctl = new AbortController();
+  let stopped = false;
+  inFlight.set(opts.key, {
+    abort: () => {
+      stopped = true;
+      ctl.abort();
+    },
   });
+  try {
+    const o = await aux().run({
+      kind: 'compact',
+      subjectId: opts.key,
+      repoId: opts.repoId,
+      label: opts.label,
+      cwd: opts.cwd,
+      model: opts.model,
+      // No `--effort`: compaction is a fixed summarisation procedure, and
+      // buying extended thinking for it is exactly the spend this gate exists
+      // to avoid.
+      effort: null,
+      prompt: `/compact ${opts.focus}`,
+      resumeSessionId: opts.sessionId,
+      // Also where the boundary is looked for: a resumed session keeps writing
+      // its original transcript file.
+      baselineTranscript: opts.transcriptPath,
+      // A `/compact` turn calls no tools; the denials are belt-and-braces
+      // against a session that answers the slash command as prose instead.
+      tools: ['Read'],
+      disallowedTools: READ_ONLY_DISALLOWED,
+      permission: 'dontAsk',
+      lean: true,
+      timeoutMs: COMPACT_TIMEOUT_MS,
+      completion: 'compact',
+      isCompacted: async (tp) => readBoundary(tp, startedAt) !== null,
+      signal: ctl.signal,
+    });
+    // Aborted takes precedence over everything, including a boundary that did
+    // land: the caller must not treat a killed run as an outcome it may act on.
+    // `stoppedSince` covers the global sweeps (/killall, forced restart);
+    // `stopped` a targeted `abortCompaction`. A timeout is our OWN deadline and
+    // stays a failure — it is not mistaken for either.
+    if (stopped || o.status === 'aborted' || aux().stoppedSince(startedAt)) {
+      return { outcome: 'aborted', ok: false, preTokens: null, postTokens: null, reason: 'stopped' };
+    }
+    if (o.status !== 'ok') {
+      return { outcome: 'failed', ok: false, preTokens: null, postTokens: null, reason: (o.error ?? 'failed').slice(0, 300) };
+    }
+    const b = readBoundary(opts.transcriptPath, startedAt);
+    if (!b) {
+      return { outcome: 'failed', ok: false, preTokens: null, postTokens: null, reason: 'no compact_boundary in transcript' };
+    }
+    return { outcome: 'compacted', ok: true, preTokens: b.pre, postTokens: b.post };
+  } finally {
+    inFlight.delete(opts.key);
+  }
 }

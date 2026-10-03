@@ -1,4 +1,3 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import {
   CHAT_MODES,
@@ -9,14 +8,16 @@ import {
   type ChatMode,
   type EffortLevel,
 } from '@tm/shared';
-import { registerHeadless } from '../claude/headless.ts';
+import { READ_ONLY_DISALLOWED, aux } from '../claude/aux.ts';
 import { pidLooksLikeOurs } from '../pty/session-manager.ts';
 import { broadcast } from '../events.ts';
 import type { ChatPatch, Storage } from '../storage/types.ts';
 
 // A chat is the terminal you would have opened yourself, held open across the
-// browser and the phone. See docs/chat.md for why every turn is a headless
-// `claude -p --resume` run rather than a PTY.
+// browser and the phone. Every turn is its own aux terminal (kind `chat`,
+// `claude --resume <sessionId>`), attachable from the runs list; the phone
+// and the chat page read the reply from the Stop hook, never from the xterm
+// bytes. See docs/chat.md § Turns are terminals.
 
 /** One turn's wall clock. Long enough for real work in `write` mode, short
  *  enough that a wedged child cannot hold the chat's lock forever. */
@@ -30,15 +31,15 @@ const MAX_PROMPT_CHARS = 32_000;
  *  chat turn, and truncating at storage time keeps `/ws/events` frames sane. */
 const MAX_REPLY_CHARS = 60_000;
 
-/** Hard ceiling on what one turn may print. `execFile`'s maxBuffer by hand,
- *  because this spawns directly (see runTurn) and gets no such option. */
-const MAX_STDOUT_CHARS = 64 * 1024 * 1024;
-
 const TITLE_MAX = 120;
 
-/** The read-mode tool fence — deliberately the SAME list `analyze.ts` and
- *  `review.ts` pass, so "read-only" means one thing in this codebase. */
-const READ_ONLY_DISALLOWED = ['Edit', 'Write', 'NotebookEdit', 'Bash'];
+/**
+ * Denied in BOTH modes: a question dialog or plan-mode approval drawn in a
+ * terminal nobody may be watching (the phone sent this turn) would hold the
+ * turn — and the chat's lock — until TURN_TIMEOUT_MS. `-p` never offered
+ * them; the interactive CLI does.
+ */
+const NEVER_IN_CHAT = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'];
 
 export interface ChatDeps {
   storage: Storage;
@@ -65,65 +66,23 @@ export interface ChatTurn {
 const fail = (code: number, error: string): ChatResult<never> => ({ ok: false, code, error });
 const ok = <T>(value: T): ChatResult<T> => ({ ok: true, value });
 
-/** `claude` inherits our env minus the vars that would make it think it is
- *  running INSIDE a claude session — the same scrub the other headless
- *  callers do (`analyze.ts` cleanEnv). */
-function cleanEnv(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && !k.startsWith('CLAUDE_CODE_') && k !== 'CLAUDECODE') env[k] = v;
-  }
-  return env;
-}
-
 function firstLine(text: string): string {
   const line = text.trim().split('\n').find((l) => l.trim().length > 0) ?? 'Chat';
   return line.trim().slice(0, TITLE_MAX);
 }
 
 /**
- * Every live chat turn, so `stop()` can cut one short. Keyed by chat id: a
- * chat runs at most one turn at a time (that is what `beginChatTurn` buys),
- * so one entry per chat is the whole story.
+ * Every live chat turn's abort handle, so `stop()` can cut one short. Keyed by
+ * chat id: a chat runs at most one turn at a time (that is what
+ * `beginChatTurn` buys), so one entry per chat is the whole story.
  */
-const liveTurns = new Map<string, ChildProcess>();
+const liveTurns = new Map<string, AbortController>();
 
 /**
- * Chat ids whose turn was stopped ON PURPOSE. `execFile` reports a signalled
- * child as a plain command failure, so without this the transcript would show
- * the whole argv as an error for something the human asked for.
+ * Chat ids whose turn was stopped ON PURPOSE, so the transcript says
+ * "stopped" rather than reporting the abort as a failure.
  */
 const stopRequested = new Set<string>();
-
-/** Grace between SIGTERM and SIGKILL, matching SessionManager.kill(). */
-const KILL_GRACE_MS = 5_000;
-
-/**
- * Signal a turn's whole PROCESS GROUP, not just the child.
- *
- * This is the difference between a stop that works and one that appears to: a
- * turn's `claude` spawns its own children (a `Bash` tool call is one), they
- * inherit its stdout, and `execFile` only calls back when that pipe reaches
- * EOF. Kill the child alone and a surviving grandchild holds the pipe open —
- * the callback never fires, the chat's lock is never released, and the chat is
- * unusable until the process dies of something else. Spawning `detached` makes
- * the child a group leader so `-pid` reaches everything it started.
- *
- * Falls back to the plain child kill if the group is already gone (ESRCH), so
- * a race between exit and signal is not an exception.
- */
-function killGroup(child: ChildProcess, signal: NodeJS.Signals): void {
-  try {
-    if (child.pid) process.kill(-child.pid, signal);
-    else child.kill(signal);
-  } catch {
-    try {
-      child.kill(signal);
-    } catch {
-      // already reaped
-    }
-  }
-}
 
 export class ChatService {
   constructor(private readonly deps: ChatDeps) {}
@@ -234,17 +193,14 @@ export class ChatService {
    * SIGTERM as well: the same signal that was already ignored once.
    */
   stop(id: string): boolean {
-    const child = liveTurns.get(id);
-    if (!child) return false;
+    const ctl = liveTurns.get(id);
+    if (!ctl) return false;
     stopRequested.add(id);
-    killGroup(child, 'SIGTERM');
-    const escalate = setTimeout(() => {
-      // Only if it is still THIS child: a turn that died and was replaced by
-      // the next message must not be killed by the previous stop's timer.
-      if (liveTurns.get(id) === child) killGroup(child, 'SIGKILL');
-    }, KILL_GRACE_MS);
-    // Do not hold the event loop open for a grace period nobody is waiting on.
-    escalate.unref?.();
+    // The aux runner ends the PTY (SIGHUP to the terminal's session, SIGKILL
+    // after its grace — the whole session, so the tools the turn started go
+    // with it) and settles the turn `aborted`; completeTurn then releases the
+    // lock. A stop that lands before the PTY exists is refused at spawn.
+    ctl.abort();
     return true;
   }
 
@@ -252,10 +208,10 @@ export class ChatService {
    * Chats left `thinking` by a crash or a restart.
    *
    * Clearing the lock is only HALF of it, and the dangerous half on its own.
-   * A chat turn owns no `tm_runs` row, so the orchestrator's boot pid sweep
-   * cannot see its child, and the child is spawned detached — a `kill -9`, an
-   * OOM or the front door's SIGKILL escalation leaves it alive and, in write
-   * mode, still editing the repo. Release the lock without killing it and the
+   * A turn's PTY is its own session leader — a `kill -9`, an OOM or the front
+   * door's SIGKILL escalation can leave it alive and, in write mode, still
+   * editing the repo. (The orchestrator's boot sweep also kills it through
+   * its aux run row; this pid is the belt to that, recorded on the chat.) Release the lock without killing it and the
    * next message spawns a second `claude --resume` on the SAME session id
    * alongside the orphan: precisely the two-children-one-session corruption
    * the lock exists to prevent, arrived at by way of the recovery.
@@ -463,25 +419,24 @@ export class ChatService {
   }
 
   /**
-   * The `claude -p` invocation. `--resume` goes FIRST when there is a session
-   * to resume, exactly as `buildWorkerInvocation` orders it; turn one has no
-   * session id yet, which is why it is the one turn that runs fresh.
+   * One turn = one aux terminal. `--resume` when there is a session to
+   * resume; turn one has no session id yet, which is why it is the one turn
+   * that runs fresh. The reply is the Stop hook's `last_assistant_message` —
+   * the same final text `-p` returned as `result` — so the phone never sees
+   * a byte of the terminal. The PTY is ended once that Stop lands and `done`
+   * resolves only after it exited, so the next turn's `--resume` never shares
+   * the session id with a live process.
    */
-  private runTurn(
+  private async runTurn(
     chat: Chat,
     cwd: string,
     prompt: string,
   ): Promise<{ text: string; sessionId: string | null; costUsd: number; error: string | null }> {
-    const args: string[] = [];
-    if (chat.sessionId) args.push('--resume', chat.sessionId);
-    args.push('-p', '--model', chat.model);
-    if (chat.effort) args.push('--effort', chat.effort);
-    // A headless turn can never ANSWER a permission prompt, so the only two
-    // honest settings are "would never be asked" and "never prompts". Which
-    // one depends entirely on the mode, and getting this wrong is silent:
+    // Two honest permission settings, depending entirely on the mode, and
+    // getting this wrong is silent:
     //
-    // - `read` is `dontAsk` plus the disallow list, exactly as analyze.ts and
-    //   review.ts run. Nothing it may do would prompt, so nothing is denied.
+    // - `read` is `dontAsk` plus the disallow list, exactly as analysis and
+    //   review run. Nothing it may do would prompt, so nothing is denied.
     // - `write` must NOT be `dontAsk`. Measured against the real CLI: with
     //   `dontAsk` and no disallow list, "create a file" answers *"Claude Code
     //   is running in don't ask mode, I can't proceed without your explicit
@@ -497,128 +452,64 @@ export class ChatService {
     //   difference that does not exist. The lever is `read` vs `write`, and
     //   write is gated per chat, warned in the UI, and additionally gated
     //   behind `telegram.chat.allowWrite` for the phone.
-    if (chat.mode === 'read') {
-      args.push('--permission-mode', 'dontAsk', '--disallowedTools', ...READ_ONLY_DISALLOWED);
-    } else {
-      args.push('--dangerously-skip-permissions');
-    }
-    args.push('--output-format', 'json');
-
-    return new Promise((resolve) => {
-      let child: ChildProcess;
-      try {
-        child = spawn('claude', args, {
-          cwd,
-          env: cleanEnv(),
-          // Its own process group, so killGroup can reach the tools this turn
-          // spawns. `spawn` and not `execFile`, which the rest of this
-          // codebase uses for headless runs, for exactly this one reason:
-          // execFile does not forward `detached` to spawn at all.
-          detached: true,
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
-      } catch (e) {
-        stopRequested.delete(chat.id);
-        resolve({ text: '', sessionId: null, costUsd: 0, error: (e as Error).message });
-        return;
-      }
-
-      let out = '';
-      let errTail = '';
-      let overflowed = false;
-      let settled = false;
-
-      const watchdog = setTimeout(() => {
-        if (liveTurns.get(chat.id) === child) {
-          killGroup(child, 'SIGTERM');
-          const hard = setTimeout(() => {
-            if (liveTurns.get(chat.id) === child) killGroup(child, 'SIGKILL');
-          }, KILL_GRACE_MS);
-          hard.unref?.();
-        }
-      }, TURN_TIMEOUT_MS);
-      watchdog.unref?.();
-
-      /** Both `close` and `error` can fire; the first one wins. */
-      const finish = (spawnError: string | null) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(watchdog);
-        liveTurns.delete(chat.id);
-        const wasStopped = stopRequested.delete(chat.id);
-
-        let envelope: any = null;
-        try {
-          envelope = JSON.parse(out);
-        } catch {
-          // non-JSON stdout = the run did not complete
-        }
-        // The session id is worth keeping even from a FAILED turn: claude has
-        // already created the session, and dropping it here would make the
-        // next message start a second conversation in the same chat.
-        const sessionId = (envelope?.session_id as string | undefined) ?? null;
-        const costUsd = Math.round((Number(envelope?.total_cost_usd ?? 0) || 0) * 1000) / 1000;
-        if (!envelope || envelope.is_error) {
-          const detail = wasStopped
-            ? 'stopped'
-            : overflowed
-              ? 'the reply was too large to read'
-              : (envelope && String(envelope.result ?? '').slice(0, 500)) ||
-                spawnError ||
-                errTail.trim().slice(-500) ||
-                'claude returned no result';
-          resolve({ text: '', sessionId, costUsd, error: detail });
-          return;
-        }
-        resolve({ text: String(envelope.result ?? ''), sessionId, costUsd, error: null });
+    const read = chat.mode === 'read';
+    // The previous turn's transcript is this session's: its totals are the
+    // baseline, so a turn reports only its OWN usage (what `-p` reported as
+    // `total_cost_usd`).
+    const prev = chat.sessionId
+      ? (await this.storage.listRuns({ kind: 'chat', subjectId: chat.id })).find((r) => r.transcriptPath)
+      : undefined;
+    const ctl = new AbortController();
+    liveTurns.set(chat.id, ctl);
+    try {
+      const { runId, done } = await aux().start<string>({
+        kind: 'chat',
+        subjectId: chat.id,
+        repoId: chat.repoId,
+        label: `chat: ${chat.title.slice(0, 60)}`,
+        cwd,
+        model: chat.model,
+        effort: chat.effort,
+        prompt,
+        resumeSessionId: chat.sessionId,
+        baselineTranscript: prev?.transcriptPath ?? null,
+        // The CLI's default tool set: a chat is the terminal the human would
+        // have opened, not a trimmed role.
+        tools: null,
+        disallowedTools: [...(read ? READ_ONLY_DISALLOWED : []), ...NEVER_IN_CHAT],
+        permission: read ? 'dontAsk' : 'bypass',
+        lean: false,
+        timeoutMs: TURN_TIMEOUT_MS,
+        // Any final text is the reply; there is no schema to correct against.
+        maxRetries: 0,
+        signal: ctl.signal,
+      });
+      // Persisted so the NEXT process can find this turn's claude should the
+      // server die without reaping it (recoverOnBoot). Fire-and-forget: a
+      // failed write must not take down a turn that has already spawned.
+      void this.storage
+        .getRun(runId)
+        .then((r) => this.storage.setChatPid(chat.id, r?.pid ?? null))
+        .catch(() => {});
+      const o = await done;
+      const costUsd = Math.round((o.stats?.costUsd ?? 0) * 1000) / 1000;
+      // The session id is worth keeping even from a FAILED turn: claude has
+      // already created the session, and dropping it here would make the next
+      // message start a second conversation in the same chat.
+      const sessionId = o.sessionId ?? chat.sessionId ?? null;
+      if (o.status === 'ok') return { text: o.value ?? o.text ?? '', sessionId, costUsd, error: null };
+      const error = stopRequested.has(chat.id) ? 'stopped' : (o.error ?? 'claude returned no result').slice(0, 500);
+      return { text: '', sessionId, costUsd, error };
+    } catch (e) {
+      return {
+        text: '',
+        sessionId: null,
+        costUsd: 0,
+        error: stopRequested.has(chat.id) ? 'stopped' : (e as Error).message,
       };
-
-      child.stdout?.setEncoding('utf8');
-      child.stdout?.on('data', (c: string) => {
-        if (overflowed) return;
-        if (out.length + c.length > MAX_STDOUT_CHARS) {
-          // execFile's maxBuffer, done by hand: stop reading and take the
-          // whole group down rather than grow the heap without a bound.
-          overflowed = true;
-          out = '';
-          killGroup(child, 'SIGKILL');
-          return;
-        }
-        out += c;
-      });
-      // Kept only for the error message — claude's result is on stdout.
-      child.stderr?.setEncoding('utf8');
-      child.stderr?.on('data', (c: string) => {
-        errTail = (errTail + c).slice(-2000);
-      });
-      // `close`, not `exit`: close fires once the pipes are drained, and a
-      // reply arriving in the last chunk must not be lost to an early exit.
-      child.on('close', () => finish(null));
-      child.on('error', (e) => finish(e.message));
-
-      liveTurns.set(chat.id, child);
-      // Persisted so the NEXT process can find this child. A chat owns no
-      // tm_runs row, so the orchestrator's boot pid sweep cannot see it, and
-      // `detached` means a crash or a SIGKILL leaves it running — in write
-      // mode, still editing the repo. Without this column the next boot would
-      // clear the lock and the next message would put a SECOND `--resume` on
-      // the same session id alongside the orphan.
-      //
-      // Fire-and-forget: a failed write must not take down a turn that has
-      // already spawned. The cost is that recovery could not kill that one,
-      // which is exactly the old behaviour and never worse than it.
-      void this.storage.setChatPid(chat.id, child.pid ?? null).catch(() => {});
-      // The prompt goes on stdin, never in argv: a chat message is arbitrary
-      // user text and has no business in a process listing.
-      child.stdin?.on('error', () => {});
-      child.stdin?.write(prompt);
-      child.stdin?.end();
-      // This turn owns no run row, so the headless registry is the only thing
-      // that knows it is working — which is what puts it under the restart
-      // guard and /killall's stopAllHeadless().
-      // `group: true` — this child is detached, so shutdown and /killall must
-      // signal `-pid` or the tools it spawned outlive them.
-      registerHeadless(child, `chat: ${chat.title.slice(0, 60)}`, { group: true });
-    });
+    } finally {
+      if (liveTurns.get(chat.id) === ctl) liveTurns.delete(chat.id);
+      stopRequested.delete(chat.id);
+    }
   }
 }

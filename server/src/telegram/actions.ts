@@ -14,7 +14,10 @@ import {
   enqueueTask as svcEnqueueTask,
   queueAddTask as svcQueueAdd,
   queueRemoveTask as svcQueueRemove,
+  releaseTask as svcReleaseTask,
+  reviewTask as svcReviewTask,
   unblockTask as svcUnblock,
+  undoTask as svcUndoTask,
   type TaskEdit,
 } from '../task-actions.ts';
 import { short } from './ids.ts';
@@ -68,6 +71,18 @@ export async function retryTask(deps: ActionDeps, taskId: string, actor: string)
   return outcome(await svcEnqueueTask(deps, taskId, RETRY_FROM, actor), (t) => `“${t.title}” is queued for a retry.`);
 }
 
+/**
+ * POST /api/tasks/:id/review — "Review now": the adversarial reviewer runs
+ * over the current diff. The verdict is not this reply (it takes minutes): it
+ * arrives as the review ping (docs/telegram.md § Notifications).
+ */
+export async function reviewTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  return outcome(
+    await svcReviewTask(deps, taskId, actor),
+    (t) => `🔍 Reviewing “${t.title}” — the verdict follows when the reviewer is done.`,
+  );
+}
+
 /** POST /api/tasks/:id/run-now — jump the queue, spawn an agent now. */
 export async function runNowTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
   return outcome(await deps.orchestrator.runNow(taskId, actor), (t) => `“${t.title}” is running.`);
@@ -76,6 +91,20 @@ export async function runNowTask(deps: ActionDeps, taskId: string, actor: string
 /** POST /api/tasks/:id/cancel — de-queue, or kill the session and cancel. */
 export async function cancelTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
   return outcome(await svcCancelTask(deps, taskId, actor), (t) => `“${t.title}” cancelled.`);
+}
+
+/** POST /api/tasks/:id/undo — stop the turn, back to where it was (docs/queue.md § Undo start). */
+export async function undoTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  return outcome(await svcUndoTask(deps, taskId, actor), (t) =>
+    t.queueHeldAt
+      ? `“${t.title}” stopped and back in the queue — held until you Release it.`
+      : `“${t.title}” stopped and back in ${t.status}.`,
+  );
+}
+
+/** POST /api/tasks/:id/release — let the queue take a task Undo start held. */
+export async function releaseTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  return outcome(await svcReleaseTask(deps, taskId, actor), (t) => `“${t.title}” released — the queue may start it.`);
 }
 
 /** POST /api/tasks/:id/unblock — blocked → review. */
@@ -147,7 +176,7 @@ export async function setQueueEnabled(deps: ActionDeps, enabled: boolean, actor:
 }
 
 /**
- * The /feature intake: create the feature and immediately start the headless
+ * The /feature intake: create the feature and immediately start the
  * analysis, because on a phone the two are never separate acts. Mirrors
  * POST /api/features + POST /api/features/:id/analyze, including the
  * transition-as-a-lock and the revert when the spawn throws.
@@ -280,7 +309,10 @@ export type ButtonAction =
   | { kind: 'task.enqueue'; id: string }
   | { kind: 'task.run'; id: string }
   | { kind: 'task.cancel'; id: string }
+  | { kind: 'task.undo'; id: string }
+  | { kind: 'task.release'; id: string }
   | { kind: 'task.retry'; id: string }
+  | { kind: 'task.review'; id: string }
   | { kind: 'task.unblock'; id: string }
   | { kind: 'task.queueAdd'; id: string }
   | { kind: 'task.queueRemove'; id: string }
@@ -299,7 +331,10 @@ const WIRE: Record<ButtonAction['kind'], string> = {
   'task.enqueue': 't:enq',
   'task.run': 't:run',
   'task.cancel': 't:can',
+  'task.undo': 't:und',
+  'task.release': 't:rel',
   'task.retry': 't:rty',
+  'task.review': 't:rev',
   'task.unblock': 't:unb',
   'task.queueAdd': 't:qadd',
   'task.queueRemove': 't:qrm',
@@ -344,8 +379,14 @@ export function runButtonAction(deps: ActionDeps, a: ButtonAction, actor: string
       return runNowTask(deps, a.id, actor);
     case 'task.cancel':
       return cancelTask(deps, a.id, actor);
+    case 'task.undo':
+      return undoTask(deps, a.id, actor);
+    case 'task.release':
+      return releaseTask(deps, a.id, actor);
     case 'task.retry':
       return retryTask(deps, a.id, actor);
+    case 'task.review':
+      return reviewTask(deps, a.id, actor);
     case 'task.unblock':
       return unblockTask(deps, a.id, actor);
     case 'task.queueAdd':

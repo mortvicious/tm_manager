@@ -11,8 +11,8 @@ import './app-types.ts';
 import { sessionToken } from './auth.ts';
 import { ActivityWatcher } from './claude/activity.ts';
 import { CommandRunner } from './commands/runner.ts';
-import { liveHeadless, onHeadlessChange, stopAllHeadless } from './claude/headless.ts';
 import { ShellRunner } from './shells/runner.ts';
+import { AuxRunner, aux, initAux } from './claude/aux.ts';
 import { loadBootConfig, serverRoot } from './config.ts';
 import { isAllowedHost, isAllowedOriginHost, lanAddresses, setLanEnabled } from './net.ts';
 import { isHostToken } from './remote.ts';
@@ -27,6 +27,9 @@ import { registerQuestionRoutes } from './routes/questions.ts';
 import { registerPushRoutes } from './routes/push.ts';
 import { PushService } from './push/service.ts';
 import { PushNotifier } from './push/notifier.ts';
+import { registerSpaceRoutes } from './routes/spaces.ts';
+import { registerReportRoutes } from './routes/reports.ts';
+import { recoverReportsOnBoot } from './reports/service.ts';
 import { registerCommandRoutes } from './routes/commands.ts';
 import { registerShellRoutes } from './routes/shells.ts';
 import { registerFeatureRoutes } from './routes/features.ts';
@@ -70,6 +73,14 @@ const commandSessions = new SessionManager(
   () => scrollbackBytes,
   () => sessionTtlMs,
 );
+// Every OTHER claude this server spawns — review, plan, plan-review, analysis,
+// compact, report, chat, commit (docs/design.md § PTY sessions) — is a real
+// terminal too, in a THIRD pool: attachable like a worker, but never taking a
+// worker slot or counting against the agents' spawn cap.
+const auxSessions = new SessionManager(
+  () => scrollbackBytes,
+  () => sessionTtlMs,
+);
 // Plain shells per repo (docs/terminals.md) — a FOURTH pool, for the reason
 // commands have their own: a shell stays open for hours and must never touch
 // agent concurrency or the agents' spawn cap.
@@ -77,14 +88,13 @@ const shellSessions = new SessionManager(
   () => scrollbackBytes,
   () => sessionTtlMs,
 );
+initAux(new AuxRunner(storage, auxSessions, `http://127.0.0.1:${cfg.port}`));
 const orchestrator = new Orchestrator(storage, sessions, `http://127.0.0.1:${cfg.port}`);
 const commandRunner = new CommandRunner(storage, commandSessions);
 const shellRunner = new ShellRunner(storage, shellSessions);
 // Chat (docs/chat.md): a free-form conversation with claude in a repo, shared
-// by the SPA and the phone. It owns no PTY and no run row — every turn is a
-// headless `claude -p --resume` child, registered with the same headless
-// registry the analysis and review runs use, so the restart guard and
-// /killall already cover it.
+// by the SPA and the phone. Every turn is an aux terminal (kind `chat`,
+// `claude --resume`), so the restart guard and /killall already cover it.
 const chats = new ChatService({ storage });
 await orchestrator.recoverOnBoot();
 // Chats left mid-turn by the previous process hold a lock nothing else will
@@ -95,12 +105,17 @@ if (strandedChats.cleared) {
   console.log(`chat: cleared ${strandedChats.cleared} turn(s) stranded by the last restart${killed}`);
 }
 
+// A report's own row is not a run row, so a crash mid-write leaves it
+// `running` with nothing in existence to settle it (docs/reports.md).
+const strandedReports = await recoverReportsOnBoot(storage);
+if (strandedReports) console.log(`reports: failed ${strandedReports} report(s) stranded by the last restart`);
+
 // Live "what is it doing right now" line per running agent, tailed off the
 // session transcripts. Started after boot recovery so orphaned runs from the
 // previous process are already retired and never get tailed.
-// Headless agents start and finish without any PTY event, so nothing else
-// would refresh the status the header (and its restart guard) reads.
-onHeadlessChange(() => {
+// Aux sessions start and finish in their own pool, so nothing on the agents'
+// side would refresh the status the header (and its restart guard) reads.
+aux().onChange(() => {
   void orchestrator
     .status()
     .then((status) => broadcast({ type: 'orchestrator.status', status }))
@@ -108,7 +123,8 @@ onHeadlessChange(() => {
 });
 
 const activity = new ActivityWatcher({
-  hasLiveSessions: () => sessions.liveCount() > 0,
+  // Aux terminals (review, plan, chat, …) get the same live activity line.
+  hasLiveSessions: () => sessions.liveCount() > 0 || aux().liveCount() > 0,
   liveRuns: async () => {
     const runs = await storage.listRuns({ status: 'running' });
     return runs
@@ -177,28 +193,28 @@ app.get('/api/health', { logLevel: 'silent' }, async () => ({ ok: true, driver: 
 // A restart kills every agent, so it is REFUSED while any is working: worker
 // tasks would be swept to `failed` by boot recovery and their sessions lost,
 // and an in-flight analysis / adversarial review / feature plan dies mid-run.
-// BOTH kinds count — interactive PTY workers AND headless `claude -p` children,
-// which own no PTY and would otherwise slip through the gate entirely.
+// BOTH pools count — worker PTYs AND aux terminals (review, plan, chat, …),
+// which live in their own pool and would otherwise slip through the gate.
 //
 // The guard is ONE function behind ONE route, because the front door
 // (server/src/host.ts) has to enforce the same rule when it restarts this
 // process from the outside; two copies of the wording is how two answers drift.
 const restartGuard = async () => {
   const { running } = await orchestrator.status();
-  const headless = liveHeadless();
+  const auxLive = aux().liveLabels();
   const services = commandRunner.running().length;
   // Like services: reported so the confirm can say what dies, never blocking.
   const shells = shellRunner.running().length;
-  const blocked = running > 0 || headless.length > 0;
+  const blocked = running > 0 || auxLive.length > 0;
   const parts = [
     running > 0 ? `${running} agent session(s)` : null,
-    headless.length > 0 ? `${headless.length} headless agent(s) (${headless.join(', ')})` : null,
+    auxLive.length > 0 ? `${auxLive.length} aux session(s) (${auxLive.join(', ')})` : null,
   ].filter(Boolean);
   return {
     blocked,
     error: blocked ? `${parts.join(' and ')} still working — stop them first, or retry with force.` : null,
     running,
-    headless: headless.length,
+    aux: auxLive.length,
     services,
     shells,
   };
@@ -235,17 +251,17 @@ app.post('/api/server/restart', async (req, reply) => {
     return reply.code(409).send({
       error: guard.error,
       running: guard.running,
-      headless: guard.headless,
+      aux: guard.aux,
       services: guard.services,
       shells: guard.shells,
     });
   }
   // Dev servers are children of this process: kill them deliberately instead
   // of orphaning them onto the port the restarted server's repos will want.
-  // Headless agents only ever exist here on the force path — same reasoning.
+  // Aux sessions only ever exist here on the force path — same reasoning.
   commandRunner.stopAll();
   shellRunner.stopAll();
-  stopAllHeadless();
+  aux().stopAll();
   // Abort the in-flight long poll NOW so the socket is not still open when the
   // teardown below runs; that teardown awaits the same (idempotent) stop, so
   // the last audit row still lands before storage.close().
@@ -313,6 +329,8 @@ registerFeatureRoutes(app, storage);
 registerStatsRoutes(app, storage, sessions, orchestrator);
 registerChatRoutes(app, chats);
 registerQuestionRoutes(app, orchestrator.questions);
+registerReportRoutes(app, storage);
+registerSpaceRoutes(app, storage, orchestrator);
 // Web Push to the Home Screen PWA (docs/push.md). Like the bot it reaches OUT
 // (to the browser vendors' push services); the routes only manage devices.
 const push = new PushService(storage, cfg.push);
@@ -322,7 +340,7 @@ const pushNotifier = new PushNotifier({
   push,
   requestedReview: (taskId) => orchestrator.isRequestedReview(taskId),
 });
-registerTerminalWs(app, [sessions, commandSessions, shellSessions]);
+registerTerminalWs(app, [sessions, commandSessions, auxSessions, shellSessions]);
 registerEventsWs(app);
 
 // The Telegram bot (docs/telegram.md) reaches OUT — it registers no route and
@@ -348,6 +366,7 @@ const telegram = new TelegramBot(
   },
   chats,
   orchestrator.questions,
+  activity,
 );
 
 // Serve the built SPA when present (production mode). When it is absent this
@@ -384,14 +403,14 @@ if (servingSpa) {
 
 const stop = async () => {
   // Dev servers and watchers die with us either way; signalling them first is
-  // what makes them release their ports before the next boot. Headless agents
-  // do NOT die with us — they would keep spending tokens for nobody.
+  // what makes them release their ports before the next boot. Aux sessions
+  // are ended explicitly — they would keep spending tokens for nobody.
   commandRunner.stopAll();
   shellRunner.stopAll();
-  stopAllHeadless();
+  aux().stopAll();
   // A resume gate (docs/token-budget.md § The fourth) sits between "task marked
   // running" and "run row created", so a task inside one has nothing in
-  // `tm_runs` to recover from. `stopAllHeadless` above already signalled its
+  // `tm_runs` to recover from. `aux().stopAll()` above already ended its
   // compaction; this waits for the settle that follows, because closing storage
   // underneath it strands the task `running` with no run — a state only Cancel
   // can leave. Bounded, and `recoverOnBoot` sweeps it anyway for the crash and

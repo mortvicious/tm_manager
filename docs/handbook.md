@@ -21,13 +21,15 @@ down the pill reads `stopped` and the button becomes **Start server**.
 
    | Preset | Model | Effort | Adversarial review |
    |---|---|---|---|
-   | **Small** | `claude-opus-5` | medium | off |
-   | **Routine** | `claude-opus-5` | high | off |
+   | **Small** | `claude-opus-5-5` | medium | off |
+   | **Routine** | `claude-opus-5-5` | high | off |
    | **Complex** | `claude-fable-5-1` | high | on |
 
    The three dropdowns underneath stay editable — the presets are a shortcut, not a mode. Change one and the row simply stops highlighting a preset. The same row is on the task panel, so an existing task can be re-tuned the same way (then **Save changes**).
 
    The preset a task ends up with is shown back on the board as a coloured chip: **Small** green, **Routine** blue, **Complex** violet. A task whose model/effort/review match no preset simply has no chip.
+
+   **Custom presets.** **Config → Presets** adds your own next to the built-ins (which are listed there read-only): a name, a model, an effort, adversarial review (config default / on / off) and one of the seven group colours. **Add preset**, edit the row, then the page's **Save**. They appear after the built-ins on the new-task form, the task panel and Telegram's `/new`, and their chip on the board takes the chosen colour. Up to 12; each needs a name no other preset uses and a model/effort/review combination no other preset (built-in included) already has — the highlighted button and the chip are *matched* from those three values, so a repeat could never light up. The warning under the list is the same rule Save enforces. Because nothing on a task records which preset was clicked, editing or deleting a preset re-labels (or un-labels) the tasks whose values it matches; the tasks' own model/effort/review never change.
 3. **On create** decides what happens the moment you press the button: **Draft** files it and nothing more, **Queue** marks it ready for the orchestrator, **Run now** spawns an agent immediately. The last two need a repo, so they stay disabled until you pick one, and the button renames itself to match.
 4. You can also start a filed task later: **Run now** (immediate) from the task panel or the ▶ on its board row, or **Enqueue** and flip the header switch to **Queue running** — the orchestrator picks tasks up automatically, max 2 at a time. Or **Add to queue** (the ≡ on the row, or the button in the panel): that queue runs on its own even while the header switch is off, strictly one task at a time in the order you added them — the row shows `queue #n` until its turn comes. A finished task that is still in **review** keeps holding its repo's place, so the next queued task from the *same* repo waits for you to Publish or Mark done it (the row says `waiting for …`); for a sequence that should run through unattended, turn on **auto-publish** on those tasks.
 
@@ -113,7 +115,7 @@ Use it for the half of the day that is not a task: *what changed in this file*, 
 
 Per task: **override wins** (set at creation or in the task panel). Otherwise:
 
-1. Tasks mentioning browser/e2e/screenshot/UI-testing keywords → **fallback model** (`claude-opus-5`).
+1. Tasks mentioning browser/e2e/screenshot/UI-testing keywords → **fallback model** (`claude-opus-5-5`).
 2. Session (5h) usage < threshold (85%) → **primary** (`claude-fable-5`); above it → fallback.
 
 The header pill mirrors the CLI's own `/usage` panel: `5h` (current session), `wk` (weekly, all models) and `fable` (the weekly cap scoped to fable-family models), plus where the next task would route. Those percentages are the REAL account figures — the claude CLI caches its last `/usage` fetch in `~/.claude.json` and the server reads it. Nothing local can refresh that cache (there is no `claude usage` subcommand, and `claude -p` runs do not update it), so hover the pill for its age; it refreshes when a Claude Code TUI fetches usage, e.g. when you open `/usage`. A window whose reset time has passed falls back to a local-transcript estimate, shown dimmed with a `~` and measured against the token budgets in Config. Only the session figure drives model routing. A segment turns amber past the usage threshold. Cost chips on runs are estimates from the same transcripts.
@@ -122,7 +124,7 @@ The header pill mirrors the CLI's own `/usage` panel: `5h` (current session), `w
 
 ## Analyze
 
-**Analyze** (per repo, or per task from its panel) launches a read-only headless agent that inspects the repo and your open tasks, then files proposals:
+**Analyze** (per repo, or per task from its panel) launches a read-only agent in its own terminal (visible in Queue → Active sessions) that inspects the repo and your open tasks, then files proposals:
 
 - **rewrite** — clearer title/description
 - **split** — 2–5 concrete subtasks (accepting queues them and blocks the parent)
@@ -135,7 +137,7 @@ Proposals appear in the task panel with Accept/Reject. One analysis per repo at 
 
 A **Feature** is the home for a request that is far too big for one task: a paragraph-to-page description of a whole capability. Write it on the **Features** page (title + markdown request, one repo), then:
 
-1. **Analyze** — a read-only headless agent reads the repo and decomposes the request into *ordered phases* of worker-grade tasks. A second, independent agent then reviews that plan adversarially (missing steps? wrong ordering? tasks too big or too vague? contradicts `CLAUDE.md`?). A **blocker** verdict feeds the findings back into a fresh analysis, up to *Feature plan re-analysis rounds* in Config.
+1. **Analyze** — a read-only agent (its own terminal, attachable from the Queue page) reads the repo and decomposes the request into *ordered phases* of worker-grade tasks. A second, independent agent then reviews that plan adversarially (missing steps? wrong ordering? tasks too big or too vague? contradicts `CLAUDE.md`?). A **blocker** verdict feeds the findings back into a fresh analysis, up to *Feature plan re-analysis rounds* in Config.
 2. **Review the plan** — the feature page shows the request, the analysis summary and considerations, the review verdict with its findings, and the plan as **phase columns of task cards**. Every card is yours to edit before approval: retitle, rewrite, set category/effort/review, exclude it, reorder it, move it to another phase, or add one. Nothing exists as a real task yet — hit **Save plan** to keep your edits.
 3. **Approve** — the included cards become real tasks (source `feature`, tagged `feat pN` on the Board). They land as **drafts**: approving does not start anything.
 4. **Start** — phase 1 is enqueued and the normal orchestrator takes over; each task runs exactly like any other (worker PTY, hooks, adversarial diff review, your review → done). When every task in a phase is resolved, the next phase enqueues itself.
@@ -165,7 +167,7 @@ Colours are on by default and can be turned off in **Config → Board → Group 
 
 ## Reviewing & fixing
 
-When a worker finishes, its change is adversarially reviewed (Fable, or Opus 5 xhigh fallback) — findings show in the task panel. If it finds blocker/major issues and the worker session is still alive, they are fed back to the worker to fix and re-reviewed automatically (up to *Review→fix rounds* in Config). For **older tasks** that finished before this, or were reviewed but not fixed, the task panel has **Apply review fixes**: it sends the review findings back to a fresh worker (or reviews-then-fixes if the task was never reviewed). Per-task you can force review on, or skip it for trivial tasks, via the **Adversarial review** selector.
+When a worker finishes, its change is adversarially reviewed (Fable, or Opus 5.5 xhigh fallback) — findings show in the task panel. If it finds blocker/major issues and the worker session is still alive, they are fed back to the worker to fix and re-reviewed automatically (up to *Review→fix rounds* in Config). For **older tasks** that finished before this, or were reviewed but not fixed, the task panel has **Apply review fixes**: it sends the review findings back to a fresh worker (or reviews-then-fixes if the task was never reviewed). **Review now** runs the reviewer itself on the current diff — even one it already judged — and records a fresh verdict; it only sends findings back to the worker when the task is in review with its session still alive, and never changes the status of a done, failed or blocked task. It is disabled while a review is queued, running or being fixed (on the phone: `/review <id>` or 🔍 on the task card). Per-task you can force review on, or skip it for trivial tasks, via the **Adversarial review** selector.
 
 ## Follow-ups & files
 
@@ -176,6 +178,37 @@ The task panel has a **Follow-up** field: send an instruction to steer a live ag
 When two tasks are coordinating (a frontend task filed a backend task for a missing API field, say), the second round doesn't need a third task: the backend agent **dispatches** its "shipped, here's the contract" message straight to the frontend task, and the server delivers it by reopening that task's own claude session — same terminal, same memory. On the Board an incoming dispatch shows as a compact accented line under the receiving task (pulsing while **pending**, i.e. waiting for that agent to be free); the sender carries a `⇢ n pending` chip, and a `dispatches:` filter appears in the board bar once any exist. The task panel's **Dispatches** section shows the full messages in both directions. You can cancel a dispatch with ✕ any time before it is delivered. Delivery works even while the queue is stopped — it continues an existing conversation, like your own follow-ups do. Agents are capped at 2 dispatches per session and 3 between any two tasks, so a runaway back-and-forth always ends up in front of you instead of looping.
 
 Every dispatch says whether it needs the other agent to **do** something or is only telling it something. A `needs_action` one wakes that session as soon as it is free, as above. An **`fyi`** — marked with an `fyi` chip on the strip — never wakes anything: it waits, quietly, and gets handed to that agent at the start of the next turn it takes anyway (a review round, your Proceed, a real dispatch, publish). Its `pending` label deliberately doesn't pulse, because nothing is due; if the task has already finished for good the message is just recorded against it and settled. That is the point: reopening an agent's session costs about $15 in re-read conversation before it does anything, which is worth it for "implement this contract" and not for "FYI, I renamed the field".
+
+## Shared spaces — repos that work on one product
+
+When several repos are one product (a backend and its frontends), put them in
+a **shared space** on the **Shared** page. Pick a name, a folder outside every
+repo (for example `~/Development/neko-shared`) and the member repos. What you
+get:
+
+- **A knowledge folder.** Every agent in those repos reads it as
+  `$TM_SHARED_DIR` and may write to it. `INDEX.md` is the map, `knowledge/`
+  and `repos/` hold the facts, `README.md` holds the conventions, and
+  `REQUESTS.md` mirrors the ledger. The server copies `INDEX.md` into the
+  folder's `CLAUDE.md`, which every agent there loads at start. Its prompt
+  opens with "read before you plan", so the map is in front of the agent
+  before the task is. To write your own `CLAUDE.md` there instead, delete its
+  first line and the server leaves it alone. Use *Copy path* or *Open in VS Code*, or
+  browse it in the Files tab.
+- **Requests.** When one repo's change needs another repo to follow up, its
+  agent writes a request addressed to that repo. The next agent working there
+  sees it at the start of its task, checks whether it is already done, then
+  resolves it or files a task. Filed tasks go into the custom queue. One
+  starts once the agent that filed it is published, done or cancelled and
+  nothing else in the repo is working. The request closes by itself when the
+  task lands. A filing whose task failed or stayed a draft is marked **needs
+  you** on the Shared page and in `/shared`.
+- **What you can do.** Write requests and notes yourself, file a request as a
+  draft or into the queue, mark it done or dismissed, or reopen it. Telegram
+  `/shared` lists what is open.
+
+**Agent chain depth** (Config) is how many agent hops from you a task may be
+and still file tasks. The default is 6. See `docs/shared-spaces.md`.
 
 ## Questions — when an agent asks you
 

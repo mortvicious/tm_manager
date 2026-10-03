@@ -4,6 +4,15 @@ export type TaskStatus =
   | 'draft'
   | 'queued'
   | 'running'
+  /**
+   * The agent ended its turn with work of its own still in flight — a
+   * background subagent it launched — so the session is NOT finished: the CLI
+   * re-invokes it when that child returns. Its PTY stays live and non-idle
+   * (it keeps its worker slot and its repo), nothing is reviewed, and the task
+   * returns to `running` on the child's stop or the next transcript line
+   * (docs/design.md § Waiting).
+   */
+  | 'waiting'
   | 'blocked'
   | 'review'
   /** committed and pushed by the agent that did the work (docs/publish.md) */
@@ -12,11 +21,6 @@ export type TaskStatus =
   | 'failed'
   | 'cancelled';
 
-/**
- * Statuses that end a task's life. `published` joins `done` here: everything
- * that waits on a task (a split parent, a feature phase gate) must treat a
- * pushed task as settled, not as still-open work.
- */
 export type ReviewState = 'pending' | 'reviewing' | 'fixing' | 'passed' | 'flagged' | 'skipped' | 'error';
 
 export type ReviewVerdict = 'clean' | 'concerns' | 'blocker';
@@ -45,11 +49,30 @@ export interface ReviewRound {
   diffHash: string | null;
   /** set when the reviewer could not run — `verdict` is then `concerns` by convention */
   error: string | null;
+  /** who asked for this round with "Review now" (`human` | `telegram`); null/absent
+   *  for the automatic round after a Stop, and for a requested round that a
+   *  restart re-ran (the requester lives in memory only) */
+  requestedBy?: string | null;
 }
 
 /** States in which the reviewer has finished with the current change. */
 export const SETTLED_REVIEW_STATES: ReviewState[] = ['passed', 'flagged', 'skipped', 'error'];
 
+/**
+ * Statuses "Review now" accepts (docs/design.md § Adversarial review): a task
+ * that is parked with a change to judge. Never `running`/`waiting` (the diff is
+ * half-written), `queued`/`draft` (no work yet) or `cancelled`/`published`.
+ */
+export const REVIEW_NOW_FROM: TaskStatus[] = ['review', 'done', 'blocked', 'failed'];
+
+/** Review states in which a round is queued, running, or being fixed — "Review now" is refused/disabled. */
+export const REVIEW_BUSY_STATES: ReviewState[] = ['pending', 'reviewing', 'fixing'];
+
+/**
+ * Statuses that end a task's life. `published` joins `done` here: everything
+ * that waits on a task (a split parent, a feature phase gate) must treat a
+ * pushed task as settled, not as still-open work.
+ */
 export const TERMINAL_TASK_STATUSES: TaskStatus[] = ['published', 'done', 'failed', 'cancelled'];
 
 export type TaskSource = 'manual' | 'sentry' | 'auto' | 'feature';
@@ -65,6 +88,7 @@ export const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', '
 export const MODEL_OPTIONS = [
   'claude-fable-5-1',
   'claude-fable-5',
+  'claude-opus-5-5',
   'claude-opus-5',
   'claude-sonnet-5',
   'claude-haiku-4-5',
@@ -89,13 +113,18 @@ export function isCodexModel(model: string | null | undefined): boolean {
  * value the dropdown's "default (config)" option writes.
  */
 export interface TaskPreset {
-  id: 'small' | 'routine' | 'complex' | 'codexFree';
+  /** a built-in's fixed id, or a custom preset's `CUSTOM_PRESET_ID_RE` id */
+  id: string;
   label: string;
   /** what the preset resolves to, shown next to the label */
   hint: string;
   model: string;
   effort: EffortLevel;
   review: boolean | null;
+  /** custom presets only: the group palette slot (1..GROUP_COLOR_COUNT) it is drawn with */
+  color?: number;
+  /** true on a preset from `presets.custom` — the built-ins leave it unset */
+  custom?: boolean;
 }
 
 export const TASK_PRESETS: TaskPreset[] = [
@@ -106,16 +135,16 @@ export const TASK_PRESETS: TaskPreset[] = [
   {
     id: 'small',
     label: 'Small',
-    hint: 'opus 5 · medium',
-    model: 'claude-opus-5',
+    hint: 'opus 5.5 · medium',
+    model: 'claude-opus-5-5',
     effort: 'medium',
     review: false,
   },
   {
     id: 'routine',
     label: 'Routine',
-    hint: 'opus 5 · high',
-    model: 'claude-opus-5',
+    hint: 'opus 5.5 · high',
+    model: 'claude-opus-5-5',
     effort: 'high',
     review: false,
   },
@@ -142,13 +171,110 @@ export const TASK_PRESETS: TaskPreset[] = [
   },
 ];
 
-/** The preset a set of override values corresponds to, or undefined ("custom"). */
-export function matchTaskPreset(v: {
-  model: string | null;
-  effort: EffortLevel | null;
+/**
+ * A preset the user made on the Config page (`presets.custom`, docs/handbook.md
+ * § Quick start, Custom presets). Same three values as a built-in plus a colour slot; the
+ * hint is derived (`presetHint`), never stored, so it cannot disagree with the
+ * values it describes.
+ */
+export interface CustomTaskPreset {
+  /** `CUSTOM_PRESET_ID_RE` — short enough for a Telegram `w:` callback, and never a built-in id */
+  id: string;
+  label: string;
+  model: string;
+  effort: EffortLevel;
   review: boolean | null;
-}): TaskPreset | undefined {
-  return TASK_PRESETS.find((p) => p.model === v.model && p.effort === v.effort && p.review === v.review);
+  /** group palette slot, 1..GROUP_COLOR_COUNT */
+  color: number;
+}
+
+export const CUSTOM_PRESET_MAX = 12;
+export const CUSTOM_PRESET_LABEL_MAX = 24;
+export const CUSTOM_PRESET_ID_RE = /^p-[a-z0-9]{4,16}$/;
+/** a model id is argv to `claude --model`, so no whitespace and nothing exotic */
+export const CUSTOM_PRESET_MODEL_RE = /^[A-Za-z0-9][\w.:-]{0,63}$/;
+
+/** "opus 5.5 · high · review" — the built-ins' hint format, derived for a custom preset. */
+export function presetHint(p: { model: string; effort: EffortLevel; review: boolean | null }): string {
+  const bare = p.model.replace(/^claude-/, '');
+  const dash = bare.indexOf('-');
+  const model = dash < 0 ? bare : `${bare.slice(0, dash)} ${bare.slice(dash + 1).replace(/-/g, '.')}`;
+  // Review is written only when ON, as on the built-ins (docs/decisions.md 2026-08-26).
+  return `${model} · ${p.effort}${p.review ? ' · review' : ''}`;
+}
+
+/**
+ * Every preset offered: the built-ins first, then the user's own in their saved
+ * order. Built-ins first also makes them win `matchTaskPreset`'s first-match —
+ * moot in practice, since `customPresetProblem` refuses a custom preset whose
+ * values repeat any other preset's.
+ */
+export function taskPresets(settings: { 'presets.custom'?: CustomTaskPreset[] } | null | undefined): TaskPreset[] {
+  const custom = settings?.['presets.custom'];
+  if (!Array.isArray(custom) || !custom.length) return TASK_PRESETS;
+  return [
+    ...TASK_PRESETS,
+    ...custom.map((c) => ({
+      id: c.id,
+      label: c.label,
+      hint: presetHint(c),
+      model: c.model,
+      effort: c.effort,
+      review: c.review,
+      color: c.color,
+      custom: true,
+    })),
+  ];
+}
+
+/**
+ * Why a `presets.custom` list cannot be saved, or null when it can. Shared so
+ * the server (settings route) and the Config page (inline, before Save) apply
+ * one rule set. Checks the per-entry shape as well, because the Config page
+ * calls it on raw form state.
+ */
+export function customPresetProblem(list: CustomTaskPreset[]): string | null {
+  if (list.length > CUSTOM_PRESET_MAX) return `at most ${CUSTOM_PRESET_MAX} custom presets`;
+  const ids = new Set<string>();
+  const labels = new Map<string, string>(TASK_PRESETS.map((p) => [p.label.toLowerCase(), p.label]));
+  const values = new Map<string, string>(
+    TASK_PRESETS.map((p) => [`${p.model}|${p.effort}|${p.review}`, p.label]),
+  );
+  for (const c of list) {
+    const label = c.label.trim();
+    const name = label || '(unnamed)';
+    if (!CUSTOM_PRESET_ID_RE.test(c.id)) return `preset "${name}": invalid id`;
+    if (ids.has(c.id)) return `preset "${name}": duplicate id`;
+    ids.add(c.id);
+    if (!label) return 'every preset needs a name';
+    if (label.length > CUSTOM_PRESET_LABEL_MAX) return `preset "${label}": name is over ${CUSTOM_PRESET_LABEL_MAX} characters`;
+    const taken = labels.get(label.toLowerCase());
+    if (taken) return `preset "${label}": the name "${taken}" is already used`;
+    labels.set(label.toLowerCase(), label);
+    if (!CUSTOM_PRESET_MODEL_RE.test(c.model)) return `preset "${label}": invalid model id`;
+    if (!EFFORT_LEVELS.includes(c.effort)) return `preset "${label}": invalid effort`;
+    if (c.review !== null && typeof c.review !== 'boolean') return `preset "${label}": invalid review value`;
+    if (!Number.isInteger(c.color) || c.color < 1 || c.color > GROUP_COLOR_COUNT) return `preset "${label}": invalid colour`;
+    // The highlighted button and the board chip are computed by matching these
+    // three values, so a repeat could never be the one that lights up.
+    const key = `${c.model}|${c.effort}|${c.review}`;
+    const same = values.get(key);
+    if (same) return `preset "${label}": same model, effort and review as "${same}"`;
+    values.set(key, label);
+  }
+  return null;
+}
+
+/** The preset a set of override values corresponds to, or undefined ("custom"). */
+export function matchTaskPreset(
+  v: {
+    model: string | null;
+    effort: EffortLevel | null;
+    review: boolean | null;
+  },
+  presets: TaskPreset[] = TASK_PRESETS,
+): TaskPreset | undefined {
+  return presets.find((p) => p.model === v.model && p.effort === v.effort && p.review === v.review);
 }
 
 export interface Repo {
@@ -301,6 +427,14 @@ export interface Task {
   source: TaskSource;
   sourceRef: string | null;
   priority: number;
+  /**
+   * Manual position (docs/grouping.md § Order). Siblings — a group's members
+   * under one parent, or the root tasks — are ordered by it, and it is the
+   * global claim's tiebreaker after `priority`, so the board's queue order IS
+   * the run order. Only its rank among siblings means anything; new rows take
+   * the global max + 1 (the end), and a drag writes a midpoint.
+   */
+  sortOrder: number;
   /** per-task overrides; null falls back to agent.model / agent.effort settings */
   model: string | null;
   effort: EffortLevel | null;
@@ -308,7 +442,7 @@ export interface Task {
   category: string | null;
   /** run id of the agent that filed this task (null = human-created) */
   createdByRun: string | null;
-  /** distance from human intent: human 0, agent-filed = creator's depth + 1 (cap 2) */
+  /** distance from human intent: human 0, agent-filed = creator's depth + 1 (cap: agent.maxSpawnDepth) */
   spawnDepth: number;
   /** the Feature this task was generated from (null = standalone task) */
   featureId: string | null;
@@ -317,6 +451,13 @@ export interface Task {
   resultSummary: string | null;
   /** per-task adversarial review override: null = use review.enabled setting */
   review: boolean | null;
+  /**
+   * Who reviews this task's change: null = the global review.model setting.
+   * Fable still falls back to Opus 5 when unavailable; the round records what ran.
+   */
+  reviewModel: string | null;
+  /** reviewer --effort; null = the reviewer's default (none, xhigh on the Opus fallback) */
+  reviewEffort: EffortLevel | null;
   /**
    * Skip the human review gate: when the worker finishes, the same agent
    * session commits and pushes the work and the task lands in `published`
@@ -342,6 +483,21 @@ export interface Task {
    */
   reviewDiffHash: string | null;
   /**
+   * Where this task's change starts (docs/design.md § Adversarial review,
+   * "What the reviewer reads"): the repo's HEAD sha and branch when the
+   * task's FIRST worker run spawned, and when. Written once and never moved —
+   * retries, fix rounds and follow-ups keep it. The reviewer diffs the task's
+   * own commits (found by their `Task: <id>` trailer, or base..HEAD when no
+   * other task worked in the repo meanwhile) plus the uncommitted rest. null =
+   * never ran (a task from before migration 29 gets one derived at its next
+   * review from its first run's start time).
+   */
+  baseSha: string | null;
+  /** branch at `baseSha` (`HEAD` when detached) */
+  baseRef: string | null;
+  /** ISO time the base was taken — the start of the task's commit window */
+  baseAt: string | null;
+  /**
    * Where the adversarial review of the CURRENT change stands (docs/design.md
    * § Adversarial review). Written in the same row write as the status it
    * qualifies, so no surface can see `review` without knowing whether the
@@ -365,6 +521,14 @@ export interface Task {
    * the field (docs/wake.md). null = not waiting on usage.
    */
   wakeAt: string | null;
+  /**
+   * ISO time an "Undo start" (docs/queue.md § Undo start) put this task back
+   * into `queued`. It keeps its place, but no claim takes it: the global, agent
+   * and custom queues all skip it until Release, Run now, Enqueue or Add to
+   * queue. Only meaningful in `queued`, and every status transition clears it.
+   * null = not held.
+   */
+  queueHeldAt: string | null;
   error: string | null;
   createdAt: string;
   updatedAt: string;
@@ -372,17 +536,35 @@ export interface Task {
 
 /**
  * Custom queue (docs/queue.md): statuses in which a member still owns its
- * repo's working tree, so the next same-repo member must wait. Twin of the
- * in-flight predicate in server/src/storage/queue-sql.ts — edit together.
+ * repo's working tree, so the next same-repo member must wait. `review` is
+ * NOT here: a member parked in review holds its repo only while an automatic
+ * review round is open on it (`customQueueHoldsRepo`). Twin of the in-flight
+ * predicate in server/src/storage/queue-sql.ts — edit together.
  */
-export const CUSTOM_QUEUE_IN_FLIGHT_STATUSES: readonly TaskStatus[] = ['running', 'review', 'blocked'];
+export const CUSTOM_QUEUE_IN_FLIGHT_STATUSES: readonly TaskStatus[] = ['running', 'waiting', 'blocked'];
+
+/**
+ * Whether this task still holds its repo's place in the custom queue
+ * (docs/queue.md § When the next member starts): working, parked on its
+ * subagents, blocked on a split, or in `review` with an automatic review round
+ * still open (`REVIEW_BUSY_STATES`). A task whose review has settled — or that
+ * was never going to be reviewed — sits in `review` for the human without
+ * stopping the queue. JS twin of `CUSTOM_QUEUE_HELD_BY` in
+ * server/src/storage/queue-sql.ts — edit together.
+ */
+export function customQueueHoldsRepo(t: Pick<Task, 'status' | 'reviewState'>): boolean {
+  if (CUSTOM_QUEUE_IN_FLIGHT_STATUSES.includes(t.status)) return true;
+  return t.status === 'review' && !!t.reviewState && REVIEW_BUSY_STATES.includes(t.reviewState);
+}
 
 /**
  * Members of the custom queue (docs/queue.md) that are still WAITING, in the
  * order they will run: FIFO by the moment each was added. `transitionTask`
  * clears `custom_queue_at` only on a terminal status, so a `running`, `review`
- * or `blocked` member keeps its mark — by design, it still holds its repo's
- * place — but it is no longer waiting and must not be counted in the position.
+ * or `blocked` member keeps its mark (whether it still holds its repo is
+ * `customQueueHoldsRepo`), but it is no longer waiting and must not be counted
+ * in the position. A member held by Undo start IS still waiting and keeps its
+ * number; the claim skips it.
  *
  * Shared rather than duplicated: the board's `queue #n` chip and the Telegram
  * bot's `/task` and `/queue` both derive their ordinal from this, so the two
@@ -395,6 +577,34 @@ export function customQueueWaiting(tasks: Task[]): Task[] {
 }
 
 /** How many distinct colours the board can tint groups with (`--tm-group-1..N`). */
+/**
+ * Where `POST /api/tasks/:id/move` puts a task relative to its target
+ * (docs/grouping.md § Drag and drop): beside it, joined to its group flat,
+ * as its last child, at the end of its group, or out of any group.
+ */
+export const TASK_MOVE_PLACES = ['before', 'after', 'into', 'child', 'group', 'ungroup'] as const;
+export type TaskMovePlace = (typeof TASK_MOVE_PLACES)[number];
+
+/**
+ * The global claim's order as a comparator — the JS twin of
+ * `MANUAL_CLAIM_ORDER` (server/src/storage/group.ts); edit them together.
+ * priority first, then the group's root key (then group id), root before its
+ * members, then the task's own key, then creation. `byId` must hold the roots.
+ */
+export function compareClaimOrder(byId: ReadonlyMap<string, Task>) {
+  return (a: Task, b: Task): number => {
+    const rootKey = (t: Task) => byId.get(t.groupId)?.sortOrder ?? t.sortOrder;
+    return (
+      b.priority - a.priority ||
+      rootKey(a) - rootKey(b) ||
+      (a.groupId < b.groupId ? -1 : a.groupId > b.groupId ? 1 : 0) ||
+      Number(!!a.parentId) - Number(!!b.parentId) ||
+      a.sortOrder - b.sortOrder ||
+      a.createdAt.localeCompare(b.createdAt)
+    );
+  };
+}
+
 export const GROUP_COLOR_COUNT = 7;
 
 /**
@@ -435,7 +645,34 @@ export function groupLabel(root: Pick<Task, 'title' | 'groupName'> | undefined, 
   return root.groupName?.trim() || root.title;
 }
 
-export type RunMode = 'worker' | 'analyze';
+/**
+ * `worker` = a task's agent (the only mode that ever moves a task). `aux` =
+ * every other claude this server spawns — each one a real, attachable PTY
+ * terminal told apart by `kind` (docs/design.md § PTY sessions). There is no
+ * headless mode any more; the legacy `analyze` rows were migrated to `aux`.
+ */
+export type RunMode = 'worker' | 'aux';
+/** What a run's terminal is doing. Workers are always `worker`. */
+export type RunKind =
+  | 'worker'
+  | 'review'
+  | 'plan'
+  | 'plan-review'
+  | 'analysis'
+  | 'compact'
+  | 'report'
+  | 'chat'
+  | 'commit';
+export const AUX_RUN_KINDS: readonly Exclude<RunKind, 'worker'>[] = [
+  'review',
+  'plan',
+  'plan-review',
+  'analysis',
+  'compact',
+  'report',
+  'chat',
+  'commit',
+];
 export type RunStatus = 'running' | 'exited' | 'killed';
 
 /** Usage figures parsed from the claude session transcript (filled by hooks/exit). */
@@ -463,6 +700,16 @@ export interface Run {
   taskId: string | null;
   repoId: string | null;
   mode: RunMode;
+  kind: RunKind;
+  /**
+   * What an aux session is about, by kind: the task (review, compact), the
+   * feature (plan, plan-review), the chat, the report, or the repo (analysis,
+   * commit). `taskId` stays null for every aux run on purpose — it means
+   * "this task's agent" everywhere it is read.
+   */
+  subjectId: string | null;
+  /** runs-list label of an aux session ("review: <task title>"); on a WORKER row, 'publish' marks a publish turn (docs/queue.md § Stacked tasks) */
+  label: string | null;
   status: RunStatus;
   pid: number | null;
   exitCode: number | null;
@@ -677,8 +924,16 @@ export interface AppSettings {
   'agent.allowEnqueue': boolean;
   /** max follow-up tasks ONE worker session may file via the agent API (403 after) */
   'agent.taskCreationCap': number;
+  /**
+   * how many agent hops from a human a task may be and still file tasks: a
+   * human's task is depth 0, a task it filed 1, … (default 6, 1..10;
+   * docs/shared-spaces.md § Depth)
+   */
+  'agent.maxSpawnDepth': number;
   /** tint each task group with its own colour on the Board */
   'board.groupColors': boolean;
+  /** the user's own task presets, after the built-in `TASK_PRESETS` (docs/handbook.md § Quick start, Custom presets) */
+  'presets.custom': CustomTaskPreset[];
   /** run an adversarial review of each worker's change before it lands in review */
   'review.enabled': boolean;
   /** reviewer model; falls back to Opus 5 xhigh when unavailable */
@@ -711,6 +966,16 @@ export interface AppSettings {
    * mid-run.
    */
   'agent.resumeContextCap': number;
+  /**
+   * How long a background SHELL (`run_in_background` Bash) may hold its task
+   * in `waiting` (docs/design.md § Waiting), counted from the first Stop that
+   * saw it running. A shell the agent ended its turn to wait for (a test
+   * suite, a Lighthouse pass) re-invokes the session when it exits; one left
+   * running on purpose (a dev server) never does, and the two look the same
+   * at the Stop — so the wait is bounded, and past it the turn lands the
+   * ordinary way. 0 = shells never hold a task (subagents only).
+   */
+  'agent.shellWaitMinutes': number;
   /** a turn that ended against the 5h usage limit is resumed automatically
    *  when the window resets, in its own session (docs/wake.md) */
   'agent.autoWake': boolean;
@@ -787,7 +1052,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'orchestrator.autoComplete': false,
   // Role split (user policy 2026-08-24): opus does the heavy work, fable
   // tells it what to do and reviews.
-  'agent.model': 'claude-opus-5',
+  'agent.model': 'claude-opus-5-5',
   'agent.effort': 'high',
   'analysis.model': 'claude-fable-5-1',
   'orchestrator.model': 'claude-fable-5-1',
@@ -795,7 +1060,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // but off by default (task.model overrides always win either way)
   'router.enabled': false,
   'router.primaryModel': 'claude-fable-5-1',
-  'router.fallbackModel': 'claude-opus-5',
+  'router.fallbackModel': 'claude-opus-5-5',
   'router.usageThresholdPct': 85,
   'router.budget5hTokens': 2_000_000,
   // No official account API, so every budget here is a calibration knob, not a
@@ -809,8 +1074,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'agent.permissionMode': 'auto',
   'agent.allowEnqueue': false,
   'agent.taskCreationCap': 15,
+  'agent.maxSpawnDepth': 6,
   'agent.allowedTools': [],
   'board.groupColors': true,
+  'presets.custom': [],
   'review.enabled': true,
   'review.model': 'claude-fable-5-1',
   'review.maxRounds': 1,
@@ -828,6 +1095,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // ~300k session, so the cap sits where quality is not yet in question and
   // only the re-write cost is.
   'agent.resumeContextCap': 300_000,
+  // 30: long enough for a full test suite or a 20-run Lighthouse pass (the
+  // incident that added it took 10), short enough that a dev server left
+  // running holds a worker slot for half an hour at most.
+  'agent.shellWaitMinutes': 30,
   'agent.autoWake': true,
   // A minute past the stated reset: the boundary is the account's, and a
   // resume that arrives a second early buys nothing but a second stall.
@@ -843,7 +1114,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'telegram.digestSentOn': '',
   'telegram.digestArmedAt': '',
   'telegram.activeChatId': '',
-  'chat.model': 'claude-opus-5',
+  'chat.model': 'claude-opus-5-5',
   'chat.effort': 'high',
   'chat.concurrency': 2,
 };
@@ -934,12 +1205,21 @@ export type AuditKind =
   | 'task.created'
   | 'task.transition'
   | 'task.edited'
+  | 'task.moved'
   /** custom queue membership changed by a human (docs/queue.md) */
   | 'task.queue'
+  /**
+   * "Undo start" stopped a running turn and put the task back where it was
+   * (docs/queue.md § Undo start), or a human released that hold. `data.action`
+   * is 'undo' | 'release'.
+   */
+  | 'task.undo'
   | 'task.follow-up'
   | 'task.dispatch'
   | 'task.publish'
   | 'run.reviewed'
+  /** a human/the bot asked for an on-demand adversarial review ("Review now") */
+  | 'task.review-requested'
   | 'task.deleted'
   | 'run.started'
   | 'run.killed'
@@ -964,8 +1244,13 @@ export type AuditKind =
   /** an agent closed a parked task as done/cancelled without a run (docs/agent-api-design.md § Close and move) */
   | 'agent.close'
   | 'sentry.sync'
+  /** a work-summary document was generated, re-run or deleted (docs/reports.md) */
+  | 'report.changed'
+  /** a shared space was created / edited / deleted, or a shared request/note changed (docs/shared-spaces.md) */
+  | 'space.changed'
   /** a tailnet login passed the front door's remote gate for the first time this front-door boot (docs/remote-access.md) */
   | 'remote.login'
+  | 'shared-note.changed'
   /** a command the Telegram bot handled for the allowlisted owner */
   | 'telegram.command'
   /** periodic SUMMARY of updates the single-user gate dropped — deliberately
@@ -987,6 +1272,8 @@ export type AuditKind =
   | 'chat.turn'
   /** a turn parked on the 5h usage window, or resumed when it reopened (docs/wake.md) */
   | 'task.wake'
+  /** a turn ended with the agent's own background children still running, or that wait ended (docs/design.md § Waiting) */
+  | 'task.waiting'
   /** a worker's AskUserQuestion reached the human / was answered / expired (docs/questions.md) */
   | 'question.asked'
   | 'question.answered'
@@ -1136,12 +1423,14 @@ export interface OrchestratorStatus {
   running: number;
   concurrency: number;
   /**
-   * Headless `claude -p` agents alive right now (analysis, adversarial review,
-   * feature planning). They own no PTY, so they are invisible to `running` —
-   * but a restart kills them just the same, which is why the restart guard
-   * counts them too. A server predating this field simply omits it.
+   * Aux sessions alive right now — review, plan, plan-review, analysis,
+   * compact, report, chat, commit terminals (docs/design.md § PTY sessions).
+   * They live in their own PTY pool and take no worker slot, so they are
+   * invisible to `running` — but a restart kills them just the same, which is
+   * why the restart guard counts them too. Was `headless` before every such
+   * run became a terminal; a server predating this field omits it.
    */
-  headless: number;
+  aux: number;
 }
 
 /**
@@ -1158,6 +1447,152 @@ export interface RunActivity {
   kind: 'tool' | 'text';
   /** ISO time the line was produced */
   at: string;
+}
+
+/**
+ * Reports (docs/reports.md): a work-summary document over SEVERAL repos and a
+ * date range, written by one headless claude pass over the task rows that
+ * finished in the window. Unlike the Telegram report (`telegram/report.ts`),
+ * which is an ops status page for the operator, this is the document you hand
+ * to whoever paid for the work: Russian prose, grouped by completion DATE, one
+ * concise business-language bullet per task, no run/token/cost machinery.
+ */
+export type ReportStatus = 'pending' | 'running' | 'ready' | 'failed';
+
+/**
+ * The presets behind the range picker. `custom` is the explicit from/to pair;
+ * every other value is resolved server-side against the server's own clock so
+ * "today" means the operator's today, not UTC's.
+ */
+export type ReportRangePreset = 'today' | '3d' | 'week' | 'month' | 'custom';
+
+/**
+ * The language the DOCUMENT is written in. It governs the agent's prose AND
+ * the headings the server assembles around it, so a report is never half
+ * Russian and half English. The SPA itself stays English — this is a property
+ * of the artifact, not of the app.
+ */
+export type ReportLanguage = 'ru' | 'en';
+
+export const REPORT_LANGUAGES: { value: ReportLanguage; label: string }[] = [
+  { value: 'ru', label: 'Русский' },
+  { value: 'en', label: 'English' },
+];
+
+export const REPORT_RANGE_PRESETS: { value: ReportRangePreset; label: string; days: number | null }[] = [
+  { value: 'today', label: 'Today', days: 1 },
+  { value: '3d', label: '3 days', days: 3 },
+  { value: 'week', label: 'Week', days: 7 },
+  { value: 'month', label: 'Month', days: 30 },
+  { value: 'custom', label: 'Custom', days: null },
+];
+
+/** Widest window a single report may cover — past this it is an export, not a report. */
+export const REPORT_MAX_DAYS = 366;
+
+/** How many finished tasks one report will summarise before it starts dropping the oldest. */
+export const REPORT_TASK_CAP = 400;
+
+export interface Report {
+  id: string;
+  /** Document heading; defaults to the repo names joined, editable at creation. */
+  title: string;
+  /** Repos in scope — ALWAYS at least one; the picker allows several. */
+  repoIds: string[];
+  /**
+   * Inclusive local calendar day bounds, `YYYY-MM-DD`. Stored as plain days
+   * rather than instants because that is what the document prints and what the
+   * human picked; the service widens them to local-midnight instants to query.
+   */
+  fromDate: string;
+  toDate: string;
+  preset: ReportRangePreset;
+  language: ReportLanguage;
+  status: ReportStatus;
+  /** The finished document, Russian markdown. Null until the run lands. */
+  markdown: string | null;
+  /** One-line Russian gist, shown in the list without opening the document. */
+  summary: string | null;
+  /** How many finished tasks went in — the denominator behind the document. */
+  taskCount: number;
+  /** Model that wrote it, so a thin report can be re-run on a better one. */
+  model: string | null;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * A shared space (docs/shared-spaces.md): a set of repos that work on one
+ * product and share one persistent knowledge folder plus a ledger of
+ * cross-repo requests and notes. A repo belongs to at most ONE space, so a
+ * worker has exactly one `$TM_SHARED_DIR`.
+ */
+export interface Space {
+  id: string;
+  name: string;
+  /** Absolute folder on disk (outside every repo) — the knowledge base agents and humans read. */
+  path: string;
+  /** Member repos; at least one. */
+  repoIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * `request` — work a repo still has to do because of another repo's change or
+ * finding (`toRepoId` required, never the author's own repo). `note` — durable
+ * knowledge for every member (`toRepoId` null, or a repo it mainly concerns).
+ */
+export type SharedNoteKind = 'request' | 'note';
+export const SHARED_NOTE_KINDS: SharedNoteKind[] = ['request', 'note'];
+
+/**
+ * open → filed (a task exists for it) → done; dismissed = withdrawn / not
+ * needed / archived note. A `filed` request whose task is cancelled or deleted
+ * reopens; one whose task lands done/published resolves (reconciled on read).
+ */
+export type SharedNoteStatus = 'open' | 'filed' | 'done' | 'dismissed';
+export const SHARED_NOTE_STATUSES: SharedNoteStatus[] = ['open', 'filed', 'done', 'dismissed'];
+/**
+ * A `filed` request whose task sits in one of these waits on a HUMAN: a draft
+ * nobody enqueued, or a failed run nobody retried. It stays `filed` (the task
+ * still owns it — reopening would invite a duplicate filing beside a retry),
+ * so the Shared page and Telegram `/shared` flag it as "needs you" instead.
+ */
+export const SHARED_FILING_STALLED: readonly TaskStatus[] = ['draft', 'failed'];
+
+export interface SharedNote {
+  id: string;
+  spaceId: string;
+  kind: SharedNoteKind;
+  title: string;
+  /** Markdown; a self-contained contract for a request. */
+  body: string;
+  /** Author repo (null = written by a human). */
+  fromRepoId: string | null;
+  /** Author task (agent-written notes). */
+  fromTaskId: string | null;
+  toRepoId: string | null;
+  status: SharedNoteStatus;
+  /** The task filed for a request (`filed`/`done`). */
+  taskId: string | null;
+  /** How it was resolved or why it was dismissed. */
+  resolution: string | null;
+  /** Paths RELATIVE to the space folder that the note refers to. */
+  files: string[];
+  /** 'human' | 'telegram' | 'agent:<runId8>' | 'import' */
+  actor: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A file in a space folder, as listed by the Shared page. */
+export interface SpaceFile {
+  /** Relative to the space folder, `/`-separated. */
+  path: string;
+  size: number;
+  mtime: string;
 }
 
 export type ServerEvent =
@@ -1182,6 +1617,12 @@ export type ServerEvent =
   | { type: 'chat.deleted'; chatId: string }
   | { type: 'chat.message'; message: ChatMessage }
   | { type: 'question.updated'; question: Question }
+  | { type: 'report.updated'; report: Report }
+  | { type: 'report.deleted'; reportId: string }
+  | { type: 'space.updated'; space: Space }
+  | { type: 'space.deleted'; spaceId: string }
+  | { type: 'shared-note.updated'; note: SharedNote }
+  | { type: 'shared-note.deleted'; noteId: string }
   | { type: 'orchestrator.status'; status: OrchestratorStatus };
 
 /**

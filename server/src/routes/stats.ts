@@ -3,6 +3,7 @@ import type { Anomaly, AuditEvent, StatsOverview } from '@tm/shared';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 import type { Storage } from '../storage/types.ts';
+import { maxSpawnDepth } from './agent-caps.ts';
 
 // Aggregates come from the base tables wherever they can (permanent truth);
 // the event log answers only what they cannot: per-day done/failed, byActor,
@@ -181,6 +182,7 @@ export function registerStatsRoutes(
     const longRunMs = settings['anomaly.longRunMin'] * 60_000;
     const costCap = settings['anomaly.costUsd'];
     const staleReviewMs = settings['anomaly.staleReviewHours'] * 3600_000;
+    const maxDepth = maxSpawnDepth(settings);
     const nowMs = Date.now();
     const anomalies: Anomaly[] = [];
 
@@ -279,11 +281,11 @@ export function registerStatsRoutes(
           taskId: t.id,
         });
       }
-      if (t.spawnDepth >= 2) {
+      if (t.spawnDepth >= maxDepth) {
         anomalies.push({
           severity: 'info',
           kind: 'max-depth',
-          message: `depth-2 task (agent chain at the cap) — worth a look at what agents are delegating`,
+          message: `depth-${t.spawnDepth} task (agent chain at the cap) — worth a look at what agents are delegating`,
           taskId: t.id,
         });
       }

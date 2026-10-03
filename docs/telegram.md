@@ -290,7 +290,7 @@ Constructed in `server/src/index.ts` after the routes are registered, started af
 
 A handler calls the same functions the REST routes call — `Orchestrator.status()`, `usageSnapshot()`, `storage.listTasks()` — never `fetch` against this server's own API. Two reasons: a self-call would have to satisfy the `Host`/`Origin` allowlists and the session token, and two paths to one number is how the phone and the browser start disagreeing. Where a route had the assembly inline, it moved into a service function and the route now calls it too — `GET /api/usage` is the first of these (the body moved to `usageSnapshot()` in `server/src/claude/usage.ts`).
 
-The bot never touches a PTY, and `/chat` did not change that: a chat turn is a headless `claude -p --resume` child, not a terminal session ([`chat.md`](chat.md)). The terminal WebSocket is still not exposed. What a **write-mode** chat does expose is the ability to edit files and run commands in a repo, which is why that half is gated on `telegram.chat.allowWrite` in the config file — see § What the bot does not do.
+The bot never touches a PTY, and `/chat` did not change that: a chat turn is its own aux terminal since 2026-09-24, but the phone reads its reply from the Stop hook, never from the terminal ([`chat.md`](chat.md) § Turns are terminals). The terminal WebSocket is still not exposed. What a **write-mode** chat does expose is the ability to edit files and run commands in a repo, which is why that half is gated on `telegram.chat.allowWrite` in the config file — see § What the bot does not do.
 
 ### The loop
 
@@ -394,6 +394,7 @@ All three are bot state, not knobs: they are deliberately absent from the `PUT /
 | bus event | condition | class | message (buttons) |
 |---|---|---|---|
 | `task.updated` | status became `review` with a **settled** `reviewState` (`passed`/`flagged`/`skipped`/`error`/null), or the state settled on a task already in `review` (see below) | `review` | 📋 title `id8` is in **review** · ✓ reviewed by <model> — clean / ⚠ review flagged N issue(s) / bare when the change was never auto-reviewed; then the task's `error` when set (⚠ the failed-publish reason), else the reviewer's overall **summary** of the work, else the worker's `resultSummary` — clipped to 1500 chars (**Mark done / Publish / Proceed**) |
+| `task.updated` | a **requested** review (`/review`, 🔍, the SPA's Review now) settled on a task NOT in `review` (`done`/`failed`/`blocked`) — asked of the orchestrator at the settling broadcast, so an automatic round on an autoComplete `done` task stays silent | `review` | 🔍 title `id8` (status) was reviewed · verdict; then the reviewer's summary. No buttons — the status was deliberately left alone |
 | `run.needs-attention` | the event carries a RAISED flag, and at flush the run is still `running`, not idle and still flagged | `attention` | ✋ title **needs attention** — the agent is waiting on a prompt |
 | `question.updated` | status `pending` — sent at once, NOT coalesced and NOT gated by the notify flags: an agent is blocked on it ([`questions.md`](questions.md)) | — | ❓ title **asks you**: one message per question with the options as buttons (`q:` namespace), `✔ Done` on multi-select, `✍️ Other…` for free text; answered in the browser → ✅ summary; expired → ⌛ with the reason |
 | `task.updated` | status became `failed` | `failed` | ❌ title **failed**: the task's `error` |
@@ -422,9 +423,9 @@ Transition detection is a last-seen-status (and last-seen-review-state) memory p
 
 Inline keyboards ride the **last** chunk of a message. `callback_data` is a `<ns>:<verb>:<id>` string — `p:acc:<n>:<id>` for the option-choosing accept, the one action that carries a parameter (Telegram caps the whole thing at 64 bytes); codec and dispatch table live together in `actions.ts` so a button cannot be added to one without the other, and an option segment on any other verb parses as null rather than being guessed about.
 
-A `solution_options` proposal is a **choice, not a confirmation**: storage resolves an index-less accept as option 0 and appends that option's approach to the task description as the chosen one. So the notification renders every option in full, the keyboard offers one accept button per option (never a bare Accept), and the action layer refuses an index-less accept on any proposal that has options — from a button *or* from a future command — with "pick one with its own button". The confirmation names the chosen option. A press is gated exactly like a message — the presser's id must be the allowlisted one, and, when the carrying message survived Telegram's 48h window, its chat must be the owner's private chat; anything else is dropped in silence and counted. The press is answered with a toast (`answerCallbackQuery`), audited as `telegram.command` (`command: 'button:<kind>'`) **before** the answers, and confirmed with a message.
+A `solution_options` proposal is a **choice, not a confirmation**: storage resolves an index-less accept as option 0 and appends that option's approach to the task description as the chosen one. So the notification renders every option in full, the keyboard offers one accept button per option (never a bare Accept), and the action layer refuses an index-less accept on any proposal that has options — from a button *or* from a future command — with "pick one with its own button". The confirmation names the chosen option. A press is gated exactly like a message — the presser's id must be the allowlisted one, and, when the carrying message survived Telegram's 48h window, its chat must be the owner's private chat; anything else is dropped in silence and counted. The press is answered with a toast (`answerCallbackQuery`), audited as `telegram.command` (`command: 'button:<kind>'`) **before** the answers, and then — **on a board or a card**, recognised by the 🔄 button its own keyboard carries (`l:f:` for a board, `l:r:` for a card) — the SAME message is redrawn with the new row and the keyboard its new status allows, the outcome (`✅ …` / `⚠ …`) riding the toast instead of a second message. Anywhere else (a notification, a `/kill` listing) it is confirmed with a message as before, and when **every** action button on the pressed message targets the one id that just succeeded (a review ping, a proposal, a feature plan) that message's keyboard is swapped for what the new status allows, or removed — so an old ping never offers a Publish the task is past. A keyboard naming several things is left alone.
 
-The actions behind the buttons are the same in-process moves the REST routes make, with `actor: 'telegram'`: **Mark done** = `review → done` (+ close sessions, resolve the parent/feature), **Publish** = the task's own session commits and pushes (landing decided by git, so the `published`/`review` outcome arrives as its own notification), **Proceed** = resume the task's previous claude session, **Accept/Reject** = the proposal decision, **Approve & start** = feature `proposed → approved → running` in one tap — the visual plan check already happened when the analysis report was read.
+The actions behind the buttons are the same in-process moves the REST routes make, with `actor: 'telegram'`: **Mark done** = `review → done` (+ close sessions, resolve the parent/feature), **Publish** = the task's own session commits and pushes (landing decided by git, so the `published`/`review` outcome arrives as its own notification), **Proceed** = resume the task's previous claude session, **🔍 Review** (on a `/task` card for a `review`/`done`/`blocked`/`failed` task with a repo, hidden while a round is pending/reviewing/fixing) = run the adversarial reviewer now, **Accept/Reject** = the proposal decision, **Approve & start** = feature `proposed → approved → running` in one tap — the visual plan check already happened when the analysis report was read.
 
 ## Security posture
 
@@ -456,6 +457,8 @@ The actions behind the buttons are the same in-process moves the REST routes mak
 
 Rejections are summarised rather than logged one row each: otherwise anyone who knows the bot's name could write to `tm_events` at will. The first rejection after boot goes through immediately — "someone found the bot" is not news that waits ten minutes — and the rest are batched at one row per ten minutes, plus a flush on shutdown.
 
+Board navigation — a tab, a repo chip, a page, opening a card, 🔄, opening a question/proposal/plan from a row — writes **no** row (§ The board): those are reads. The action buttons on a board or card are ordinary `button:<kind>` rows.
+
 A command is audited **before** its answer is sent: the row records that the server acted, which stays true even if Telegram then refuses to deliver.
 
 `ok` is the **write's** outcome, not "the handler returned" — on a flow row and on a command row alike. A refused edit or a refused on-create queue move still produces a perfectly good sentence to send (`⚠ …`), and an earlier version reported those as `ok: true` with a "Created"/"OK" toast — an audit trail recording a success that did not happen. The toast, the message and the row now all come from the same `StepResult.ok`.
@@ -472,6 +475,8 @@ Each chunk is parsed by Telegram independently, so a tag pair may not span one. 
 
 Link previews are disabled: a repo path or URL in a status line should not become a card.
 
+**Edits are not chunked.** The board and the card redraw an existing message with `editMessageText` (`editMessageReplyMarkup` swaps only the buttons), both on the same `call()` path as `sendMessage`. One message has to stay one message, so the renderers clip themselves to fit (retrying at narrower widths, because escaping can grow a clipped field fivefold), and the redraw **falls back to a fresh send** whenever the edit cannot happen: the pressed message aged past 48h (Telegram then delivers an inaccessible stub with `date: 0`), the text would not fit, or Telegram refuses the edit for any other reason. The one refusal that is NOT a fallback is `message is not modified` — a 🔄 on a board where nothing moved — which is the redraw having nothing to do.
+
 ## Commands
 
 Registered with `setMyCommands`, so they autocomplete in the client. The tables below are the whole surface; `/help` renders the list from the same array the router looks up, so the two cannot drift.
@@ -480,13 +485,15 @@ Registered with `setMyCommands`, so they autocomplete in the client. The tables 
 
 | command | answers |
 |---|---|
-| `/start` | what the bot is |
+| `/start` | what the bot is — and it hands out the persistent bottom keyboard (§ The board) |
 | `/help` | the command list, generated from the router table |
-| `/status` | queue on/off, agents `n/m` (+ headless), the three usage windows with `resetsAt`, queued (and custom-queued) count, tasks in review, needs-attention runs, uptime, and the discarded/rejected update counters |
+| `/status` | queue on/off, agents `n/m` (+ aux sessions), the three usage windows with `resetsAt`, queued (and custom-queued) count, tasks in review, needs-attention runs, uptime, and the discarded/rejected update counters |
 | `/repos` | every registered repo — short id, name, open-task count, path |
-| `/tasks [status\|repo]` | no argument = the **open** tasks (everything not `published`/`done`/`failed`/`cancelled`), newest first. An argument that is a task status filters by it; anything else resolves as a repo (by name, then by id prefix). A `➕` marks a custom-queue member |
-| `/task <id>` | one task in full: status, repo, category, description, the resolved model/effort/review/auto-publish (naming the preset when they match one), its custom-queue standing, feature and phase, result summary, review summary, error — plus the buttons its **current status** makes possible |
-| `/queue` | the custom queue: the **waiting** members numbered `#1…#n` in the order they will run, then — listed apart, because they have no position left — any member that is running, in review or blocked and so still holds its repo's place |
+| `/shared` | per shared space (`docs/shared-spaces.md`): its folder and the open/filed cross-repo requests, oldest first (≤ 20 each), `from → to` and the filed task's short id and status; a filing whose task is `failed` or a `draft` gets ⚠️ and a "needs you" line (`SHARED_FILING_STALLED`). Read-only — the ledger is managed on the dashboard's Shared page |
+| `/tasks [inbox\|open\|status\|repo\|text]` | **the board** — one message that redraws itself in place (§ The board). No argument = the triage **inbox**; `open` = every open task; a task status = that tab (`running` is the live tab, which also holds `waiting`); a repo (by name, then id prefix) = its open tasks with that repo chip on; **anything else is a case-insensitive title search** |
+| `/now` | the live tab of the board: each running/waiting task with its last activity line (tool call or narration), elapsed time, context % and cost, and its ✖ kill / ❓ answer buttons |
+| `/task <id>` | one task as a **card**: status with its markers, repo, category, description, the resolved model/effort/review/auto-publish (naming the preset when they match one), its custom-queue standing, feature and phase, result summary, review summary, error, and — when a session is live — its activity line and stats. Buttons: what its **current status** makes possible, ❓ Answer / ✖ Kill run when they apply, then ◀ back and 🔄. Long fields are clipped so the card stays one editable message |
+| `/queue` | the custom queue: the **waiting** members numbered `#1…#n` in the order they will run, then — listed apart, because they have no position left — any member that is running, waiting, blocked or in an open auto-review and so still holds its repo's place (a member whose review settled is the human's and is not listed; a member held by Undo start is marked ⏸ held) |
 | `/features` | every feature: status, repo, phase/task counts, error |
 | `/proposals` | pending agent proposals with their ids and rationale |
 | `/kill` | with no argument, the live runs and their ids, one **✖ kill** button each |
@@ -495,14 +502,17 @@ Registered with `setMyCommands`, so they autocomplete in the client. The tables 
 
 | command | does |
 |---|---|
-| `/new [text]` | the creation flow: repo picker → title → description (skippable) → **preset** (Small / Routine / Complex / Codex, or ⚙ Custom → model → effort → review) → auto-publish → **On create: 📝 draft / ⏳ queue / ➕ custom queue / ▶ run now**. With text after the command the first line seeds the title and the rest the description, and those two steps are skipped |
-| `/edit <id>` | field picker → the new value. Title, description and category are typed (send `-` as the category to clear it); repo, model, effort, review and auto-publish are keyboards. One field per `/edit`. **Repo is on that list deliberately**: a task can arrive repo-less (the REST body allows it, and agents and proposals create them that way), every run path then refuses with "assign a repo before running this task", and without this field the phone had no way to act on that refusal |
+| `/new [text]` | the creation flow: repo picker → title → description (skippable) → **preset** (Small / Routine / Complex / Codex, or ⚙ Custom → model → effort → review → reviewer model, skipped when review is off) → auto-publish → **On create: 📝 draft / ⏳ queue / ➕ custom queue / ▶ run now**. With text after the command the first line seeds the title and the rest the description, and those two steps are skipped |
+| `/edit <id>` | field picker → the new value. Title, description and category are typed (send `-` as the category to clear it); repo, model, effort, review, reviewer model and auto-publish are keyboards. One field per `/edit`. **Repo is on that list deliberately**: a task can arrive repo-less (the REST body allows it, and agents and proposals create them that way), every run path then refuses with "assign a repo before running this task", and without this field the phone had no way to act on that refusal |
 | `/enqueue <id>` | into the global queue (`draft`/`failed`/`cancelled`/`review` → `queued`) |
 | `/run <id>` | run now, jumping the queue |
 | `/questions` | everything the agents are waiting on you to decide, with the option buttons again ([`questions.md`](questions.md)) |
 | `/cancel <id>` | de-queue, or kill the session and cancel |
+| `/undo <id>` | Undo start: stop a running task and put it back where it was before the turn — a queued task keeps its place, held (`docs/queue.md` § Undo start); the card shows ↩ Undo start on a running/waiting task |
+| `/release <id>` | let the queue take a task Undo start held; the card shows ▶ Release on a held task |
 | `/retry <id>` | re-queue a `failed`/`cancelled` task |
 | `/unblock <id>` | `blocked` → `review` |
+| `/review <id>` | run the adversarial reviewer NOW over the task's current diff (`review`/`done`/`blocked`/`failed`; the unchanged-diff gate is bypassed, `review already in progress` while a round runs — `docs/design.md` § Adversarial review). Replies at once; the verdict arrives as the review ping (a task in `review`), or as a 🔍 verdict line for one parked elsewhere, whose status is left alone |
 | `/complete <id>` | `review` → `done`, closing the task's terminals |
 | `/publish <id>` | commit and push in the task's OWN session (`docs/publish.md`); the landing status arrives later as its own notification, decided by git |
 | `/proceed <id> [text]` | steer the task with an instruction. **Without text the bot asks for it** rather than resuming with the generic "carry on" — the reason to reach for `/proceed` from a phone is that you have something specific to say. Whether a claude session survives decides *which* move runs, never whether the instruction is collected: with one it resumes that session, without one it starts a **fresh worker carrying the message** (`followUp` mode `auto`, the web drawer's "Send follow-up" behaviour) and the prompt says so up front. `/run` is not the fallback — it spawns off the task description and would throw the typed instruction away |
@@ -514,7 +524,7 @@ Registered with `setMyCommands`, so they autocomplete in the client. The tables 
 |---|---|
 | `/accept <id> [option]` | accept a proposal. The option number is **1-based**, matching the listing; an options proposal refuses an index-less accept (see § Buttons) |
 | `/reject <id>` | reject a proposal |
-| `/feature [text]` | the feature intake: the long request (typed, or given after the command) → repo picker → the feature is created and the headless analysis starts immediately. The plan comes back through the notification path with an **Approve & start** button |
+| `/feature [text]` | the feature intake: the long request (typed, or given after the command) → repo picker → the feature is created and the planning session starts immediately. The plan comes back through the notification path with an **Approve & start** button |
 | `/approve <id>` | the same approve-and-start as that button, by id |
 | `/on` / `/off` | start / stop picking tasks. `/off` is the soft one: live sessions keep running, and it says **how many** (`/kill` ends one, `/killall` ends all) |
 | `/kill <run id>` | kill a live run |
@@ -550,7 +560,7 @@ Two commands can destroy work, so neither of them fires on a single press.
 |---|---|
 | `/off` | **the soft stop.** Stops picking new tasks; live sessions keep running, and the reply says how many so "it's off" is never mistaken for "it's quiet". `/on` resumes |
 | `/kill <run id>` | one session |
-| `/killall` | **the red button.** Stop the queue → pause running features → cancel queued tasks → kill every live run → stop the headless agents. Behind a 60-second confirm |
+| `/killall` | **the red button.** Stop the queue → pause running features → cancel queued tasks → kill every live run (workers AND aux sessions) → stop any aux session still live. Behind a 60-second confirm |
 | `/restart` | restart the server through the front door, honouring `restart-check`. Behind a confirm; **force** is a second, separately labelled one |
 
 #### What `/killall` does, in that order
@@ -562,7 +572,7 @@ The order is the argument:
 3. **pause running features** — killing a task cascades through `resolveCompletion`, and a *running* feature answers that cascade by enqueuing its next phase, which would re-fill the queue behind us;
 4. **cancel what is queued** — both queues: a custom-queue member also sits in `queued` (`docs/queue.md`), and the custom queue runs even while the global switch is off, so leaving it would leave the one queue `/off` cannot stop;
 5. **kill every live run — all modes**, not just `worker` like the web button. The phone's `/kill` listing already shows every mode, and a red button that leaves an analysis burning tokens is a half-button;
-6. **stop the headless `claude -p` children** that own no run row at all (plan reviews, adversarial rounds) — the same `stopAllHeadless()` the restart path calls;
+6. **stop every aux session still live** (review, plan, chat, report, …) — the same `aux().stopAll()` the restart path calls. Most were already killed in step 5 as run rows; this catches one spawned in between, and the report lists only what THIS step stopped (`headlessStopped` keeps its field name in the audit row);
 7. **sweep 2–5 once more**, because 5 and 6 both have exit handlers that write, and a Stop hook already in flight can still file a dispatch. Two passes, not a loop: a fixed bound cannot spin. What stops a *third* round is that every source of new work is now shut — the queue switch for claims, and leg 2 for the one path that switch does not cover. The report says when the re-sweep found something.
 
 The reply is exactly what happened — run ids with their task titles, cancelled task titles, paused feature titles, cancelled dispatches (named by the task they would have resumed), headless labels — **and what was already idle**, so a short answer is never mistaken for a failed one.
@@ -600,7 +610,7 @@ The counters are in memory, like the window: a restart is not a limit the owner 
 There are **two** exit signals, because there are two kinds of run:
 
 - a **PTY** run announces itself on the event bus — `run.exited`, broadcast from `Orchestrator.handleExit` when node-pty reports the child dead (and again, for the idle Stop-hook path, from `routes/internal.ts`; the watcher tolerates the same id twice);
-- a **headless `analyze`** run has no PTY and therefore nothing on the bus at all. `killAnalysis()` SIGTERMs an `execFile` child and broadcasts nothing; the run row is updated by whatever awaited the child, which is not the same fact and is not an event. Since `/killall` kills every mode, waiting only on the bus meant every killed analysis was reported as a 60-second straggler that had in fact died instantly. `claude/analyze.ts` now exports **`onHeadlessRunExit()`**, fired from the one place that already knows — `trackHeadlessChild`'s own `child.on('exit')` handler, the single chokepoint for both `/analyze` and feature-plan children. The watcher subscribes to both. So `/killall` sends **two** messages: the report of what was signalled, then `☠️ All N killed session(s) have exited` once they actually have. After 60 seconds it stops waiting and names the stragglers instead of claiming a clean sweep.
+- *(until 2026-09-24)* a **headless `analyze`** run had no PTY and therefore nothing on the bus at all. Since then every aux session is a PTY and broadcasts `run.exited` like a worker, so `onHeadlessRunExit` is gone and the bus is the whole signal. The history: `killAnalysis()` SIGTERMs an `execFile` child and broadcasts nothing; the run row is updated by whatever awaited the child, which is not the same fact and is not an event. Since `/killall` kills every mode, waiting only on the bus meant every killed analysis was reported as a 60-second straggler that had in fact died instantly. `claude/analyze.ts` now exports **`onHeadlessRunExit()`**, fired from the one place that already knows — `trackHeadlessChild`'s own `child.on('exit')` handler, the single chokepoint for both `/analyze` and feature-plan children. The watcher subscribes to both. So `/killall` sends **two** messages: the report of what was signalled, then `☠️ All N killed session(s) have exited` once they actually have. After 60 seconds it stops waiting and names the stragglers instead of claiming a clean sweep.
 
 The watcher is armed **before** the kills go out, not after: a pty can exit inside the same tick that signalled it, and an exit landing before the watcher was listening would leave the follow-up waiting for an event that had already happened. It collects every exit it sees from the moment it is armed and subtracts the ones that already landed.
 
@@ -609,7 +619,7 @@ The watcher is armed **before** the kills go out, not after: a pty can exit insi
 `/restart` calls the **same `restartGuard` closure** the REST route calls — handed to the bot by `index.ts`, never restated. Three surfaces (the header button, the front door, the phone) must give one answer to "are agents working?", and two copies of that rule is how two answers drift; `docs/host.md` makes the same point about `/host/stop|restart` forwarding the check verbatim.
 
 - **Guard clear** → a plain confirm, then the restart.
-- **Guard blocked** → the reason is reported *verbatim*, with the numbers behind it (running sessions, headless agents, and the repo commands that will be stopped even though they do not block), a pointer at `/killall` as the clean way to empty the machine, and a button labelled **⚠️ Restart ANYWAY (force)**. Force is only ever reachable through a window armed as `restart-force` — i.e. after the guard has already refused once and the owner pressed a button that says what it does.
+- **Guard blocked** → the reason is reported *verbatim*, with the numbers behind it (running sessions, aux sessions, and the repo commands that will be stopped even though they do not block), a pointer at `/killall` as the clean way to empty the machine, and a button labelled **⚠️ Restart ANYWAY (force)**. Force is only ever reachable through a window armed as `restart-force` — i.e. after the guard has already refused once and the owner pressed a button that says what it does.
 
 Execution is `POST /host/restart` on the **front door** (`docs/host.md`). That is not the forbidden self-call: the front door is a different process, and there is no in-process function that can restart a process from inside itself and still be supervised afterwards. Two header rules, both mirroring what `host.ts` does in the other direction — `Host` must be the loopback origin of the port being called (its DNS-rebinding guard) and `Origin` must be **absent**, because that guard only judges an Origin that is present and inventing one would put this call under a rule written for browsers.
 
@@ -630,7 +640,44 @@ Nobody types 36 characters on a phone, so **every `<id>` above accepts a prefix*
 - a prefix matching more than one row is an **error naming the candidates** (up to six, then "and N more"), never a pick;
 - case is ignored and a leading `#` is stripped;
 - `/kill` resolves against **live runs only** — a finished run cannot be killed, so matching a week of exited rows would turn every short id into an ambiguity error for no reachable outcome;
-- repos additionally resolve by exact name (`/tasks alpha`), because nobody remembers a repo uuid either.
+- repos additionally resolve by exact name (`/tasks alpha`), because nobody remembers a repo uuid either;
+- board buttons (`l:`) carry the 8-character form and resolve through the same rules at press time — a stale or ambiguous one is a toast, never a pick (§ The board).
+
+## The board
+
+`/tasks` (and `/now`, and the 📥 / 👀 / 🏃 bottom-keyboard buttons) is a phone dashboard: **one message that redraws itself in place** (`telegram/board.ts`). Every read goes through in-process services — storage, `Orchestrator.status()`, the activity watcher's `snapshot()` — never HTTP and never the PTY.
+
+**Layout.** Top row: six filter tabs — 📥 inbox · 🏃 running · 👀 review · ⏳ queued · 📝 draft · ⚠ failed — each with its count, the active one marked `•`. Second row(s): repo chips (🌐 all plus up to five repos with open work, busiest first), shown when there is more than one repo to choose from. Then one row per item on the page — its **number and title open it**, action buttons beside it — then `‹ n/N › 🔄` when there is more than one page (8 rows per page), or `🔄 Refresh`. A 40-button page is the worst case, far under Telegram's 100.
+
+**The inbox** is triage order, each group with its own buttons:
+
+| # | what | buttons |
+|---|---|---|
+| 1 | tasks with an open question ❓ | ❓ Answer (sends the question with its option buttons) |
+| 2 | running tasks whose run needs attention 🔔 | ✖ Kill |
+| 3 | tasks in review — `flagged` verdicts 🚩 first | ✅ Done · 🚀 Publish |
+| 4 | blocked tasks | ⛔ Unblock |
+| 5 | failed tasks updated in the last **7 days** (older ones stay on the ⚠ tab) | 🔁 Retry |
+| 6 | pending proposals | ✅ Accept (only when the proposal has **no** options) · ✖ Reject; the title sends the proposal in full, with one accept per option |
+| 7 | proposed features | ✅ Approve; the title sends the plan report |
+
+A task appears once, in its first group.
+
+**Markers**, mirroring the SPA's `StatusBadge` (a row has room for several at once): the status icon, then ❓ asks you · 🔔 needs attention (a live, non-idle run flagged on a `running` task — the Board page's rule) · 🔍 auto-review (`review` + `pending`/`reviewing`) · 🔧 fixing · 🚩 review flagged · ➕ custom queue. The card spells the first two out.
+
+**The live tab** (🏃, and `/now`) heads with `workers n/m · queue on|off · k aux` and gives each running or waiting task its last `RunActivity` line (🛠 a tool call, 💬 narration), `⏱ elapsed · ctx % · $cost` from the run's `RunStats`, and ✖ Kill / ❓ Answer. Stats are what the orchestrator's 20s refresh last wrote; there is no polling — press 🔄.
+
+**Cards.** A row opens the task's card IN the same message, with ◀ back to exactly the board state it came from (tab, repo chip, page) and 🔄. An action on the card redraws the card (§ Buttons). `/task <id>` sends a card whose ◀ goes to the inbox.
+
+**Search.** `/tasks <text>` that is neither a status nor a repo is a case-insensitive title search. The text cannot ride a 64-byte button, so the bot remembers the last search in memory (one user, one search) and the search view's pages and chips re-read it; after a restart that view says to search again.
+
+**The `l:` namespace.** `l:v:<view>:<repo>:<page>` navigate · `l:f:…` the board's own 🔄 · `l:o:<task>:<view>:<repo>:<page>` open a card · `l:r:…` the card's own 🔄 · `l:a:<task>` send its questions · `l:p:<id>` a proposal · `l:e:<id>` a feature plan · `l:x` the page counter (answered silently). Parsed in `bot.ts` after `w:` `k:` `c:` `q:` and **before** the action codec, built only through `encodeList` (which throws on anything over 64 bytes). Ids are the **8-character short form**, resolved through `ids.ts` at press time — so a press on a task that is gone toasts `no task starts with …` and redraws the board it came from, an id prefix shared by two tasks toasts the ambiguity and opens neither, and a malformed `l:` string (an id under 4 characters, an unknown view, a 4-digit page) parses as nothing and falls through to "Unknown button". A repo chip whose repo is gone is dropped; a page past the end clamps to the last.
+
+**Navigation is not audited.** A tab, a chip, a page, a card, a 🔄, opening a question/proposal/plan — none writes a `telegram.command` row; they are reads, and a row per tap would bury the mutations. The action buttons on the board and the card are the ordinary action codec and are audited exactly as before. A typed `/tasks` or `/now` is a command and is audited as one, as every command is.
+
+**The bottom keyboard.** `/start` sends a persistent reply keyboard — `📥 Tasks · 👀 Review · 🏃 Now` / `❓ Questions · 📊 Status`. Its buttons send their label as text; `bot.ts` maps the **exact** labels to `/tasks`, `/tasks review`, `/now`, `/questions`, `/status` before parsing, so they behave (and are audited) as those commands, winning over a flow or chat mode just as a typed command does. Anything else — including a label with more text around it — stays free text.
+
+**Not done**: the review ping is not edited into its final state when the task later moves on by some other path (that would need the notifier to remember message ids per task); the keyboard retirement above covers a press on the ping itself.
 
 ## Conversations
 
@@ -670,13 +717,13 @@ A **second thought sent while the first is still waiting on its button replaces 
 
 ### Agent parameters
 
-The `/new` flow offers the same `TASK_PRESETS` the web form does (`shared/src/types.ts`, one source for both surfaces) — Small, Routine, Complex, Codex (free) — each resolving model + effort + review in one tap. ⚙ Custom asks for the three separately, each with a `default (config)` option that writes `null` and falls back to the `agent.model` / `agent.effort` / `review.enabled` settings, exactly as the web dropdowns' "default (config)" does.
+The `/new` flow offers the same presets the web form does (`taskPresets(settings)` in `shared/src/types.ts`, one source for both surfaces) — Small, Routine, Complex, Codex (free), then the user's custom presets from Config → Presets (`presets.custom`, read from storage when the keyboard is drawn and again when a button is pressed, so a preset deleted in between is refused as `Unknown preset` rather than applied from a stale copy; custom ids are `p-xxxxxxxx`, well inside the `w:` value slot and never the literal `custom`) — each resolving model + effort + review in one tap. The `/task` card's preset label matches against the same list. ⚙ Custom asks for the three separately, each with a `default (config)` option that writes `null` and falls back to the `agent.model` / `agent.effort` / `review.enabled` settings, exactly as the web dropdowns' "default (config)" does. After review, Custom asks for the **reviewer model** (`w:<seq>:rmodel:<index>`), unless review was set to `off`, since nobody would review. `default (config)` writes `reviewModel: null`, which means the global `review.model`. Presets never set a reviewer, so a preset-built task keeps `null` and `matchTaskPreset` still labels it. `/edit` offers the same keyboard as `Reviewer model`. The `/task` card prints `reviewer <model>` (plus the reviewer effort when one is set) on the model/effort line, except when review is off for the task. The reviewer effort is web/REST only, because the phone flow is already long enough.
 
 `➕` means the **custom** queue everywhere in the bot — the marker on a queued row in `/tasks`, the `/task` standing line, `taskActionKeyboard`'s buttons and now `/new`'s on-create step, where the global option wears `⏳` instead. `/new` previously offered `➕ Add to queue` for the *global* queue, which is the one that stops when `/off` is set: the opposite of what the symbol promises next to a serial queue that ignores it. `/new` can now reach the custom queue at all, which it could not before — it took a follow-up `/queue add`.
 
 **Auto-publish is always its own step**, on both the preset and the custom path. Presets do not carry it (the web ones do not either), and it is the one parameter that decides whether work reaches `origin` without a human looking, so it is asked rather than defaulted silently.
 
-The model picker is a shortlist (`MODEL_OPTIONS` plus `codex-free`) even though the column accepts any string: a typo'd model id does not fail here, it fails at spawn time, hours later.
+The model picker is a shortlist (`MODEL_OPTIONS` plus `codex-free`) even though the column accepts any string: a typo'd model id does not fail here, it fails at spawn time, hours later. The reviewer picker is `MODEL_OPTIONS` alone, because the reviewer is always `claude -p` and a Codex id cannot review.
 
 ## Reports
 
@@ -903,5 +950,23 @@ Task 6 (the workbook) verifies the § Connect chapter itself, because a setup do
 
 **The Mac-as-a-server checklist was executed, not recited.** `caffeinate`'s flags are quoted from its own man page on this machine (`-i` = idle only; `-s` "valid only when system is running on AC power"; a wrapped utility holds the assertion for the utility's lifetime); a live assertion was read back with `pmset -g assertions` (`pid N(caffeinate): … PreventUserIdleSystemSleep`); the AC/battery split in § 6 matches this machine's actual `pmset -g custom` (`sleep 0` on AC, `sleep 1` on battery). The launchd plist was **linted, loaded, run and unloaded**: `plutil -lint` passes, `launchctl bootstrap gui/$UID` starts it, `launchctl print` shows `runs = 1` / `last exit code = 0`, `caffeinate -i` really did exec the wrapped program, `KeepAlive: { SuccessfulExit: false }` correctly did **not** respawn it after a clean exit, and `launchctl bootout` removed it (a throwaway `Label` was used and the agent is gone — nothing was installed on this machine). `fdesetup status` reports `FileVault is On.` and `defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates` reports `1`, which is precisely the reboot-into-the-FileVault-screen configuration § 6 warns about — the caveat is live here, not hypothetical. That `server/data/` is git-ignored and `config.json` untracked was checked with `git check-ignore` and `git ls-files`.
 
+
+The board (§ The board) is verified by `telegram-board-harness.mts` (**97 assertions**, attached to its task), driving the real `TelegramBot` against a stubbed `fetch` that records `sendMessage`, `editMessageText`, `editMessageReplyMarkup` and `sendDocument`, a real SQLite database, a stub orchestrator and a stub activity snapshot:
+
+- the `l:` codec: every button kind round-trips through short ids, the longest wire is under 40 bytes and never carries a uuid; an id under 4 characters, an unknown view, a 4-digit page and trailing segments do not parse; `l:` is disjoint from the action, `w:`, `c:`, `q:` and `k:` codecs in both directions; a board is recognised by its 🔄, a card by its 🔄 (not its ◀), a notification keyboard by neither;
+- `/tasks` is ONE message: the six tabs in order with the active one marked, repo chips, triage order question → attention → flagged review → review → blocked → failed → proposals, the proposed feature on page 2 numbered `9.`, a 10-day-old failure and the drafts absent, each row's action buttons (❓ Answer, ✖ Kill on the right run, ✅ Done / 🚀 Publish, ⛔ Unblock, 🔁 Retry, Accept only on the option-less proposal, Approve), the ❓ 🔔 🚩 markers, escaped titles;
+- a tab tap edits the SAME message and sends nothing; 12 drafts page as 8 + 4 with `‹ 1/2 › 🔄`; page 99 clamps; a repo chip filters; the page counter answers silently; a 🔄 answered `message is not modified` sends no copy; **none of it writes a `telegram.command` row**;
+- a card opened from a filtered page carries ◀ back to that exact state; ⏳ Queue on the card moves the task, redraws the same message with `queued` and 🚫 Cancel (Queue gone), keeps ◀ / 🔄, toasts `✅ …`, and is audited once; pressing it again toasts `⚠ …`, redraws, and audits `ok: false`; a card whose escaped fields would pass 4096 characters shrinks into one edit;
+- a stale id toasts `no task starts with` and redraws the board; two tasks sharing an 8-character prefix toast `matches 2 tasks` and open neither; a 3-character `l:` id is "Unknown button";
+- ❓ Answer sends the question with its `q:` buttons; 💡 sends an options proposal in full with one accept per option; 🧩 sends the plan document with Approve;
+- ✖ Reject in the inbox rejects and redraws the inbox without the row;
+- `/now`: `workers 1/2 · queue on`, `🛠 Edit server/src/x.ts`, `⏱ 1h 15m · ctx 43% · $1.23`, ✖ Kill and ❓ Answer; Kill from it kills the run and redraws without the button;
+- `/tasks review`, `/tasks beta` (repo), `/tasks SHIP` (search, case-insensitive), a search with no hit, and a search lost to a restart;
+- Done on a review ping keeps its ✅ message and removes the ping's keyboard; a keyboard naming two tasks is left alone;
+- a refused edit falls back to a fresh send; a `date: 0` message is sent fresh without an edit attempt;
+- `/start` carries the persistent keyboard; `🏃 Now` and `👀 Review` run their commands and are audited as `tasks` + `review`;
+- every keyboard produced in the run is ≤ 100 buttons with every `callback_data` ≤ 64 bytes and every text ≤ 4096.
+
+Re-running the task-3 commands harness after this change: its `/tasks` checks (flat list, junk-argument help) and "every `/task` button parses through the action codec" (the card now also carries `l:` ◀ / 🔄) fail **by design**. Its other failures (the default model, `claude-fable-5`) and the notify and red-button harnesses' failures (review-message wording, `tm_dispatches.intent`) predate this change — those harnesses have drifted from later schema and wording work.
 
 **Not verified**: **a real BotFather token against the real Bot API.** Task 6 could not close this one and did not pretend to: creating a bot requires a human in the Telegram app talking to @BotFather, and no token exists on this machine — `server/data/config.json` has no `telegram` block and no environment variable carries one. What is verified instead is that every string the workbook quotes is either produced by a real server (the boot lines) or asserted against the real bot code (the replies, the buttons, the command list), so the instructions cannot drift from the implementation; what remains unobserved is Telegram's own transport, the BotFather dialogue, and the **409 two-poller collision** — the 409 hint text in § 7 is quoted from `bot.ts`, and the fatal 401/404 beside it was produced against the real API. The rest, unchanged from the earlier tasks: the usage watcher's threshold/reset comparisons are reviewed but not driven by the harness (`usageSnapshot()` reads real transcripts and CLI caches). `/feature` is driven only as far as the repo picker: pressing it starts a real headless `claude -p` analysis, which a smoke test must not do. `/restart` is driven against a **stand-in** front door, not the real `host.ts` — a test that actually restarted the server would take the harness with it; what is verified is the request this process sends (path, headers, `force`) and how it reads each answer. `stopAllHeadless()` is exercised only through the no-op path: a test process has no headless `claude -p` children, and spawning one to kill it would be spawning `claude` from a test. The report's **usage** numbers are rendered but not asserted against a known value — `usageSnapshot()` reads real transcripts and CLI caches, so the harness checks that each window is present and labelled, not what it says. The rendered report was also read at phone width in a browser, which is how the raw-markdown defect in the result summaries was found; that part is an eye, not an assertion.

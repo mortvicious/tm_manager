@@ -28,6 +28,8 @@ a stale reminder silently overrides the new rules for the rest of the session.
 | **Ask on big decisions** | When a choice would materially change the outcome (architecture/library, ambiguous or conflicting requirement, destructive step, scope that could go two ways), ask with `AskUserQuestion` — it reaches the dashboard and the phone and the session waits (`docs/questions.md`). Small things: decide, never ask. |
 | Final summary | The orchestrator stores it as `result_summary`; the review round and the next run read it. |
 | Adversarial review warning | The change is reviewed before the human sees it, so it must compile and hold up. |
+| **Commit trailer** | `commitTrailerRule(task.id)`, on EVERY turn including publish: every commit for this task ends with `Task: <id>`. It is how the reviewer finds the task's commits on any ref (`docs/design.md` § Adversarial review, *What the reviewer reads*). |
+| **Ship gate** (conditional) | Only when `shipHeldForReview(task, settings)`, i.e. the change will be reviewed and the task is not auto-publish. It is appended after the standing rules (fresh) and after the reminder (resumed): no push, no deploy, no production verify; local commits are fine. It overrides the repo's CLAUDE.md. The publish turn never gets it; that turn ships (`docs/design.md` § Adversarial review, *Review before ship*). |
 
 ### One exception: the publish turn
 
@@ -36,7 +38,8 @@ standing rules — no code, no subagents, and the closing report is the commit s
 and push result rather than a work summary. On that turn only, the reminder is
 placed **above** the instruction, so the last thing the agent reads is the narrow
 version and not "plan, delegate, summarise". Every other resumed turn keeps the
-usual order (instruction, then reminder).
+usual order (instruction, then reminder), plus the ship gate after it when that
+applies. The publish turn never carries the gate: it is the turn that pushes.
 
 ## Why "delegate" is phrased as a directive, not a cap (2026-08-27)
 
@@ -92,10 +95,36 @@ Prompt text alone cannot fix these; they are structural:
   from is now stored next to it as `RunStats.contextTokens`, which is what the
   resume gate reads.
 - `anomaly.costUsd` is read only by the stats dashboard route, never enforced.
-- The sticky `fableUnavailable` latch in `server/src/claude/review.ts`.
+- The sticky `fableUnavailable` latch, now one process-wide cache in `server/src/claude/aux.ts` (`withModelFallback`). Since 2026-09-24 it is set only by a Fable StopFailure `model_not_found`, but it still lasts until restart.
 - ~~The fixed ~52k preamble~~ — done 2026-08-27, see `docs/token-budget.md`.
   (Not via `agent.allowedTools`: that flag is a permission gate and moves no
   context. The schemas come off with `--tools`.)
+
+## The shared-space block (2026-09-28)
+
+A task whose repo belongs to a shared space (`docs/shared-spaces.md`) also gets
+`TM_SHARED_DIR` in its env, `--add-dir=<folder>` on the argv, and a block built
+by `sharedPromptBlock()` and passed as `sharedNote`. It follows the
+`dispatchNote` rules: never concatenated onto `followUp`, never the last thing
+in a resumed prompt, and never on the publish turn.
+
+- A fresh prompt **starts** with it, above `# Task:`. Between a long
+  description and the standing rules it was read past (2026-09-28, task
+  d474e1e1). It says "read before you plan": step 1 is to read the files
+  `INDEX.md` points to for this task's area plus the repo's own page, and the
+  plan must name them. It also names the folder, says "write what other repos
+  need here", and lists up to 10 open requests addressed to the repo, with the
+  triage rule.
+- The map itself reaches the context without the agent opening anything. The
+  env carries `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`, so the CLI
+  loads the shared folder's generated `CLAUDE.md` (rules plus a copy of
+  `INDEX.md`, refreshed each spawn) as memory. See `docs/shared-spaces.md`
+  § What a worker gets.
+- A resumed turn gets only the open requests new, reopened or updated since the
+  resumed run started (`updated_at`, cut after the reconcile), and nothing when
+  there are none.
+- The standing rules above are unchanged. The block only appears for repos in
+  a space.
 
 ## Keep it short — it is re-sent every turn
 

@@ -1,9 +1,8 @@
-import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type { Feature, FeaturePlan, FeatureReview, PlanReviewRound, Repo, RunStats } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
-import { trackHeadlessChild } from './analyze.ts';
+import { READ_ONLY_TOOLS, acceptJson, aux, resultInstruction, withModelFallback, type AuxOutcome } from './aux.ts';
 import {
   PLAN_JSON_SCHEMA,
   PLAN_REVIEW_JSON_SCHEMA,
@@ -14,124 +13,59 @@ import {
   toStoredPlan,
 } from './feature-plan.ts';
 
-// The Feature pipeline: one headless planning run decomposes the request into
-// ordered phases, a SECOND independent headless run reviews that plan
+// The Feature pipeline: one planning session decomposes the request into
+// ordered phases, a SECOND independent session reviews that plan
 // adversarially, and a blocker verdict feeds back into a bounded re-analysis —
 // the work→review→work loop of orchestrator.ts, applied to planning instead of
-// diffs. Both calls are read-only `claude -p` (analyze.ts idioms: dontAsk,
-// write tools disallowed, --json-schema, envelope parsing, 64MiB buffer).
+// diffs. Each call is its own read-only aux TERMINAL (kinds `plan` and
+// `plan-review`, subject = the feature — docs/design.md § PTY sessions),
+// attachable from the runs list; the result is the fenced JSON block at the
+// end of its final message, validated by the same zod schemas.
+//
+// Tool policy is the one the `-p` calls had, unchanged: `dontAsk`, and
+// Edit/Write/NotebookEdit denied. Bash was never in this role's denial list
+// (unlike analysis/review), so under `dontAsk` it runs only what the repo's
+// own allow rules permit — kept as is rather than silently changed.
+const PLAN_DISALLOWED = ['Edit', 'Write', 'NotebookEdit'];
+const PLAN_TOOLS = [...READ_ONLY_TOOLS, 'Bash'];
 
-// Same env hygiene as PTY workers / analyze.ts: strip inherited session markers.
-function cleanEnv(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && !k.startsWith('CLAUDE_CODE_') && k !== 'CLAUDECODE') env[k] = v;
-  }
-  return env;
-}
-
-interface HeadlessResult {
-  envelope: any;
-  err: Error | null;
-  stdout: string;
-}
-
-function runHeadless(opts: {
-  cwd: string;
-  model: string;
-  effort: string | null;
-  prompt: string;
-  jsonSchema: string;
-  runId: string;
-  timeoutMs: number;
-  /** what this child is doing, for the restart guard's refusal message */
-  label: string;
-}): Promise<HeadlessResult> {
-  const args = [
-    '-p',
-    '--model',
-    opts.model,
-    ...(opts.effort ? ['--effort', opts.effort] : []),
-    '--permission-mode',
-    'dontAsk',
-    '--disallowedTools',
-    'Edit',
-    'Write',
-    'NotebookEdit',
-    '--output-format',
-    'json',
-    '--json-schema',
-    opts.jsonSchema,
-  ];
-  return new Promise((resolve) => {
-    const child = execFile(
-      'claude',
-      args,
-      { cwd: opts.cwd, timeout: opts.timeoutMs, maxBuffer: 64 * 1024 * 1024, env: cleanEnv() },
-      (err, stdout) => {
-        let envelope: any = null;
-        try {
-          envelope = JSON.parse(String(stdout ?? ''));
-        } catch {
-          /* non-JSON = failure */
-        }
-        resolve({ envelope, err, stdout: String(stdout ?? '') });
-      },
-    );
-    // EPIPE when claude exits before draining stdin would otherwise be an
-    // unhandled 'error' event → process crash (analyze.ts review R1).
-    child.stdin?.on('error', () => {});
-    child.stdin?.write(opts.prompt);
-    child.stdin?.end();
-    // One run row, several child processes — the Kill button always points at
-    // whichever one is currently burning.
-    trackHeadlessChild(opts.runId, child, opts.label);
-  });
-}
-
-/** Fable → Opus 5 xhigh fallback, mirroring review.ts (cached per process). */
-let fableUnavailable = false;
-
-async function runWithFallback(opts: {
-  cwd: string;
+/** Fable → Opus 5.5 xhigh on `model_not_found` only — the shared `withModelFallback`. */
+async function runWithFallback<T>(opts: {
+  kind: 'plan' | 'plan-review';
+  feature: Feature;
+  repo: Repo;
   model: string;
   prompt: string;
-  jsonSchema: string;
-  runId: string;
+  jsonSchema: object | string;
+  schema: Parameters<typeof acceptJson<T>>[0];
   timeoutMs: number;
   label: string;
-}): Promise<HeadlessResult & { model: string }> {
-  let model = fableUnavailable && /fable/i.test(opts.model) ? 'claude-opus-5' : opts.model;
-  let effort: string | null = model === 'claude-opus-5' && model !== opts.model ? 'xhigh' : null;
-  let res = await runHeadless({ ...opts, model, effort });
-  const modelUnavailable =
-    (!res.envelope || res.envelope.is_error) &&
-    /model|not.*available|unknown model|unavailable|not.*found|access/i.test(
-      res.stdout + String(res.err?.message ?? ''),
-    );
-  if (modelUnavailable && model !== 'claude-opus-5') {
-    fableUnavailable = true;
-    model = 'claude-opus-5';
-    effort = 'xhigh';
-    res = await runHeadless({ ...opts, model, effort });
-  }
+  signal: AbortSignal;
+}): Promise<AuxOutcome<T> & { model: string }> {
+  const once = (model: string, effort: string | null) =>
+    aux().run<T>({
+      kind: opts.kind,
+      subjectId: opts.feature.id,
+      repoId: opts.repo.id,
+      label: opts.label,
+      cwd: opts.repo.path,
+      model,
+      effort,
+      prompt: opts.prompt + '\n' + resultInstruction(opts.jsonSchema),
+      tools: PLAN_TOOLS,
+      disallowedTools: PLAN_DISALLOWED,
+      permission: 'dontAsk',
+      lean: true,
+      timeoutMs: opts.timeoutMs,
+      accept: acceptJson<T>(opts.schema),
+      signal: opts.signal,
+    });
+  const { res, model } = await withModelFallback({ model: opts.model, effort: null }, 'xhigh', once);
   return { ...res, model };
 }
 
-function usageOf(envelope: any): RunStats {
-  const u = envelope?.usage ?? {};
-  return {
-    inputTokens: u.input_tokens ?? 0,
-    outputTokens: u.output_tokens ?? 0,
-    cacheReadTokens: u.cache_read_input_tokens ?? 0,
-    cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
-    costUsd: envelope?.total_cost_usd ?? 0,
-    contextPct: 0,
-    contextTokens: 0,
-  };
-}
-
-function addStats(a: RunStats, b: RunStats): RunStats {
+function addStats(a: RunStats, b: RunStats | null): RunStats {
+  if (!b) return a;
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
@@ -143,10 +77,8 @@ function addStats(a: RunStats, b: RunStats): RunStats {
   };
 }
 
-function envelopeError(res: HeadlessResult, what: string): string {
-  if (!res.envelope) return `${what}: no JSON envelope (${(res.err?.message ?? 'unknown error').slice(0, 200)})`;
-  if (res.envelope.is_error) return `${what}: ${String(res.envelope.result ?? 'error').slice(0, 300)}`;
-  return `${what}: no structured output`;
+function outcomeError(res: AuxOutcome<unknown>, what: string): string {
+  return `${what}: ${(res.error ?? 'no result').slice(0, 300)}`;
 }
 
 export interface FeatureAnalyzeDeps {
@@ -167,17 +99,11 @@ export async function startFeatureAnalysis(
   feature: Feature,
   repo: Repo,
   opts?: { note?: string | null },
-): Promise<{ runId: string }> {
+): Promise<void> {
   const { storage } = deps;
   const settings = await storage.getSettings();
   const model = settings['analysis.model'];
   const maxRounds = Math.max(0, settings['feature.analysisMaxRounds']);
-  const run = await storage.createRun({
-    repoId: repo.id,
-    mode: 'analyze',
-    model,
-    effort: settings['agent.effort'],
-  });
 
   void (async () => {
     const startedAt = Date.now();
@@ -190,21 +116,17 @@ export async function startFeatureAnalysis(
       contextPct: 0,
       contextTokens: 0,
     };
-    const finishRun = async (exitCode: number, sessionId?: string | null) => {
-      await storage
-        .updateRun(run.id, {
-          status: 'exited',
-          exitCode,
-          endedAt: new Date().toISOString(),
-          sessionId: sessionId ?? null,
-          stats,
-        })
-        .catch(() => {});
-    };
-    /** Stop conditions: a user Kill on the run row, or the feature leaving
-     *  `analyzing` under us (cancelled / re-analyzed from another request). */
+    // Every session of the pipeline gets this signal. The feature leaving
+    // `analyzing` under us (cancelled, re-analyzed from another request) ends
+    // the one in flight instead of paying for a plan nobody will read.
+    const ctl = new AbortController();
+    const watch = setInterval(() => {
+      void storage.getFeature(feature.id).then((cur) => {
+        if (!cur || cur.status !== 'analyzing') ctl.abort();
+      });
+    }, 5_000);
     const aborted = async () => {
-      if ((await storage.getRun(run.id))?.status === 'killed') return true;
+      if (ctl.signal.aborted) return true;
       const cur = await storage.getFeature(feature.id);
       return !cur || cur.status !== 'analyzing';
     };
@@ -213,12 +135,17 @@ export async function startFeatureAnalysis(
         error: message.slice(0, 1000),
       });
       if (failed) broadcast({ type: 'feature.updated', feature: failed });
-      await finishRun(1);
+    };
+    /** A Kill on one of the pipeline's terminals is a stop of the whole analysis. */
+    const stoppedByKill = async (res: AuxOutcome<unknown>) => {
+      if (res.status !== 'aborted' || ctl.signal.aborted) return false;
+      await fail('analysis stopped (a planning terminal was killed)');
+      return true;
     };
 
     try {
       const openTasks = (await storage.listTasks({ repoId: repo.id }))
-        .filter((t) => ['draft', 'queued', 'running', 'review', 'blocked', 'failed'].includes(t.status))
+        .filter((t) => ['draft', 'queued', 'running', 'waiting', 'review', 'blocked', 'failed'].includes(t.status))
         .filter((t) => t.featureId !== feature.id)
         .slice(0, 60)
         .map((t) => ({ id: t.id, title: t.title, status: t.status }));
@@ -229,17 +156,18 @@ export async function startFeatureAnalysis(
         plan: FeaturePlan;
         findings: { severity: string; summary: string; detail: string | null }[];
       } | null = null;
-      let sessionId: string | null = null;
       // round 0 is the first attempt; up to maxRounds RE-analyses follow it.
       for (let round = 0; round <= maxRounds; round++) {
-        if (await aborted()) return void (await finishRun(1));
+        if (await aborted()) return;
         if (Date.now() - startedAt > PIPELINE_BUDGET_MS) {
           if (plan) break; // keep the plan we have rather than throwing it away
           return void (await fail('analysis exceeded its time budget'));
         }
 
         const planRes = await runWithFallback({
-          cwd: repo.path,
+          kind: 'plan',
+          feature,
+          repo,
           model,
           prompt: buildPlanPrompt({
             repoName: repo.name,
@@ -252,23 +180,19 @@ export async function startFeatureAnalysis(
             previous,
           }),
           jsonSchema: PLAN_JSON_SCHEMA,
-          runId: run.id,
+          schema: planSchema,
           timeoutMs: CALL_TIMEOUT_MS,
-          label: `feature planning: ${feature.title}`,
+          label: `plan: ${feature.title}`,
+          signal: ctl.signal,
         });
-        stats = addStats(stats, usageOf(planRes.envelope));
-        sessionId = planRes.envelope?.session_id ?? sessionId;
-        if (await aborted()) return void (await finishRun(1));
-        if (!planRes.envelope || planRes.envelope.is_error || !planRes.envelope.structured_output) {
+        stats = addStats(stats, planRes.stats);
+        if (await stoppedByKill(planRes)) return;
+        if (await aborted()) return;
+        if (planRes.status !== 'ok' || !planRes.value) {
           if (plan) break; // a later round failed; the earlier plan still stands
-          return void (await fail(envelopeError(planRes, 'plan analysis failed')));
+          return void (await fail(outcomeError(planRes, 'plan analysis failed')));
         }
-        const parsed = planSchema.safeParse(planRes.envelope.structured_output);
-        if (!parsed.success) {
-          if (plan) break;
-          return void (await fail(`plan analysis returned invalid output: ${parsed.error.message.slice(0, 400)}`));
-        }
-        plan = toStoredPlan(parsed.data, () => randomUUID());
+        plan = toStoredPlan(planRes.value, () => randomUUID());
 
         // Persist the fresh plan immediately: a crash mid-review must not lose
         // a good plan, and the page shows progress round by round.
@@ -281,7 +205,9 @@ export async function startFeatureAnalysis(
 
         // ---- adversarial pass over THIS plan ----
         const reviewRes = await runWithFallback({
-          cwd: repo.path,
+          kind: 'plan-review',
+          feature,
+          repo,
           model: settings['review.model'],
           prompt: buildPlanReviewPrompt({
             repoName: repo.name,
@@ -290,19 +216,18 @@ export async function startFeatureAnalysis(
             plan,
           }),
           jsonSchema: PLAN_REVIEW_JSON_SCHEMA,
-          runId: run.id,
+          schema: planReviewSchema,
           label: `plan review: ${feature.title}`,
           timeoutMs: CALL_TIMEOUT_MS,
+          signal: ctl.signal,
         });
-        stats = addStats(stats, usageOf(reviewRes.envelope));
-        if (await aborted()) return void (await finishRun(1));
+        stats = addStats(stats, reviewRes.stats);
+        if (await stoppedByKill(reviewRes)) return;
+        if (await aborted()) return;
 
         let roundResult: PlanReviewRound;
-        const reviewParsed =
-          reviewRes.envelope && !reviewRes.envelope.is_error && reviewRes.envelope.structured_output
-            ? planReviewSchema.safeParse(reviewRes.envelope.structured_output)
-            : null;
-        if (reviewParsed?.success) {
+        const reviewParsed = reviewRes.status === 'ok' && reviewRes.value ? { data: reviewRes.value } : null;
+        if (reviewParsed) {
           roundResult = {
             round: round + 1,
             verdict: reviewParsed.data.verdict,
@@ -323,7 +248,7 @@ export async function startFeatureAnalysis(
               {
                 severity: 'minor',
                 summary: 'The adversarial plan review could not run — this plan is UNREVIEWED.',
-                detail: envelopeError(reviewRes, 'plan review'),
+                detail: outcomeError(reviewRes, 'plan review'),
               },
             ],
             model: reviewRes.model,
@@ -338,10 +263,11 @@ export async function startFeatureAnalysis(
         await storage.appendEvent({
           kind: 'feature.analyzed',
           actor: 'analyze',
-          runId: run.id,
+          runId: reviewRes.runId || planRes.runId || null,
           repoId: repo.id,
           data: {
             featureId: feature.id,
+            costUsd: stats.costUsd,
             round: round + 1,
             verdict: roundResult.verdict,
             findings: roundResult.findings.length,
@@ -360,12 +286,11 @@ export async function startFeatureAnalysis(
         error: null,
       });
       if (proposed) broadcast({ type: 'feature.updated', feature: proposed });
-      await finishRun(0, sessionId);
     } catch (err) {
       console.error('feature analysis failed:', err);
       await fail(`analysis crashed: ${(err as Error).message}`).catch(() => {});
+    } finally {
+      clearInterval(watch);
     }
   })();
-
-  return { runId: run.id };
 }

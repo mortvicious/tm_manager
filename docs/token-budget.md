@@ -235,8 +235,10 @@ the raw number behind `contextPct` (which divides by a fixed 200k and clamps at
 
 Under the cap, nothing changes. Over it, in order of preference:
 
-- **`compact`** — a `-p` turn whose prompt IS the `/compact` slash command:
-  `claude -p --resume <id> "/compact <focus>"`. Measured against CLI v2.1.257 on
+- **`compact`** — a turn whose prompt IS the `/compact` slash command, run
+  since 2026-09-24 as an attachable aux terminal (kind `compact`):
+  `claude --resume <id> … -- "/compact <focus>"`. It was a `-p` turn before, and
+  the cost shape is the same; see § Aux sessions. Measured against CLI v2.1.257 on
   two real sessions: the transcript gains
   `{type:'system', subtype:'compact_boundary', compactMetadata:{trigger:'manual',
   preTokens:191365, postTokens:10360}}`, `num_turns` 0, empty result. The
@@ -270,9 +272,9 @@ Two consequences worth knowing. A compaction is a paid turn on the resumed
 transcript, and the resume baseline is snapshotted **before** the gate runs, so
 that cost lands on the run that chose to compact — which is what makes the
 comparison below honest. And for the ~1–3 minutes it takes, the task sits
-`running` with no run row and no PTY yet; like a headless adversarial review, it
-holds no orchestrator concurrency slot, only a `liveHeadless` entry (so
-`/killall` and the restart guard still see it).
+`running` with no WORKER run row and no worker PTY yet. The compaction itself is
+an aux run in the aux pool, so it holds no orchestrator concurrency slot, and
+`/killall` and the restart guard still see it.
 
 ### That window is the dangerous part
 
@@ -284,8 +286,8 @@ to assume it had not. Two rules close that:
 - **A compaction WE stopped is `aborted`, never `failed`.** The answer to a
   failed compaction is to spawn an agent; doing that seconds after `/killall`
   reported the machine idle, or while a forced restart is closing storage, is
-  the worst outcome the gate can produce. `stopAllHeadless()` records when it
-  swept (`headlessStoppedSince`), `cancel()` stops the compaction for its task
+  the worst outcome the gate can produce. `aux().stopAll()` records when it
+  swept (`aux().stoppedSince`), `cancel()` stops the compaction for its task
   by name (`abortCompaction`), and either way `resumeHandoff` returns `abort`:
   no run row, no spawn, the task parked in `review` with the reason. A genuine
   CLI failure or a ten-minute timeout is still `failed` and still falls through
@@ -333,6 +335,48 @@ with several resumes and compare `costUsd` of runs whose `run.started` carries
 `handoff: 'resume'` against the ones carrying `'compact'`, on the same task and
 the same model. The re-write is the floor of a resumed run's cost, so the
 difference should be most of it.
+
+## Aux sessions: interactive terminals instead of `claude -p` (2026-09-24)
+
+Every non-worker claude (review, plan, plan-review, analysis, compact, report,
+chat, commit) became an interactive terminal (`docs/design.md` § PTY sessions).
+The obvious worry is the one measured at the top of this file: an interactive
+session's preamble is BIGGER than `-p`'s (41,649 vs 24,956 on this repo). It
+does not come out that way here, because the aux runner applies the worker's
+three levers to every role except chat:
+
+- `--tools=` names only what the role can use under `dontAsk`: Read/Glob/Grep/
+  Agent/TodoWrite for review and analysis, the same plus Bash for planning,
+  Read for compact, and **none** for report and commit (`--tools=`).
+- `disableBundledSkills`, in the same `--settings` JSON that carries the hooks.
+- `--no-chrome`.
+
+**Measured** on this repo, first assistant message, Haiku 4.5, CLI 2.1.280:
+the interactive session with `--tools=Read,Glob,Grep` + `--no-chrome` +
+`disableBundledSkills` cost **18,532** cache-write tokens; `claude -p` with the
+old argv (only the four denials) cost **28,478**. The read-only roles are about
+10k tokens cheaper per turn than they were. A `--tools=` session (report, commit)
+drops further.
+
+**Nothing re-buys context per turn that `-p` did not.**
+- One aux session is one conversation. A correction for an invalid result is
+  TYPED into the same live session, so it is one more turn on a warm cache, never
+  a second process that would re-write the prompt.
+- The session is ended as soon as its result is accepted, so no idle terminal
+  lingers into a cache expiry.
+- The two kinds that `--resume` (chat turns, compaction) did so under `-p` as
+  well, one resume per turn, and still do exactly that.
+- A chat turn's cost is the transcript delta over the previous turn's totals
+  (`statsBaseline`), which is what `-p`'s `total_cost_usd` reported.
+
+**Two accounting differences, both visible now.**
+- Every aux session is a `tm_runs` row with transcript stats, so the dashboard's
+  spend (`/api/stats`) now INCLUDES review, plan, report, chat and commit sessions.
+  Under `-p` only the analysis row was counted; the rest never reached a row.
+- A compaction row reads **$0**. The summarising request is not written into the
+  transcript as an assistant message with usage, and its stats are the transcript
+  delta. Its real cost still lands where § The gate says: on the next worker
+  run's first turn, as before.
 
 ## Re-measuring after a change here
 

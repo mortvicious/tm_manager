@@ -1,4 +1,6 @@
-import { TASK_PRESETS, matchTaskPreset, type EffortLevel, type TaskPreset } from '@tm/shared';
+import { useMemo } from 'react';
+import { matchTaskPreset, taskPresets, type EffortLevel, type TaskPreset } from '@tm/shared';
+import { useApp } from '../state.tsx';
 
 /** The review dropdown's three states, as the forms hold them. */
 export type ReviewChoice = 'default' | 'on' | 'off';
@@ -15,7 +17,20 @@ export const reviewValueOf = (choice: ReviewChoice): boolean | null =>
  * points `--tm-preset` at the right one, so the picker button and the board
  * chip can never disagree about what "Complex" looks like.
  */
-export const presetClass = (p: TaskPreset) => `preset-${p.id}`;
+export const presetClass = (p: TaskPreset) =>
+  // A custom preset has no token of its own — it borrows a group palette slot.
+  p.custom ? `preset-color-${p.color ?? 1}` : `preset-${p.id}`;
+
+/**
+ * Built-ins + the Config page's custom presets, from the settings already in
+ * global state (reloaded by Config's Save). Memoised on the custom list so a
+ * board full of chips does not rebuild it per row.
+ */
+export function useTaskPresets(): TaskPreset[] {
+  const { settings } = useApp();
+  const custom = settings?.['presets.custom'];
+  return useMemo(() => taskPresets({ 'presets.custom': custom }), [custom]);
+}
 
 /** All three values spelled out — the glanceable hint's complete half. */
 export const presetTitle = (p: TaskPreset) =>
@@ -24,7 +39,8 @@ export const presetTitle = (p: TaskPreset) =>
   }`;
 
 /**
- * One-click model / effort / adversarial-review bundles (`TASK_PRESETS`).
+ * One-click model / effort / adversarial-review bundles (`TASK_PRESETS` plus
+ * the user's own, `presets.custom`).
  * Purely a shortcut for the three dropdowns below it — the dropdowns stay
  * editable, and touching one just drops the row back to "custom".
  */
@@ -40,14 +56,18 @@ export function PresetPicker({
   review: ReviewChoice;
   onApply: (p: TaskPreset) => void;
 }) {
-  const active = matchTaskPreset({
-    model: model || null,
-    effort: (effort || null) as EffortLevel | null,
-    review: reviewValueOf(review),
-  });
+  const presets = useTaskPresets();
+  const active = matchTaskPreset(
+    {
+      model: model || null,
+      effort: (effort || null) as EffortLevel | null,
+      review: reviewValueOf(review),
+    },
+    presets,
+  );
   return (
     <div className="preset-row">
-      {TASK_PRESETS.map((p) => (
+      {presets.map((p) => (
         <button
           key={p.id}
           type="button"
@@ -79,7 +99,7 @@ export function PresetChip({
   effort: EffortLevel | null;
   review: boolean | null;
 }) {
-  const p = matchTaskPreset({ model, effort, review });
+  const p = matchTaskPreset({ model, effort, review }, useTaskPresets());
   if (!p) return null;
   return (
     <span className={`chip preset-chip ${presetClass(p)}`} title={`preset · ${p.label} — ${presetTitle(p)}`}>

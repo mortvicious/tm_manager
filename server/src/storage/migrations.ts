@@ -380,6 +380,166 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
     ],
   },
   {
+    id: 24,
+    // Reports (docs/reports.md): a work-summary document over several repos and
+    // a date range. FK-less like tm_events and tm_questions — the document is a
+    // record of what was delivered in a window and must outlive the repo rows
+    // it names. `repo_ids` is a JSON array (a report is multi-repo by
+    // definition, so there is no single repo_id column to hang an FK on).
+    //
+    // The index is the other half: a report asks tm_tasks for a WINDOW, and
+    // without it a month-wide report scans the whole table. `updated_at` is
+    // what both bounds of TaskFilter compare against.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_reports (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        repo_ids TEXT NOT NULL,
+        from_date TEXT NOT NULL,
+        to_date TEXT NOT NULL,
+        preset TEXT NOT NULL DEFAULT 'custom',
+        language TEXT NOT NULL DEFAULT 'ru',
+        status TEXT NOT NULL DEFAULT 'pending',
+        markdown TEXT,
+        summary TEXT,
+        task_count INTEGER NOT NULL DEFAULT 0,
+        model TEXT,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_reports_created_idx ON tm_reports(created_at)`,
+      `CREATE INDEX IF NOT EXISTS tm_tasks_updated_idx ON tm_tasks(updated_at)`,
+    ],
+  },
+  {
+    id: 25,
+    // Per-task reviewer (docs/design.md § Adversarial review): which model (and
+    // effort) runs the adversarial review of THIS task's change. NULL reads as
+    // "use the global review.model" — the previous behaviour on existing rows.
+    statements: [
+      `ALTER TABLE tm_tasks ADD COLUMN review_model TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN review_effort TEXT`,
+    ],
+  },
+  {
+    id: 26,
+    // Manual task order (docs/grouping.md § Order): the board's drag-to-reorder
+    // and the global claim's tiebreaker after priority. DOUBLE PRECISION, not
+    // REAL — REAL is float4 on Postgres, which runs out of midpoints after a
+    // handful of drags (SQLite reads the name as REAL affinity, a double).
+    // The backfill ranks existing rows by creation (id breaks a tie), so every
+    // sibling set keeps the order it had before anything is dragged.
+    statements: [
+      `ALTER TABLE tm_tasks ADD COLUMN sort_order DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `UPDATE tm_tasks SET sort_order = 1 + (SELECT COUNT(*) FROM tm_tasks o
+          WHERE o.created_at < tm_tasks.created_at
+             OR (o.created_at = tm_tasks.created_at AND o.id < tm_tasks.id))`,
+    ],
+  },
+  {
+    id: 27,
+    // Opus 5.5 (user decision 2026-09-23): the opus TIER moves to the newer
+    // point release, so a stored `claude-opus-5` is repointed rather than left
+    // behind. This is a deliberate exception to the "existing installs keep
+    // whatever tm_config holds" policy of the 2026-09-03 Fable-5.1 entry: 5.1
+    // was an ADDITIONAL option beside a model the user had chosen between,
+    // while 5.5 supersedes a tier they only ever chose as "opus".
+    //
+    // Values are JSON (getSettings JSON.parse()s them), so the literal carries
+    // its quotes. Scoped to the model KEYS by name, never `WHERE value = ...`
+    // alone — no unrelated setting can ever be rewritten by a value collision.
+    // tm_tasks.model / review_model are deliberately NOT touched: a per-task
+    // pin records what actually ran on work that may already be published, and
+    // rewriting it would re-date history and misprice the cost chip.
+    statements: [
+      `UPDATE tm_config SET value = '"claude-opus-5-5"'
+        WHERE value = '"claude-opus-5"'
+          AND key IN ('agent.model', 'analysis.model', 'orchestrator.model',
+                      'review.model', 'router.primaryModel', 'router.fallbackModel',
+                      'chat.model')`,
+    ],
+  },
+  {
+    id: 28,
+    // Every claude this server spawns is a terminal now (docs/decisions.md
+    // 2026-09-24, "Headless is retired"): review, plan, plan-review, analysis,
+    // compact, report, chat and commit-message sessions are `mode = 'aux'`
+    // rows in the SAME table, told apart by `kind`. `subject_id` names what
+    // the session is about — a task for review/compact, a feature for
+    // plan/plan-review, a chat, a report, a repo for analysis/commit — and
+    // `task_id` stays NULL on purpose: every worker rule keyed on
+    // `tm_runs.task_id` (the stop hook's newer-run guard, resumable-session
+    // lookup, the task's latest run, per-task cost) must never see a
+    // reviewer as the task's agent. `label` is what the runs list shows.
+    // The legacy 'analyze' rows (analysis and the feature pipeline, which
+    // shared one mode) become 'aux'/'analysis'.
+    statements: [
+      `ALTER TABLE tm_runs ADD COLUMN kind TEXT`,
+      `ALTER TABLE tm_runs ADD COLUMN subject_id TEXT`,
+      `ALTER TABLE tm_runs ADD COLUMN label TEXT`,
+      `UPDATE tm_runs SET mode = 'aux', kind = 'analysis' WHERE mode = 'analyze'`,
+      `CREATE INDEX IF NOT EXISTS tm_runs_subject_idx ON tm_runs (subject_id)`,
+    ],
+  },
+  {
+    id: 29,
+    // The reviewer reads the change THIS task made, committed or not
+    // (docs/decisions.md 2026-09-24, "The reviewer reads the task's commits"):
+    // the HEAD sha + branch when the task's first worker run spawned, and
+    // when. Set once, never moved by a retry or fix round.
+    statements: [
+      `ALTER TABLE tm_tasks ADD COLUMN base_sha TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN base_ref TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN base_at TEXT`,
+    ],
+  },
+  {
+    id: 30,
+    // Shared spaces (docs/shared-spaces.md): a set of repos sharing one
+    // knowledge folder on disk and a ledger of cross-repo requests/notes that
+    // every member's worker reads at the start of a turn. FK-less like
+    // tm_events/tm_dispatches: a note outlives the task that wrote it, and a
+    // deleted repo leaves its id in `repo_ids`, filtered on read.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_spaces (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        path TEXT NOT NULL,
+        repo_ids TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS tm_shared_notes (
+        id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        from_repo_id TEXT,
+        from_task_id TEXT,
+        to_repo_id TEXT,
+        status TEXT NOT NULL,
+        task_id TEXT,
+        resolution TEXT,
+        files TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_shared_notes_space_idx ON tm_shared_notes (space_id, status)`,
+      `CREATE INDEX IF NOT EXISTS tm_shared_notes_to_idx ON tm_shared_notes (to_repo_id, status)`,
+      `CREATE INDEX IF NOT EXISTS tm_shared_notes_task_idx ON tm_shared_notes (task_id)`,
+    ],
+  },
+  {
+    id: 31,
+    // "Undo start" (docs/queue.md § Undo start): a running task sent back to
+    // `queued` keeps its place but no claim may take it until the human
+    // releases it — otherwise the queue would restart it on the next pass.
+    statements: [`ALTER TABLE tm_tasks ADD COLUMN queue_held_at TEXT`],
+  },
+  {
     id: 32,
     // Web Push devices (docs/push.md): one row per subscribed browser, keyed on
     // the push service's endpoint. FK-less like tm_events; `kinds` is a JSON

@@ -30,6 +30,8 @@ export function pidLooksLikeOurs(pid: number, pattern: RegExp = /claude|node|zsh
 export interface SessionEndInfo {
   runId: string;
   exitCode: number;
+  /** the signal that ended it, when one did (node-pty reports 0 / undefined otherwise) */
+  signal?: number;
 }
 
 export interface Session {
@@ -177,11 +179,11 @@ export class SessionManager {
       this.fanout(session, frame);
     });
 
-    pty.onExit(({ exitCode }) => {
+    pty.onExit(({ exitCode, signal }) => {
       session.exit = { code: exitCode };
       session.endedAt = Date.now();
       this.fanout(session, { type: 'exit', code: exitCode });
-      this.onExitCb?.({ runId: opts.runId, exitCode });
+      this.onExitCb?.({ runId: opts.runId, exitCode, signal: signal || undefined });
     });
 
     return session;

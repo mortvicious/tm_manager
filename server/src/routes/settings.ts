@@ -2,10 +2,39 @@ import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import type { AppSettings } from '@tm/shared';
+import {
+  CUSTOM_PRESET_ID_RE,
+  CUSTOM_PRESET_LABEL_MAX,
+  CUSTOM_PRESET_MAX,
+  CUSTOM_PRESET_MODEL_RE,
+  GROUP_COLOR_COUNT,
+  customPresetProblem,
+  type AppSettings,
+} from '@tm/shared';
 import { serverRoot } from '../config.ts';
 import { syncSentryIssues } from '../sentry.ts';
 import type { Storage } from '../storage/types.ts';
+
+// Shape per entry here; the list-level rules (unique ids/names, no repeated
+// model+effort+review) live in `customPresetProblem`, shared with the Config page.
+const customPresetsSchema = z
+  .array(
+    z
+      .object({
+        id: z.string().regex(CUSTOM_PRESET_ID_RE),
+        label: z.string().trim().min(1).max(CUSTOM_PRESET_LABEL_MAX),
+        model: z.string().regex(CUSTOM_PRESET_MODEL_RE),
+        effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
+        review: z.boolean().nullable(),
+        color: z.number().int().min(1).max(GROUP_COLOR_COUNT),
+      })
+      .strict(),
+  )
+  .max(CUSTOM_PRESET_MAX)
+  .superRefine((list, ctx) => {
+    const problem = customPresetProblem(list);
+    if (problem) ctx.addIssue({ code: 'custom', message: problem });
+  });
 
 const settingsSchema = z
   .object({
@@ -18,7 +47,9 @@ const settingsSchema = z
     'orchestrator.model': z.string().min(1),
     'agent.allowEnqueue': z.boolean(),
     'agent.taskCreationCap': z.number().int().min(1).max(100),
+    'agent.maxSpawnDepth': z.number().int().min(1).max(50),
     'board.groupColors': z.boolean(),
+    'presets.custom': customPresetsSchema,
     'review.enabled': z.boolean(),
     'review.model': z.string().min(1),
     'review.maxRounds': z.number().int().min(0).max(5),
@@ -47,6 +78,10 @@ const settingsSchema = z
     // ("always compact first") is a legitimate choice, and the number field in
     // the UI would have no way to express a hole in the range.
     'agent.resumeContextCap': z.number().int().min(0).max(1_000_000),
+    // 0 = shells never hold a task. Four hours is past any build or test run
+    // worth waiting on; beyond it the knob could only mean "forever", which
+    // is the dev-server trap the bound exists to prevent.
+    'agent.shellWaitMinutes': z.number().int().min(0).max(240),
     'agent.autoWake': z.boolean(),
     // Up to an hour of slack past the reset. The window is 5h, so a longer
     // grace could outlive the capacity it waits for.

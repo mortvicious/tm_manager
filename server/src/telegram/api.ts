@@ -1,6 +1,7 @@
 import type {
   BotCommandSpec,
   InlineKeyboardMarkup,
+  ReplyKeyboardMarkup,
   TelegramMessage,
   TelegramResponse,
   TelegramUpdate,
@@ -208,6 +209,11 @@ export interface Reply {
   html: string;
   keyboard?: InlineKeyboardMarkup;
   /**
+   * The persistent bottom keyboard (`/start` hands it out). A message carries
+   * ONE reply_markup, so this is only honoured when `keyboard` is absent.
+   */
+  replyKeyboard?: ReplyKeyboardMarkup;
+  /**
    * Whether the WRITE behind this reply succeeded. Absent means "nothing was
    * written, or it worked" — the audit trail reads `ok !== false`. A refusal
    * ("cannot enqueue from status 'running'") is a perfectly good sentence to
@@ -235,6 +241,15 @@ export type ReplyLike = string | Reply;
 
 export function toReply(r: ReplyLike): Reply {
   return typeof r === 'string' ? { html: r } : r;
+}
+
+/**
+ * Telegram refuses an edit that changes nothing ("message is not modified") —
+ * a 🔄 on a board where nothing moved. That is the redraw having nothing to
+ * do, not a failure, and it must not turn into a fresh copy of the message.
+ */
+export function isNotModified(e: unknown): boolean {
+  return e instanceof TelegramApiError && e.fromTelegram && e.code === 400 && /message is not modified/i.test(e.message);
 }
 
 export interface CallOptions {
@@ -377,7 +392,7 @@ export class TelegramApi {
     chatId: number,
     html: string,
     opts?: CallOptions,
-    keyboard?: InlineKeyboardMarkup,
+    keyboard?: InlineKeyboardMarkup | ReplyKeyboardMarkup,
   ): Promise<TelegramMessage[]> {
     const sent: TelegramMessage[] = [];
     const parts = chunkMessage(html).filter((p) => p.trim());
@@ -397,6 +412,48 @@ export class TelegramApi {
       );
     }
     return sent;
+  }
+
+  /**
+   * Redraw a message the bot sent earlier — the board and the task card
+   * (docs/telegram.md § The board). Same `call()` path as `sendMessage`, but
+   * NOT chunked: one message stays one message, so a text over the limit is a
+   * refusal the caller answers with a fresh send. Omitting `keyboard` removes
+   * the inline keyboard, which is Telegram's rule, not ours.
+   */
+  editMessageText(
+    chatId: number,
+    messageId: number,
+    html: string,
+    opts?: CallOptions,
+    keyboard?: InlineKeyboardMarkup,
+  ): Promise<TelegramMessage | true> {
+    return this.call<TelegramMessage | true>(
+      'editMessageText',
+      {
+        chat_id: chatId,
+        message_id: messageId,
+        text: html,
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        ...(keyboard ? { reply_markup: keyboard } : {}),
+      },
+      opts,
+    );
+  }
+
+  /** Swap (or, with no `keyboard`, remove) the buttons under a sent message. */
+  editMessageReplyMarkup(
+    chatId: number,
+    messageId: number,
+    keyboard?: InlineKeyboardMarkup,
+    opts?: CallOptions,
+  ): Promise<TelegramMessage | true> {
+    return this.call<TelegramMessage | true>(
+      'editMessageReplyMarkup',
+      { chat_id: chatId, message_id: messageId, ...(keyboard ? { reply_markup: keyboard } : {}) },
+      opts,
+    );
   }
 
   /**

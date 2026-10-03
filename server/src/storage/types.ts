@@ -1,3 +1,4 @@
+import type { MoveAnchor } from './group.ts';
 import type { PushDevice, PushKind } from '@tm/shared';
 import type {
   AppSettings,
@@ -20,9 +21,18 @@ import type {
   Question,
   QuestionItem,
   QuestionStatus,
+  Report,
+  ReportLanguage,
+  ReportRangePreset,
+  ReportStatus,
+  SharedNote,
+  SharedNoteKind,
+  SharedNoteStatus,
+  Space,
   Repo,
   RepoCommand,
   Run,
+  RunKind,
   RunMode,
   RunStats,
   RunStatus,
@@ -63,6 +73,20 @@ export interface TaskFilter {
    * report does not grow with the age of the install.
    */
   updatedSince?: string;
+  /**
+   * ISO UPPER bound on `updated_at`, inclusive — the other half of a window.
+   * `updatedSince` alone answers "since when"; a report answers "between", so
+   * it needs a closing bound or every report would run to now (docs/reports.md).
+   */
+  updatedUntil?: string;
+  /**
+   * Several repos at once, for the multi-repo report. Disjunctive, and NOT a
+   * replacement for `repoId` (which stays the single-repo fast path every other
+   * caller uses). An EMPTY array matches nothing — a report over no repos has
+   * no scope, and silently widening that to "all repos" would put private work
+   * in a document that did not ask for it.
+   */
+  repoIds?: string[];
 }
 
 export interface NewRepo {
@@ -101,6 +125,8 @@ export interface NewTask {
   effort?: Task['effort'];
   category?: string | null;
   review?: boolean | null;
+  reviewModel?: string | null;
+  reviewEffort?: Task['effort'];
   autoPublish?: boolean;
   createdByRun?: string | null;
   spawnDepth?: number;
@@ -137,6 +163,12 @@ export interface NewRun {
   taskId?: string | null;
   repoId?: string | null;
   mode: RunMode;
+  /** what the session is (docs/design.md § PTY sessions); defaults to 'worker' for a worker */
+  kind?: RunKind;
+  /** the task / feature / chat / report / repo an aux session is about */
+  subjectId?: string | null;
+  /** runs-list label of an aux session */
+  label?: string | null;
   pid?: number | null;
   model?: string | null;
   effort?: Task['effort'];
@@ -233,8 +265,11 @@ export interface DispatchFilter {
 
 export interface RunFilter {
   taskId?: string;
+  repoId?: string;
   status?: RunStatus;
   mode?: RunMode;
+  kind?: RunKind;
+  subjectId?: string;
   /** ISO lower bound on `started_at`, inclusive — the report window */
   since?: string;
 }
@@ -257,6 +292,76 @@ export interface ChildCounts {
 // NOTE: deliberately no generic `transaction(fn)` — better-sqlite3 transactions
 // are sync-only, so multi-step mutations are first-class composite methods
 // implemented transactionally inside each driver.
+export interface NewReport {
+  title: string;
+  repoIds: string[];
+  fromDate: string;
+  toDate: string;
+  preset: ReportRangePreset;
+  language: ReportLanguage;
+  model: string | null;
+}
+
+/** undefined = leave as-is; null clears the column. */
+export interface ReportPatch {
+  title?: string;
+  status?: ReportStatus;
+  markdown?: string | null;
+  summary?: string | null;
+  taskCount?: number;
+  model?: string | null;
+  error?: string | null;
+}
+
+/** Shared spaces (docs/shared-spaces.md). */
+export interface NewSpace {
+  name: string;
+  path: string;
+  repoIds: string[];
+}
+
+export interface SpacePatch {
+  name?: string;
+  path?: string;
+  repoIds?: string[];
+}
+
+export interface NewSharedNote {
+  spaceId: string;
+  kind: SharedNoteKind;
+  title: string;
+  body: string;
+  fromRepoId: string | null;
+  fromTaskId: string | null;
+  toRepoId: string | null;
+  files: string[];
+  actor: string;
+}
+
+/** undefined = leave as-is; null clears the column. */
+export interface SharedNotePatch {
+  title?: string;
+  body?: string;
+  toRepoId?: string | null;
+  status?: SharedNoteStatus;
+  taskId?: string | null;
+  resolution?: string | null;
+  files?: string[];
+}
+
+export interface SharedNoteFilter {
+  spaceId?: string;
+  kind?: SharedNoteKind;
+  status?: SharedNoteStatus[];
+  /** null = notes addressed to nobody in particular */
+  toRepoId?: string | null;
+  taskId?: string;
+  /** strictly after this ISO instant */
+  createdAfter?: string;
+  oldestFirst?: boolean;
+  limit?: number;
+}
+
 export interface Storage {
   migrate(): Promise<void>;
   close(): Promise<void>;
@@ -286,6 +391,15 @@ export interface Storage {
   createTask(t: NewTask, actor: string): Promise<Task>;
   updateTask(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Promise<Task | null>;
   deleteTask(id: string): Promise<void>;
+  /**
+   * Re-parent AND position a task in one transaction (docs/grouping.md § Order):
+   * `parentId` as updateTask (same errors, same subtree move), then the key
+   * next to `anchor` among the destination's siblings — renumbering them when
+   * the gap is spent. Audited `task.moved`. Returns every row whose group or
+   * key changed (the moved subtree, the destination group, a renumbered set),
+   * or null when the task does not exist.
+   */
+  moveTask(id: string, parentId: string | null, anchor: MoveAnchor, actor: string): Promise<Task[] | null>;
   /** Atomic queued→running claim (repo-less tasks are never claimed); null when queue is empty. */
   claimNextQueuedTask(actor: string): Promise<Task | null>;
   /**
@@ -304,7 +418,7 @@ export interface Storage {
     from: TaskStatus[],
     to: TaskStatus,
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'queueHeldAt'>>,
   ): Promise<Task | null>;
   /**
    * Atomic parent re-evaluation after a child reaches a terminal status.
@@ -484,6 +598,36 @@ export interface Storage {
    *  same transaction as the mutation). */
   appendEvent(e: NewAuditEvent): Promise<AuditEvent>;
   listEvents(f?: EventFilter): Promise<AuditEvent[]>;
+
+  /**
+   * Reports (docs/reports.md). Plain CRUD: unlike a task there is no state
+   * machine here — a report is created `pending`, moved to `running` by the
+   * service that spawns its claude pass, and lands `ready` or `failed`. No
+   * composite is needed because only one writer ever touches a given row.
+   */
+  listReports(): Promise<Report[]>;
+  getReport(id: string): Promise<Report | null>;
+  createReport(r: NewReport, actor: string): Promise<Report>;
+  updateReport(id: string, patch: ReportPatch): Promise<Report | null>;
+  deleteReport(id: string): Promise<boolean>;
+
+  /**
+   * Shared spaces (docs/shared-spaces.md). Plain CRUD plus one conditional
+   * update: `updateSharedNote(id, patch, fromStatus)` only writes while the
+   * note is in one of `fromStatus`, which is what makes filing a request
+   * single-winner. `deleteSpace` removes the space's notes in the same
+   * transaction.
+   */
+  listSpaces(): Promise<Space[]>;
+  getSpace(id: string): Promise<Space | null>;
+  createSpace(s: NewSpace): Promise<Space>;
+  updateSpace(id: string, patch: SpacePatch): Promise<Space | null>;
+  deleteSpace(id: string): Promise<boolean>;
+  listSharedNotes(f: SharedNoteFilter): Promise<SharedNote[]>;
+  getSharedNote(id: string): Promise<SharedNote | null>;
+  createSharedNote(n: NewSharedNote): Promise<SharedNote>;
+  updateSharedNote(id: string, patch: SharedNotePatch, fromStatus?: readonly SharedNoteStatus[]): Promise<SharedNote | null>;
+  deleteSharedNote(id: string): Promise<boolean>;
 
   getSettings(): Promise<AppSettings>;
   setSetting<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void>;

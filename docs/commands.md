@@ -111,12 +111,16 @@ A restart kills every agent, and **two kinds of agent exist**:
 
 - **Interactive workers** — a PTY in the `SessionManager`. Losing one loses the
   session, and boot recovery sweeps its task to `failed`.
-- **Headless `claude -p` children** — analysis, adversarial review, feature
-  planning/review. They own no PTY, so `sessions.liveCount()` cannot see them,
-  and gating only on that number let a restart kill an analysis mid-flight —
-  precisely the harm the rule exists to prevent.
+- **Aux sessions** — review, plan, plan-review, analysis, compact, report,
+  chat, commit. Since 2026-09-24 each is an interactive PTY of its own, in a
+  THIRD pool (`claude/aux.ts`, `docs/design.md` § PTY sessions). They take no
+  worker slot, so `sessions.liveCount()` cannot see them, and gating only on
+  that number would let a restart kill a review mid-flight — precisely the harm
+  the rule exists to prevent. The runner's `liveLabels()` is their count, and
+  `OrchestratorStatus.aux` / the restart check's `aux` field carry it (both were
+  `headless`); a forced restart calls `aux().stopAll()`.
 
-`server/src/claude/headless.ts` is the registry for the second kind: every
+*History, the headless era:* `server/src/claude/headless.ts` was the registry for the second kind: every
 headless spawn registers its child with a label (`analysis of neko-vite`,
 `reviewing "…"`, `feature planning: …`), and it deregisters on `exit` or
 `error`. It is keyed by the child process rather than a run id on purpose — a

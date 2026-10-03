@@ -6,7 +6,7 @@ Status: **implemented 2026-08-25** (design written the same day). This file is t
 
 Today the intake units are a single task (human-written) or an Analyze run over existing tasks. There is no home for a **big request**: a paragraph-to-page description of a large capability, which needs to be analyzed, decomposed into ordered tasks, sanity-checked, *approved by the human*, and then executed by the normal orchestrator machinery over hours or days. The docker/shadow/cloud analysis is the canonical example: ~4 phases, each several tasks, with strict ordering (containers before shadow enforcement before cloud).
 
-The Feature interface is that home. Key property: **it composes almost entirely out of existing subsystems** — headless structured analysis (`analyze.ts`), adversarial review (`review.ts` pattern), proposal-accept transactions, parent/child task mechanics, the claim loop. What's genuinely new is one entity, one pipeline, and one page.
+The Feature interface is that home. Key property: **it composes almost entirely out of existing subsystems** — structured analysis in a read-only aux terminal (`analyze.ts`), adversarial review (`review.ts` pattern), proposal-accept transactions, parent/child task mechanics, the claim loop. What's genuinely new is one entity, one pipeline, and one page.
 
 ## Concept and lifecycle
 
@@ -21,8 +21,8 @@ draft ──▶ analyzing ──▶ analysis-review ──▶ proposed ──▶
 ```
 
 - **draft** — user writes/edits the big request (title + long markdown body, optional attachments via the existing artifacts dir mechanism).
-- **analyzing** — one headless run (`claude -p`, model `claude-fable-5` per role-model policy, write tools disallowed, `--json-schema`) with cwd = the repo, prompt = request + repo role + existing open tasks + instructions. Output: structured plan (schema below).
-- **analysis-review** — a *second* independent headless run adversarially reviews the plan against the request and the repo (missing steps? wrong ordering? tasks too big/vague? contradicts CLAUDE.md/docs?). Verdict `clean | minor | blocker`. Blockers → fold findings into a re-analysis prompt and repeat, bounded by `feature.analysisMaxRounds` (default 2, mirrors `review.maxRounds`). This is the same shape as the existing work→review→work loop, applied to planning instead of diffs.
+- **analyzing** — one planning session (an aux terminal of kind `plan`, attachable from the runs list — `docs/design.md` § PTY sessions; model `claude-fable-5` per role-model policy, write tools disallowed, result as a fenced JSON block validated by zod) with cwd = the repo, prompt = request + repo role + existing open tasks + instructions. Output: structured plan (schema below).
+- **analysis-review** — a *second* independent session (kind `plan-review`) adversarially reviews the plan against the request and the repo (missing steps? wrong ordering? tasks too big/vague? contradicts CLAUDE.md/docs?). Verdict `clean | minor | blocker`. Blockers → fold findings into a re-analysis prompt and repeat, bounded by `feature.analysisMaxRounds` (default 2, mirrors `review.maxRounds`). This is the same shape as the existing work→review→work loop, applied to planning instead of diffs.
 - **proposed** — the plan is shown visually (below). Nothing exists as real tasks yet.
 - **approved** — user approves (possibly after editing); real `tm_tasks` rows are created transactionally (composite storage method, like `acceptProposal`).
 - **running / paused / review / done** — execution + roll-up, below.
@@ -118,14 +118,14 @@ Implemented as designed; the deltas below are the decisions taken while building
 | Composite methods (both drivers) | `server/src/storage/{sqlite,postgres}.ts` |
 | Phase-gating SQL, shared verbatim by both drivers | `server/src/storage/feature-sql.ts` |
 | Structured-output contract, prompts, caps injection (pure) | `server/src/claude/feature-plan.ts` |
-| The two-headless-run pipeline | `server/src/claude/feature-analysis.ts` |
+| The two-session pipeline (plan → plan-review terminals) | `server/src/claude/feature-analysis.ts` |
 | REST + events | `server/src/routes/features.ts` |
 | Phase pump | `Orchestrator.advanceFeature` / `resolveCompletion` |
 | UI | `web/src/pages/{Features,Feature}.tsx`, `components/FeatureBadge.tsx`, `theme.css` |
 
 ### Deltas from the design above
 
-1. **`analysis-review` is not a persisted status.** The plan review runs *inside* `analyzing`: one `tm_runs` row (mode `analyze`) spans the whole pipeline, and each `claude -p` child registers itself with `trackHeadlessChild` so the single Kill button always points at whatever is currently burning. The rounds are visible as `feature.review.rounds[]` instead of as a status. The feature leaves `analyzing` exactly once, for `proposed` or `failed`.
+1. **`analysis-review` is not a persisted status.** The plan review runs *inside* `analyzing`. Every call of the pipeline is its own aux terminal: a `tm_runs` row of kind `plan` or `plan-review` with `subject_id` = the feature, attachable and killable from the runs list (`docs/design.md` § PTY sessions). There used to be ONE `analyze` row spanning the pipeline, with the `-p` children tracked under it; that row is gone, and `POST /api/features/:id/analyze` no longer returns a `runId`. **Killing** either terminal fails the feature with "analysis stopped". The feature leaving `analyzing` (cancel, re-analyze) aborts the session in flight within 5 s, rather than paying for a plan nobody will read. The result is the fenced JSON block at the end of the session's final message, validated by the same `planSchema`/`planReviewSchema` zod schemas `--json-schema` was paired with. The tool policy is unchanged from `-p`: `dontAsk`, and Edit/Write/NotebookEdit denied. Bash was never denied to this role, so under `dontAsk` it runs only what the repo's own allow rules permit. The per-feature spend (`costUsd`) now rides on the `feature.analyzed` event, since there is no single row to sum it on. The rounds are visible as `feature.review.rounds[]` instead of as a status. The feature leaves `analyzing` exactly once, for `proposed` or `failed`.
 2. **Approve ≠ start.** Approval materialises the cards as **`draft`** tasks, not `queued`. Only `POST /features/:id/start` (approved → running) lets the phase pump move the current phase to `queued`. A plan can therefore be approved and reviewed on the Board before any agent touches the repo.
 3. **Phase gating lives in one shared SQL fragment.** `FEATURE_CLAIM_GATE` is spliced into `claimNextQueuedTask` in *both* drivers, so SQLite and Postgres cannot drift. Its JS twin `isFeatureTaskBlocking` drives `resolveFeatureCompletion`; the two are documented as one policy and must be edited together (a mismatch between them wedges a phase — it is exactly the bug the test suite caught during the build).
 4. **A worker-filed draft does not hold a phase open.** Children a worker files inside a feature inherit `feature_id`/`feature_phase` (as designed) — but an *unqueued* one (`status='draft'`, `source<>'feature'`) is a human-triage item, not phase work, and is exempt from the gate. Split children, which are queued, do block their phase as intended.

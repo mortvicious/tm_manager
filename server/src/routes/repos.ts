@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { z } from 'zod';
 import { expandHome } from '../config.ts';
 import { commitRepo, gitStatus, pushRepo } from '../git.ts';
+import { spaceConflictForRepo } from '../spaces/service.ts';
 import type { Storage } from '../storage/types.ts';
 
 const repoBody = z
@@ -56,6 +57,8 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
       return reply.code(400).send({ error: `Path is not an existing directory: ${abs}` });
     }
     const name = body.name?.trim() || abs.split('/').filter(Boolean).pop() || abs;
+    const clash = await spaceConflictForRepo(storage, { name, path: abs });
+    if (clash) return reply.code(400).send({ error: clash });
     let previewUrl: string | null;
     try {
       previewUrl = normalizePreviewUrl(body.previewUrl);
@@ -80,6 +83,8 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
       if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
         return reply.code(400).send({ error: `Path is not an existing directory: ${abs}` });
       }
+      const clash = await spaceConflictForRepo(storage, { name: body.name ?? 'this repo', path: abs });
+      if (clash) return reply.code(400).send({ error: clash });
     }
     let previewUrl: string | null | undefined;
     if ('previewUrl' in body) {
@@ -109,7 +114,7 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
     return gitStatus(repo);
   });
 
-  // git add -A + commit; the message is written by claude-opus-5 from the
+  // git add -A + commit; the message is written by claude-opus-5-5 from the
   // staged diff (user policy). Explicit button, human actor.
   app.post('/api/repos/:id/commit', async (req, reply) => {
     const { id } = req.params as { id: string };

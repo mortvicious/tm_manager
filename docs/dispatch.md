@@ -163,7 +163,7 @@ thing a resumed agent reads has to stay the instruction it must act on.
 
 Delivery holds (stays `pending`, retried on later ticks) while the target:
 
-- is `running`, `queued`, or `blocked`;
+- is `running`, `waiting` (a live session about to be re-invoked by its own subagent — a resume would kill it, `docs/design.md` § Waiting), `queued`, or `blocked`;
 - has a live non-idle session, or any agent is live in its repo (never two
   agents editing one working tree);
 - would exceed `orchestrator.concurrency` (delivery is a real agent turn).

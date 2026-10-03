@@ -21,10 +21,13 @@ import type {
   OrchestratorStatus,
   Proposal,
   Repo,
+  Report,
   RepoCommand,
   Run,
   RunActivity,
   ServerEvent,
+  SharedNote,
+  Space,
   Task,
 } from '@tm/shared';
 import { api, normalizeTask } from './api.ts';
@@ -56,6 +59,11 @@ interface AppState {
    */
   chatMessages: Record<string, ChatMessage[]>;
   loadChat: (id: string) => Promise<void>;
+  /** generated work-summary documents, newest first (docs/reports.md) */
+  reports: Report[];
+  /** shared spaces and their request/note ledger (docs/shared-spaces.md) */
+  spaces: Space[];
+  sharedNotes: SharedNote[];
   /** saved per-repo command definitions (docs/commands.md) */
   commands: RepoCommand[];
   /** command executions this server knows about — running ones first-class,
@@ -104,11 +112,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [features, setFeatures] = useState<Feature[]>([]);
   const [chats, setChats] = useState<Chat[]>([]);
   const [chatMessages, setChatMessages] = useState<Record<string, ChatMessage[]>>({});
+  const [reports, setReports] = useState<Report[]>([]);
+  const [spaces, setSpaces] = useState<Space[]>([]);
+  const [sharedNotes, setSharedNotes] = useState<SharedNote[]>([]);
   const [commands, setCommands] = useState<RepoCommand[]>([]);
   const [commandRuns, setCommandRuns] = useState<CommandRun[]>([]);
   const [shells, setShells] = useState<ShellSession[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
-  const [orch, setOrch] = useState<OrchestratorStatus>({ enabled: false, running: 0, concurrency: 2, headless: 0 });
+  const [orch, setOrch] = useState<OrchestratorStatus>({ enabled: false, running: 0, concurrency: 2, aux: 0 });
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
@@ -133,6 +144,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api.listQuestions().then(setQuestions).catch(() => {});
     api.listFeatures().then(setFeatures).catch(() => {});
     api.listChats().then(setChats).catch(() => {});
+    api.listReports().then(setReports).catch(() => {});
+    api.listSpaces().then(setSpaces).catch(() => {});
+    api.listSharedNotes().then(setSharedNotes).catch(() => {});
     api.listCommands().then(setCommands).catch(() => {});
     api.listCommandRuns().then(setCommandRuns).catch(() => {});
     api.listShells().then(setShells).catch(() => {});
@@ -332,6 +346,45 @@ export function AppProvider({ children }: { children: ReactNode }) {
               return e.question.status === 'pending' ? [e.question, ...rest] : rest;
             });
             break;
+          case 'report.updated':
+            // Newest first, matching the server's ORDER BY: a re-run keeps its
+            // place in the list rather than jumping to the top.
+            setReports((cur) => {
+              const i = cur.findIndex((r) => r.id === e.report.id);
+              if (i === -1) return [e.report, ...cur];
+              const next = [...cur];
+              next[i] = e.report;
+              return next;
+            });
+            break;
+          case 'report.deleted':
+            setReports((cur) => cur.filter((r) => r.id !== e.reportId));
+            break;
+          case 'space.updated':
+            setSpaces((cur) => {
+              const i = cur.findIndex((x) => x.id === e.space.id);
+              if (i === -1) return [...cur, e.space];
+              const next = [...cur];
+              next[i] = e.space;
+              return next;
+            });
+            break;
+          case 'space.deleted':
+            setSpaces((cur) => cur.filter((x) => x.id !== e.spaceId));
+            setSharedNotes((cur) => cur.filter((n) => n.spaceId !== e.spaceId));
+            break;
+          case 'shared-note.updated':
+            setSharedNotes((cur) => {
+              const i = cur.findIndex((n) => n.id === e.note.id);
+              if (i === -1) return [e.note, ...cur];
+              const next = [...cur];
+              next[i] = e.note;
+              return next;
+            });
+            break;
+          case 'shared-note.deleted':
+            setSharedNotes((cur) => cur.filter((n) => n.id !== e.noteId));
+            break;
           case 'dispatch.updated':
             setDispatches((cur) => {
               const i = cur.findIndex((d) => d.id === e.dispatch.id);
@@ -443,6 +496,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         chats,
         chatMessages,
         loadChat,
+        reports,
+        spaces,
+        sharedNotes,
         commands,
         commandRuns,
         shells,

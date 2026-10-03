@@ -15,6 +15,13 @@ import type {
   Proposal,
   Repo,
   RepoCommand,
+  Report,
+  SpaceFile,
+  Space,
+  SharedNoteKind,
+  SharedNote,
+  ReportLanguage,
+  ReportRangePreset,
   RepoScripts,
   Run,
   RunActivity,
@@ -22,6 +29,7 @@ import type {
   StatsOverview,
   Task,
   UsageSnapshot,
+  TaskMovePlace,
 } from '@tm/shared';
 
 // Only user-editable fields — status/error/resultSummary are machine-owned and
@@ -42,6 +50,8 @@ export type TaskWrite = Partial<
     | 'effort'
     | 'category'
     | 'review'
+    | 'reviewModel'
+    | 'reviewEffort'
     | 'autoPublish'
     | 'groupName'
     | 'groupColor'
@@ -60,6 +70,7 @@ export function normalizeTask(t: Task): Task {
     t.groupPath &&
     t.autoPublish !== undefined &&
     t.customQueueAt !== undefined &&
+    typeof t.sortOrder === 'number' &&
     Array.isArray(t.reviewRounds)
   )
     return t;
@@ -68,11 +79,14 @@ export function normalizeTask(t: Task): Task {
     autoPublish: t.autoPublish ?? false,
     customQueueAt: t.customQueueAt ?? null,
     reviewState: t.reviewState ?? null,
+    reviewModel: t.reviewModel ?? null,
+    reviewEffort: t.reviewEffort ?? null,
     reviewRounds: Array.isArray(t.reviewRounds) ? t.reviewRounds : [],
     groupId: t.groupId ?? t.id,
     groupPath: t.groupPath ?? '/',
     groupName: t.groupName ?? null,
     groupColor: t.groupColor ?? null,
+    sortOrder: typeof t.sortOrder === 'number' ? t.sortOrder : 0,
   };
 }
 
@@ -121,6 +135,60 @@ export const api = {
   gitCommit: (id: string) => req<{ ok: true; message: string; summary: string }>('POST', `/api/repos/${id}/commit`),
   gitPush: (id: string) => req<{ ok: true; output: string }>('POST', `/api/repos/${id}/push`),
 
+  // Reports (docs/reports.md). Create answers 202 with a `pending` row — the
+  // document itself arrives over /ws/events, because the claude pass that
+  // writes it outlives any HTTP timeout.
+  listReports: () => req<Report[]>('GET', '/api/reports'),
+  createReport: (b: {
+    repoIds: string[];
+    preset: ReportRangePreset;
+    language: ReportLanguage;
+    from?: string;
+    to?: string;
+    title?: string;
+    model?: string;
+  }) => req<Report>('POST', '/api/reports', b),
+  regenerateReport: (id: string) => req<Report>('POST', `/api/reports/${id}/regenerate`),
+  deleteReport: (id: string) => req<{ ok: boolean }>('DELETE', `/api/reports/${id}`),
+  // Shared spaces (docs/shared-spaces.md)
+  listSpaces: () => req<Space[]>('GET', '/api/spaces'),
+  createSpace: (b: { name: string; path: string; repoIds: string[] }) =>
+    req<{ space: Space; imported: number; importError?: string }>('POST', '/api/spaces', b),
+  updateSpace: (id: string, b: { name?: string; path?: string; repoIds?: string[] }) =>
+    req<Space>('PATCH', `/api/spaces/${id}`, b),
+  deleteSpace: (id: string) => req<{ ok: boolean }>('DELETE', `/api/spaces/${id}`),
+  importSpaceSeed: (id: string) =>
+    req<{ imported: number; skipped: number; error?: string }>('POST', `/api/spaces/${id}/import`),
+  listSharedNotes: () => req<SharedNote[]>('GET', '/api/shared-notes'),
+  createSharedNote: (
+    spaceId: string,
+    b: { kind: SharedNoteKind; title: string; body: string; toRepoId: string | null; fromRepoId: string | null; files?: string[] },
+  ) => req<SharedNote>('POST', `/api/spaces/${spaceId}/notes`, b),
+  updateSharedNote: (
+    id: string,
+    b: { title?: string; body?: string; toRepoId?: string | null; status?: 'open' | 'done' | 'dismissed'; resolution?: string | null },
+  ) => req<SharedNote>('PATCH', `/api/shared-notes/${id}`, b),
+  deleteSharedNote: (id: string) => req<{ ok: boolean }>('DELETE', `/api/shared-notes/${id}`),
+  fileSharedNote: (id: string, placement: 'queue' | 'draft') =>
+    req<{ note: SharedNote; task: Task; placement: 'queue' | 'draft'; placementNote: string | null }>(
+      'POST',
+      `/api/shared-notes/${id}/file`,
+      { placement },
+    ),
+  spaceFiles: (id: string) => req<{ files: SpaceFile[]; truncated: boolean }>('GET', `/api/spaces/${id}/files`),
+  spaceFileText: async (id: string, path: string): Promise<string> => {
+    const res = await fetch(`/api/spaces/${id}/file?path=${encodeURIComponent(path)}`);
+    if (!res.ok) {
+      let msg = `${res.status}`;
+      try {
+        msg = (await res.json()).error ?? msg;
+      } catch {
+        /* keep status */
+      }
+      throw new Error(msg);
+    }
+    return res.text();
+  },
   listCommands: () => req<RepoCommand[]>('GET', '/api/commands'),
   createCommand: (b: { repoId: string; name: string; command: string; kind?: RepoCommand['kind']; cwd?: string | null }) =>
     req<RepoCommand>('POST', '/api/commands', b),
@@ -142,13 +210,29 @@ export const api = {
   updateTask: (id: string, b: TaskWrite) =>
     req<Task>('PATCH', `/api/tasks/${id}`, b).then(normalizeTask),
   deleteTask: (id: string) => req<{ ok: true }>('DELETE', `/api/tasks/${id}`),
+  /** One board drop / picker choice (docs/grouping.md § Drag and drop) */
+  moveTask: (id: string, b: { place: TaskMovePlace; targetId?: string | null }) =>
+    req<Task>('POST', `/api/tasks/${id}/move`, b).then(normalizeTask),
   taskAction: (
     id: string,
-    action: 'enqueue' | 'run-now' | 'cancel' | 'retry' | 'unblock' | 'complete' | 'publish' | 'queue' | 'unqueue',
+    action:
+      | 'enqueue'
+      | 'run-now'
+      | 'cancel'
+      | 'undo'
+      | 'release'
+      | 'retry'
+      | 'unblock'
+      | 'complete'
+      | 'publish'
+      | 'queue'
+      | 'unqueue',
   ) => req<Task>('POST', `/api/tasks/${id}/${action}`),
   stopAgent: (id: string) => req<{ ok: true; closed: number }>('POST', `/api/tasks/${id}/stop-agent`),
   followUp: (id: string, message: string) => req<Task>('POST', `/api/tasks/${id}/follow-up`, { message }),
   applyReview: (id: string) => req<Task>('POST', `/api/tasks/${id}/apply-review`),
+  /** "Review now": run the adversarial reviewer on demand (409 while a round is in flight) */
+  reviewNow: (id: string) => req<Task>('POST', `/api/tasks/${id}/review`),
   proceed: (id: string, message?: string) =>
     req<Task>('POST', `/api/tasks/${id}/proceed`, { message: message ?? null }),
   resumable: (id: string) =>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_SETTINGS, EFFORT_LEVELS, MODEL_OPTIONS, type AppSettings } from '@tm/shared';
 import { api } from '../api.ts';
+import { PresetEditor } from '../components/PresetEditor.tsx';
 import { PushSettings } from '../components/PushSettings.tsx';
 import { useApp } from '../state.tsx';
 
@@ -217,6 +218,24 @@ export function ConfigPage() {
         </div>
         <div className="cfg-row">
           <div>
+            <div>Agent chain depth</div>
+            <div className="hint">
+              how many agent hops from a human a task may be and still file tasks (your task is 0, a task it
+              files is 1, …). Past it the agent API refuses and the work waits for a human
+            </div>
+          </div>
+          <input
+            className="field"
+            style={{ width: 80 }}
+            type="number"
+            min={1}
+            max={50}
+            value={cfg['agent.maxSpawnDepth']}
+            onChange={(e) => set('agent.maxSpawnDepth', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
             <div>Resume sessions on follow-up</div>
             <div className="hint">
               a follow-up reopens the agent's previous claude session (<span className="mono">--resume</span>)
@@ -249,6 +268,27 @@ export function ConfigPage() {
             step={50000}
             value={cfg['agent.resumeContextCap'] ?? DEFAULT_SETTINGS['agent.resumeContextCap']}
             onChange={(e) => set('agent.resumeContextCap', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Wait on background commands (minutes)</div>
+            <div className="hint">
+              a worker that ends its turn to wait for a command it started in the background (a test run, a
+              Lighthouse pass) stays <span className="mono">waiting</span> — no review, session kept — until the
+              command exits and the agent carries on. Bounded because a dev server left running never exits: past
+              this many minutes the turn lands in review as usual. 0 = only subagents hold a task
+            </div>
+          </div>
+          <input
+            className="field"
+            style={{ width: 110 }}
+            type="number"
+            min={0}
+            max={240}
+            step={5}
+            value={cfg['agent.shellWaitMinutes'] ?? DEFAULT_SETTINGS['agent.shellWaitMinutes']}
+            onChange={(e) => set('agent.shellWaitMinutes', Number(e.target.value))}
           />
         </div>
         <div className="cfg-row">
@@ -352,7 +392,12 @@ export function ConfigPage() {
           />
         </div>
         <div className="cfg-row">
-          <div>Review model</div>
+          <div>
+            <div>Default review model</div>
+            <div className="hint">
+              the default reviewer; a task can pick its own reviewer model (and effort) instead
+            </div>
+          </div>
           <select
             className="field mono"
             style={{ width: 220 }}
@@ -605,6 +650,19 @@ export function ConfigPage() {
               default and the key stays out of the save diff until touched */}
           <Toggle on={cfg['board.groupColors'] ?? true} onChange={(v) => set('board.groupColors', v)} />
         </div>
+      </div>
+
+      <div className="panel cfg-group">
+        <h3>Presets</h3>
+        <div className="hint" style={{ marginBottom: 6 }}>
+          one-click model / effort / review bundles on the new-task form, the task panel and Telegram's /new
+          (docs/handbook.md § Quick start, Custom presets)
+        </div>
+        {/* `?? []` so a server that predates the key renders an empty list and stays out of the save diff */}
+        <PresetEditor
+          value={cfg['presets.custom'] ?? DEFAULT_SETTINGS['presets.custom']}
+          onChange={(v) => set('presets.custom', v)}
+        />
       </div>
 
       <div className="panel cfg-group">

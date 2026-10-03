@@ -18,8 +18,8 @@ export function registerProposalRoutes(app: FastifyInstance, storage: Storage) {
     if (!repo) return reply.code(404).send({ error: 'repo not found' });
 
     // One analyze per repo at a time — a double-click must not burn two
-    // headless sessions (final review F4).
-    const live = await storage.listRuns({ mode: 'analyze', status: 'running' });
+    // sessions (final review F4).
+    const live = await storage.listRuns({ kind: 'analysis', status: 'running' });
     if (live.some((r) => r.repoId === repo.id)) {
       return reply.code(409).send({ error: 'an analysis is already running for this repo' });
     }

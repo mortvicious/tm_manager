@@ -11,6 +11,9 @@ export interface OrchestratorApi {
   releaseCustomQueue(taskId: string): void;
   runNow(taskId: string, actor?: string): Promise<ActionResult>;
   cancel(taskId: string, actor?: string): Promise<ActionResult>;
+  /** "Undo start" (docs/queue.md § Undo start): stop the running turn and put
+   *  the task back in the status it had before it, held if that is `queued`. */
+  undoStart(taskId: string, actor?: string): Promise<ActionResult>;
   followUp(
     taskId: string,
     message: string,
@@ -41,7 +44,12 @@ export interface OrchestratorApi {
   /** Feature phase pump: enqueue the current phase, pause on failure, or roll
    *  up to review. Also called directly by the start/resume routes. */
   advanceFeature(featureId: string, actor?: string): Promise<void>;
-  reviewCompletedRun(taskId: string): Promise<void>;
+  /** `forced`: a review already decided (boot's pending/reviewing re-run) — no
+   *  `review.enabled` re-check, REVIEW_NOW_FROM statuses. */
+  reviewCompletedRun(taskId: string, forced?: boolean): Promise<void>;
+  /** "Review now": run the adversarial reviewer on demand, bypassing the
+   *  unchanged-diff gate; 409 while a round is in flight. */
+  reviewNow(taskId: string, actor?: string): Promise<ActionResult>;
   applyReviewFixes(taskId: string, actor?: string): Promise<ActionResult>;
   /** True when a PTY for this task is still alive (live or idle post-Stop). */
   hasLiveSession(taskId: string): Promise<boolean>;

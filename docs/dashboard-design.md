@@ -75,7 +75,7 @@ GET /api/stats/anomalies
 | agent-filed drafts older than 7 d (nobody triaged) | warn |
 | boot.recovery events in last 24 h (crashes/restarts mid-run) | warn |
 | queued > 30 min while orchestrator enabled (starvation) | critical |
-| depth-2 tasks present (max-depth chains — look at what agents are doing) | info→warn |
+| tasks at the depth cap (`agent.maxSpawnDepth`, default 6 — max-depth chains, look at what agents are doing) | info→warn |
 
 ## 4. Dashboard page (new sidebar item, first position)
 

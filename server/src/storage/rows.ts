@@ -9,7 +9,10 @@ import type {
   Question,
   Repo,
   RepoCommand,
+  Report,
   Run,
+  SharedNote,
+  Space,
   Task,
 } from '@tm/shared';
 
@@ -71,6 +74,7 @@ export function rowToTask(r: any): Task {
     source: r.source,
     sourceRef: r.source_ref ?? null,
     priority: Number(r.priority ?? 0),
+    sortOrder: Number(r.sort_order ?? 0),
     model: r.model ?? null,
     effort: r.effort ?? null,
     category: r.category ?? null,
@@ -80,13 +84,19 @@ export function rowToTask(r: any): Task {
     featurePhase: r.feature_phase == null ? null : Number(r.feature_phase),
     resultSummary: r.result_summary ?? null,
     review: r.review == null ? null : !!Number(r.review),
+    reviewModel: r.review_model ?? null,
+    reviewEffort: r.review_effort ?? null,
     autoPublish: !!Number(r.auto_publish ?? 0),
     customQueueAt: r.custom_queue_at ?? null,
     reviewSummary: r.review_summary ?? null,
     reviewDiffHash: r.review_diff_hash ?? null,
+    baseSha: r.base_sha ?? null,
+    baseRef: r.base_ref ?? null,
+    baseAt: r.base_at ?? null,
     reviewState: r.review_state ?? null,
     reviewRounds: safeParse(r.review_rounds, []),
     wakeAt: r.wake_at ?? null,
+    queueHeldAt: r.queue_held_at ?? null,
     error: r.error ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -99,6 +109,9 @@ export function rowToRun(r: any): Run {
     taskId: r.task_id ?? null,
     repoId: r.repo_id ?? null,
     mode: r.mode,
+    kind: r.kind ?? (r.mode === 'worker' ? 'worker' : 'analysis'),
+    subjectId: r.subject_id ?? null,
+    label: r.label ?? null,
     status: r.status,
     pid: r.pid == null ? null : Number(r.pid),
     exitCode: r.exit_code == null ? null : Number(r.exit_code),
@@ -145,6 +158,86 @@ export function rowToQuestion(r: any): Question {
     note: r.note ?? null,
     createdAt: r.created_at,
     answeredAt: r.answered_at ?? null,
+  };
+}
+
+export function rowToReport(r: any): Report {
+  return {
+    id: r.id,
+    title: r.title,
+    repoIds: safeParse<string[]>(r.repo_ids, []),
+    fromDate: r.from_date,
+    toDate: r.to_date,
+    preset: r.preset,
+    // Rows written before the column existed cannot occur (it ships in the same
+    // migration as the table), but a NULL must still read as the default.
+    language: r.language ?? 'ru',
+    status: r.status,
+    markdown: r.markdown ?? null,
+    summary: r.summary ?? null,
+    // pg returns INTEGER as a number, sqlite too — but a NULL from a row
+    // written before the DEFAULT took effect must not become NaN.
+    taskCount: Number(r.task_count ?? 0),
+    model: r.model ?? null,
+    error: r.error ?? null,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+/**
+ * Patch -> (column, value) pairs for tm_reports, shared verbatim by both
+ * drivers so an added field cannot land in one and not the other. `undefined`
+ * means "leave as-is"; `null` is a real value that clears the column.
+ */
+export function reportPatchColumns(patch: {
+  title?: string;
+  status?: string;
+  markdown?: string | null;
+  summary?: string | null;
+  taskCount?: number;
+  model?: string | null;
+  error?: string | null;
+}): [string, unknown][] {
+  const out: [string, unknown][] = [];
+  if (patch.title !== undefined) out.push(['title', patch.title]);
+  if (patch.status !== undefined) out.push(['status', patch.status]);
+  if (patch.markdown !== undefined) out.push(['markdown', patch.markdown]);
+  if (patch.summary !== undefined) out.push(['summary', patch.summary]);
+  if (patch.taskCount !== undefined) out.push(['task_count', patch.taskCount]);
+  if (patch.model !== undefined) out.push(['model', patch.model]);
+  if (patch.error !== undefined) out.push(['error', patch.error]);
+  return out;
+}
+
+export function rowToSpace(r: any): Space {
+  return {
+    id: r.id,
+    name: r.name,
+    path: r.path,
+    repoIds: safeParse<string[]>(r.repo_ids, []),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+export function rowToSharedNote(r: any): SharedNote {
+  return {
+    id: r.id,
+    spaceId: r.space_id,
+    kind: r.kind,
+    title: r.title,
+    body: r.body,
+    fromRepoId: r.from_repo_id ?? null,
+    fromTaskId: r.from_task_id ?? null,
+    toRepoId: r.to_repo_id ?? null,
+    status: r.status,
+    taskId: r.task_id ?? null,
+    resolution: r.resolution ?? null,
+    files: safeParse<string[]>(r.files, []),
+    actor: r.actor,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
   };
 }
 

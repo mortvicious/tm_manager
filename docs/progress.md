@@ -331,6 +331,210 @@ Phase checklist (each phase ends with a docs update + adversarial review):
 - **Review round 1 (1 blocker, 3 major, 9 minor), fixed**: unquoted `case` patterns (the quoted `pending` pattern never matched → forced deny after 5 min), `tool_use_id` required + unique index + race re-read, one failure increment per attempt, idle-run 409 → silent exit, Origin required on the human answer route, questions handed back verbatim, toast clip, `Other…` vs live wizard, Escape scoping, index-based picks, CSS tokens. Re-verified with six-pending / 409 / HTML-500 stub cases and the race/verbatim/Origin assertions.
 - **Not exercised**: the Postgres driver (SQL mirrored); a real Telegram send (handlers exercised in-process, the wire format unchanged).
 
+## Parent task — nesting a task from the UI (2026-09-08, `docs/grouping.md`)
+
+- [x] **Web (task panel)** — `TaskSlideOver` gained a full-width **Parent task**
+      select seeded from `task.parentId` in the id-keyed hydrate effect, folded
+      into the `dirty` chain and saved as `parentId` on the normal
+      `api.updateTask` (`— none (own group root) —` sends `null`). Candidates are
+      `tasks` minus this task and minus every task under it
+      (`groupAncestors(t).includes(task.id)` — the client twin of the server's
+      `parent.groupPath.split('/').includes(id)` 400), sorted by title.
+- [x] **Web (new-task form)** — the same select on `NewTaskForm`, sent as
+      `parentId` on `POST /api/tasks`; no exclusions are needed (a task that does
+      not exist yet has no descendants) and the field resets after a create.
+- [x] **Docs** — `docs/grouping.md`: the UI is now a producer of `parent_id`, so
+      *"Why a board can show no groups at all"* became *"Where a group comes
+      from"*, and **On the Board** gained the field, its two rules and the
+      `POST` parentId line under **API**.
+- **No server change.** Re-parenting, subtree re-basing, demotion and orphan
+  promotion were already complete (`storage/group.ts`, `task-actions.ts`); this
+  is a UI-only producer.
+- **Found by verification, not by inspection**: saving the panel while nesting a
+  **named root** would have taken a `400 only the root task of a group can be
+  named or coloured` — `save()` sent `groupName`/`groupColor` whenever `isRoot`,
+  but the server judges the parent the row will have *after* the patch. The
+  spread and the two fields' visibility now key off `rootAfter`
+  (`isRoot && !parentAfter`) rather than `isRoot`, which is also the truth on the
+  row: demotion clears both columns.
+- Verified live against the running API (sqlite) with the panel's and the form's
+  exact payloads: a task created with `parentId` and a separate root PATCHed
+  under the same parent both landed with `group_id` = the root and `group_path` =
+  `/rootId/`, `GET /api/tasks/:id/group` reporting **3** members with the root's
+  name and colour — the "n of m" the block header counts. Rejections behave as
+  the candidate filter promises: self → *a task cannot be its own parent*,
+  descendant → *a task cannot be moved under its own descendant*, unknown →
+  *parent task not found*, and the old `isRoot` payload → the group-identity 400.
+  Un-nesting one child (`parentId: null`) split the group into 2 + 1 with the
+  promoted row's `group_name`/`group_color` cleared. All three probe tasks were
+  then deleted (the board is back to 156 tasks, 9 parented — none of them mine).
+  `npm run typecheck` and `npm run build` clean.
+- **Not exercised**: the Postgres driver (no server code changed) and the
+  rendered pixels — this session had no browser, so the block, tinted header,
+  breadcrumb, group filter and `group: task group` mode were verified from the
+  rows they read, not by eye. That renderer is untouched and is already drawing
+  two real groups on the live board (5 and 6 members), so the new field feeds
+  a path in daily use rather than a dormant one.
+
+## Reports — a client-facing work document (2026-09-08)
+
+`docs/reports.md`. A `/reports` page: pick several repos and a date range, and
+one headless agent writes the document you hand to whoever paid for the work —
+concise markdown, grouped by completion date, Russian or English.
+
+- **It is not the Telegram report.** That one is the operator's ops page
+  (numbers, runs, tokens, problems) and is single-scope and `since`-only, so
+  there was nothing to extend: two audiences, two documents. The new one carries
+  no machinery at all — no run counts, no costs, no ids, no file names.
+- **The completion date is the audit log, not `updated_at`.** The
+  `task.transition` row that moved a task to `done`/`published` is when the work
+  landed; `updated_at` keeps moving, and a title fix months later would have
+  re-dated delivered work into the wrong section *and* the wrong report. Days
+  bucket on server-local time, like the dashboard's bars, because the document
+  prints those dates.
+- **The server assembles the document; the model only writes prose.** The agent
+  fills `{summary, days:[{date,bullets}]}` against a `--json-schema` and
+  `renderMarkdown` builds the chrome. That is what makes an *invented* date
+  impossible: a day not in the gathered set is dropped, and a report with
+  nothing left over fails rather than emitting a heading with no work under it.
+- **An empty window is an answer, not a failure** — the document says so, and no
+  agent is spawned for it.
+- Language is a property of the artifact. Both halves — the agent's prose and
+  the headings around it, plus the labels on the raw records fed in — come from
+  one record per language, or a Russian document could end up under an English
+  "Repositories:" line.
+- Storage: migration 24 (`tm_reports`, FK-less, `repo_ids` JSON) plus
+  `tm_tasks_updated_idx`, and `TaskFilter` gains `updatedUntil` and `repoIds`.
+  An empty `repoIds` matches **nothing** — silently widening it to "all repos"
+  would put private work in a document that did not ask for it.
+- Two holes a run with no run row leaves, both closed: delete kills the child
+  *before* the row goes, and `recoverReportsOnBoot()` fails what a crash left
+  `running` (the same hole `chat.recoverOnBoot` closes for a stranded lock).
+- **Verified against a copy of the live database** (118 delivered tasks, 3
+  repos): 48 checks over the migration, both new `TaskFilter` fields, every
+  range preset, six malformed custom ranges, `gatherTasks`, the seven route
+  refusals and `renderMarkdown`'s invented-date/blank-bullet guards — all
+  passing. Then the real thing twice: a Russian week report (18 tasks, 33 s) and
+  an English 3-day report (14 tasks, 23 s), both `ready`; both documents are
+  attached to the task. `npm run typecheck` and `npm run build` clean.
+- **Not exercised**: the Postgres driver (the SQL is shared verbatim with
+  sqlite and `reportPatchColumns` is the one SET builder, but it was not run),
+  and the rendered pixels — this session had no browser, so the page, the toggle
+  chips and the date inputs were verified from the code and the tokens, not by
+  eye. The `color-scheme` declarations added to both themes are what keep the
+  native date pickers from drawing light-on-light in the dark theme.
+
+## Waiting on background shells — bounded (2026-09-15, `docs/design.md` § Waiting)
+
+- [x] **Cause** — S3-T3 ended two turns "waiting for Lighthouse" (a `run_in_background` Bash); shells were excluded from `waiting`, so each Stop landed `review`, the reviewer fired, and the fix round's resume killed the PTY and the shell.
+- [x] **Server** — `runningShells()` (`routes/internal.ts`); `waitDecision` counts shells within `agent.shellWaitMinutes` of first sight (`shellsSeen`); a shell-held park arms a timer that replays the Stop through `settleStop(…, replayOf)`; `SubagentStop` does not end a shell-held park; `dropWait` on landing/exit.
+- [x] **Settings + UI** — `agent.shellWaitMinutes` (default 30, 0..240, 0 = subagents only): `shared` type + default, zod, a number field on the Config page.
+- [x] **Verified** — real-CLI Stop payload for a background Bash; 10-case script through the real `Orchestrator` + Stop route with stubbed storage; `npm run typecheck`. Takes effect on the next API restart.
+
+## Grouping, re-thought — drag and drop, order, fold, rename, picker (2026-09-16, `docs/grouping.md`)
+
+- [x] **Order** — migration 26 `tm_tasks.sort_order` (`DOUBLE PRECISION`, backfilled
+  by creation rank); new rows take the global max + 1; a move writes a midpoint,
+  renumbering the sibling set only when the gap is spent. The global claim now
+  orders by priority, group root key, root first, own key — board queue order
+  is run order (the human's choice, asked via AskUserQuestion).
+- [x] **Server** — `POST /api/tasks/:id/move {place, targetId}` with places
+  `before|after|into|child|group|ungroup` (`TASK_MOVE_PLACES` in shared),
+  resolved in `task-actions.ts moveTask` and written by the storage composite
+  `moveTask` in both drivers (re-parent + key + `task.moved` audit in one
+  transaction). `into` joins the target's group FLAT (the human's choice).
+  New 409 on both move and `PATCH parentId`: a child cannot leave a `blocked`
+  split parent (`reparentRefusal`, shared).
+- [x] **Board** — a grip on every row but `recent` (pointer events, touch-safe),
+  drop line before/after, lit row for into, lit header for append, red outline +
+  reason for a refused drop, a ghost saying what letting go does, Escape and
+  edge auto-scroll; `sort: queue order`, auto-selected by a reorder among roots;
+  group members always in manual order. Group headers fold to one line with a
+  status summary (persisted), and rename + recolour inline (pencil or
+  double-click).
+- [x] **Picker** — `GroupPicker` replaces the Parent task `<select>` in the task
+  panel and the new-task form: search, groups with colour/size/repo (append),
+  expandable to members (nest under), lone tasks (start a group), keyboard.
+- [x] **Verified** — storage + service script against a fresh SQLite DB: reorder
+  among roots, flat join, start a group, append with subtree, in-group reorder,
+  ungroup keeps key, self/cycle/missing/unknown refusals, blocked-parent 409 on
+  move and PATCH, 80 same-slot drops → one renumber, claim order
+  `A, C, B, E, F, D` for a group with a nested member. Migration 26 on a copy of
+  the live DB (277 rows): 60 ms, all keys distinct, zero rows out of creation
+  order. HTTP refusals via curl on an isolated copy (127.0.0.1:5195, own DB).
+  Real Chromium (playwright-core) against that copy: start a group by dropping
+  onto a lone task, reorder among roots (sort switched to queue order), append
+  via header, reorder inside a group (rendered order matches), refused drop
+  shows the reason and sends nothing, rename + colour via pencil, fold persists
+  across reload with `4 draft` summary, drag a member out above a root, picker
+  search → append → save. No console errors; screenshots checked on desktop
+  and a 390px touch viewport. `npm run typecheck` and a `vite build` clean.
+- **Not exercised**: the Postgres driver's `moveTask` (the SQL helpers are
+  shared with sqlite, but it was not run); a real finger on a phone (touch
+  emulation only).
+
+
+### Opus 5.5 (2026-09-23)
+
+- [x] **`claude-opus-5-5` is the opus tier everywhere it was a default** — added to
+  `MODEL_OPTIONS` ahead of `claude-opus-5` (which stays selectable); flipped
+  `agent.model`, `chat.model`, `router.fallbackModel`, the Small/Routine presets
+  and their hints (`shared/src/types.ts`), `COMMIT_MODEL` (`server/src/git.ts`),
+  and the Fable→Opus availability fallback in `claude/review.ts`,
+  `claude/feature-analysis.ts` and `reports/service.ts` — each of those three now
+  names the target once, as `FALLBACK_MODEL`, because the retry guard compares
+  against it and two drifting literals would have retried forever.
+- [x] **Migration 27 repoints stored settings** — `tm_config` values of exactly
+  `"claude-opus-5"` (JSON, quotes included) become `"claude-opus-5-5"`, scoped by
+  `key IN (…)` over the seven model keys, never by value alone. A deliberate
+  exception to the Fable-5.1 "installs keep what they hold" policy (user
+  decision); `tm_tasks.model` / `review_model` are NOT touched — they record what
+  actually ran. Rationale in `docs/decisions.md`.
+- Verified: `npm run typecheck` and `npm run build` clean. Migration 27 run through
+  the real `SqliteStorage.migrate()` on a copy of the live DB — exactly two rows
+  changed (`analysis.model`, `orchestrator.model`, both pinned to `claude-opus-5`
+  by hand), `review.model` left on `claude-fable-5-1`, every other config row
+  byte-identical by diff; migration row 27 recorded and a second `migrate()` a
+  no-op. Grepped the tree for surviving `claude-opus-5` literals: the only ones
+  left are intentional (the dropdown entry, the `stats.ts` pricing row that
+  prefix-matches both ids, and the migration's own match literal).
+- **Not exercised**: the live server was not restarted (agents were working, and
+  the restart guard refuses it) — migration 27 applies on its next boot; the
+  Postgres driver's migration 27 was not run, though the statement is plain
+  dialect-neutral SQL with no placeholders.
+
+## Custom task presets (2026-09-24)
+
+- **Shared**: `CustomTaskPreset`, setting `presets.custom` (default `[]`), `taskPresets(settings)`, `presetHint`, `customPresetProblem`, `matchTaskPreset(v, presets)`; `TaskPreset.id` widened to `string` with optional `color`/`custom`.
+- **Server**: `presets.custom` in the strict settings schema (per-entry zod shape + `customPresetProblem` refinement); Telegram `/new` keyboard and press lookup and the `/task` card read the merged list from storage.
+- **Web**: Config → Presets section (`components/PresetEditor.tsx`); `PresetPicker`/`PresetChip` read the merged list via `useTaskPresets()`; `.preset-color-1..7` and editor styles in `theme.css`, all on existing tokens; the Board create form's model select keeps an unlisted current model.
+- **Verified**: `npm run typecheck` and `npm run build` clean. The settings route was exercised through `app.inject` on a freshly migrated scratch SQLite DB: the default is `[]`; a valid save round-trips (label trimmed); `review: null` and `codex-free` are accepted; refusals (400) for a Routine-duplicate triple, a built-in name (`small`), duplicate ids, duplicate triples, a bad id (`custom`), colour 8, a model with a space, an extra key, a blank name and 13 entries; clearing works. `taskPresets` + `matchTaskPreset` resolve a custom and a built-in correctly, and `presetHint` reproduces the Small/Routine/Complex hints.
+- **Not exercised**: the live server was not restarted and the page was not driven in a browser; the Telegram flow was checked by typecheck only.
+
+## Every claude is a terminal — headless retired (2026-09-24)
+
+- **Shared**: `RunMode = 'worker' | 'aux'`, `RunKind` + `AUX_RUN_KINDS`, `Run.kind/subjectId/label`; `OrchestratorStatus.aux` replaces `headless`.
+- **Server**: `claude/aux.ts` holds `AuxRunner` (third PTY pool, hook-driven completion, fenced-JSON results with a typed correction, `stopAll`/`stoppedSince`/`liveLabels`). It replaces `claude/headless.ts` (deleted) and the run-keyed registry in `analyze.ts`. Migration 28 adds `tm_runs.kind/subject_id/label`, and `analyze` rows become `aux`/`analysis`. All seven callers were converted: `review.ts`, `feature-analysis.ts`, `analyze.ts`, `compact.ts`, `reports/service.ts`, `chat/service.ts`, `git.ts` `commitRepo`. The internal routes hand aux runs to the runner, and add `/stop-failure`. Also updated: `killRun`, `status()`, the restart guard, shutdown, `/killall` and `KillWatcher`, and the activity watcher.
+- **Web**: runs list with kind badges, a Terminal button for every live run, and title links to the task, feature, chat or report (`components/RunKind.tsx`). The task panel lists the task's review and compaction terminals. The `auto-review` badge opens the live reviewer (board and panel). The header shows `+n` aux sessions, and the terminal drawer uses the aux label.
+- **Verified**: live, against the real CLI on an isolated copy. Every kind ran end to end. Kill, StopFailure, the typed correction, the folder-trust answer over the browser WebSocket, and SIGKILL recovery were each exercised. Details in `docs/decisions.md` 2026-09-24. `npm run typecheck` and `npm run build` are clean.
+- **Not exercised**: the Postgres migration, Telegram `/killall` against a real bot, the Fable→Opus retry itself, and a browser-driven UI pass (typecheck and build only).
+
+## Shared spaces (2026-09-28, `docs/shared-spaces.md`)
+
+- **Shared**: the `Space`, `SharedNote`, `SharedNoteKind|Status` and `SpaceFile` types; the `space.*`/`shared-note.*` events and audit kinds; the `agent.maxSpawnDepth` setting (default 6).
+- **Server**:
+  - migration 30 (`tm_spaces`, `tm_shared_notes`)
+  - `storage/space-sql.ts`, shared by both drivers
+  - `spaces/service.ts`: path rules, one space per repo, the seed import, `README.md`/`REQUESTS.md`, filing into the custom queue, read-time reconcile and the prompt block
+  - `routes/spaces.ts` (human) and `routes/agent-shared.ts` (agent)
+  - `routes/agent-caps.ts`, where the depth cap is now a setting
+  - `startWorker` → `sharedContext()`: `TM_SHARED_DIR`, `--add-dir=` and the block
+  - Telegram `/shared`
+- **Web**: the `/shared` page (spaces, requests grouped by target, notes, a folder browser with `Markdown safe`), the Config field for depth, and the state/events wiring.
+- **Verified**: an isolated API instance with a stub `claude` (see the doc's § Verification). `npm run typecheck` and `vite build` pass.
+- **Not exercised** (round 1): the Postgres driver, and a browser-driven UI pass. **Both done in review round 2** on a throwaway local PostgreSQL 18 and in Chrome against an isolated instance (docs/shared-spaces.md § Verification). Round 2 also narrowed the filed-task hold to the filer and live/mid-review work, surfaced reopened requests on resume, flagged stalled filings ("needs you"), refused repo/space overlap from the repo side and at spawn, refused a space repoint that strands its knowledge, and put an Origin guard on the human space writes.
+- **Content**: the last two weeks of neko artifacts were consolidated into `~/Development/neko-shared/`. The ledger is seeded when the `neko` space is created after the next restart.
+
 ## Terminals (2026-10-02, `docs/terminals.md`)
 
 - **Shared**: `ShellSession`, `MAX_SHELL_SESSIONS`, the `shell.session`/`shell.closed` events, the `shell.session` audit kind.

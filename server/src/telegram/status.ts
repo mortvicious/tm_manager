@@ -30,7 +30,8 @@ export interface BotStatusData {
   enabled: boolean;
   running: number;
   concurrency: number;
-  headless: number;
+  /** live aux sessions (review, plan, chat, …) */
+  aux: number;
   queued: number;
   customQueued: number;
   review: number;
@@ -57,7 +58,7 @@ export async function collectStatus(
     enabled: orch.enabled,
     running: orch.running,
     concurrency: orch.concurrency,
-    headless: orch.headless,
+    aux: orch.aux,
     // Same split the Queue page makes: a task carrying the custom-queue mark
     // is waiting in the serial queue, not in the global one (docs/queue.md).
     queued: queuedTasks.filter((t) => !t.customQueueAt).length,
@@ -91,7 +92,7 @@ export function renderStatus(s: BotStatusData): string {
     `<b>Task Manager</b>`,
     ``,
     `Queue: <b>${s.enabled ? 'running' : 'stopped'}</b> · agents ${s.running}/${s.concurrency}` +
-      (s.headless > 0 ? ` · ${s.headless} headless` : ''),
+      (s.aux > 0 ? ` · ${s.aux} aux` : ''),
     `Usage: ${renderWindow('5h', s.usage.fiveHour)} | ${renderWindow('week', s.usage.week)} | ${renderWindow('fable', s.usage.weekFable)}`,
     ``,
     `Queued: <b>${s.queued}</b>` + (s.customQueued > 0 ? ` (+${s.customQueued} in the custom queue)` : ''),

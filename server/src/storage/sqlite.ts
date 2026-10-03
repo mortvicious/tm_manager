@@ -16,18 +16,40 @@ import {
   type Proposal,
   type Repo,
   type RepoCommand,
+  type Report,
   type Run,
+  type SharedNote,
+  type SharedNoteStatus,
+  type Space,
   type Task,
 } from '@tm/shared';
 import { planCards } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
 import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_IDLE } from './queue-sql.ts';
-import { MOVE_SUBTREE_SQL, ROOT_PATH, moveSubtreeParams, pathContains, placement } from './group.ts';
+import {
+  MANUAL_CLAIM_ORDER,
+  MOVE_SUBTREE_SQL,
+  NEXT_SORT_ORDER_SQL,
+  ROOT_PATH,
+  keyNextTo,
+  moveSubtreeParams,
+  pathContains,
+  placement,
+  siblingsQuery,
+  type MoveAnchor,
+} from './group.ts';
 import { MIGRATIONS } from './migrations.ts';
 import { PUSH_RESULT_FAIL_SQL, PUSH_RESULT_OK_SQL, PUSH_UPSERT_SQL, rowToPushDevice } from './push-sql.ts';
 import type { NewPushDevice, PushDeviceRecord } from './types.ts';
 import type { PushKind } from '@tm/shared';
+import {
+  SHARED_NOTE_INSERT_SQL,
+  SPACE_INSERT_SQL,
+  sharedNoteListQuery,
+  sharedNoteUpdate,
+  spacePatchColumns,
+} from './space-sql.ts';
 import {
   eventId,
   now,
@@ -36,6 +58,10 @@ import {
   rowToCommand,
   rowToDispatch,
   rowToQuestion,
+  reportPatchColumns,
+  rowToReport,
+  rowToSharedNote,
+  rowToSpace,
   rowToEvent,
   rowToFeature,
   rowToProposal,
@@ -59,6 +85,13 @@ import type {
   NewCommand,
   NewDispatch,
   NewQuestion,
+  NewReport,
+  NewSharedNote,
+  NewSpace,
+  SharedNoteFilter,
+  SharedNotePatch,
+  SpacePatch,
+  ReportPatch,
   QuestionFilter,
   NewFeature,
   NewProposal,
@@ -308,7 +341,20 @@ export class SqliteStorage implements Storage {
       where.push(`updated_at >= ?`);
       params.push(f.updatedSince);
     }
-    const sql = `SELECT * FROM tm_tasks ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY priority DESC, created_at`;
+    if (f?.updatedUntil) {
+      where.push(`updated_at <= ?`);
+      params.push(f.updatedUntil);
+    }
+    if (f?.repoIds) {
+      // An empty scope matches NOTHING rather than everything (storage/types.ts).
+      // `1 = 0` keeps the shape of the query — no branch that skips the WHERE.
+      if (f.repoIds.length === 0) where.push(`1 = 0`);
+      else {
+        where.push(`repo_id IN (${f.repoIds.map(() => '?').join(', ')})`);
+        params.push(...f.repoIds);
+      }
+    }
+    const sql = `SELECT * FROM tm_tasks ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY priority DESC, sort_order, created_at`;
     return (this.db.prepare(sql).all(...params) as any[]).map(rowToTask);
   }
 
@@ -335,8 +381,8 @@ export class SqliteStorage implements Storage {
     const place = this.placeSync(id, t.parentId);
     this.db
       .prepare(
-        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, auto_publish, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, auto_publish, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (${NEXT_SORT_ORDER_SQL}))`,
       )
       .run(
         id,
@@ -361,6 +407,8 @@ export class SqliteStorage implements Storage {
         t.featurePhase ?? null,
         ts,
         ts,
+        t.reviewModel ?? null,
+        t.reviewEffort ?? null,
       );
     const task = rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
     this.appendEventSync({
@@ -420,7 +468,7 @@ export class SqliteStorage implements Storage {
     const isRoot = place.groupId === id;
     this.db
       .prepare(
-        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, auto_publish=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, review_diff_hash=?, review_state=?, review_rounds=?, wake_at=?, error=?, updated_at=? WHERE id=?`,
+        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, auto_publish=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, review_diff_hash=?, review_state=?, review_rounds=?, wake_at=?, error=?, updated_at=?, review_model=?, review_effort=?, base_sha=?, base_ref=?, base_at=?, queue_held_at=? WHERE id=?`,
       )
       .run(
         next.title,
@@ -451,6 +499,12 @@ export class SqliteStorage implements Storage {
         next.wakeAt ?? null,
         next.error,
         next.updatedAt,
+        next.reviewModel ?? null,
+        next.reviewEffort ?? null,
+        next.baseSha ?? null,
+        next.baseRef ?? null,
+        next.baseAt ?? null,
+        next.queueHeldAt ?? null,
         id,
       );
     return rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
@@ -459,6 +513,58 @@ export class SqliteStorage implements Storage {
   async updateTask(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Promise<Task | null> {
     // A re-parent rewrites the moved subtree too, so it must be one transaction.
     return this.inTxn(() => this.updateTaskSync(id, patch));
+  }
+
+  async moveTask(id: string, parentId: string | null, anchor: MoveAnchor, actor: string): Promise<Task[] | null> {
+    return this.inTxn((): Task[] | null => {
+      const cur = this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id);
+      if (!cur) return null;
+      const before = rowToTask(cur);
+      // Same guards and subtree move as a PATCH parentId (throws roll back).
+      if (parentId !== before.parentId) this.updateTaskSync(id, { parentId });
+      const changed = new Set<string>([id]);
+      if (typeof anchor === 'object') {
+        const q = siblingsQuery(parentId, id);
+        const pos = keyNextTo(this.db.prepare(q.sql).all(...q.params) as any[], id, anchor);
+        if ('key' in pos) {
+          this.db.prepare(`UPDATE tm_tasks SET sort_order = ? WHERE id = ?`).run(pos.key, id);
+        } else {
+          const set = this.db.prepare(`UPDATE tm_tasks SET sort_order = ? WHERE id = ?`);
+          pos.renumber.forEach((rid, i) => {
+            set.run(i + 1, rid);
+            changed.add(rid);
+          });
+        }
+      } else if (anchor === 'end') {
+        const k = (this.db.prepare(NEXT_SORT_ORDER_SQL).get() as { k: number }).k;
+        this.db.prepare(`UPDATE tm_tasks SET sort_order = ? WHERE id = ?`).run(k, id);
+      }
+      const task = rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
+      this.appendEventSync({
+        kind: 'task.moved',
+        actor,
+        taskId: id,
+        repoId: task.repoId,
+        data: {
+          fromParentId: before.parentId,
+          parentId,
+          fromGroupId: before.groupId,
+          groupId: task.groupId,
+          anchor,
+          renumbered: changed.size > 1 ? changed.size : undefined,
+        },
+      });
+      const rows = new Map<string, Task>();
+      for (const r of this.db.prepare(`SELECT * FROM tm_tasks WHERE group_id = ?`).all(task.groupId) as any[]) {
+        rows.set(r.id, rowToTask(r));
+      }
+      for (const rid of changed) {
+        if (rows.has(rid)) continue;
+        const r = this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(rid);
+        if (r) rows.set(rid, rowToTask(r));
+      }
+      return [...rows.values()];
+    });
   }
 
   async deleteTask(id: string): Promise<void> {
@@ -494,8 +600,9 @@ export class SqliteStorage implements Storage {
           `UPDATE tm_tasks SET status = 'running', updated_at = ?
            WHERE id = (SELECT t.id FROM tm_tasks t WHERE t.status = 'queued' AND t.repo_id IS NOT NULL
                          AND t.custom_queue_at IS NULL
+                         AND t.queue_held_at IS NULL
                          AND ${FEATURE_CLAIM_GATE}
-                       ORDER BY t.priority DESC, t.created_at LIMIT 1)
+                       ORDER BY ${MANUAL_CLAIM_ORDER} LIMIT 1)
            RETURNING *`,
         )
         .get(now());
@@ -553,7 +660,7 @@ export class SqliteStorage implements Storage {
     from: Task['status'][],
     to: Task['status'],
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'queueHeldAt'>>,
   ): Promise<Task | null> {
     // Conditional single-statement transition — immune to check-then-set races
     // between route handlers, hook callbacks and the claim loop. Patch keys are
@@ -571,6 +678,15 @@ export class SqliteStorage implements Storage {
     if (patch && 'reviewState' in patch) {
       sets.push('review_state = ?');
       vals.push(patch.reviewState ?? null);
+    }
+    // An Undo-start hold (docs/queue.md § Undo start) means "queued, but not
+    // yet" and exists only for the transition that sets it: every other status
+    // change releases it, so a hold can never outlive the `queued` it was for.
+    if (patch && 'queueHeldAt' in patch) {
+      sets.push('queue_held_at = ?');
+      vals.push(patch.queueHeldAt ?? null);
+    } else {
+      sets.push('queue_held_at = NULL');
     }
     // A terminal status ends the task's custom-queue membership (docs/queue.md):
     // a mark must never outlive the work, or a later follow-up into `review`
@@ -662,6 +778,10 @@ export class SqliteStorage implements Storage {
       where.push(`task_id = ?`);
       params.push(f.taskId);
     }
+    if (f?.repoId) {
+      where.push(`repo_id = ?`);
+      params.push(f.repoId);
+    }
     if (f?.status) {
       where.push(`status = ?`);
       params.push(f.status);
@@ -669,6 +789,14 @@ export class SqliteStorage implements Storage {
     if (f?.mode) {
       where.push(`mode = ?`);
       params.push(f.mode);
+    }
+    if (f?.kind) {
+      where.push(`kind = ?`);
+      params.push(f.kind);
+    }
+    if (f?.subjectId) {
+      where.push(`subject_id = ?`);
+      params.push(f.subjectId);
     }
     if (f?.since) {
       where.push(`started_at >= ?`);
@@ -713,6 +841,7 @@ export class SqliteStorage implements Storage {
            WHERE id = (SELECT t.id FROM tm_tasks t
                        WHERE t.status = 'queued' AND t.repo_id IS NOT NULL AND t.created_by_run IN (${placeholders})
                          AND t.custom_queue_at IS NULL
+                         AND t.queue_held_at IS NULL
                          AND ${FEATURE_OVERFLOW_GATE}
                        ORDER BY t.created_at LIMIT 1)
            RETURNING *`,
@@ -735,13 +864,16 @@ export class SqliteStorage implements Storage {
     const id = randomUUID();
     this.db
       .prepare(
-        `INSERT INTO tm_runs (id, task_id, repo_id, mode, status, pid, model, effort, run_token, resumed_from, stats_baseline, started_at) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tm_runs (id, task_id, repo_id, mode, kind, subject_id, label, status, pid, model, effort, run_token, resumed_from, stats_baseline, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
         r.taskId ?? null,
         r.repoId ?? null,
         r.mode,
+        r.kind ?? (r.mode === 'worker' ? 'worker' : null),
+        r.subjectId ?? null,
+        r.label ?? null,
         r.pid ?? null,
         r.model ?? null,
         r.effort ?? null,
@@ -1502,6 +1634,122 @@ export class SqliteStorage implements Storage {
   }
 
   // ---- settings ----
+
+  // ---- Reports (docs/reports.md) ----
+
+  async listReports(): Promise<Report[]> {
+    return (this.db.prepare(`SELECT * FROM tm_reports ORDER BY created_at DESC`).all() as any[]).map(rowToReport);
+  }
+
+  async getReport(id: string): Promise<Report | null> {
+    const r = this.db.prepare(`SELECT * FROM tm_reports WHERE id = ?`).get(id);
+    return r ? rowToReport(r) : null;
+  }
+
+  async createReport(r: NewReport, actor: string): Promise<Report> {
+    const id = randomUUID();
+    const at = now();
+    this.db
+      .prepare(
+        `INSERT INTO tm_reports (id, title, repo_ids, from_date, to_date, preset, language, status, task_count, model, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
+      )
+      .run(id, r.title, JSON.stringify(r.repoIds), r.fromDate, r.toDate, r.preset, r.language, r.model, at, at);
+    const created = (await this.getReport(id))!;
+    await this.appendEvent({
+      kind: 'report.changed',
+      actor,
+      data: { action: 'created', reportId: id, repoIds: r.repoIds, from: r.fromDate, to: r.toDate, language: r.language },
+    });
+    return created;
+  }
+
+  async updateReport(id: string, patch: ReportPatch): Promise<Report | null> {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    for (const [col, val] of reportPatchColumns(patch)) {
+      sets.push(`${col} = ?`);
+      params.push(val);
+    }
+    if (sets.length === 0) return this.getReport(id);
+    sets.push(`updated_at = ?`);
+    params.push(now(), id);
+    const r = this.db.prepare(`UPDATE tm_reports SET ${sets.join(', ')} WHERE id = ? RETURNING *`).get(...params);
+    return r ? rowToReport(r) : null;
+  }
+
+  async deleteReport(id: string): Promise<boolean> {
+    const info = this.db.prepare(`DELETE FROM tm_reports WHERE id = ?`).run(id);
+    return info.changes > 0;
+  }
+  // ---- Shared spaces (docs/shared-spaces.md) ----
+
+  async listSpaces(): Promise<Space[]> {
+    return (this.db.prepare(`SELECT * FROM tm_spaces ORDER BY created_at ASC`).all() as any[]).map(rowToSpace);
+  }
+
+  async getSpace(id: string): Promise<Space | null> {
+    const r = this.db.prepare(`SELECT * FROM tm_spaces WHERE id = ?`).get(id);
+    return r ? rowToSpace(r) : null;
+  }
+
+  async createSpace(s: NewSpace): Promise<Space> {
+    const id = randomUUID();
+    const at = now();
+    this.db.prepare(SPACE_INSERT_SQL).run(id, s.name, s.path, JSON.stringify(s.repoIds), at, at);
+    return (await this.getSpace(id))!;
+  }
+
+  async updateSpace(id: string, patch: SpacePatch): Promise<Space | null> {
+    const cols = spacePatchColumns(patch);
+    if (cols.length === 0) return this.getSpace(id);
+    const r = this.db
+      .prepare(`UPDATE tm_spaces SET ${cols.map(([c]) => `${c} = ?`).join(', ')}, updated_at = ? WHERE id = ? RETURNING *`)
+      .get(...cols.map(([, v]) => v), now(), id);
+    return r ? rowToSpace(r) : null;
+  }
+
+  async deleteSpace(id: string): Promise<boolean> {
+    return this.inTxn(() => {
+      this.db.prepare(`DELETE FROM tm_shared_notes WHERE space_id = ?`).run(id);
+      return this.db.prepare(`DELETE FROM tm_spaces WHERE id = ?`).run(id).changes > 0;
+    });
+  }
+
+  async listSharedNotes(f: SharedNoteFilter): Promise<SharedNote[]> {
+    const { sql, params } = sharedNoteListQuery(f);
+    return (this.db.prepare(sql).all(...params) as any[]).map(rowToSharedNote);
+  }
+
+  async getSharedNote(id: string): Promise<SharedNote | null> {
+    const r = this.db.prepare(`SELECT * FROM tm_shared_notes WHERE id = ?`).get(id);
+    return r ? rowToSharedNote(r) : null;
+  }
+
+  async createSharedNote(n: NewSharedNote): Promise<SharedNote> {
+    const id = randomUUID();
+    const at = now();
+    this.db
+      .prepare(SHARED_NOTE_INSERT_SQL)
+      .run(id, n.spaceId, n.kind, n.title, n.body, n.fromRepoId, n.fromTaskId, n.toRepoId, 'open', null, null, JSON.stringify(n.files), n.actor, at, at);
+    return (await this.getSharedNote(id))!;
+  }
+
+  async updateSharedNote(
+    id: string,
+    patch: SharedNotePatch,
+    fromStatus?: readonly SharedNoteStatus[],
+  ): Promise<SharedNote | null> {
+    const u = sharedNoteUpdate(id, patch, now(), fromStatus);
+    if (!u) return this.getSharedNote(id);
+    const r = this.db.prepare(u.sql).get(...u.params);
+    return r ? rowToSharedNote(r) : null;
+  }
+
+  async deleteSharedNote(id: string): Promise<boolean> {
+    return this.db.prepare(`DELETE FROM tm_shared_notes WHERE id = ?`).run(id).changes > 0;
+  }
+
 
   async getSettings(): Promise<AppSettings> {
     const rows = this.db.prepare(`SELECT key, value FROM tm_config`).all() as { key: string; value: string }[];

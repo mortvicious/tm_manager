@@ -98,11 +98,12 @@ display:none pair.
 - **Bottom tab bar** (`.tabbar`) — Dashboard · Board · Queue · Features · More.
   The active tab carries three cues, not one: accent colour, `stroke-width: 2.6`
   and a top rail, because colour alone is weak in peripheral vision.
-- **More sheet** (`.more-sheet`) — the **whole** nav (so the four slots are a
-  shortcut, never the only route) plus the header controls the compact top bar
-  could not hold: usage pill, server uptime/restart, repo commands, theme, and
-  the address the page was served from. Escape and the overlay close it; it also
-  closes on navigation and on crossing the breakpoint.
+- **More sheet** (`.more-sheet`, drawn by the shared `<Sheet>` — § Sheets) — the
+  **whole** nav (so the four slots are a shortcut, never the only route) plus the
+  header controls the compact top bar could not hold: usage pill, server
+  uptime/restart, repo commands, theme, and the address the page was served
+  from. Escape and the overlay close it; it also closes on navigation and on
+  crossing the breakpoint.
 - **Top bar** — brand (hidden under 430px), queue switch, `running n/m`, and the
   `⋯` that toggles the sheet.
 - **The emulator is not mounted on mobile.** A phone framing a phone is noise,
@@ -141,12 +142,12 @@ not a new set of sizes.
 - **Config is label-over-control.** Every control on that page is sized by an
   inline `width`, so the override is `!important` on `.app.mobile .cfg-row .field`
   rather than ~30 edited call sites on a page this work does not otherwise touch.
-- **Rows wrap, titles do not shrink to nothing.** `.task-row` wraps with
-  `.task-main` at `flex: 1 1 60%`, so chips move to a second line instead of
-  squeezing the title. Child indent halves to 12px per level — marker included,
-  or the `└` hangs off its own child.
+- **Board rows are their own layout** (§ Board). Anything else that reuses
+  `.task-row` (the task panel's file list) still wraps, with `.task-main` at
+  `flex: 1 1 60%`. Child indent halves to 12px per level, marker included, or
+  the `└` hangs off its own child.
 - **The slide-over is a sheet**: full width, `top: 0`, and it owns the
-  status-bar inset the header used to.
+  status-bar inset the header used to. Its layout is § Task panel.
 - **Safe areas.** `viewport-fit=cover` in `index.html` makes
   `env(safe-area-inset-*)` non-zero; the header, `.main`, the tab bar, the sheet
   and the slide-over each pay their own side back, so landscape on a notched
@@ -168,64 +169,254 @@ Before this pass, a missing `web/dist` registered **no** static route and **no**
 log line: `/` answered Fastify's default 404 JSON on a server that was otherwise
 healthy. It now says so on boot and answers `/` with the two commands that fix it.
 
-## The terminal key row
+## Sheets
 
-A phone soft keyboard has no Esc, no Tab, no Ctrl and no arrow keys, which is
-most of how you steer an interactive `claude`: Esc interrupts, Tab accepts the
-completion, the arrows walk history, Ctrl-C kills. So `.app.mobile` — and only
-`.app.mobile` — renders a `.term-keys` row inside the drawer, directly above
-`.term-body`:
+`components/Sheet.tsx` is the one bottom sheet. The More menu, the board's
+filters, a row's actions and the task panel's overflow all use it, so Escape,
+the overlay, the grip and the body scroll lock behave the same everywhere.
+
+- **Portalled into `.app`, not `document.body`.** Every mobile rule is keyed off
+  `.app.mobile`: field sizes, tap targets, fonts. A sheet out on `body` would
+  lose all of them. The portal also escapes whatever declared it, so no
+  transformed or clipping ancestor can trap the `position: fixed` box.
+  `.sheet-root` is `display: contents`, so the wrapper never becomes a grid item
+  of `.app`.
+- **Clicks stop at the sheet.** React bubbles synthetic events up the COMPONENT
+  tree even through a portal. A row's sheet is declared inside that row, and a
+  tap on "Run now" would otherwise also open the task panel.
+- **`SheetAction` prints its reason.** Each action is a 44px row with a label and
+  a hint line. The hint is what a desktop keeps in a hover tooltip, and a phone
+  cannot hover. It matters most for a disabled action, whose "why not?" used to
+  exist only in that tooltip. Disabled dims the label and icon, never the hint.
+- **`FullSheet`** is the whole-screen variant, with a header, a close button and
+  its own scroller, for a form too long for a bottom sheet (New task). It sits at
+  z-index 33: above the task panel (31) and the phone terminal (32), under the
+  bottom sheets (35) and the question modal (40).
+
+## Board
+
+**Toolbar.** One line replaces the page title, the seven filter selects and the
+New button: `[Filters · n] [sort ▾] [+ New]`. That was about 340px of screen,
+40% of a phone, before the first task.
+
+- **Filters** opens a sheet holding the same `filterSelects` fragment the desktop
+  bar renders: repo, source, category, dispatches, task group, group-by. Below
+  them are a `full | essentials` view toggle and Reset/Done. One fragment feeds
+  both layouts, so a new filter cannot be added to one and forgotten in the
+  other.
+- **Sort** stays a native select in the toolbar. The OS picker is the dropdown.
+- **What the sheet narrows stays on screen.** Every active filter, plus a
+  non-default group-by, prints as a chip under the toolbar. Tapping a chip clears
+  it, and the Filters button shows the count.
+- **Filters persist** in `localStorage['tm.board']` with sort, focus and the
+  folded set. This applies to desktop too. A home-screen app reloads often, and
+  filters that are lost on reload were a desktop default nobody chose. A
+  persisted value can outlive what it names: a deleted repo, a dissolved group,
+  the last dispatch pruned. Such a value reads as `all` at render time
+  (`filterRepo`/`filterCat`/`filterGroup`/`filterDispatch` in `BoardPage`)
+  rather than silently emptying the board behind a hidden or blank select. The
+  checks wait for data, because an empty list at boot means "not loaded yet".
+- **New task** is a `FullSheet` holding the unchanged form. It no longer pushes
+  every list down by a screen and a half. Closing it keeps what was typed.
+
+**Rows** (`TaskRow`, `.task-row.m`: its own JSX branch, because the actions
+differ, not only their layout). A 3×3 grid:
 
 ```
-[ Ctrl ][ Esc ][ Tab ][ ↑ ][ ↓ ][ ← ][ → ]
+[grip] [title, up to 2 lines      ] [primary] [⋯]
+[grip] [status] [tag] [tag] [+n]              [age]
+[grip] [row error, when there is one               ]
 ```
 
-Every key goes out over the **same** `{type:'input'}` WebSocket frame the
-keyboard already uses — the drawer's xterm effect publishes its send function
-through a ref, and `term.onData` is wired to that same function, so there is one
-input path and not two. Esc sends `\x1b`, Tab `\t`, and the arrows `\x1b[A`,
-`\x1b[B`, `\x1b[D`, `\x1b[C`.
+- **One primary action, chosen by status.** Review → Publish; a startable task
+  (draft/queued/failed/cancelled, no live session) → Run now; otherwise the
+  terminal, if there is a session. When nothing applies there is no button. A
+  disabled primary is never shown: its reason would sit in a tooltip.
+- **`⋯` opens the row's sheet** with every row action: terminal, Publish (review),
+  Run now, Mark done / Mark as ready, Add to / Remove from queue, and Open
+  details. They use the same guards and the same wording as the desktop icons.
+- **Two tags, then `+n`.** `rowChips` builds one list in the desktop order.
+  Phones rank it `repo, dispatch, group, category, feature, auto-publish, agent,
+  source, preset, reviewer` and keep two. Only chips that actually render go in
+  the list (PresetChip and ReviewerChip draw nothing on some rows), so `+n` never
+  counts a ghost. With the board filtered to one repo, the repo tag is dropped:
+  it would repeat the filter on every row.
+- **The meta line never wraps.** Tags shrink to an ellipsis before the badge or
+  the age does, and the second tag gives way first (`flex-shrink: 4`), so the
+  repo stays readable. The status badge is drawn first (`order: -1`) because it
+  is what the eye looks for there.
+- **Nesting** moves `--tm-depth` onto the row, so the meta line indents with its
+  title.
 
-**Ctrl is sticky and lasts exactly one keypress.** It has to be: Ctrl-C needs a
-`c`, and the `c` comes from the soft keyboard, not from the row. So the modifier
-is applied where the bytes are sent rather than on the buttons — the next single
-character is mapped with `c & 0x1f` (`c` → `\x03`, `a` → `\x01`, case-
-insensitive; `?` → DEL), and anything that is not a single mappable character
-passes through untouched. Armed, the key is teal and `aria-pressed`; tap it
-again to disarm. It clears after one keypress **whether or not that key mapped**,
-and it clears when the drawer compacts, when the viewport leaves mobile, or when
-the run changes — an armed modifier on a terminal you cannot see would fire into
-the next one you open.
+**Section heads stick** to the top of `.main` while their list scrolls. Each
+head is sticky inside its own Section wrapper, so the next section's head pushes
+it off. This applies only to the board (`.board .section-head`): the task panel
+and other pages put several heads in one parent, where they would pile up.
 
-The row scrolls horizontally rather than clipping (it fits without scrolling at
-320px, but nothing about the key list is pinned to seven items), keys are
-`--tm-tap-dense` (38px), and tapping one does not move focus — `preventDefault`
-on mousedown keeps the soft keyboard up, otherwise every keypress would cost a
-re-tap on the terminal. Because the row is a sibling of `.term-body` inside the
-drawer, it takes its height from the terminal and not from the tab-bar
-clearance; mounting or unmounting it refits xterm and resizes the PTY.
+**Group heads are one line.** The name gets an ellipsis (it needs
+`display: block`; the head's buttons are inline-flex), and the counts, `n of m`
+and the pencil keep their place. The fold and pencil buttons are 34px. Rename
+mode still wraps, for the swatches.
 
-**Terminal scrolling** (`components/termTouchScroll.ts`). xterm 6 replaced
-its native-overflow viewport with VS Code's scrollable element, which listens
-to `wheel` only, so a finger dragged over the terminal scrolled nothing. A
-one-finger vertical drag now scrolls: in the normal buffer (claude's inline
-TUI, a shell) through `term.scrollLines`, sub-line remainders carried; in the
-alternate buffer (less, vim) through a synthetic line-mode `wheel` on
-`.xterm-screen`, which xterm reports to the app or turns into arrow keys, as a
-desktop wheel would. Nothing is prevented until the finger moves 8px, so a
-tap still focuses xterm and raises the keyboard; a drag cancels the page's own
-scroll and the tap that would follow it. A flick coasts and decays; a finger
-that stopped before lifting does not. Two fingers are left to the browser.
+## Task panel
+
+The desktop panel draws its actions as one wrapping row of up to 17 buttons,
+with Delete and Cancel beside the safe ones, after roughly 800px of form. On a
+phone:
+
+- **A pinned header**: status · title · close, with the chips on a second line
+  that scrolls sideways. The chip line is dropped when it would only say
+  "manual".
+- **A pinned action bar** under it holds up to three actions, then `⋯`. They come
+  from ONE `PanelAction[]` list that the desktop row renders too, in the same
+  order and with the same classes, so what a status offers cannot drift between
+  the two. The bar picks by `mobilePrimary(live)`:
+  `publish, complete, release, unblock, run-now, enqueue, terminal`. With a live
+  session the terminal moves ahead of run-now/enqueue, which the server would
+  refuse anyway. Disabled actions never go in the bar.
+- **The `⋯` sheet** lists the rest: available first, then the refused ones with
+  their reason. Destructive actions (Cancel, Remove from the global queue, which
+  is a cancel, Stop agent, Delete) sit apart at the bottom, in red.
+- **The live-session guard is mirrored.** Enqueue, Add to queue, Release and Run
+  now are disabled while the task's PTY is up, with the same words as the board
+  row, because the server's `hasLiveSession()` would 409 them. This applies to
+  the desktop row too, where they used to be clickable into an error.
+- **Reading order**, by CSS `order` on the body's flex column, so the JSX is
+  shared: breadcrumb, alerts (error, wake-up, held), the agent's question, run
+  stats, review, the worker's summary, follow-up. Then the title and
+  description, the settings, and the rest in desktop order. What happened comes
+  first, then your answer to it, then the task itself.
+- **Settings fold away.** The settings grid (repo, category, group, preset,
+  review, auto-publish, model, effort, reviewer) sits behind a toggle that shows
+  `repo · model · effort`. The toggle is open for a draft, which is still being
+  written, and closed otherwise.
+- **Save is a sticky bottom bar** while there is something to save. It is last
+  in the order, so it rests below everything. It carries a negative `bottom`
+  because sticky insets count from inside the body's padding.
+
+## The terminal
+
+On a phone the drawer is the **whole screen** (`.term-drawer.full`, z-index 32,
+over the tab bar and the header), laid out top to bottom:
+
+```
+[name] [live] [A−] [A+] [⌄] [✕]
+[ xterm ................................ ]
+[Ctrl Esc ⏎ ↑ ↓ 1 2 3 Tab ⇧Tab ^C ← → ⤓]
+[ Message…                        ] [➤]
+```
+
+- **It fits what the keyboard leaves.** iOS does not resize the layout viewport
+  for the soft keyboard; it covers it. The drawer tracks `visualViewport`
+  (`--tm-vv-h`/`--tm-vv-top`, written on its `resize`/`scroll` and on window
+  resize). The prompt and the compose bar therefore stay above the keys, and
+  every change schedules a refit, so the PTY learns its new row count.
+- **Refits are debounced, one per burst** (`scheduleRefit`, 60ms). The keyboard
+  animates through a dozen heights, and each resize message is a SIGWINCH and a
+  full TUI redraw. A `ResizeObserver` on the body covers everything else that
+  changes its box. It uses a timer, not rAF, because rAF never fires in a hidden
+  tab and the size must be right when the tab is shown.
+- **The compose bar** is a real `<textarea>`, so autocorrect, dictation and paste
+  work. None of them do in xterm's hidden textarea. Send puts the text through
+  **`term.paste()`**, xterm's own paste path, so it arrives bracketed
+  (`\x1b[200~…\x1b[201~`) whenever the app enabled bracketed paste, exactly like
+  a desktop paste. Enter follows as its **own frame, 120ms later**. Sent back to
+  back, the two frames can reach the TUI in one read, and `text\r` would then be
+  parsed as a paste with a newline in it rather than a submit. An empty Send is
+  a bare Enter. Enter in the field sends; a hardware Shift+Enter still breaks the
+  line. Sending disarms a sticky Ctrl first: a message is not "the next key".
+- **The key row moved under the terminal**, next to the thumb and the keyboard,
+  and gained **Enter, 1/2/3, Shift+Tab (`\x1b[Z`, the mode cycle) and ^C**. With
+  Enter and the digits, claude's pickers (permission prompts, numbered choices)
+  are answered without opening the keyboard at all. A key needs no focus: it
+  goes straight down the socket, and `holdFocus` leaves the keyboard as it was.
+  Keys no longer focus xterm, which popped the keyboard open over the picker you
+  meant to answer with one tap. Sticky Ctrl still focuses xterm (the key it
+  modifies comes from the keyboard) unless the compose box has focus. ⤓ jumps
+  to the live end of the scrollback.
+- **Terminal scrolling** (`components/termTouchScroll.ts`). xterm 6 replaced
+  its native-overflow viewport with VS Code's scrollable element, which listens
+  to `wheel` only, so a finger dragged over the terminal scrolled nothing. A
+  one-finger vertical drag now scrolls: in the normal buffer (claude's inline
+  TUI, a shell) through `term.scrollLines`, sub-line remainders carried; in the
+  alternate buffer (less, vim) through a synthetic line-mode `wheel` on
+  `.xterm-screen`, which xterm reports to the app or turns into arrow keys, as a
+  desktop wheel would. Nothing is prevented until the finger moves 8px, so a
+  tap still focuses xterm and raises the keyboard; a drag cancels the page's own
+  scroll and the tap that would follow it. A flick coasts and decays; a finger
+  that stopped before lifting does not. Two fingers are left to the browser.
+- **Text size**: A−/A+ from 8 to 16px (default 11, about 56 columns at 390px
+  instead of 45 at the desktop's 12.5), remembered in
+  `localStorage['tm.term.mobileFont']`. Desktop stays at 12.5 with no control.
+- **Tapping "outside" does nothing on a phone.** The only outside is a sheet or
+  the question modal drawn over the terminal, and answering one must not fold it
+  away. The ⌄ button still compacts it to the bar above the tab bar. That bar
+  now hides the compose box too, and it keeps its own height:
+  `.app.mobile .term-drawer.compact { height: auto }` fixes the 58svh drawer
+  height that used to win on specificity.
+
+The sticky Ctrl itself is unchanged, and so is the single input path it rides:
+`withCtrl`, cleared after one keypress mapped or not, and cleared on
+compact/breakpoint/run change. The reasoning is in `docs/decisions.md`,
+2026-08-27.
 
 ## Known limits
 
 - A phone in **landscape** is ≥768px wide and therefore gets the desktop layout.
   That is legible (the sidebar fits 390px of height) but it is not designed for;
   a short-viewport pass is filed separately.
-- The key row covers Esc, Tab, Ctrl and the four arrows. Anything else a
-  session wants — Ctrl-with-a-symbol, function keys, Alt — still has no key.
+- The key row covers Ctrl, Esc, Enter, the arrows, 1/2/3, Tab, Shift+Tab and ^C.
+  Ctrl-with-a-symbol, function keys and Alt still have no key.
+- Reordering on a phone is still the drag grip, which does work on touch
+  (pointer events). There is no "move up/down" action in the row sheet.
+- The compose bar's Enter delay (120ms) is a timing assumption about the TUI's
+  read loop, not a protocol guarantee. A very long paste that the CLI takes
+  longer to ingest could still see the Enter arrive early.
 
 ## Verification
+
+**Board rework (2026-09-29)**, run in a real browser against the live API through
+Vite, with the app in same-origin iframes at 360, 390 and 430 CSS px:
+
+- `npm run typecheck`; the SPA built with `vite build` (to a scratch outDir, so
+  the live `web/dist` was not replaced before review).
+- There is no horizontal overflow: `scrollWidth` equals the width for the
+  document and for `.main` at all three widths, on Board and Queue, and inside
+  the New task sheet.
+- Toolbar, filter sheet, the chips (set a repo, then tap to clear) and the
+  persisted `tm.board` JSON were all checked. The row sheet on a `review` row
+  listed its six actions, with Run now and Add to queue disabled and the live
+  session named as the reason.
+- Task panel on a review task: the bar was Publish · Mark done · Terminal, and
+  the sheet showed the available actions first, then the refused ones, then
+  Stop agent and Delete apart. The body order was measured with `order`
+  computed. The save bar sits flush at the bottom edge (bottom 780 of 780).
+- The terminal was checked with `WebSocket.prototype.send` stubbed for
+  `/ws/terminal/` sockets in the test frame, so no byte reached a live PTY.
+  - Frames decoded:
+    - Esc ``, ⏎ `
+`, `1`, ⇧Tab `[Z`, ^C ``, ↑ `[A`.
+    - Compose `hello world⏎line two  ` became
+      `[200~hello world
+line two[201~`, then a separate `
+`. An armed
+      Ctrl was disarmed without being applied.
+    - An empty Send became a bare `
+`.
+  - A+ resized to 52×39 and A− back to 57×44.
+  - A 780 → 430px viewport (the keyboard) moved the drawer to 430 tall, compose
+    bottom at 430, and sent ONE resize, 56×19; restoring it gave 56×44.
+  - Compact gives a 47px bar above the tab bar.
+- Desktop at 1440: board screenshot identical to the pre-change build on :5176.
+  Task-panel action rows are identical in order and classes for review, running
+  and draft tasks. The one difference is the mirrored live-session guard, which
+  disables Enqueue, Add to queue and Run now on a review task whose session is
+  up.
+- Not verified on a physical iPhone. `visualViewport` was driven by resizing the
+  frame, which is what the keyboard does to it. That is the thing to check first
+  if the terminal misbehaves on a device.
+
+**Mobile shell (2026-08-27):**
 
 - `npm run typecheck`, `npm run build`.
 - Every route rendered over CDP at 360, 390 and 430 CSS px:

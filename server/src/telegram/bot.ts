@@ -2,7 +2,21 @@ import { DEFAULT_DIGEST, saveTelegramDigest, saveTelegramNotify, type TelegramCo
 import type { Orchestrator } from '../orchestrator.ts';
 import type { Storage } from '../storage/types.ts';
 import { parseActionData, runButtonAction, type ActionOutcome } from './actions.ts';
-import { TelegramApi, TelegramApiError, escapeHtml, toReply, type Reply } from './api.ts';
+import { TelegramApi, TelegramApiError, escapeHtml, isNotModified, MAX_MESSAGE_CHARS, toReply, type Reply } from './api.ts';
+import {
+  BoardMemory,
+  messageContext,
+  parseListData,
+  renderBoard,
+  renderCard,
+  shortcutCommand,
+  taskActionKeyboard,
+  type ActivitySource,
+  type BoardDeps,
+  type ListButton,
+  type MessageContext,
+} from './board.ts';
+import { resolveFeature, resolveProposal, resolveTask } from './ids.ts';
 import { commandSpecs, findCommand, parseCommand, unknownCommandReply } from './commands.ts';
 import type { Chat } from '@tm/shared';
 import type { ChatService } from '../chat/service.ts';
@@ -40,12 +54,19 @@ import {
   type FlowButton,
 } from './flows.ts';
 import { DigestScheduler } from './digest.ts';
-import { TelegramNotifier } from './notifications.ts';
-import { QuestionDrafts, handleQuestionButton, parseQuestionData, type QuestionButton, type QuestionDeps } from './questions.ts';
+import { TelegramNotifier, featureKeyboard, proposalMessage } from './notifications.ts';
+import {
+  QuestionDrafts,
+  handleQuestionButton,
+  parseQuestionData,
+  questionMessages,
+  type QuestionButton,
+  type QuestionDeps,
+} from './questions.ts';
 import type { QuestionService } from '../questions.ts';
-import type { ReportDocument } from './report.ts';
+import { buildReport, type ReportDocument } from './report.ts';
 import { formatClock, type GateCounters } from './status.ts';
-import type { InlineKeyboardMarkup, TelegramCallbackQuery, TelegramUpdate } from './types.ts';
+import type { InlineKeyboardMarkup, ReplyKeyboardMarkup, TelegramCallbackQuery, TelegramUpdate } from './types.ts';
 
 // The bot process-side: one long-polling loop, one allowlisted user, one
 // audit trail. See docs/telegram.md.
@@ -161,6 +182,8 @@ export class TelegramBot {
    */
   private readonly confirms = new ConfirmStore();
   private readonly limiter = new RateLimiter();
+  /** the board's remembered `/tasks <text>` search (docs/telegram.md § The board) */
+  private readonly boardMemory = new BoardMemory();
   private readonly killWatcher: KillWatcher;
 
   constructor(
@@ -174,6 +197,9 @@ export class TelegramBot {
     /** the question service (docs/questions.md). Null in a harness — the
      *  buttons and /questions then say so rather than throwing. */
     private readonly questions: QuestionService | null = null,
+    /** the activity watcher's read side, for the board's live lines. Null in
+     *  a harness — the board then renders without narration. */
+    private readonly activity: ActivitySource | null = null,
   ) {
     // `loadBootConfig()` always merges this block in, but a config built by
     // hand — a harness, an older caller — can be missing it entirely. The
@@ -189,6 +215,7 @@ export class TelegramBot {
       // place and the notifier must see it at its next flush.
       notify: cfg.notify,
       send: (html, keyboard) => this.send(cfg.allowedUserId, html, keyboard),
+      requestedReview: (taskId) => this.orchestrator.isRequestedReview(taskId),
       // The feature-plan message carries the SAME report /report builds — one
       // generator, one shape (docs/telegram.md § Reports).
       sendDocument: (doc, caption, keyboard) => this.sendDocument(cfg.allowedUserId, doc, caption, keyboard),
@@ -496,7 +523,10 @@ export class TelegramBot {
       return;
     }
     const from = msg.from;
-    const parsed = msg.text ? parseCommand(msg.text) : null;
+    // A bottom-keyboard button sends its LABEL as text; the exact labels are
+    // read as the command they stand for, so they win over a flow or chat
+    // mode exactly like a typed command does.
+    const parsed = msg.text ? parseCommand(shortcutCommand(msg.text) ?? msg.text) : null;
     const authorized =
       !!from &&
       from.id === this.cfg.allowedUserId &&
@@ -575,6 +605,7 @@ export class TelegramBot {
           actor: ACTOR,
           args: parsed.args,
           message: msg,
+          board: { activity: this.activity, memory: this.boardMemory },
         }),
       );
     } catch (e) {
@@ -607,7 +638,7 @@ export class TelegramBot {
     // text as its caption, not a message plus a file: two notifications for
     // one command is the thing a phone surface must not do.
     if (reply.document) await this.sendDocument(msg.chat.id, reply.document, text, reply.keyboard);
-    else await this.send(msg.chat.id, text, reply.keyboard);
+    else await this.send(msg.chat.id, text, reply.keyboard ?? reply.replyKeyboard);
     // A multi-part question is one message per part (docs/questions.md).
     for (const more of reply.extra ?? []) await this.send(msg.chat.id, more.html, more.keyboard);
   }
@@ -784,6 +815,14 @@ export class TelegramBot {
       await this.handleQuestionPress(cb, questionButton);
       return;
     }
+    // The board (docs/telegram.md § The board). Navigation only — a tab, a
+    // page, a card, a 🔄 — so it is deliberately NOT audited; the mutations
+    // its action buttons carry go through the codec below like any other.
+    const listButton = cb.data ? parseListData(cb.data) : null;
+    if (listButton) {
+      await this.handleListPress(cb, listButton);
+      return;
+    }
     const action = cb.data ? parseActionData(cb.data) : null;
     if (!action) {
       await this.audit('telegram.command', { command: 'button', ignored: 'unparseable callback data' });
@@ -814,8 +853,166 @@ export class TelegramBot {
       ok: outcome.ok,
       ...(outcome.ok ? {} : { error: outcome.text }),
     });
+    const sentence = `${outcome.ok ? '✅' : '⚠'} ${outcome.text}`;
+    // Pressed on a board or a card: that message redraws itself with the new
+    // state and the outcome is the toast — no second message, no stale
+    // buttons left behind (docs/telegram.md § The board).
+    const where = messageContext(cb.message?.reply_markup);
+    if (where) {
+      let redrawn: Reply | null = null;
+      try {
+        redrawn = await this.renderContext(where);
+      } catch (e) {
+        console.warn('telegram: redraw after a button failed:', errText(e));
+      }
+      if (redrawn) {
+        await this.answerCallback(cb.id, sentence);
+        await this.redraw(cb, redrawn);
+        return;
+      }
+    }
     await this.answerCallback(cb.id, outcome.ok ? 'Done' : 'Failed');
     await this.send(this.cfg.allowedUserId, `${outcome.ok ? '✅' : '⚠'} ${escapeHtml(outcome.text)}`);
+    if (outcome.ok) await this.retireStaleButtons(cb, action);
+  }
+
+  private boardDeps(): BoardDeps {
+    return { storage: this.storage, orchestrator: this.orchestrator, activity: this.activity, memory: this.boardMemory };
+  }
+
+  /** What a board or a card looks like NOW. A card whose task is gone falls back to its board. */
+  private async renderContext(where: MessageContext): Promise<Reply> {
+    if (where.kind === 'board') return renderBoard(this.boardDeps(), where.state);
+    const found = await resolveTask(this.storage, where.task);
+    return found.ok ? renderCard(this.boardDeps(), found.value, where.back) : renderBoard(this.boardDeps(), where.back);
+  }
+
+  /**
+   * An `l:` press. Every branch answers the callback exactly once; the ones
+   * that open something (a question, a proposal, a feature plan) send it as a
+   * NEW message because it carries its own keyboard, and leave the board alone.
+   */
+  private async handleListPress(cb: TelegramCallbackQuery, button: ListButton): Promise<void> {
+    const toMe = this.cfg.allowedUserId;
+    try {
+      switch (button.kind) {
+        case 'noop':
+          await this.answerCallback(cb.id);
+          return;
+        case 'board': {
+          const reply = await renderBoard(this.boardDeps(), button.state);
+          await this.answerCallback(cb.id);
+          await this.redraw(cb, reply);
+          return;
+        }
+        case 'card': {
+          const found = await resolveTask(this.storage, button.task);
+          if (!found.ok) {
+            // Stale (gone) or ambiguous short id: say why, and put the board
+            // it came from back — never guess between two tasks.
+            await this.answerCallback(cb.id, found.error);
+            await this.redraw(cb, await renderBoard(this.boardDeps(), button.back));
+            return;
+          }
+          const reply = await renderCard(this.boardDeps(), found.value, button.back);
+          await this.answerCallback(cb.id);
+          await this.redraw(cb, reply);
+          return;
+        }
+        case 'ask': {
+          const found = await resolveTask(this.storage, button.task);
+          if (!found.ok) {
+            await this.answerCallback(cb.id, found.error);
+            return;
+          }
+          const pending = await this.storage.listQuestions({ status: 'pending', taskId: found.value.id });
+          if (pending.length === 0) {
+            await this.answerCallback(cb.id, 'No open question — it was answered or expired');
+            const where = messageContext(cb.message?.reply_markup);
+            if (where) await this.redraw(cb, await this.renderContext(where));
+            return;
+          }
+          await this.answerCallback(cb.id);
+          for (const q of pending) {
+            for (const r of questionMessages(q, found.value, this.questionDrafts)) await this.send(toMe, r.html, r.keyboard);
+          }
+          return;
+        }
+        case 'proposal': {
+          const found = await resolveProposal(this.storage, button.id);
+          if (!found.ok || found.value.status !== 'pending') {
+            await this.answerCallback(cb.id, found.ok ? `That proposal is already ${found.value.status}` : found.error);
+            const where = messageContext(cb.message?.reply_markup);
+            if (where) await this.redraw(cb, await this.renderContext(where));
+            return;
+          }
+          const msg = proposalMessage(found.value);
+          await this.answerCallback(cb.id);
+          await this.send(toMe, msg.html, msg.keyboard);
+          return;
+        }
+        case 'feature': {
+          const found = await resolveFeature(this.storage, button.id);
+          if (!found.ok) {
+            await this.answerCallback(cb.id, found.error);
+            return;
+          }
+          const f = found.value;
+          const doc = await buildReport(this.storage, { kind: 'feature', feature: f });
+          const caption = `🧩 <b>${escapeHtml(f.title)}</b> · ${escapeHtml(f.status)}\n\n${doc.lines.map((l) => escapeHtml(l)).join('\n')}`;
+          await this.answerCallback(cb.id);
+          await this.sendDocument(toMe, doc, caption, f.status === 'proposed' ? featureKeyboard(f.id) : undefined);
+          return;
+        }
+      }
+    } catch (e) {
+      console.error('telegram: board button failed:', errText(e));
+      await this.answerCallback(cb.id, 'Failed');
+      await this.send(toMe, `⚠ ${escapeHtml(errText(e))}`);
+    }
+  }
+
+  /**
+   * Put `reply` in place of the pressed message. Falls back to a fresh send
+   * when there is no message to edit (aged past 48h — Telegram then hands an
+   * inaccessible stub with date 0), when the text cannot be one message, or
+   * when Telegram refuses the edit for any reason but "nothing changed".
+   */
+  private async redraw(cb: TelegramCallbackQuery, reply: Reply): Promise<void> {
+    const m = cb.message;
+    if (m && m.date !== 0 && reply.html.length <= MAX_MESSAGE_CHARS) {
+      try {
+        await this.api.editMessageText(m.chat.id, m.message_id, reply.html, { signal: this.abort.signal }, reply.keyboard);
+        return;
+      } catch (e) {
+        if (this.abort.signal.aborted || isNotModified(e)) return;
+        console.warn('telegram: editMessageText failed, sending fresh:', errText(e));
+      }
+    }
+    await this.send(this.cfg.allowedUserId, reply.html, reply.keyboard);
+  }
+
+  /**
+   * After a successful action pressed on a message that is neither a board nor
+   * a card (a review ping, a proposal, a feature plan), swap its keyboard for
+   * what is possible now — but only when EVERY button on it targets the same
+   * id, so a list of several things never loses the others' buttons.
+   */
+  private async retireStaleButtons(cb: TelegramCallbackQuery, action: NonNullable<ReturnType<typeof parseActionData>>) {
+    const m = cb.message;
+    const buttons = m?.reply_markup?.inline_keyboard.flat() ?? [];
+    if (!m || m.date === 0 || buttons.length === 0) return;
+    if (!buttons.every((b) => parseActionData(b.callback_data)?.id === action.id)) return;
+    try {
+      let next: InlineKeyboardMarkup | undefined;
+      if (action.kind.startsWith('task.')) {
+        const t = await this.storage.getTask(action.id);
+        next = t ? taskActionKeyboard(t) : undefined;
+      }
+      await this.api.editMessageReplyMarkup(m.chat.id, m.message_id, next, { signal: this.abort.signal });
+    } catch (e) {
+      if (!this.abort.signal.aborted && !isNotModified(e)) console.warn('telegram: could not retire stale buttons:', errText(e));
+    }
   }
 
   /**
@@ -1209,7 +1406,7 @@ export class TelegramBot {
     if (overflow) await this.send(chatId, overflow);
   }
 
-  private async send(chatId: number, html: string, keyboard?: InlineKeyboardMarkup): Promise<void> {
+  private async send(chatId: number, html: string, keyboard?: InlineKeyboardMarkup | ReplyKeyboardMarkup): Promise<void> {
     try {
       await this.api.sendMessage(chatId, html, { signal: this.abort.signal }, keyboard);
     } catch (e) {

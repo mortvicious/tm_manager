@@ -5,7 +5,7 @@ import { startFeatureAnalysis } from '../claude/feature-analysis.ts';
 import { broadcast } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 
-// Feature interface (docs/features.md): a big request → headless analysis →
+// Feature interface (docs/features.md): a big request → planning session →
 // adversarial plan review → visually approved tasks. Status is machine-owned
 // here exactly as it is for tasks: it moves only through the action endpoints,
 // never through a generic PATCH (.strict() bodies give a loud 400 instead of a
@@ -173,13 +173,13 @@ export function registerFeatureRoutes(app: FastifyInstance, storage: Storage) {
     if (!repo) return reply.code(409).send({ error: 'repo not found' });
     if (!cur.request.trim()) return reply.code(409).send({ error: 'write the request first' });
     // The status transition IS the lock: a second click finds 'analyzing' and
-    // gets a 409 instead of burning a second headless session.
+    // gets a 409 instead of burning a second planning session.
     const feature = await storage.transitionFeature(id, EDITABLE, 'analyzing', 'human', { error: null });
     if (!feature) return reply.code(409).send({ error: `cannot analyze from status '${cur.status}'` });
     push(feature);
     try {
-      const { runId } = await startFeatureAnalysis({ storage }, feature, repo, { note: body.note ?? null });
-      return { runId, feature };
+      await startFeatureAnalysis({ storage }, feature, repo, { note: body.note ?? null });
+      return { feature };
     } catch (e) {
       const reverted = await storage.transitionFeature(id, ['analyzing'], 'failed', 'system', {
         error: `could not start the analysis: ${(e as Error).message}`,
