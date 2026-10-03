@@ -73,7 +73,10 @@ routes it through react-router, so the open terminal and scroll position survive
 Otherwise `clients.openWindow(url)`. Only same-origin paths are followed. The deep
 link **`/?task=<id>`** is new and general: any page with `?task=` opens that task's
 panel, then the parameter is dropped (`replace`), so Back and reload do not reopen
-it.
+it. A short id (a unique prefix, ≥4 characters) resolves by the Board's find-by-id
+rules (`web/src/taskId.ts`); it waits for the first task list to load, and an id
+that resolves to nothing is passed through unchanged, so a full id whose task has
+not arrived yet still opens when it does.
 
 ## The service worker
 

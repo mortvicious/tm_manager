@@ -30,6 +30,7 @@ import { liveReviewRun } from '../components/RunKind.tsx';
 import { FullSheet, Sheet } from '../components/Sheet.tsx';
 import { StatusBadge } from '../components/StatusBadge.tsx';
 import { DragGhost, useTaskDrag, type DropZone } from '../components/TaskDrag.tsx';
+import { TaskIdFinder } from '../components/TaskIdFinder.tsx';
 import { TaskRow } from '../components/TaskRow.tsx';
 import { TimeAgo, isNew, useNow } from '../components/TimeAgo.tsx';
 
@@ -1138,6 +1139,14 @@ export function BoardPage({
           {filtersOpen && (
             <Sheet label="Filters" title="Filters & view" onClose={() => setFiltersOpen(false)}>
               <div className="sheet-fields">
+                <TaskIdFinder
+                  tasks={tasks}
+                  inline
+                  onOpenTask={(id) => {
+                    setFiltersOpen(false);
+                    onOpenTask(id);
+                  }}
+                />
                 {filterSelects}
                 {glass && sortSelect}
                 <div className="sheet-field-row">
@@ -1182,6 +1191,7 @@ export function BoardPage({
           <div className="board-bar">
             {filterSelects}
             {sortSelect}
+            <TaskIdFinder tasks={tasks} onOpenTask={onOpenTask} />
           </div>
         </>
       )}

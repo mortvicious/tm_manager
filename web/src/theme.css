@@ -1910,6 +1910,93 @@ button.badge.badge-link:hover {
   font-size: var(--tm-text-sm);
 }
 
+/* find a task by id (TaskIdFinder): the bar's last item, pushed right; the
+   outcome drops under it on desktop and sits in flow in the phone sheet */
+.id-find {
+  position: relative;
+  margin-left: auto;
+}
+
+.id-find .field {
+  width: 180px;
+  font-size: var(--tm-text-sm);
+}
+
+.id-find.inline {
+  margin-left: 0;
+}
+
+.id-find.inline .field {
+  width: 100%;
+  font-size: var(--tm-text-input);
+}
+
+.id-find-out {
+  position: absolute;
+  top: calc(100% + var(--tm-space-2));
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  width: 380px;
+  max-width: calc(100vw - var(--tm-sidebar-w) - var(--tm-space-5));
+  padding: var(--tm-space-2);
+  font-size: var(--tm-text-sm);
+  background: var(--tm-bg-raised);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-lg);
+  box-shadow: var(--tm-shadow-lg);
+}
+
+.id-find.inline .id-find-out {
+  position: static;
+  width: auto;
+  max-width: none;
+  margin-top: var(--tm-space-2);
+  box-shadow: none;
+  background: var(--tm-bg-inset);
+}
+
+.id-find-out > span {
+  padding: var(--tm-space-1) var(--tm-space-2);
+}
+
+.id-find-hit {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  min-width: 0;
+  padding: var(--tm-space-1) var(--tm-space-2);
+  border: none;
+  border-radius: var(--tm-radius-md);
+  background: transparent;
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.id-find.inline .id-find-hit {
+  min-height: var(--tm-tap-dense);
+}
+
+.id-find-hit:hover,
+.id-find-hit:focus-visible {
+  background: var(--tm-bg-overlay);
+}
+
+.id-find-hit .mono {
+  flex: none;
+  color: var(--tm-accent);
+}
+
+.id-find-hit .title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* row age — right-aligned before the quick actions so ages line up as a column */
 .task-row .age {
   flex: none;
@@ -1980,6 +2067,20 @@ button.badge.badge-link:hover {
   gap: var(--tm-space-3);
   padding: var(--tm-space-4) var(--tm-space-5);
   border-bottom: 1px solid var(--tm-border);
+}
+
+/* the short id: a click copies the full one */
+.so-id {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--tm-text-muted);
+  font-size: inherit;
+  cursor: copy;
+}
+
+.so-id:hover {
+  color: var(--tm-text);
 }
 
 .slideover-body {

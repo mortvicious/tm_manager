@@ -258,6 +258,12 @@ New button: `[Filters · n] [sort ▾] [+ New]`. That was about 340px of screen,
   them are a `full | essentials` view toggle and Reset/Done. One fragment feeds
   both layouts, so a new filter cannot be added to one and forgotten in the
   other.
+- **Find by id** (`TaskIdFinder`) heads the Filters sheet, full width with the
+  outcome (too short / no match / the candidates of an ambiguous prefix) in
+  flow under the field; desktop puts it at the right end of the bar with the
+  outcome in a popover. A hit closes the sheet and opens the task panel. It is
+  not in `filterSelects` because it filters nothing: it ignores every filter
+  (`docs/handbook.md` § Finding a task by id).
 - **Sort** stays a native select in the toolbar. The OS picker is the dropdown.
   In Glass it moves into the Filters sheet, under group-by, and the toolbar is
   Filters and New only (`docs/glass.md` § What Glass changes).

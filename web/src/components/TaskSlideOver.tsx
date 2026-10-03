@@ -195,6 +195,14 @@ export function TaskSlideOver({
   const [category, setCategory] = useState<string>('');
   const [groupName, setGroupName] = useState<string>('');
   const [groupColor, setGroupColor] = useState<string>('');
+  // the head's short id copies the full one ("copied" for a moment) — the
+  // value the Board's find-by-id field and Telegram's /task take
+  const [idCopied, setIdCopied] = useState(false);
+  useEffect(() => {
+    if (!idCopied) return;
+    const t = setTimeout(() => setIdCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [idCopied]);
   const [review, setReview] = useState<ReviewChoice>('default');
   const [reviewModel, setReviewModel] = useState<string>('');
   const [reviewEffort, setReviewEffort] = useState<string>('');
@@ -615,7 +623,19 @@ export function TaskSlideOver({
   // the head is the drag handle on a phone; its close button animates the sheet out first
   const head = (close: () => void) => (
     <div className="slideover-head">
-      <span className="mono muted">{task.id.slice(0, 8)}</span>
+      <button
+        type="button"
+        className="so-id mono muted"
+        title={`${task.id} — click to copy`}
+        onClick={() =>
+          navigator.clipboard
+            ?.writeText(task.id)
+            .then(() => setIdCopied(true))
+            .catch(() => {})
+        }
+      >
+        {idCopied ? 'copied' : task.id.slice(0, 8)}
+      </button>
       <StatusBadge
         status={task.status}
         attention={latestRun?.needsAttention && task.status === 'running'}

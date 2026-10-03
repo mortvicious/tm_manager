@@ -157,6 +157,12 @@ Three ways to see less: the **sort** selector (last touched / newest filed / old
 
 Every task can carry a free-text **category** ("UI", "Estimator", "Auth"…). You set one in the create form or the task panel; **agents assign them too** — the Analyze run labels each task by domain, and workers can categorize tasks they file. The Board header filters by repo, source (human / agent / sentry / analyze / feature), category and group, and groups by status, category, repo, or task group.
 
+## Finding a task by id
+
+Every task has an id (a UUID). The task panel shows its first 8 characters next to the status — **click it to copy the full id** — and the same id is what commits carry as their `Task:` trailer and what Telegram's `/task <id>` takes.
+
+To jump to a task from an id, type it into the **Task id…** field at the end of the Board bar (on a phone: the top of the **Filters** sheet) and press Enter. It takes the full id or any unique prefix of **at least 4 characters**, case-insensitive; a leading `#`, a pasted `Task: ` trailer and a trailing `…` are ignored. A match opens the task panel whatever the board's filters hide. A prefix that several tasks share lists them (newest first, up to 6) to pick from; one that matches nothing says so. The rules are the same as Telegram's, so a short id copied from the phone works here. The `?task=<id>` deep link accepts a short id the same way.
+
 ## Task groups
 
 Split a task and the pieces stay together: a task plus everything split out of it (at any depth) is a **group**. Every task knows its root and its path to it, so the Board draws a group as one bordered block — its name, how many of its tasks are in that section, `of N` when the rest are elsewhere — and clicking that header filters the whole board to the group. `group: task group` gives each tree its own section instead.
