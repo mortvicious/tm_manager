@@ -121,12 +121,16 @@ Glass), and the `::view-transition` duration.
   phone Board gets a title (`.page-title.glass-only` in `Board.tsx`), which
   Classic hides.
 - **Overlays.**
-  - The More sheet floats inside the screen's corners, with a grabber and
-    Control Center tiles for the nav.
+  - **Every sheet is Liquid Glass** (`--tm-glass-thick` + rim + blur): the
+    menus, Filters, the question, New task and the task panel on a phone
+    (`docs/mobile.md` § Sheets). A content-height sheet floats inside the
+    screen's corners (its position beats the library's inline styles with
+    `!important`); a tall one is a card from the bottom edge. The More sheet
+    has a grabber and Control Center tiles for the nav.
   - The top bar lets clicks, the wheel and `.main`'s scrollbar through its
     gaps (`pointer-events`), because it spans the page's top edge.
-  - The task panel is a floating pane on desktop and a card sheet on a phone
-    (8px below the status bar, dimmed page behind).
+  - The task panel is a floating pane on desktop and a tall glass sheet on a
+    phone.
   - The question modal is an alert that pops in from slightly too big.
     Popovers grow out of their button.
   - The terminal drawer rises like a sheet.
@@ -154,6 +158,9 @@ delays.
   curve and the base rule carries the spring.
 - The tab lens, the switch knob and the section carets ride the spring.
 - Sheets, the task panel and the question modal animate both in and out.
+  A SHEET's motion is react-modal-sheet's own tween (`--tm-sheet-dur` 560ms,
+  `--tm-sheet-ease` = the cubic fallback of `--tm-ease-smooth`, since motion
+  cannot take `linear()`), never a CSS animation on the container.
 
 **Exit animations** are the one non-obvious part. Every overlay is mounted
 conditionally by its parent (`{open && <Sheet/>}`), so it can't delay its own
@@ -171,8 +178,12 @@ React 19 cleanup runs before React removes the DOM:
   double-invoke never ghosts.
 - `.tm-exit *` switches off every other animation, so nothing replays inside a
   ghost.
-- Used by `Sheet`, `FullSheet`, `TaskSlideOver` and `QuestionModal`. The
-  terminal drawer has no exit, since its canvas would come out blank.
+- Used by `Sheet` (so `FullSheet`, the phone task panel and the phone
+  question too), the desktop `TaskSlideOver` and the desktop `QuestionModal`.
+  A sheet ghosts only when its parent unmounts it while OPEN: a backdrop tap,
+  drag or Escape is animated out by the library before `onClose`, and then
+  there is nothing left to replay. The terminal drawer has no exit, since its
+  canvas would come out blank.
 
 Reduce Motion: the global rule in `theme.css` already collapses every duration,
 and `exitGhost` doesn't ghost at all. Reduce Transparency (where the browser
@@ -194,8 +205,9 @@ containing block of its `position: fixed` children. That gives four rules:
   portal host). The header paints over the page using grid-item z-index (26,
   above the drawer's 25, as the emulator was before), which creates no
   containing block.
-- **`.more-sheet` is blurred only while it holds no `.cmd-pop`**
-  (`:not(:has(.cmd-pop))`). The phone's commands popover is fixed inside it.
+- **Every `.more-sheet` is blurred.** Nothing fixed lives inside a sheet any
+  more: the phone's repo commands open a sheet of their own instead of the
+  fixed `.cmd-pop` that used to need the `:not(:has(.cmd-pop))` exception.
 - **Cards don't blur.** Nothing is behind them but the wallpaper, and a blur of
   a soft gradient is that gradient. Only things that float over content get one
   (bars, the tab bar, sheets, the panel, the modal, popovers, the phone's sticky

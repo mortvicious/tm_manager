@@ -80,6 +80,10 @@
   --tm-dur-fast: 120ms;
   --tm-dur-base: 200ms;
   --tm-dur-slow: 380ms;
+  /* the bottom sheet's open/close tween (components/Sheet.tsx reads these; the
+     ease must be a cubic-bezier, which is what the sheet library animates with) */
+  --tm-sheet-dur: var(--tm-dur-base);
+  --tm-sheet-ease: var(--tm-ease-out);
 
   /* ---- app layout ---- */
   --tm-sidebar-w: 212px;
@@ -218,6 +222,10 @@
   --tm-dur-exit: 260ms;
   --tm-dur-page: 440ms;
   --tm-dur-sheet: 560ms;
+  /* the sheet library needs a cubic; the cubic fallback of --tm-ease-smooth,
+     which @supports below replaces with linear() */
+  --tm-sheet-dur: var(--tm-dur-sheet);
+  --tm-sheet-ease: cubic-bezier(0.32, 0.72, 0, 1);
   --tm-dur-spring: 620ms;
   --tm-press-scale: 0.95;
   --tm-blur: 24px;
@@ -3284,45 +3292,61 @@ tr.repo-open > td {
   background: var(--tm-bg-overlay);
 }
 
-/* ---- the More sheet: the rest of the nav + every header control ---- */
+/* ---- the bottom sheet (components/Sheet.tsx, react-modal-sheet) ----
+   The library owns the box: position, height cap (`100% - top inset - 34px`),
+   the drag transform and the z-index all arrive as inline styles on its
+   elements. These rules are only the look, plus the padding it leaves to us. */
 
-.sheet-overlay {
-  z-index: 34;
+/* the backdrop wears `.overlay`'s scrim; its fade is the library's opacity,
+   which follows the drag, so the CSS fade-in must not fight it */
+.sheet-root .overlay.sheet-overlay {
+  animation: none;
 }
 
 .more-sheet {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 35;
-  display: flex;
-  flex-direction: column;
-  gap: var(--tm-space-3);
-  max-height: 84svh;
-  overflow: auto;
-  padding: var(--tm-space-2) calc(var(--tm-space-4) + env(safe-area-inset-right, 0px))
-    calc(env(safe-area-inset-bottom, 0px) + var(--tm-space-4)) calc(var(--tm-space-4) + env(safe-area-inset-left, 0px));
   background: var(--tm-bg-raised);
   border-top: 1px solid var(--tm-border);
   border-radius: var(--tm-radius-lg) var(--tm-radius-lg) 0 0;
   box-shadow: var(--tm-shadow-lg);
-  animation: sheet-up var(--tm-dur-base) var(--tm-ease-out);
 }
 
-@keyframes sheet-up {
-  from {
-    transform: translateY(100%);
-  }
-  to {
-    transform: none;
-  }
+
+/* the drag handle: grip + title, or a component's own head */
+.sheet-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-3);
+  padding: var(--tm-space-2) calc(var(--tm-space-4) + env(safe-area-inset-right, 0px)) 0
+    calc(var(--tm-space-4) + env(safe-area-inset-left, 0px));
+}
+
+/* a component's own head that spans edge to edge with a rule under it (the
+   task panel, the agent's question): the head pays its own padding */
+.sheet-flush .sheet-head {
+  gap: 0;
+  padding: var(--tm-space-2) 0 0;
+}
+
+.sheet-flush .qmodal-head {
+  padding: var(--tm-space-2) calc(var(--tm-space-4) + env(safe-area-inset-right, 0px)) var(--tm-space-3)
+    calc(var(--tm-space-4) + env(safe-area-inset-left, 0px));
+}
+
+/* Inside the library's scroller (which carries the keyboard inset as an inline
+   padding-bottom, so ours lives one box in). */
+.sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-3);
+  padding: var(--tm-space-3) calc(var(--tm-space-4) + env(safe-area-inset-right, 0px))
+    calc(env(safe-area-inset-bottom, 0px) + var(--tm-space-4)) calc(var(--tm-space-4) + env(safe-area-inset-left, 0px));
 }
 
 .sheet-grip {
+  flex: none;
   width: 36px;
   height: 4px;
-  margin: var(--tm-space-1) auto var(--tm-space-1);
+  margin: var(--tm-space-1) auto 0;
   border-radius: var(--tm-radius-pill);
   background: var(--tm-border-strong);
 }
@@ -3363,7 +3387,8 @@ tr.repo-open > td {
 
 /* ---- shared sheet parts (components/Sheet.tsx, docs/mobile.md § Sheets) ---- */
 
-/* the portal wrapper: no box of its own, so it never becomes a grid item of `.app` */
+/* the portal wrapper (and the library's mount point): no box of its own, so it
+   never becomes a grid item of `.app` */
 .sheet-root {
   display: contents;
 }
@@ -3490,25 +3515,19 @@ tr.repo-open > td {
   min-height: var(--tm-tap);
 }
 
-/* a whole-screen form (New task): above the slide-over, under sheets and the question modal */
+/* a full-height sheet for a long form (New task) */
 .full-sheet {
-  position: fixed;
-  inset: 0;
-  z-index: 33;
-  display: flex;
-  flex-direction: column;
   background: var(--tm-bg);
-  animation: sheet-up var(--tm-dur-base) var(--tm-ease-out);
 }
 
+/* the sheet's head already pays the side insets */
 .full-sheet-head {
   display: flex;
   align-items: center;
   gap: var(--tm-space-2);
-  padding: calc(var(--tm-space-2) + env(safe-area-inset-top, 0px)) calc(var(--tm-space-2) + env(safe-area-inset-right, 0px))
-    var(--tm-space-2) calc(var(--tm-space-4) + env(safe-area-inset-left, 0px));
+  margin: 0 calc(-1 * var(--tm-space-2)) 0 0;
+  padding-bottom: var(--tm-space-2);
   border-bottom: 1px solid var(--tm-border);
-  background: var(--tm-bg-raised);
 }
 
 .full-sheet-title {
@@ -3525,10 +3544,6 @@ tr.repo-open > td {
 }
 
 .full-sheet-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
   padding: var(--tm-space-3) calc(var(--tm-space-3) + env(safe-area-inset-right, 0px))
     calc(var(--tm-space-6) + env(safe-area-inset-bottom, 0px)) calc(var(--tm-space-3) + env(safe-area-inset-left, 0px));
 }
@@ -3840,23 +3855,20 @@ tr.repo-open > td {
   min-width: 0;
 }
 
-/* ---- slide-over: a sheet, not a side panel ---- */
+/* ---- task panel: a full-height sheet, not a side panel (TaskSlideOver) ----
+   Its head + action bar are the sheet's drag handle; `.slideover-body` is the
+   box inside the library's scroller, so it stops scrolling on its own. */
 
-.app.mobile .slideover {
-  width: auto;
-  left: 0;
-  right: 0;
-  top: 0;
-  border-left: 0;
-}
 
-/* The sheet starts at y=0, so it owns the status-bar inset the header used to. */
 .app.mobile .slideover-head {
   flex-wrap: wrap;
   row-gap: var(--tm-space-1);
-  padding: calc(var(--tm-space-3) + env(safe-area-inset-top, 0px))
-    calc(var(--tm-space-4) + env(safe-area-inset-right, 0px)) var(--tm-space-3)
+  padding: var(--tm-space-2) calc(var(--tm-space-4) + env(safe-area-inset-right, 0px)) var(--tm-space-3)
     calc(var(--tm-space-4) + env(safe-area-inset-left, 0px));
+}
+
+.slideover-sheet .slideover-body {
+  overflow: visible;
 }
 
 .app.mobile .slideover-body {
@@ -4407,17 +4419,11 @@ tr.repo-open > td {
   justify-content: center;
 }
 
-/* ---- repo commands popover ---- */
+/* ---- repo commands: a sheet on a phone, not the popover (Commands.tsx) ---- */
 
-.app.mobile .cmd-pop {
-  position: fixed;
-  left: var(--tm-space-2);
-  right: var(--tm-space-2);
-  top: auto;
-  bottom: calc(var(--tm-tabbar-clear) + var(--tm-space-2));
-  width: auto;
-  max-width: none;
-  max-height: 62svh;
+/* the rows carry their own side padding; line them up with the sheet's edge */
+.cmd-sheet {
+  margin: 0 calc(-1 * var(--tm-space-2));
 }
 
 .app.mobile .cmd-form > .field:nth-of-type(1),

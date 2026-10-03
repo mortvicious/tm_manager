@@ -10,8 +10,8 @@
    - backdrop-filter, filter and transform make an element the containing
      block of its position:fixed children. `.main` holds the slide-over, the
      drawer and the question modal, and `.header` holds the emulator, so
-     neither gets a blur of its own. `.more-sheet` holds the phone's commands
-     popover, so it is blurred only while no popover is open in it.
+     neither gets a blur of its own. A sheet (`.more-sheet`) may: nothing
+     fixed lives inside one (the phone's commands open a sheet of their own).
    - Exit animations replay on a clone (`.tm-exit`, src/motion.ts). An
      overlay's entry animation is therefore its only animation, and the
      clone switches every other one off.
@@ -782,30 +782,47 @@
   animation: tm-fade-in var(--tm-dur-sheet) var(--tm-ease-smooth);
 }
 
-/* the bottom sheet floats inside the screen's own corners (iOS 26) */
+/* The bottom sheet (components/Sheet.tsx): EVERY sheet is Liquid Glass — the
+   menus, the task panel, New task, the agent's question. react-modal-sheet positions it
+   with inline styles and slides it with an inline transform, so the float
+   below has to win over those with !important; the motion is the library's
+   (its tween reads --tm-sheet-dur/--tm-sheet-ease), never a CSS animation. */
 [data-design='glass'] .more-sheet {
-  left: calc(var(--tm-space-2) + env(safe-area-inset-left, 0px));
-  right: calc(var(--tm-space-2) + env(safe-area-inset-right, 0px));
-  bottom: var(--tm-space-2);
-  max-height: calc(100svh - var(--tm-space-8));
-  padding: var(--tm-space-2) var(--tm-space-4)
-    max(var(--tm-space-4), calc(env(safe-area-inset-bottom, 0px) - var(--tm-space-2)));
   border: 1px solid var(--tm-glass-rim);
-  border-radius: var(--tm-radius-xl);
   background: var(--tm-glass-thick);
-  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-shadow-lg);
-  animation: tm-sheet-in var(--tm-dur-sheet) var(--tm-ease-smooth);
-}
-
-[data-design='glass'] .more-sheet:not(:has(.cmd-pop)) {
   -webkit-backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
   backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-shadow-lg);
+}
+
+/* a content-height sheet floats inside the screen's own corners (iOS 26) */
+[data-design='glass'] .more-sheet:not(.sheet-tall) {
+  left: calc(var(--tm-space-2) + env(safe-area-inset-left, 0px)) !important;
+  width: calc(100% - 2 * var(--tm-space-2) - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)) !important;
+  bottom: var(--tm-space-2) !important;
+  max-height: calc(100% - env(safe-area-inset-top, 0px) - 34px - var(--tm-space-2)) !important;
+  border-radius: var(--tm-radius-xl);
+}
+
+[data-design='glass'] .more-sheet:not(.sheet-tall, .sheet-flush) .sheet-head {
+  padding-left: var(--tm-space-4);
+  padding-right: var(--tm-space-4);
+}
+
+[data-design='glass'] .more-sheet:not(.sheet-tall) .sheet-body {
+  padding: var(--tm-space-3) var(--tm-space-4) max(var(--tm-space-4), calc(env(safe-area-inset-bottom, 0px) - var(--tm-space-2)));
+}
+
+/* a full-height one is a card from the bottom edge, like the task panel was */
+[data-design='glass'] .more-sheet.sheet-tall {
+  border-width: 1px 0 0;
+  border-radius: var(--tm-radius-lg) var(--tm-radius-lg) 0 0;
 }
 
 [data-design='glass'] .sheet-grip {
   width: 36px;
   height: 5px;
-  margin: 2px auto var(--tm-space-1);
+  margin: 2px auto 0;
   background: var(--tm-text-faint);
   opacity: 0.55;
 }
@@ -870,13 +887,6 @@
   border-top: 0.5px solid var(--tm-border);
 }
 
-/* New task: a whole-screen form on the wallpaper */
-[data-design='glass'] .full-sheet {
-  background: var(--tm-wallpaper);
-  background-color: var(--tm-bg);
-  animation: tm-sheet-in var(--tm-dur-sheet) var(--tm-ease-smooth);
-}
-
 [data-design='glass'] .full-sheet-head {
   border-bottom: 0.5px solid var(--tm-border);
   background: transparent;
@@ -908,21 +918,6 @@
   background: transparent;
 }
 
-[data-design='glass'] .app.mobile .slideover {
-  top: calc(env(safe-area-inset-top, 0px) + var(--tm-space-2));
-  right: 0;
-  bottom: 0;
-  left: 0;
-  border-width: 1px 0 0;
-  border-radius: var(--tm-radius-lg) var(--tm-radius-lg) 0 0;
-  animation: tm-sheet-in var(--tm-dur-sheet) var(--tm-ease-smooth);
-}
-
-/* the card sheet starts below the status bar, so its head no longer pays that inset */
-[data-design='glass'] .app.mobile .slideover-head {
-  padding-top: var(--tm-space-3);
-}
-
 [data-design='glass'] .app.mobile .slideover-body > .so-save {
   border-top: 0.5px solid var(--tm-border);
   background: var(--tm-glass-bar);
@@ -952,10 +947,6 @@
   box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-shadow-lg);
   transform-origin: top;
   animation: tm-pop-in var(--tm-dur-spring) var(--tm-ease-spring);
-}
-
-[data-design='glass'] .app.mobile .cmd-pop {
-  transform-origin: bottom;
 }
 
 /* the terminal drawer rises like a sheet; it stays a terminal inside */
@@ -1015,13 +1006,12 @@
 }
 
 [data-design='glass'] .tm-exit.overlay,
-[data-design='glass'] .tm-exit > .overlay {
+[data-design='glass'] .tm-exit > .overlay,
+[data-design='glass'] .sheet-root.tm-exit .sheet-overlay {
   animation: tm-fade-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
 }
 
-[data-design='glass'] .sheet-root.tm-exit > .more-sheet,
-[data-design='glass'] .full-sheet.tm-exit,
-[data-design='glass'] .app.mobile .slideover.tm-exit {
+[data-design='glass'] .sheet-root.tm-exit .more-sheet {
   animation: tm-sheet-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
 }
 

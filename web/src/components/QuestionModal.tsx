@@ -4,6 +4,8 @@ import { api } from '../api.ts';
 import { exitGhost } from '../motion.ts';
 import { useApp } from '../state.tsx';
 import { IconX } from './Icons.tsx';
+import { useIsMobile } from './Layout.tsx';
+import { Sheet } from './Sheet.tsx';
 
 // docs/questions.md — the browser half. A worker's AskUserQuestion pops up
 // here on whatever page is open: the task's title, each question with its
@@ -142,6 +144,7 @@ export function QuestionForm({ question, onDone }: { question: Question; onDone?
 
 export function QuestionModal() {
   const { questions, tasks, questionNudge } = useApp();
+  const mobile = useIsMobile();
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   // the header chip: reopen whatever was dismissed
   useEffect(() => {
@@ -171,21 +174,38 @@ export function QuestionModal() {
   if (!current) return null;
   const task = tasks.find((t) => t.id === current.taskId);
   const close = () => setDismissed((d) => new Set(d).add(current.id));
+  const head = (dismiss: () => void) => (
+    <div className="qmodal-head">
+      <span className="badge s-attention">
+        <span className="dot" /> asks you
+      </span>
+      <span className="qmodal-title">{task?.title ?? `task ${current.taskId.slice(0, 8)}`}</span>
+      {pending.length > 1 && <span className="chip">{pending.length} waiting</span>}
+      <span className="spacer" style={{ flex: 1 }} />
+      <button className="btn ghost" onClick={dismiss} title="Dismiss for now (the ❓ chip in the header brings it back)">
+        <IconX />
+      </button>
+    </div>
+  );
+  // a phone: a sheet above every other sheet; swiping it down is "not now"
+  if (mobile)
+    return (
+      <Sheet
+        key={current.id}
+        label="An agent is asking you"
+        className="qsheet sheet-flush"
+        zIndex={41}
+        onClose={close}
+        head={head}
+      >
+        <QuestionForm question={current} />
+      </Sheet>
+    );
   return (
     <>
       <div className="overlay qmodal-overlay" ref={exitGhost} onClick={close} />
       <div className="qmodal" ref={exitGhost} role="dialog" aria-label="An agent is asking you">
-        <div className="qmodal-head">
-          <span className="badge s-attention">
-            <span className="dot" /> asks you
-          </span>
-          <span className="qmodal-title">{task?.title ?? `task ${current.taskId.slice(0, 8)}`}</span>
-          {pending.length > 1 && <span className="chip">{pending.length} waiting</span>}
-          <span className="spacer" style={{ flex: 1 }} />
-          <button className="btn ghost" onClick={close} title="Dismiss for now (the ❓ chip in the header brings it back)">
-            <IconX />
-          </button>
-        </div>
+        {head(close)}
         <div className="qmodal-body">
           <QuestionForm question={current} />
         </div>

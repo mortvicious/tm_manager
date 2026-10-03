@@ -150,8 +150,8 @@ not a new set of sizes.
   `.task-row` (the task panel's file list) still wraps, with `.task-main` at
   `flex: 1 1 60%`. Child indent halves to 12px per level, marker included, or
   the `└` hangs off its own child.
-- **The slide-over is a sheet**: full width, `top: 0`, and it owns the
-  status-bar inset the header used to. Its layout is § Task panel.
+- **The slide-over is a sheet**: a full-height `<Sheet tall>` (§ Sheets) that
+  drags down to close. Its layout is § Task panel.
 - **Safe areas.** `viewport-fit=cover` in `index.html` makes
   `env(safe-area-inset-*)` non-zero; the header, `.main`, the tab bar, the sheet
   and the slide-over each pay their own side back, so landscape on a notched
@@ -175,27 +175,77 @@ healthy. It now says so on boot and answers `/` with the two commands that fix i
 
 ## Sheets
 
-`components/Sheet.tsx` is the one bottom sheet. The More menu, the board's
-filters, a row's actions and the task panel's overflow all use it, so Escape,
-the overlay, the grip and the body scroll lock behave the same everywhere.
+**On a phone every overlay is a sheet.** `components/Sheet.tsx` is the one
+bottom sheet, built on **react-modal-sheet 5.6.0** + **motion 12.42.2** (pinned
+exactly, the same pair neko-frontend uses). The More menu, the board's filters,
+a row's actions, the task panel and its `⋯` overflow, New task, the agent's
+question, and both repo-command menus all open one. Desktop keeps its side
+panel, centred question modal and popovers; the branch is `useIsMobile()` in each
+component.
 
+- **Drag from anywhere while scrolled to the top.** The library watches its OWN
+  scroller (`.react-modal-sheet-content-scroller`): at `scrollTop` 0 a downward
+  swipe anywhere on the sheet drags it, and below the top the same swipe scrolls
+  the content. The header (grip + title, or a component's own head) drags
+  always. Released past 60% of its height or flicked (>1200px/s), it closes.
+  So a sheet's content must live in THAT scroller, never in a nested one of
+  its own (the library cannot see a nested `scrollTop`; that is why
+  `.slideover-body` turns `overflow: visible` inside the panel sheet and the
+  body box is `.sheet-body`, not a scroller).
+  - On iOS the library's touch lock (`preventScrollMobileSafari`, picked by
+    `navigator.platform`) cancels the native pan at the top, which is what lets
+    a drag start on any child, a textarea included. Chromium with a non-iOS
+    platform (Android) has no such lock and decides by `touch-action`: there
+    a drag starting on a child element can be taken as a scroll instead. The
+    header always works.
+  - While dragging is on, a horizontal scroll strip INSIDE the content cannot
+    pan sideways (framer's `pan-x` meets the scroller's `pan-down`: none). The
+    task panel's chip strip lives in its head, where it can. Below the top the
+    content drag is off and sideways scrolling works.
+- **Mounted means open.** Parents still render `{open && <Sheet …/>}`. The sheet
+  mounts closed and opens on the next commit (so there is a state change to
+  animate from). Every way out it owns — backdrop tap, drag, Escape, a head close
+  button via `head={(close) => …}` — animates out FIRST and calls `onClose` only
+  when the library's `onCloseEnd` fires. A parent that does not unmount it then
+  would leave a closed sheet with nothing to reopen it, so 400ms later it opens
+  again. A parent that unmounts an open sheet itself (an action that closes and
+  acts) gets no library exit: Glass replays one with `exitGhost` on the wrapper,
+  skipped when the library already played its own; Classic just disappears.
+- **Escape closes the top sheet only** (a module-level stack): the task panel
+  and its `⋯` sheet are both open at once. The question sheet keeps its own
+  capture-phase Escape, which ignores typing in its fields.
 - **Portalled into `.app`, not `document.body`.** Every mobile rule is keyed off
-  `.app.mobile`: field sizes, tap targets, fonts. A sheet out on `body` would
-  lose all of them. The portal also escapes whatever declared it, so no
-  transformed or clipping ancestor can trap the `position: fixed` box.
-  `.sheet-root` is `display: contents`, so the wrapper never becomes a grid item
-  of `.app`.
+  `.app.mobile`: field sizes, tap targets, fonts. `.sheet-root` (the portal
+  wrapper, `display: contents`) is the library's `mountPoint`. The library's root
+  is `position: fixed; inset: 0` with the z-index we pass: 35 for sheets, 41 for
+  the question (above the panel and every other sheet).
+- **The library owns the box, CSS owns the look.** It runs `unstyled`: position,
+  the height cap (`100% - top inset - 34px`), the drag transform and the backdrop
+  opacity (which follows the drag) are its inline styles; `.more-sheet`,
+  `.sheet-head`, `.sheet-body`, `.sheet-grip` and the backdrop's `.overlay` scrim
+  are ours, from `--tm-*` tokens. No CSS animation may touch the container — it
+  would fight the inline transform. The tween is the token pair
+  `--tm-sheet-dur`/`--tm-sheet-ease` (Classic 200ms ease-out, Glass 560ms
+  smooth), read once per sheet; the ease must be a `cubic-bezier`, anything
+  else falls back to the library's.
+- **Sizes.** Default hugs its content (`detent="content"`). `tall` is full height
+  (`detent="default"`): New task (`FullSheet`) and the task panel.
+  `sheet-flush` is for a component's own edge-to-edge head with a rule under it
+  (the task panel, the question): the head then pays its own padding.
+- **Scroll lock and keyboard are the library's.** It locks the page while any
+  sheet is open (counted, so stacked sheets are fine) and pads its scroller by
+  the keyboard inset; that inline `padding-bottom` is why our safe-area padding
+  lives one box in, on `.sheet-body`.
 - **Clicks stop at the sheet.** React bubbles synthetic events up the COMPONENT
   tree even through a portal. A row's sheet is declared inside that row, and a
-  tap on "Run now" would otherwise also open the task panel.
+  tap on "Run now" would otherwise also open the task panel. The repo-command
+  menus skip their outside-`pointerdown` close on a phone for the same reason:
+  the sheet is outside their DOM.
 - **`SheetAction` prints its reason.** Each action is a 44px row with a label and
   a hint line. The hint is what a desktop keeps in a hover tooltip, and a phone
   cannot hover. It matters most for a disabled action, whose "why not?" used to
   exist only in that tooltip. Disabled dims the label and icon, never the hint.
-- **`FullSheet`** is the whole-screen variant, with a header, a close button and
-  its own scroller, for a form too long for a bottom sheet (New task). It sits at
-  z-index 33: above the task panel (31) and the phone terminal (32), under the
-  bottom sheets (35) and the question modal (40).
+- **Glass:** every sheet is Liquid Glass (`docs/glass.md` § Materials).
 
 ## Board
 
@@ -222,8 +272,9 @@ New button: `[Filters · n] [sort ▾] [+ New]`. That was about 340px of screen,
   (`filterRepo`/`filterCat`/`filterGroup`/`filterDispatch` in `BoardPage`)
   rather than silently emptying the board behind a hidden or blank select. The
   checks wait for data, because an empty list at boot means "not loaded yet".
-- **New task** is a `FullSheet` holding the unchanged form. It no longer pushes
-  every list down by a screen and a half. Closing it keeps what was typed.
+- **New task** is a `FullSheet` (a full-height sheet) holding the unchanged form.
+  It no longer pushes every list down by a screen and a half. Closing it keeps
+  what was typed.
 
 **Rows** (`TaskRow`, `.task-row.m`: its own JSX branch, because the actions
 differ, not only their layout). A 3×3 grid:
@@ -268,9 +319,12 @@ mode still wraps, for the swatches.
 
 The desktop panel draws its actions as one wrapping row of up to 17 buttons,
 with Delete and Cancel beside the safe ones, after roughly 800px of form. On a
-phone:
+phone the panel is a full-height sheet (§ Sheets): the same `head`, action bar
+and body JSX as the desktop panel, rearranged — head + bar are the sheet's drag
+handle, the body is its content. Drag it down (from anywhere while at the top)
+to close; × animates out the same way.
 
-- **A pinned header**: status · title · close, with the chips on a second line
+- **A pinned header**: grip, then status · title · close, with the chips on a second line
   that scrolls sideways. The chip line is dropped when it would only say
   "manual".
 - **A pinned action bar** under it holds up to three actions, then `⋯`. They come
@@ -380,6 +434,29 @@ compact/breakpoint/run change. The reasoning is in `docs/decisions.md`,
   longer to ingest could still see the Enter arrive early.
 
 ## Verification
+
+**Sheets on react-modal-sheet (2026-10-03)**: Playwright (`playwright-core`
+1.63.0, cached chromium-1243) at 393×852, touch, iPhone UA and
+`navigator.platform = 'iPhone'` (without it the library takes its non-iOS
+path), against the live API through Vite; real touches via CDP
+`Input.dispatchTouchEvent`. Both designs, dark:
+
+- More sheet closed by a content drag (from 60% down its height) and by a grip
+  drag; Filters by a backdrop tap and by Escape; New task by its ×; the agent's
+  question (a real pending one) by a swipe on its head.
+- Task panel (scroller 4616px tall): scrolled to 250, a downward swipe scrolled
+  it (250 → 115) and did not move the sheet; a swipe up scrolled; back at the
+  top, a 150px drag from y 200, 400 (a section) and 600 (a textarea) moved the
+  sheet 150px with it; a full swipe closed it. `⋯` stacked a second sheet and one
+  Escape closed only that one.
+- Repo menu (Repos) and the commands launcher (inside More) open as sheets, no
+  `.cmd-pop`; a tap inside does not close them; Escape closes only the top.
+- Glass: `backdrop-filter: blur(40px) saturate(1.8)` on every sheet (content,
+  tall, panel, question); Classic: opaque `--tm-bg-raised`, no blur. Container
+  transform `none` at rest, sheets inside `.app`.
+- Desktop at 1400: the task panel is still `.slideover`, no library sheet.
+- No page errors. `npm run typecheck`; `vite build` (the live `web/dist` was
+  rebuilt from HEAD afterwards, not shipped).
 
 **Board rework (2026-09-29)**, run in a real browser against the live API through
 Vite, with the app in same-origin iframes at 360, 390 and 430 CSS px:

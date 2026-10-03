@@ -612,73 +612,484 @@ export function TaskSlideOver({
     />
   );
 
-  return (
-    <>
-      <div className="overlay" ref={exitGhost} onClick={onClose} />
-      <div className="slideover" ref={exitGhost}>
-        <div className="slideover-head">
-          <span className="mono muted">{task.id.slice(0, 8)}</span>
-          <StatusBadge
-            status={task.status}
-            attention={latestRun?.needsAttention && task.status === 'running'}
-            question={!!pendingQuestion}
-            reviewState={task.reviewState}
-            onOpenReviewer={reviewerRun ? () => onOpenTerminal(reviewerRun.id) : undefined}
-          />
-          {/* phones: the title stays in view while the body scrolls under it */}
-          {mobile && <span className="so-title">{task.title}</span>}
-          {/* a phone gives the chips their own line only when they say more than "manual" */}
+  // the head is the drag handle on a phone; its close button animates the sheet out first
+  const head = (close: () => void) => (
+    <div className="slideover-head">
+      <span className="mono muted">{task.id.slice(0, 8)}</span>
+      <StatusBadge
+        status={task.status}
+        attention={latestRun?.needsAttention && task.status === 'running'}
+        question={!!pendingQuestion}
+        reviewState={task.reviewState}
+        onOpenReviewer={reviewerRun ? () => onOpenTerminal(reviewerRun.id) : undefined}
+      />
+      {/* phones: the title stays in view while the body scrolls under it */}
+      {mobile && <span className="so-title">{task.title}</span>}
+      {/* a phone gives the chips their own line only when they say more than "manual" */}
+      <span
+        className={`so-chips${
+          task.source === 'manual' && !task.category && groupTasks.length < 2 && !task.parentId && !task.createdByRun
+            ? ' plain'
+            : ''
+        }`}
+      >
+        <span className="chip">{task.source}</span>
+        {task.category && <span className="chip" style={{ color: 'var(--tm-accent)' }}>{task.category}</span>}
+        {groupTasks.length > 1 && (
           <span
-            className={`so-chips${
-              task.source === 'manual' && !task.category && groupTasks.length < 2 && !task.parentId && !task.createdByRun
-                ? ' plain'
-                : ''
-            }`}
+            className="chip group-chip"
+            style={groupTint}
+            title={`task group · ${groupTasks.length} tasks${isRoot ? ' · this is the group root' : ''}`}
           >
-            <span className="chip">{task.source}</span>
-            {task.category && <span className="chip" style={{ color: 'var(--tm-accent)' }}>{task.category}</span>}
-            {groupTasks.length > 1 && (
-              <span
-                className="chip group-chip"
-                style={groupTint}
-                title={`task group · ${groupTasks.length} tasks${isRoot ? ' · this is the group root' : ''}`}
-              >
-                {groupLabel(groupRoot, task.title)} · {groupTasks.length}
-              </span>
-            )}
-            {task.parentId && <span className="chip">subtask</span>}
-            {task.createdByRun && (
-              <span className="chip" title={`filed by agent run ${task.createdByRun.slice(0, 8)} (depth ${task.spawnDepth})`}>
-                agent d{task.spawnDepth}
-              </span>
-            )}
+            {groupLabel(groupRoot, task.title)} · {groupTasks.length}
           </span>
-          <span className="spacer" style={{ flex: 1 }} />
-          <button className="btn ghost" aria-label="Close" onClick={onClose}>
-            <IconX />
+        )}
+        {task.parentId && <span className="chip">subtask</span>}
+        {task.createdByRun && (
+          <span className="chip" title={`filed by agent run ${task.createdByRun.slice(0, 8)} (depth ${task.spawnDepth})`}>
+            agent d{task.spawnDepth}
+          </span>
+        )}
+      </span>
+      <span className="spacer" style={{ flex: 1 }} />
+      <button className="btn ghost" aria-label="Close" onClick={close}>
+        <IconX />
+      </button>
+    </div>
+  );
+
+  const actionBar = (
+    <div className="so-bar">
+      {bar.map((a, i) => (
+        <button
+          key={a.id}
+          className={`btn${i === 0 ? ' primary' : ''}`}
+          disabled={a.disabled}
+          onClick={a.onClick}
+        >
+          {a.icon}
+          {a.icon ? ' ' : ''}
+          {a.short ?? a.label}
+        </button>
+      ))}
+      <button className="btn so-more" aria-expanded={moreOpen} aria-label="More actions" onClick={() => setMoreOpen(true)}>
+        <IconMore />
+        {bar.length === 0 && ' Actions'}
+      </button>
+    </div>
+  );
+
+  const body = (
+    <>
+      <GroupPath task={task} tasks={tasks} onOpen={onOpenTask} />
+      {pendingQuestion && (
+        <div className="qpanel so-question">
+          <label className="label">The agent is asking you</label>
+          <QuestionForm question={pendingQuestion} />
+        </div>
+      )}
+      {/* phones: the run's numbers ride at the top, since the action row they sit in is gone */}
+      {mobile && latestRun && (
+        <div className="so-stats">
+          <RunStatsChips run={latestRun} />
+        </div>
+      )}
+      <div>
+        <label className="label">Title</label>
+        <input className="field" value={title} onChange={(e) => setTitle(e.target.value)} />
+      </div>
+      <div>
+        <label className="label">Description</label>
+        <textarea
+          className="field"
+          rows={6}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </div>
+      {mobile && (
+        <button
+          className="so-settings-toggle"
+          aria-expanded={settingsOpen}
+          onClick={() => setSettingsOpen((v) => !v)}
+        >
+          <span className={`caret ${settingsOpen ? '' : 'closed'}`}>
+            <IconChevron />
+          </span>
+          <span className="label">Settings</span>
+          <span className="so-settings-sum mono">
+            {[
+              repos.find((r) => r.id === repoId)?.name ?? 'no repo',
+              model || 'default model',
+              effort || 'default effort',
+            ].join(' · ')}
+          </span>
+        </button>
+      )}
+      {(!mobile || settingsOpen) && (
+        <div className="form-grid">
+          <div>
+            <label className="label">Repo</label>
+            <select className="field" value={repoId} onChange={(e) => setRepoId(e.target.value)}>
+              <option value="">— none —</option>
+              {repos.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                  {r.role ? ` (${r.role})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">Category</label>
+            <input
+              className="field"
+              list="tm-categories-drawer"
+              placeholder="UI, Estimator…"
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+            />
+            <datalist id="tm-categories-drawer">
+              {[...new Set(tasks.map((t) => t.category).filter(Boolean))].map((c) => (
+                <option key={c as string} value={c as string} />
+              ))}
+            </datalist>
+          </div>
+          <div className="wide">
+            <label className="label">Group</label>
+            <GroupPicker
+              tasks={tasks}
+              task={task}
+              repoId={task.repoId}
+              value={parentAfter}
+              valuePlace={parentPlace}
+              onChange={(id, place) => {
+                setParentId(id ?? '');
+                setParentPlace(place);
+              }}
+              repoName={(id) => repos.find((r) => r.id === id)?.name}
+            />
+            <div className="hint">
+              {!regroup
+                ? 'Or drag the row on the board: onto a task to group with it, above or below to reorder.'
+                : parentAfter
+                  ? 'Saving moves this task — and everything under it — to the end of that group.'
+                  : 'Saving takes this task out of its group. Its own subtasks come with it.'}
+            </div>
+          </div>
+          {rootAfter && groupTasks.length > 1 && (
+            <>
+              <div>
+                <label className="label">Group name</label>
+                <input
+                  className="field"
+                  placeholder={task.title}
+                  value={groupName}
+                  onChange={(e) => setGroupName(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="label">Group colour</label>
+                <select
+                  className="field group-swatch"
+                  style={groupColor === '' ? groupTint : ({ '--tm-group': `var(--tm-group-${groupColor})` } as CSSProperties)}
+                  value={groupColor}
+                  onChange={(e) => setGroupColor(e.target.value)}
+                >
+                  <option value="">auto (from group id)</option>
+                  {Array.from({ length: GROUP_COLOR_COUNT }, (_, i) => (
+                    <option key={i + 1} value={String(i + 1)}>
+                      colour {i + 1}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
+          <div className="wide">
+            <label className="label">Preset</label>
+            <PresetPicker
+              model={model}
+              effort={effort}
+              review={review}
+              onApply={(p) => {
+                setModel(p.model);
+                setEffort(p.effort);
+                setReview(reviewChoiceOf(p.review));
+              }}
+            />
+          </div>
+          <div>
+            <label className="label">Adversarial review</label>
+            <select className="field" value={review} onChange={(e) => setReview(e.target.value as ReviewChoice)}>
+              <option value="default">default (config)</option>
+              <option value="on">review this</option>
+              <option value="off">skip (small task)</option>
+            </select>
+          </div>
+          <div>
+            <label className="label">Auto-publish on end</label>
+            <select
+              className="field"
+              value={autoPublish ? 'on' : 'off'}
+              onChange={(e) => setAutoPublish(e.target.value === 'on')}
+            >
+              <option value="off">off — stop at review</option>
+              <option value="on">on — commit &amp; push at the end</option>
+            </select>
+          </div>
+          <div>
+            <label className="label">Updated</label>
+            <div className="mono muted" style={{ paddingTop: 6 }}>
+              {new Date(task.updatedAt).toLocaleString()}
+            </div>
+          </div>
+          <div>
+            <label className="label">Model</label>
+            <select className="field mono" value={model} onChange={(e) => setModel(e.target.value)}>
+              <option value="">default (config)</option>
+              {(model && !MODEL_OPTIONS.includes(model) ? [model, ...MODEL_OPTIONS] : MODEL_OPTIONS).map(
+                (m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ),
+              )}
+            </select>
+          </div>
+          <div>
+            <label className="label">Effort</label>
+            <select className="field mono" value={effort} onChange={(e) => setEffort(e.target.value)}>
+              <option value="">default (config)</option>
+              {EFFORT_LEVELS.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </div>
+          {reviewIsOn(reviewValueOf(review), settings) && (
+            <ReviewerFields
+              model={reviewModel}
+              effort={reviewEffort}
+              onModel={setReviewModel}
+              onEffort={setReviewEffort}
+              settings={settings}
+            />
+          )}
+        </div>
+      )}
+
+      {dirty && (
+        <div className="so-save">
+          <button className="btn primary" onClick={save}>
+            Save changes
           </button>
         </div>
-        {mobile && (
-          <div className="so-bar">
-            {bar.map((a, i) => (
-              <button
-                key={a.id}
-                className={`btn${i === 0 ? ' primary' : ''}`}
-                disabled={a.disabled}
-                onClick={a.onClick}
-              >
-                {a.icon}
-                {a.icon ? ' ' : ''}
-                {a.short ?? a.label}
-              </button>
-            ))}
-            <button className="btn so-more" aria-expanded={moreOpen} aria-label="More actions" onClick={() => setMoreOpen(true)}>
-              <IconMore />
-              {bar.length === 0 && ' Actions'}
+      )}
+
+      {err && <div className="warn-text so-alert">{err}</div>}
+      {task.error && (
+        <div className="warn-text so-alert" style={{ whiteSpace: 'pre-wrap' }}>
+          {task.error}
+        </div>
+      )}
+      {task.wakeAt && (
+        <div className="hint so-alert" style={{ color: 'var(--tm-accent)' }}>
+          waiting on the 5h usage window — this task's own session resumes automatically{' '}
+          {fmtWake(task.wakeAt)}
+        </div>
+      )}
+      {task.status === 'queued' && task.queueHeldAt && (
+        <div className="hint so-alert" style={{ color: 'var(--tm-accent)' }}>
+          held by Undo start — it keeps its place, but the queue skips it until you Release it (or Run now)
+        </div>
+      )}
+      <div className="so-review">
+        <ReviewPanel task={task} />
+      </div>
+      {task.resultSummary && (
+        <div className="so-summary">
+          <Markdown label="Worker's summary" text={task.resultSummary} />
+        </div>
+      )}
+
+      <div className="so-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {actions.map((a) => (
+          <Fragment key={a.id}>
+            {/* the run's cost/context chips sit just before Analyze, as they always have */}
+            {a.id === 'analyze' && latestRun && <RunStatsChips run={latestRun} />}
+            <button
+              className={`btn${a.cls ? ` ${a.cls}` : ''}`}
+              title={a.title}
+              disabled={a.disabled}
+              onClick={a.onClick}
+            >
+              {a.icon}
+              {a.icon ? ' ' : ''}
+              {a.label}
             </button>
+          </Fragment>
+        ))}
+      </div>
+
+      {auxRuns.length > 0 && (
+        <div className="aux-runs">
+          <div className="section-head">Review &amp; compaction terminals</div>
+          {auxRuns.map((r) => (
+            <div className="aux-run" key={r.id}>
+              <KindBadge kind={r.kind} />
+              <span className={r.status === 'running' ? 'aux-run-live' : 'muted'}>
+                {r.status === 'running' ? 'live' : r.status === 'killed' ? 'stopped' : r.exitCode === 0 ? 'done' : 'failed'}
+              </span>
+              <span className="mono muted">{new Date(r.startedAt).toLocaleString()}</span>
+              {r.stats && <span className="mono muted">${r.stats.costUsd.toFixed(3)}</span>}
+              <button className="btn" onClick={() => onOpenTerminal(r.id)}>
+                <IconTerminal /> Terminal
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(task.status !== 'draft' || latestRun) && (
+        <div className="so-followup">
+          <label className="label">Follow-up</label>
+          <textarea
+            className="field"
+            rows={3}
+            placeholder={
+              resumeSession
+                ? 'New instruction — continues the agent\'s previous session, which still remembers everything'
+                : 'New instruction — re-runs the task with the previous summary as context'
+            }
+            value={followUpMsg}
+            onChange={(e) => setFollowUpMsg(e.target.value)}
+          />
+          <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              className="btn primary"
+              disabled={!followUpMsg.trim() || sendingFollowUp}
+              onClick={() => send(() => api.followUp(task.id, followUpMsg.trim()))}
+            >
+              {sendingFollowUp ? 'Sending…' : 'Send follow-up'}
+            </button>
+            <button
+              className="btn"
+              disabled={!resumeSession || sendingFollowUp}
+              title={
+                resumeSession
+                  ? `Reopen session ${resumeSession.slice(0, 8)} and carry on — use this when the terminal died mid-task (usage limit, dropped connection). Any text above is sent as the instruction.`
+                  : 'No agent session to continue — run the task first, or use Run now for a fresh agent'
+              }
+              onClick={() => send(() => api.proceed(task.id, followUpMsg.trim() || undefined))}
+            >
+              <IconPlay /> Proceed
+            </button>
+            {resumeSession && (
+              <span className="mono muted" style={{ fontSize: 11 }}>
+                resumes {resumeSession.slice(0, 8)}
+              </span>
+            )}
           </div>
-        )}
-        {mobile && moreOpen && (
+        </div>
+      )}
+
+      <div className="section-head">Files</div>
+      <div
+        className={`dropzone ${dragOver ? 'over' : ''}`}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          void doUpload(e.dataTransfer.files);
+        }}
+        onClick={() => document.getElementById(`tm-file-${task.id}`)?.click()}
+      >
+        {uploading ? 'Uploading…' : 'Drop screenshots or files here, or click to pick'}
+        <input
+          id={`tm-file-${task.id}`}
+          type="file"
+          multiple
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            if (e.target.files) void doUpload(e.target.files);
+            e.target.value = '';
+          }}
+        />
+      </div>
+      {files.length > 0 && (
+        <div className="panel">
+          {files.map((f) => (
+            <div key={f.name} className="task-row" style={{ cursor: 'default' }}>
+              <a
+                className="title mono"
+                style={{ textDecoration: 'none', color: 'inherit', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+                href={`/api/tasks/${task.id}/files/${encodeURIComponent(f.name)}`}
+                download={f.name}
+              >
+                {f.name}
+              </a>
+              <span className="mono muted">
+                {f.size < 1024 ? `${f.size} B` : f.size < 1048576 ? `${(f.size / 1024).toFixed(1)} KB` : `${(f.size / 1048576).toFixed(1)} MB`}
+              </span>
+              <button
+                className="btn ghost"
+                title="remove"
+                onClick={() => delFile(f.name)}
+                style={{ padding: '2px 8px' }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {dispatches.some((d) => d.fromTaskId === task.id || d.toTaskId === task.id) && (
+        <>
+          <div className="section-head">Dispatches</div>
+          <div className="panel" style={{ padding: '6px 10px' }}>
+            <DispatchStrip taskId={task.id} direction="both" full onOpenTask={onOpenTask} />
+          </div>
+        </>
+      )}
+
+      {taskProposals.length > 0 && (
+        <>
+          <div className="section-head">Proposals</div>
+          {taskProposals.map((p) => (
+            <ProposalCard key={p.id} p={p} onDone={refresh} />
+          ))}
+        </>
+      )}
+    </>
+  );
+
+  // a phone: a full-height sheet that drags down to close (docs/mobile.md § Task panel)
+  if (mobile)
+    return (
+      <>
+        <Sheet
+          label={`Task ${task.title}`}
+          tall
+          className="slideover-sheet sheet-flush"
+          bodyClassName="slideover-body"
+          onClose={onClose}
+          head={(close) => (
+            <>
+              {head(close)}
+              {actionBar}
+            </>
+          )}
+        >
+          {body}
+        </Sheet>
+        {moreOpen && (
           <Sheet label="Task actions" title={task.title} onClose={() => setMoreOpen(false)}>
             {/* what can be done now first; the refused ones follow with their reason */}
             <div className="sheet-actions">
@@ -692,394 +1103,15 @@ export function TaskSlideOver({
             )}
           </Sheet>
         )}
-        <div className="slideover-body">
-          <GroupPath task={task} tasks={tasks} onOpen={onOpenTask} />
-          {pendingQuestion && (
-            <div className="qpanel so-question">
-              <label className="label">The agent is asking you</label>
-              <QuestionForm question={pendingQuestion} />
-            </div>
-          )}
-          {/* phones: the run's numbers ride at the top, since the action row they sit in is gone */}
-          {mobile && latestRun && (
-            <div className="so-stats">
-              <RunStatsChips run={latestRun} />
-            </div>
-          )}
-          <div>
-            <label className="label">Title</label>
-            <input className="field" value={title} onChange={(e) => setTitle(e.target.value)} />
-          </div>
-          <div>
-            <label className="label">Description</label>
-            <textarea
-              className="field"
-              rows={6}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
-          </div>
-          {mobile && (
-            <button
-              className="so-settings-toggle"
-              aria-expanded={settingsOpen}
-              onClick={() => setSettingsOpen((v) => !v)}
-            >
-              <span className={`caret ${settingsOpen ? '' : 'closed'}`}>
-                <IconChevron />
-              </span>
-              <span className="label">Settings</span>
-              <span className="so-settings-sum mono">
-                {[
-                  repos.find((r) => r.id === repoId)?.name ?? 'no repo',
-                  model || 'default model',
-                  effort || 'default effort',
-                ].join(' · ')}
-              </span>
-            </button>
-          )}
-          {(!mobile || settingsOpen) && (
-            <div className="form-grid">
-              <div>
-                <label className="label">Repo</label>
-                <select className="field" value={repoId} onChange={(e) => setRepoId(e.target.value)}>
-                  <option value="">— none —</option>
-                  {repos.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name}
-                      {r.role ? ` (${r.role})` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="label">Category</label>
-                <input
-                  className="field"
-                  list="tm-categories-drawer"
-                  placeholder="UI, Estimator…"
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                />
-                <datalist id="tm-categories-drawer">
-                  {[...new Set(tasks.map((t) => t.category).filter(Boolean))].map((c) => (
-                    <option key={c as string} value={c as string} />
-                  ))}
-                </datalist>
-              </div>
-              <div className="wide">
-                <label className="label">Group</label>
-                <GroupPicker
-                  tasks={tasks}
-                  task={task}
-                  repoId={task.repoId}
-                  value={parentAfter}
-                  valuePlace={parentPlace}
-                  onChange={(id, place) => {
-                    setParentId(id ?? '');
-                    setParentPlace(place);
-                  }}
-                  repoName={(id) => repos.find((r) => r.id === id)?.name}
-                />
-                <div className="hint">
-                  {!regroup
-                    ? 'Or drag the row on the board: onto a task to group with it, above or below to reorder.'
-                    : parentAfter
-                      ? 'Saving moves this task — and everything under it — to the end of that group.'
-                      : 'Saving takes this task out of its group. Its own subtasks come with it.'}
-                </div>
-              </div>
-              {rootAfter && groupTasks.length > 1 && (
-                <>
-                  <div>
-                    <label className="label">Group name</label>
-                    <input
-                      className="field"
-                      placeholder={task.title}
-                      value={groupName}
-                      onChange={(e) => setGroupName(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="label">Group colour</label>
-                    <select
-                      className="field group-swatch"
-                      style={groupColor === '' ? groupTint : ({ '--tm-group': `var(--tm-group-${groupColor})` } as CSSProperties)}
-                      value={groupColor}
-                      onChange={(e) => setGroupColor(e.target.value)}
-                    >
-                      <option value="">auto (from group id)</option>
-                      {Array.from({ length: GROUP_COLOR_COUNT }, (_, i) => (
-                        <option key={i + 1} value={String(i + 1)}>
-                          colour {i + 1}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </>
-              )}
-              <div className="wide">
-                <label className="label">Preset</label>
-                <PresetPicker
-                  model={model}
-                  effort={effort}
-                  review={review}
-                  onApply={(p) => {
-                    setModel(p.model);
-                    setEffort(p.effort);
-                    setReview(reviewChoiceOf(p.review));
-                  }}
-                />
-              </div>
-              <div>
-                <label className="label">Adversarial review</label>
-                <select className="field" value={review} onChange={(e) => setReview(e.target.value as ReviewChoice)}>
-                  <option value="default">default (config)</option>
-                  <option value="on">review this</option>
-                  <option value="off">skip (small task)</option>
-                </select>
-              </div>
-              <div>
-                <label className="label">Auto-publish on end</label>
-                <select
-                  className="field"
-                  value={autoPublish ? 'on' : 'off'}
-                  onChange={(e) => setAutoPublish(e.target.value === 'on')}
-                >
-                  <option value="off">off — stop at review</option>
-                  <option value="on">on — commit &amp; push at the end</option>
-                </select>
-              </div>
-              <div>
-                <label className="label">Updated</label>
-                <div className="mono muted" style={{ paddingTop: 6 }}>
-                  {new Date(task.updatedAt).toLocaleString()}
-                </div>
-              </div>
-              <div>
-                <label className="label">Model</label>
-                <select className="field mono" value={model} onChange={(e) => setModel(e.target.value)}>
-                  <option value="">default (config)</option>
-                  {(model && !MODEL_OPTIONS.includes(model) ? [model, ...MODEL_OPTIONS] : MODEL_OPTIONS).map(
-                    (m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ),
-                  )}
-                </select>
-              </div>
-              <div>
-                <label className="label">Effort</label>
-                <select className="field mono" value={effort} onChange={(e) => setEffort(e.target.value)}>
-                  <option value="">default (config)</option>
-                  {EFFORT_LEVELS.map((l) => (
-                    <option key={l} value={l}>
-                      {l}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {reviewIsOn(reviewValueOf(review), settings) && (
-                <ReviewerFields
-                  model={reviewModel}
-                  effort={reviewEffort}
-                  onModel={setReviewModel}
-                  onEffort={setReviewEffort}
-                  settings={settings}
-                />
-              )}
-            </div>
-          )}
+      </>
+    );
 
-          {dirty && (
-            <div className="so-save">
-              <button className="btn primary" onClick={save}>
-                Save changes
-              </button>
-            </div>
-          )}
-
-          {err && <div className="warn-text so-alert">{err}</div>}
-          {task.error && (
-            <div className="warn-text so-alert" style={{ whiteSpace: 'pre-wrap' }}>
-              {task.error}
-            </div>
-          )}
-          {task.wakeAt && (
-            <div className="hint so-alert" style={{ color: 'var(--tm-accent)' }}>
-              waiting on the 5h usage window — this task's own session resumes automatically{' '}
-              {fmtWake(task.wakeAt)}
-            </div>
-          )}
-          {task.status === 'queued' && task.queueHeldAt && (
-            <div className="hint so-alert" style={{ color: 'var(--tm-accent)' }}>
-              held by Undo start — it keeps its place, but the queue skips it until you Release it (or Run now)
-            </div>
-          )}
-          <div className="so-review">
-            <ReviewPanel task={task} />
-          </div>
-          {task.resultSummary && (
-            <div className="so-summary">
-              <Markdown label="Worker's summary" text={task.resultSummary} />
-            </div>
-          )}
-
-          <div className="so-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {actions.map((a) => (
-              <Fragment key={a.id}>
-                {/* the run's cost/context chips sit just before Analyze, as they always have */}
-                {a.id === 'analyze' && latestRun && <RunStatsChips run={latestRun} />}
-                <button
-                  className={`btn${a.cls ? ` ${a.cls}` : ''}`}
-                  title={a.title}
-                  disabled={a.disabled}
-                  onClick={a.onClick}
-                >
-                  {a.icon}
-                  {a.icon ? ' ' : ''}
-                  {a.label}
-                </button>
-              </Fragment>
-            ))}
-          </div>
-
-          {auxRuns.length > 0 && (
-            <div className="aux-runs">
-              <div className="section-head">Review &amp; compaction terminals</div>
-              {auxRuns.map((r) => (
-                <div className="aux-run" key={r.id}>
-                  <KindBadge kind={r.kind} />
-                  <span className={r.status === 'running' ? 'aux-run-live' : 'muted'}>
-                    {r.status === 'running' ? 'live' : r.status === 'killed' ? 'stopped' : r.exitCode === 0 ? 'done' : 'failed'}
-                  </span>
-                  <span className="mono muted">{new Date(r.startedAt).toLocaleString()}</span>
-                  {r.stats && <span className="mono muted">${r.stats.costUsd.toFixed(3)}</span>}
-                  <button className="btn" onClick={() => onOpenTerminal(r.id)}>
-                    <IconTerminal /> Terminal
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {(task.status !== 'draft' || latestRun) && (
-            <div className="so-followup">
-              <label className="label">Follow-up</label>
-              <textarea
-                className="field"
-                rows={3}
-                placeholder={
-                  resumeSession
-                    ? 'New instruction — continues the agent\'s previous session, which still remembers everything'
-                    : 'New instruction — re-runs the task with the previous summary as context'
-                }
-                value={followUpMsg}
-                onChange={(e) => setFollowUpMsg(e.target.value)}
-              />
-              <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                <button
-                  className="btn primary"
-                  disabled={!followUpMsg.trim() || sendingFollowUp}
-                  onClick={() => send(() => api.followUp(task.id, followUpMsg.trim()))}
-                >
-                  {sendingFollowUp ? 'Sending…' : 'Send follow-up'}
-                </button>
-                <button
-                  className="btn"
-                  disabled={!resumeSession || sendingFollowUp}
-                  title={
-                    resumeSession
-                      ? `Reopen session ${resumeSession.slice(0, 8)} and carry on — use this when the terminal died mid-task (usage limit, dropped connection). Any text above is sent as the instruction.`
-                      : 'No agent session to continue — run the task first, or use Run now for a fresh agent'
-                  }
-                  onClick={() => send(() => api.proceed(task.id, followUpMsg.trim() || undefined))}
-                >
-                  <IconPlay /> Proceed
-                </button>
-                {resumeSession && (
-                  <span className="mono muted" style={{ fontSize: 11 }}>
-                    resumes {resumeSession.slice(0, 8)}
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-
-          <div className="section-head">Files</div>
-          <div
-            className={`dropzone ${dragOver ? 'over' : ''}`}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragOver(true);
-            }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragOver(false);
-              void doUpload(e.dataTransfer.files);
-            }}
-            onClick={() => document.getElementById(`tm-file-${task.id}`)?.click()}
-          >
-            {uploading ? 'Uploading…' : 'Drop screenshots or files here, or click to pick'}
-            <input
-              id={`tm-file-${task.id}`}
-              type="file"
-              multiple
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                if (e.target.files) void doUpload(e.target.files);
-                e.target.value = '';
-              }}
-            />
-          </div>
-          {files.length > 0 && (
-            <div className="panel">
-              {files.map((f) => (
-                <div key={f.name} className="task-row" style={{ cursor: 'default' }}>
-                  <a
-                    className="title mono"
-                    style={{ textDecoration: 'none', color: 'inherit', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
-                    href={`/api/tasks/${task.id}/files/${encodeURIComponent(f.name)}`}
-                    download={f.name}
-                  >
-                    {f.name}
-                  </a>
-                  <span className="mono muted">
-                    {f.size < 1024 ? `${f.size} B` : f.size < 1048576 ? `${(f.size / 1024).toFixed(1)} KB` : `${(f.size / 1048576).toFixed(1)} MB`}
-                  </span>
-                  <button
-                    className="btn ghost"
-                    title="remove"
-                    onClick={() => delFile(f.name)}
-                    style={{ padding: '2px 8px' }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {dispatches.some((d) => d.fromTaskId === task.id || d.toTaskId === task.id) && (
-            <>
-              <div className="section-head">Dispatches</div>
-              <div className="panel" style={{ padding: '6px 10px' }}>
-                <DispatchStrip taskId={task.id} direction="both" full onOpenTask={onOpenTask} />
-              </div>
-            </>
-          )}
-
-          {taskProposals.length > 0 && (
-            <>
-              <div className="section-head">Proposals</div>
-              {taskProposals.map((p) => (
-                <ProposalCard key={p.id} p={p} onDone={refresh} />
-              ))}
-            </>
-          )}
-        </div>
+  return (
+    <>
+      <div className="overlay" ref={exitGhost} onClick={onClose} />
+      <div className="slideover" ref={exitGhost}>
+        {head(onClose)}
+        <div className="slideover-body">{body}</div>
       </div>
     </>
   );

@@ -90,6 +90,9 @@
   --tm-dur-fast: 120ms;
   --tm-dur-base: 200ms;
   --tm-dur-slow: 380ms;
+  /* the bottom sheet's tween (react-modal-sheet; the ease must be a cubic-bezier) */
+  --tm-sheet-dur: var(--tm-dur-base);
+  --tm-sheet-ease: var(--tm-ease-out);
 }
 
 /* ---- semantic: dark (default — this is a terminal tool) ---- */
@@ -203,6 +206,8 @@
   --tm-dur-exit: 260ms;
   --tm-dur-page: 440ms;
   --tm-dur-sheet: 560ms;
+  --tm-sheet-dur: var(--tm-dur-sheet);
+  --tm-sheet-ease: cubic-bezier(0.32, 0.72, 0, 1);
   --tm-dur-spring: 620ms;
   --tm-press-scale: 0.95;
   --tm-blur: 24px;

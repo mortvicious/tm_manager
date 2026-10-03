@@ -4,6 +4,8 @@ import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { fmtAgo, useNow } from './TimeAgo.tsx';
 import { IconBolt, IconChevron, IconPlay, IconRefresh, IconStop, IconTerminal, IconTrash, IconX } from './Icons.tsx';
+import { useIsMobile } from './Layout.tsx';
+import { Sheet } from './Sheet.tsx';
 
 /** Which repo the launcher was last pointed at — a preference, not state. */
 const STORE_KEY = 'tm.commands.repo';
@@ -106,6 +108,7 @@ function RunRow({
 /** Header button + popover: what is running, and one click to run anything. */
 export function CommandsLauncher({ onOpenTerminal }: { onOpenTerminal: (runId: string) => void }) {
   const { repos, commands, commandRuns } = useApp();
+  const mobile = useIsMobile();
   const [open, setOpen] = useState(false);
   const [repoId, setRepoId] = useState<string | null>(() => readRepoPref());
   const wrapRef = useRef<HTMLSpanElement>(null);
@@ -118,8 +121,9 @@ export function CommandsLauncher({ onOpenTerminal }: { onOpenTerminal: (runId: s
   const finished = useMemo(() => commandRuns.filter((r) => r.status !== 'running').slice(0, 5), [commandRuns]);
   const services = running.filter((r) => r.kind === 'service');
 
+  // a phone opens a sheet, which brings its own backdrop and Escape
   useEffect(() => {
-    if (!open) return;
+    if (!open || mobile) return;
     const onDown = (e: PointerEvent) => {
       if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
     };
@@ -132,7 +136,7 @@ export function CommandsLauncher({ onOpenTerminal }: { onOpenTerminal: (runId: s
       document.removeEventListener('pointerdown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [open]);
+  }, [open, mobile]);
 
   // A remembered repo can be deleted while the popover is shut; and with none
   // remembered, prefer whichever repo already has commands.
@@ -149,6 +153,126 @@ export function CommandsLauncher({ onOpenTerminal }: { onOpenTerminal: (runId: s
   const title = running.length
     ? `${running.length} command(s) running: ${running.map((r) => `${r.repoName} · ${r.name}`).join(', ')}`
     : 'Repo commands — dev servers and scripts';
+
+  const content = (
+    <>
+      <div className="cmd-pop-head">
+        <span className="label" style={{ margin: 0 }}>
+          running
+        </span>
+        <span style={{ flex: 1 }} />
+        {finished.length > 0 && (
+          <button
+            className="btn ghost"
+            title="Clear finished runs from this list"
+            onClick={() => api.clearCommandRuns().catch(() => {})}
+          >
+            clear
+          </button>
+        )}
+        <button className="btn ghost" title="Close" onClick={() => setOpen(false)}>
+          <IconX />
+        </button>
+      </div>
+
+      {running.length === 0 ? (
+        <div className="cmd-empty">Nothing running.</div>
+      ) : (
+        running.map((r) => (
+          <RunRow
+            key={r.id}
+            run={r}
+            busy={busy === r.id}
+            onStop={stop}
+            onOpenTerminal={(id) => {
+              setOpen(false);
+              onOpenTerminal(id);
+            }}
+          />
+        ))
+      )}
+
+      <div className="cmd-pop-head" style={{ marginTop: 'var(--tm-space-2)' }}>
+        <span className="label" style={{ margin: 0 }}>
+          run
+        </span>
+        <select
+          className="field cmd-select"
+          value={effectiveRepoId ?? ''}
+          disabled={repos.length === 0}
+          onChange={(e) => {
+            setRepoId(e.target.value);
+            writeRepoPref(e.target.value);
+            setErr(null);
+          }}
+        >
+          {repos.length === 0 && <option value="">no repos</option>}
+          {repos.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.name}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {repoCommands.length === 0 ? (
+        <div className="cmd-empty">
+          No commands saved for this repo — add them on the <b>Repos</b> page (its scanner lists every{' '}
+          <span className="mono">package.json</span> script).
+        </div>
+      ) : (
+        repoCommands.map((c) => {
+          const live = running.find((r) => r.commandId === c.id);
+          return (
+            <div className="cmd-run" key={c.id}>
+              <span className={`cmd-dot ${live ? 'live' : ''}`} aria-hidden="true" />
+              <span className="cmd-run-main">
+                <span className="cmd-run-name">{c.name}</span>
+                <span className="mono muted cmd-run-sub" title={c.cwd ? `${c.command}\nin ${c.cwd}` : c.command}>
+                  {c.command}
+                  {c.cwd ? ` · ${c.cwd}` : ''}
+                </span>
+              </span>
+              {c.kind === 'service' && <span className="chip">dev</span>}
+              {live ? (
+                <button className="btn ghost" title="Stop it" disabled={busy === live.id} onClick={() => stop(live.id)}>
+                  <IconStop />
+                </button>
+              ) : (
+                <button className="btn ghost" title="Run it" disabled={busy === c.id} onClick={() => run(c)}>
+                  <IconPlay />
+                </button>
+              )}
+            </div>
+          );
+        })
+      )}
+
+      {finished.length > 0 && (
+        <>
+          <div className="cmd-pop-head" style={{ marginTop: 'var(--tm-space-2)' }}>
+            <span className="label" style={{ margin: 0 }}>
+              finished
+            </span>
+          </div>
+          {finished.map((r) => (
+            <RunRow
+              key={r.id}
+              run={r}
+              busy={false}
+              onStop={stop}
+              onOpenTerminal={(id) => {
+                setOpen(false);
+                onOpenTerminal(id);
+              }}
+            />
+          ))}
+        </>
+      )}
+
+      {err && <div className="warn-text cmd-err">{err}</div>}
+    </>
+  );
 
   return (
     <span className="cmd-wrap" ref={wrapRef}>
@@ -171,125 +295,16 @@ export function CommandsLauncher({ onOpenTerminal }: { onOpenTerminal: (runId: s
         )}
       </button>
 
-      {open && (
-        <div className="cmd-pop" role="dialog" aria-label="Repo commands">
-          <div className="cmd-pop-head">
-            <span className="label" style={{ margin: 0 }}>
-              running
-            </span>
-            <span style={{ flex: 1 }} />
-            {finished.length > 0 && (
-              <button
-                className="btn ghost"
-                title="Clear finished runs from this list"
-                onClick={() => api.clearCommandRuns().catch(() => {})}
-              >
-                clear
-              </button>
-            )}
-            <button className="btn ghost" title="Close" onClick={() => setOpen(false)}>
-              <IconX />
-            </button>
+      {open &&
+        (mobile ? (
+          <Sheet label="Repo commands" onClose={() => setOpen(false)}>
+            <div className="cmd-sheet">{content}</div>
+          </Sheet>
+        ) : (
+          <div className="cmd-pop" role="dialog" aria-label="Repo commands">
+            {content}
           </div>
-
-          {running.length === 0 ? (
-            <div className="cmd-empty">Nothing running.</div>
-          ) : (
-            running.map((r) => (
-              <RunRow
-                key={r.id}
-                run={r}
-                busy={busy === r.id}
-                onStop={stop}
-                onOpenTerminal={(id) => {
-                  setOpen(false);
-                  onOpenTerminal(id);
-                }}
-              />
-            ))
-          )}
-
-          <div className="cmd-pop-head" style={{ marginTop: 'var(--tm-space-2)' }}>
-            <span className="label" style={{ margin: 0 }}>
-              run
-            </span>
-            <select
-              className="field cmd-select"
-              value={effectiveRepoId ?? ''}
-              disabled={repos.length === 0}
-              onChange={(e) => {
-                setRepoId(e.target.value);
-                writeRepoPref(e.target.value);
-                setErr(null);
-              }}
-            >
-              {repos.length === 0 && <option value="">no repos</option>}
-              {repos.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {repoCommands.length === 0 ? (
-            <div className="cmd-empty">
-              No commands saved for this repo — add them on the <b>Repos</b> page (its scanner lists every{' '}
-              <span className="mono">package.json</span> script).
-            </div>
-          ) : (
-            repoCommands.map((c) => {
-              const live = running.find((r) => r.commandId === c.id);
-              return (
-                <div className="cmd-run" key={c.id}>
-                  <span className={`cmd-dot ${live ? 'live' : ''}`} aria-hidden="true" />
-                  <span className="cmd-run-main">
-                    <span className="cmd-run-name">{c.name}</span>
-                    <span className="mono muted cmd-run-sub" title={c.cwd ? `${c.command}\nin ${c.cwd}` : c.command}>
-                      {c.command}
-                      {c.cwd ? ` · ${c.cwd}` : ''}
-                    </span>
-                  </span>
-                  {c.kind === 'service' && <span className="chip">dev</span>}
-                  {live ? (
-                    <button className="btn ghost" title="Stop it" disabled={busy === live.id} onClick={() => stop(live.id)}>
-                      <IconStop />
-                    </button>
-                  ) : (
-                    <button className="btn ghost" title="Run it" disabled={busy === c.id} onClick={() => run(c)}>
-                      <IconPlay />
-                    </button>
-                  )}
-                </div>
-              );
-            })
-          )}
-
-          {finished.length > 0 && (
-            <>
-              <div className="cmd-pop-head" style={{ marginTop: 'var(--tm-space-2)' }}>
-                <span className="label" style={{ margin: 0 }}>
-                  finished
-                </span>
-              </div>
-              {finished.map((r) => (
-                <RunRow
-                  key={r.id}
-                  run={r}
-                  busy={false}
-                  onStop={stop}
-                  onOpenTerminal={(id) => {
-                    setOpen(false);
-                    onOpenTerminal(id);
-                  }}
-                />
-              ))}
-            </>
-          )}
-
-          {err && <div className="warn-text cmd-err">{err}</div>}
-        </div>
-      )}
+        ))}
     </span>
   );
 }
@@ -312,6 +327,7 @@ export function RepoCommandsMenu({
   onOpenTerminal?: (runId: string) => void;
 }) {
   const { commands, commandRuns } = useApp();
+  const mobile = useIsMobile();
   const [at, setAt] = useState<{ top: number; left: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
@@ -328,8 +344,9 @@ export function RepoCommandsMenu({
     setAt({ top: rect.bottom + 6, left });
   };
 
+  // a phone opens a sheet instead, which brings its own backdrop and Escape
   useEffect(() => {
-    if (!at) return;
+    if (!at || mobile) return;
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node;
       if (!popRef.current?.contains(t) && !btnRef.current?.contains(t)) setAt(null);
@@ -349,7 +366,65 @@ export function RepoCommandsMenu({
       window.removeEventListener('resize', close);
       window.removeEventListener('scroll', close, true);
     };
-  }, [at]);
+  }, [at, mobile]);
+
+  const menu = (
+    <>
+      {mine.length === 0 ? (
+        <div className="cmd-empty">No commands saved for this repo yet.</div>
+      ) : (
+        mine.map((c) => {
+          const live = running.find((r) => r.commandId === c.id);
+          return (
+            <div className="cmd-run" key={c.id}>
+              <span className={`cmd-dot ${live ? 'live' : ''}`} aria-hidden="true" />
+              <span className="cmd-run-main">
+                <span className="cmd-run-name">{c.name}</span>
+                <span className="mono muted cmd-run-sub" title={c.cwd ? `${c.command}\nin ${c.cwd}` : c.command}>
+                  {c.command}
+                  {c.cwd ? ` · ${c.cwd}` : ''}
+                </span>
+              </span>
+              {c.kind === 'service' && <span className="chip">dev</span>}
+              {live ? (
+                <>
+                  <button
+                    className="btn ghost"
+                    title="Open its terminal"
+                    onClick={() => {
+                      setAt(null);
+                      onOpenTerminal?.(live.id);
+                    }}
+                  >
+                    <IconTerminal />
+                  </button>
+                  <button className="btn ghost" title="Stop it" disabled={busy === live.id} onClick={() => stop(live.id)}>
+                    <IconStop />
+                  </button>
+                </>
+              ) : (
+                <button className="btn ghost" title="Run it" disabled={busy === c.id} onClick={() => run(c)}>
+                  <IconPlay />
+                </button>
+              )}
+            </div>
+          );
+        })
+      )}
+      {err && <div className="warn-text cmd-err">{err}</div>}
+      <div className="cmd-menu-foot">
+        <button
+          className="btn"
+          onClick={() => {
+            setAt(null);
+            onManage();
+          }}
+        >
+          <IconRefresh /> Add / manage commands…
+        </button>
+      </div>
+    </>
+  );
 
   return (
     <>
@@ -365,63 +440,16 @@ export function RepoCommandsMenu({
         {running.length > 0 && <span className="cmd-dot live" aria-label={`${running.length} running`} />}
         <IconChevron />
       </button>
-      {at && (
-        <div ref={popRef} className="cmd-pop cmd-menu" role="menu" style={{ top: at.top, left: at.left }}>
-          {mine.length === 0 ? (
-            <div className="cmd-empty">No commands saved for this repo yet.</div>
-          ) : (
-            mine.map((c) => {
-              const live = running.find((r) => r.commandId === c.id);
-              return (
-                <div className="cmd-run" key={c.id}>
-                  <span className={`cmd-dot ${live ? 'live' : ''}`} aria-hidden="true" />
-                  <span className="cmd-run-main">
-                    <span className="cmd-run-name">{c.name}</span>
-                    <span className="mono muted cmd-run-sub" title={c.cwd ? `${c.command}\nin ${c.cwd}` : c.command}>
-                      {c.command}
-                      {c.cwd ? ` · ${c.cwd}` : ''}
-                    </span>
-                  </span>
-                  {c.kind === 'service' && <span className="chip">dev</span>}
-                  {live ? (
-                    <>
-                      <button
-                        className="btn ghost"
-                        title="Open its terminal"
-                        onClick={() => {
-                          setAt(null);
-                          onOpenTerminal?.(live.id);
-                        }}
-                      >
-                        <IconTerminal />
-                      </button>
-                      <button className="btn ghost" title="Stop it" disabled={busy === live.id} onClick={() => stop(live.id)}>
-                        <IconStop />
-                      </button>
-                    </>
-                  ) : (
-                    <button className="btn ghost" title="Run it" disabled={busy === c.id} onClick={() => run(c)}>
-                      <IconPlay />
-                    </button>
-                  )}
-                </div>
-              );
-            })
-          )}
-          {err && <div className="warn-text cmd-err">{err}</div>}
-          <div className="cmd-menu-foot">
-            <button
-              className="btn"
-              onClick={() => {
-                setAt(null);
-                onManage();
-              }}
-            >
-              <IconRefresh /> Add / manage commands…
-            </button>
+      {at &&
+        (mobile ? (
+          <Sheet label="Repo commands" title="Commands" onClose={() => setAt(null)}>
+            <div className="cmd-sheet">{menu}</div>
+          </Sheet>
+        ) : (
+          <div ref={popRef} className="cmd-pop cmd-menu" role="menu" style={{ top: at.top, left: at.left }}>
+            {menu}
           </div>
-        </div>
-      )}
+        ))}
     </>
   );
 }
