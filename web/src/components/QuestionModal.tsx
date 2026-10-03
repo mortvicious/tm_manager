@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Question, QuestionItem } from '@tm/shared';
 import { api } from '../api.ts';
+import { exitGhost } from '../motion.ts';
 import { useApp } from '../state.tsx';
 import { IconX } from './Icons.tsx';
 
@@ -172,8 +173,8 @@ export function QuestionModal() {
   const close = () => setDismissed((d) => new Set(d).add(current.id));
   return (
     <>
-      <div className="overlay qmodal-overlay" onClick={close} />
-      <div className="qmodal" role="dialog" aria-label="An agent is asking you">
+      <div className="overlay qmodal-overlay" ref={exitGhost} onClick={close} />
+      <div className="qmodal" ref={exitGhost} role="dialog" aria-label="An agent is asking you">
         <div className="qmodal-head">
           <span className="badge s-attention">
             <span className="dot" /> asks you

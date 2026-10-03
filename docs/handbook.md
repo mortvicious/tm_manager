@@ -100,7 +100,7 @@ Services die when the server stops or restarts — deliberately, so their ports 
 
 ## Chat — asking, instead of tasking
 
-**Chat** in the sidebar (and `/chat` on Telegram) is a conversation with claude inside one of your repos. Full details: `docs/chat.md`.
+**Chat** in the sidebar (and `/chat` on Telegram) is a conversation with claude inside one of your repos. Full details: `docs/chat.md`. The Glass design leaves Chat out of the menus: switch the device to Classic (Config → Appearance) or open `/chat` directly.
 
 Use it for the half of the day that is not a task: *what changed in this file*, *does this endpoint still return the old shape*, *why did we do it this way*. Filing a task for a three-sentence answer costs a queue slot, a fresh session and a review round; a chat costs one turn.
 
@@ -135,7 +135,7 @@ Proposals appear in the task panel with Accept/Reject. One analysis per repo at 
 
 ## Features — when one task is too small
 
-A **Feature** is the home for a request that is far too big for one task: a paragraph-to-page description of a whole capability. Write it on the **Features** page (title + markdown request, one repo), then:
+A **Feature** is the home for a request that is far too big for one task: a paragraph-to-page description of a whole capability. Write it on the **Features** page (title + markdown request, one repo; in the Glass design it is not in the menus, so use Classic or open `/features`), then:
 
 1. **Analyze** — a read-only agent (its own terminal, attachable from the Queue page) reads the repo and decomposes the request into *ordered phases* of worker-grade tasks. A second, independent agent then reviews that plan adversarially (missing steps? wrong ordering? tasks too big or too vague? contradicts `CLAUDE.md`?). A **blocker** verdict feeds the findings back into a fresh analysis, up to *Feature plan re-analysis rounds* in Config.
 2. **Review the plan** — the feature page shows the request, the analysis summary and considerations, the review verdict with its findings, and the plan as **phase columns of task cards**. Every card is yours to edit before approval: retitle, rewrite, set category/effort/review, exclude it, reorder it, move it to another phase, or add one. Nothing exists as a real task yet — hit **Save plan** to keep your edits.
@@ -218,6 +218,7 @@ Some decisions are yours: which of two designs, what an ambiguous requirement me
 
 | Setting | Meaning |
 |---|---|
+| Appearance | **this device only**, applied as you click (not part of Save): Design **Glass** (iOS Liquid Glass, the default; leaves Features and Chat out of the menus) or **Classic**, and Light or dark: **System** (the default, follows the device), Light or Dark. The sun/moon button in the header flips and pins it. `docs/glass.md` |
 | Concurrency | simultaneous worker sessions (2 recommended) |
 | Auto-complete | first agent turn-end → done instead of review |
 | Model / Effort | defaults for workers and analysis |

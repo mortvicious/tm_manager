@@ -1108,6 +1108,8 @@ export function BoardPage({
     <div className="board">
       {mobile ? (
         <>
+          {/* Glass gives the phone board a large title like every other page; Classic hides it */}
+          <h1 className="page-title glass-only">Board</h1>
           <div className="board-toolbar">
             <button
               className={`btn filters-btn ${activeFilters.length > 0 ? 'on' : ''}`}
@@ -1202,13 +1204,13 @@ export function BoardPage({
         </div>
       )}
       {active.length > 0 && (
-        <Section label="active" count={active.length} accent collapsed={collapsed.has('active')} onToggle={() => toggleFold('active')}>
+        <Section label="Active" count={active.length} accent collapsed={collapsed.has('active')} onToggle={() => toggleFold('active')}>
           <div className="panel">{renderRows(active, 'active')}</div>
         </Section>
       )}
       {drafts.length > 0 && (
         <Section
-          label="drafts"
+          label="Drafts"
           count={drafts.length}
           collapsed={collapsed.has('drafts')}
           onToggle={() => toggleFold('drafts')}
@@ -1252,7 +1254,7 @@ export function BoardPage({
         );
       })}
       {!focus && recent.length > 0 && (
-        <Section label="recent" count={recent.length} collapsed={collapsed.has('recent')} onToggle={() => toggleFold('recent')}>
+        <Section label="Recent" count={recent.length} collapsed={collapsed.has('recent')} onToggle={() => toggleFold('recent')}>
           <div className="panel">{recent.map((r) => row(r.task, 'recent'))}</div>
         </Section>
       )}

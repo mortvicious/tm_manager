@@ -18,9 +18,22 @@
       rel="stylesheet"
     />
     <script>
-      // Set theme before paint to avoid a flash. Dark is the default —
-      // this tool's native habitat is a PTY (docs/tm-design-tokens.html).
-      document.documentElement.dataset.theme = localStorage.getItem('tm.theme') || 'dark';
+      // Set the look before paint to avoid a flash (docs/glass.md). The inline
+      // twin of resolve() in src/appearance.ts: keep keys, defaults and
+      // attributes in step. No stored theme = follow the system (dark when the
+      // query is unsupported); no stored design = glass.
+      (function () {
+        var d = document.documentElement, t = null, g = null;
+        try {
+          t = localStorage.getItem('tm.theme');
+          g = localStorage.getItem('tm.design');
+        } catch (e) {}
+        if (t !== 'light' && t !== 'dark') {
+          t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        }
+        d.dataset.theme = t;
+        d.dataset.design = g === 'classic' ? 'classic' : 'glass';
+      })();
     </script>
   </head>
   <body>

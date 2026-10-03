@@ -27,6 +27,7 @@ import { KindBadge, liveReviewRun, runTaskId } from './RunKind.tsx';
 import { ReviewPanel } from './ReviewPanel.tsx';
 import { QuestionForm } from './QuestionModal.tsx';
 import { Sheet, SheetAction } from './Sheet.tsx';
+import { exitGhost } from '../motion.ts';
 
 /**
  * One button of the panel's action set. Desktop draws the whole list as one
@@ -613,8 +614,8 @@ export function TaskSlideOver({
 
   return (
     <>
-      <div className="overlay" onClick={onClose} />
-      <div className="slideover">
+      <div className="overlay" ref={exitGhost} onClick={onClose} />
+      <div className="slideover" ref={exitGhost}>
         <div className="slideover-head">
           <span className="mono muted">{task.id.slice(0, 8)}</span>
           <StatusBadge

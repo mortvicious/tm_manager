@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_SETTINGS, EFFORT_LEVELS, MODEL_OPTIONS, type AppSettings } from '@tm/shared';
 import { api } from '../api.ts';
+import { AppearanceSettings } from '../components/AppearanceSettings.tsx';
 import { PresetEditor } from '../components/PresetEditor.tsx';
 import { PushSettings } from '../components/PushSettings.tsx';
 import { useApp } from '../state.tsx';
@@ -34,7 +35,14 @@ export function ConfigPage() {
       .catch((e) => setErr(e.message));
   }, []);
 
-  if (!cfg) return <div className="muted">{err ?? 'Loading…'}</div>;
+  // The look is this device's own: reachable even while the API is down.
+  if (!cfg)
+    return (
+      <div style={{ maxWidth: 720 }}>
+        <AppearanceSettings />
+        <div className="muted">{err ?? 'Loading…'}</div>
+      </div>
+    );
 
   const set = <K extends keyof AppSettings>(k: K, v: AppSettings[K]) => setCfg({ ...cfg, [k]: v });
 
@@ -80,6 +88,7 @@ export function ConfigPage() {
       </h1>
       {err && <div className="warn-text" style={{ marginBottom: 10 }}>{err}</div>}
 
+      <AppearanceSettings />
       <PushSettings />
 
       <div className="panel cfg-group">

@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { exitGhost } from '../motion.ts';
 import { IconX } from './Icons.tsx';
 
 /** Where sheets mount: inside `.app`, so `.app.mobile` rules still reach them. */
@@ -51,7 +52,7 @@ export function Sheet({
 }) {
   useModalChrome(onClose);
   return createPortal(
-    <div className="sheet-root" onClick={(e) => e.stopPropagation()}>
+    <div className="sheet-root" ref={exitGhost} onClick={(e) => e.stopPropagation()}>
       <div className="overlay sheet-overlay" onClick={onClose} />
       <div className={`more-sheet ${className ?? ''}`} role="dialog" aria-modal="true" aria-label={label}>
         <div className="sheet-grip" />
@@ -80,7 +81,14 @@ export function FullSheet({
 }) {
   useModalChrome(onClose);
   return createPortal(
-    <div className="full-sheet" role="dialog" aria-modal="true" aria-label={label} onClick={(e) => e.stopPropagation()}>
+    <div
+      className="full-sheet"
+      ref={exitGhost}
+      role="dialog"
+      aria-modal="true"
+      aria-label={label}
+      onClick={(e) => e.stopPropagation()}
+    >
       <div className="full-sheet-head">
         <span className="full-sheet-title">{title}</span>
         <button className="btn ghost" aria-label="Close" onClick={onClose}>

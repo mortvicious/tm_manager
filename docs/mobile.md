@@ -97,7 +97,11 @@ display:none pair.
 
 - **Bottom tab bar** (`.tabbar`) — Dashboard · Board · Queue · Features · More.
   The active tab carries three cues, not one: accent colour, `stroke-width: 2.6`
-  and a top rail, because colour alone is weak in peripheral vision.
+  and a top rail, because colour alone is weak in peripheral vision. In the
+  **Glass** design (`docs/glass.md`, picked per device in Config → Appearance)
+  it is a floating capsule with a sliding lens instead of the rail, and it reads
+  Dashboard · Board · Queue · More: Glass leaves Features and Chat out of every
+  menu, and their routes stay reachable by link.
 - **More sheet** (`.more-sheet`, drawn by the shared `<Sheet>` — § Sheets) — the
   **whole** nav (so the four slots are a shortcut, never the only route) plus the
   header controls the compact top bar could not hold: usage pill, server

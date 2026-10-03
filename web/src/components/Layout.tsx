@@ -1,7 +1,8 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { UsageSnapshot, UsageWindow } from '@tm/shared';
 import { NavLink } from 'react-router-dom';
 import { api } from '../api.ts';
+import { toggleScheme, useLook } from '../appearance.ts';
 import { useApp } from '../state.tsx';
 import { CommandsLauncher } from './Commands.tsx';
 import { EmulatorLauncher } from './Emulator.tsx';
@@ -48,17 +49,12 @@ export function useIsMobile() {
 }
 
 function ThemeToggle() {
-  const [theme, setTheme] = useState(document.documentElement.dataset.theme ?? 'dark');
-  // Persist only on explicit toggle — never pin a default the user didn't choose (R9).
-  const toggle = () => {
-    const next = theme === 'dark' ? 'light' : 'dark';
-    setTheme(next);
-    document.documentElement.dataset.theme = next;
-    localStorage.setItem('tm.theme', next);
-  };
+  // Flips what is on screen and pins it. Only an explicit pick is stored (R9);
+  // Config → Appearance → System goes back to following the device.
+  const { scheme } = useLook();
   return (
-    <button className="btn ghost" title="Toggle theme" onClick={toggle}>
-      {theme === 'dark' ? <IconSun /> : <IconMoon />}
+    <button className="btn ghost" title="Toggle light / dark" onClick={toggleScheme}>
+      {scheme === 'dark' ? <IconSun /> : <IconMoon />}
     </button>
   );
 }
@@ -350,6 +346,17 @@ const NAV: NavItem[] = [
   { to: '/handbook', label: 'Handbook', icon: <IconBook /> },
 ];
 
+/**
+ * Glass leaves these out of every menu (docs/glass.md). The routes stay, so
+ * push deep links and the Queue's aux-run links still land on them.
+ */
+const GLASS_HIDDEN = new Set(['/features', '/chat']);
+
+function useNav() {
+  const { design } = useLook();
+  return design === 'glass' ? NAV.filter((n) => !GLASS_HIDDEN.has(n.to)) : NAV;
+}
+
 function navClass({ isActive }: { isActive: boolean }) {
   return `nav-link ${isActive ? 'active' : ''}`;
 }
@@ -400,10 +407,11 @@ function QuestionChip() {
 }
 
 function MoreSheet({ onClose, onOpenTerminal }: { onClose: () => void; onOpenTerminal: (runId: string) => void }) {
+  const nav = useNav();
   return (
     <Sheet label="Menu" onClose={onClose}>
       <div className="sheet-nav">
-        {NAV.map((n) => (
+        {nav.map((n) => (
           <NavLink key={n.to} to={n.to} end={n.to === '/'} className={navClass} onClick={onClose}>
             {n.icon} {n.label}
           </NavLink>
@@ -422,16 +430,33 @@ function MoreSheet({ onClose, onOpenTerminal }: { onClose: () => void; onOpenTer
   );
 }
 
+/** NavLink's own matching: `/` exactly, anything else as a path prefix. */
+function owns(to: string, pathname: string) {
+  return to === '/' ? pathname === '/' : pathname === to || pathname.startsWith(`${to}/`);
+}
+
 function TabBar({ onMore, moreOpen }: { onMore: () => void; moreOpen: boolean }) {
+  const tabs = useNav().filter((n) => n.primary);
+  const { pathname } = useLocation();
+  // Glass's lens sits under the tab that owns this page; a page reached from
+  // the More sheet belongs to More. Classic ignores both variables.
+  const owner = moreOpen ? -1 : tabs.findIndex((n) => owns(n.to, pathname));
+  const lens = owner === -1 ? tabs.length : owner;
+  const lensVars = { '--tab-i': lens, '--tab-n': tabs.length + 1 } as CSSProperties;
   return (
-    <nav className="tabbar" aria-label="Primary">
-      {NAV.filter((n) => n.primary).map((n) => (
+    <nav className="tabbar" aria-label="Primary" style={lensVars}>
+      {tabs.map((n) => (
         <NavLink key={n.to} to={n.to} end={n.to === '/'} className={navClass}>
           {n.icon}
           <span>{n.label}</span>
         </NavLink>
       ))}
-      <button type="button" className={`nav-link ${moreOpen ? 'active' : ''}`} aria-expanded={moreOpen} onClick={onMore}>
+      <button
+        type="button"
+        className={`nav-link ${moreOpen ? 'active' : ''}${lens === tabs.length ? ' here' : ''}`}
+        aria-expanded={moreOpen}
+        onClick={onMore}
+      >
         <IconMore />
         <span>More</span>
       </button>
@@ -441,11 +466,23 @@ function TabBar({ onMore, moreOpen }: { onMore: () => void; moreOpen: boolean })
 
 export function Layout({ children, onOpenTerminal }: { children: ReactNode; onOpenTerminal: (runId: string) => void }) {
   const mobile = useIsMobile();
+  const nav = useNav();
   const [moreOpen, setMoreOpen] = useState(false);
   const { pathname } = useLocation();
   // A sheet left open across a breakpoint change or a navigation would sit over
   // a layout that no longer has a tab bar under it.
   useEffect(() => setMoreOpen(false), [mobile, pathname]);
+  // Glass's row cascade runs only while a section is entering (glass.css § motion):
+  // a reorder moves rows, and a moved row would replay an always-on animation.
+  const mainRef = useRef<HTMLElement>(null);
+  const section = pathname.split('/')[1] ?? '';
+  useLayoutEffect(() => {
+    const main = mainRef.current;
+    if (!main) return;
+    main.dataset.entering = '';
+    const t = setTimeout(() => delete main.dataset.entering, 900);
+    return () => clearTimeout(t);
+  }, [section]);
   // Scroll lock and Escape live in <Sheet>, shared with every other sheet.
 
   return (
@@ -456,7 +493,7 @@ export function Layout({ children, onOpenTerminal }: { children: ReactNode; onOp
             <span className="tm">tm_</span>manager
             <span className="sub">tasks · agents · terminals</span>
           </div>
-          {NAV.map((n) => (
+          {nav.map((n) => (
             <NavLink key={n.to} to={n.to} end={n.to === '/'} className={navClass}>
               {n.icon} {n.label}
             </NavLink>
@@ -464,6 +501,8 @@ export function Layout({ children, onOpenTerminal }: { children: ReactNode; onOp
           <div className="sidebar-foot">{servedFrom()}</div>
         </aside>
       )}
+      {/* Glass only: the blur the page scrolls under (glass.css § the shell) */}
+      <div className="edge-top" aria-hidden="true" />
       <header className="header">
         {mobile && (
           <span className="brand-mini">
@@ -494,7 +533,9 @@ export function Layout({ children, onOpenTerminal }: { children: ReactNode; onOp
           </>
         )}
       </header>
-      <main className="main">{children}</main>
+      <main className="main" ref={mainRef}>
+        {children}
+      </main>
       {mobile && <TabBar moreOpen={moreOpen} onMore={() => setMoreOpen((v) => !v)} />}
       {mobile && moreOpen && <MoreSheet onClose={() => setMoreOpen(false)} onOpenTerminal={onOpenTerminal} />}
     </div>

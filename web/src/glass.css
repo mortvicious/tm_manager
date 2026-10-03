@@ -1,0 +1,1094 @@
+/* =====================================================================
+   GLASS: the iOS 26 Liquid Glass design layer (docs/glass.md)
+
+   Loaded after theme.css. Every rule is scoped to html[data-design='glass'],
+   which src/appearance.ts sets per device, so Classic renders exactly as it
+   did. Every value is a --tm-* token from theme.css's Glass blocks; nothing
+   here introduces a colour of its own.
+
+   Two traps decide where a blur may go (docs/glass.md § Materials):
+   - backdrop-filter, filter and transform make an element the containing
+     block of its position:fixed children. `.main` holds the slide-over, the
+     drawer and the question modal, and `.header` holds the emulator, so
+     neither gets a blur of its own. `.more-sheet` holds the phone's commands
+     popover, so it is blurred only while no popover is open in it.
+   - Exit animations replay on a clone (`.tm-exit`, src/motion.ts). An
+     overlay's entry animation is therefore its only animation, and the
+     clone switches every other one off.
+   ===================================================================== */
+
+/* only Glass draws these: the scroll-edge blur and the Board's phone title */
+.edge-top,
+.glass-only {
+  display: none;
+}
+
+/* ---------- base ---------- */
+
+:root[data-design='glass'] {
+  -webkit-tap-highlight-color: transparent;
+  background: var(--tm-bg);
+}
+
+[data-design='glass'] body {
+  background: var(--tm-wallpaper);
+  background-color: var(--tm-bg);
+}
+
+[data-design='glass'] ::selection {
+  background: color-mix(in srgb, var(--tm-accent) 32%, transparent);
+  color: inherit;
+}
+
+/* iOS type on a phone (the scale is in theme.css's Glass blocks). The body's
+   own size is fixed before .app redefines the tokens, so set it here. */
+[data-design='glass'] .app.mobile {
+  font-size: var(--tm-text-sm);
+}
+
+/* chrome is not text: no selection loupe or callout on a long press */
+[data-design='glass'] .app.mobile
+  :is(.header, .tabbar, .btn, .nav-link, .badge, .chip, .section-head, .sheet-action, .switch, .task-row) {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* ---------- the shell: the top bar floats and the page scrolls under it ---------- */
+
+[data-design='glass'] .app {
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: 'side main';
+}
+
+[data-design='glass'] .app.mobile {
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: 'main';
+}
+
+/* A grid item takes z-index without being positioned, so the header paints
+   over the page without becoming anyone's containing block. 26 keeps the
+   emulator inside it above the drawer (25), as before. */
+/* pointer-events: the bar spans .main's top edge, so its gaps let clicks,
+   the wheel and the scrollbar through to the page; its controls still take them */
+[data-design='glass'] .header {
+  pointer-events: none;
+  grid-area: main;
+  align-self: start;
+  z-index: 26;
+  min-height: var(--tm-head-h);
+  padding-top: var(--tm-space-2);
+  padding-bottom: var(--tm-space-2);
+  gap: var(--tm-space-2);
+  background: transparent;
+  border-bottom: 0;
+}
+
+[data-design='glass'] .header > * {
+  pointer-events: auto;
+}
+
+[data-design='glass'] .app.mobile .header {
+  min-height: calc(var(--tm-head-h) + env(safe-area-inset-top, 0px));
+  padding-top: calc(var(--tm-space-2) + env(safe-area-inset-top, 0px));
+}
+
+/* iOS 26's scroll-edge effect: a soft blur under the bar that is invisible
+   over the wallpaper and only shows once content slides beneath it */
+[data-design='glass'] .edge-top {
+  display: block;
+  grid-area: main;
+  align-self: start;
+  z-index: 25;
+  height: calc(var(--tm-head-h) + var(--tm-space-6));
+  pointer-events: none;
+  background: linear-gradient(to bottom, var(--tm-edge-tint), transparent);
+  -webkit-backdrop-filter: blur(var(--tm-blur-edge));
+  backdrop-filter: blur(var(--tm-blur-edge));
+  /* the mask only reads alpha: currentColor is any opaque colour */
+  -webkit-mask-image: linear-gradient(to bottom, currentColor 45%, transparent);
+  mask-image: linear-gradient(to bottom, currentColor 45%, transparent);
+}
+
+[data-design='glass'] .app.mobile .edge-top {
+  height: calc(var(--tm-head-h) + env(safe-area-inset-top, 0px) + var(--tm-space-6));
+}
+
+[data-design='glass'] .main {
+  padding-top: calc(var(--tm-head-h) + var(--tm-space-3));
+  scroll-padding-top: calc(var(--tm-head-h) + var(--tm-space-3));
+  background-image: none;
+}
+
+[data-design='glass'] .app.mobile .main {
+  padding-top: calc(var(--tm-head-h) + env(safe-area-inset-top, 0px) + var(--tm-space-2));
+  scroll-padding-top: calc(var(--tm-head-h) + env(safe-area-inset-top, 0px) + var(--tm-space-2));
+}
+
+/* desktop: the sidebar is a pane of glass inset from the window edge */
+[data-design='glass'] .sidebar {
+  margin: var(--tm-space-2) 0 var(--tm-space-2) var(--tm-space-2);
+  min-height: 0;
+  overflow: auto;
+  padding: var(--tm-space-4) var(--tm-space-2);
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-glass-card);
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
+}
+
+[data-design='glass'] .brand,
+[data-design='glass'] .brand-mini {
+  font-family: var(--tm-font-display);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+[data-design='glass'] .brand {
+  font-size: var(--tm-text-md);
+  padding: var(--tm-space-1) var(--tm-space-3) var(--tm-space-4);
+}
+
+[data-design='glass'] .brand .sub,
+[data-design='glass'] .sidebar-foot {
+  font-family: var(--tm-font-body);
+  letter-spacing: 0;
+}
+
+[data-design='glass'] .sidebar .nav-link {
+  padding: 8px 10px;
+  border-radius: var(--tm-radius-md);
+  color: var(--tm-text);
+  transition:
+    color var(--tm-dur-fast) var(--tm-ease-out),
+    background var(--tm-dur-fast) var(--tm-ease-out),
+    transform var(--tm-dur-spring) var(--tm-ease-spring);
+}
+
+[data-design='glass'] .sidebar .nav-link svg {
+  color: var(--tm-accent);
+  opacity: 1;
+}
+
+[data-design='glass'] .sidebar .nav-link.active {
+  background: var(--tm-accent-subtle);
+  color: var(--tm-accent);
+}
+
+[data-design='glass'] .sidebar .nav-link:active {
+  transform: scale(0.97);
+  transition-duration: var(--tm-dur-press);
+}
+
+/* large titles */
+[data-design='glass'] .page-title {
+  font-weight: 700;
+  letter-spacing: -0.005em;
+}
+
+[data-design='glass'] .app.mobile .page-title {
+  font-size: var(--tm-text-3xl);
+  line-height: 1.15;
+  margin: var(--tm-space-1) var(--tm-space-1) var(--tm-space-3);
+}
+
+[data-design='glass'] .page-title.glass-only {
+  display: flex;
+}
+
+/* ---------- materials ---------- */
+
+/* cards sit on the wallpaper: translucent, a lit rim, no blur (nothing
+   behind them but the wallpaper, and a blur of a gradient is that gradient) */
+[data-design='glass'] :is(.panel, .tile, .chart-card) {
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-glass-card);
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
+}
+
+/* an inset-grouped list: the rows' own backgrounds keep to the corners */
+[data-design='glass'] .panel:has(> .task-row, > .task-group) {
+  overflow: hidden;
+}
+
+/* ---------- buttons: capsules; a press shrinks, the release springs back ---------- */
+
+/* Specificity is held at Classic's own level with :where(), so Classic's
+   state rules (.preset-btn.on, .pick-btn.on, .queue-btn …) still win over
+   the base. The :hover twin stops Classic's hover colours sticking after a
+   tap on a phone (iOS keeps :hover until the next tap elsewhere). */
+:where([data-design='glass']) .btn,
+:where([data-design='glass']) .btn:hover {
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-glass-btn);
+  color: var(--tm-text);
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-shadow-sm);
+}
+
+:where([data-design='glass']) .btn {
+  padding: 7px 16px;
+  transition:
+    transform var(--tm-dur-spring) var(--tm-ease-spring),
+    background var(--tm-dur-fast) var(--tm-ease-out),
+    color var(--tm-dur-fast) var(--tm-ease-out),
+    box-shadow var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+:where([data-design='glass']) .btn:active {
+  transform: scale(var(--tm-press-scale));
+  transition-duration: var(--tm-dur-press);
+  transition-timing-function: var(--tm-ease-out);
+}
+
+:where([data-design='glass']) .btn.primary,
+:where([data-design='glass']) .btn.primary:hover {
+  border-color: transparent;
+  background: var(--tm-accent);
+  color: var(--tm-accent-contrast);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--tm-accent-contrast) 28%, transparent),
+    0 6px 18px color-mix(in srgb, var(--tm-accent) 32%, transparent);
+}
+
+:where([data-design='glass']) .btn.danger,
+:where([data-design='glass']) .btn.danger:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--tm-status-failed) 14%, transparent);
+  color: var(--tm-status-failed);
+  box-shadow: none;
+}
+
+:where([data-design='glass']) .btn.ghost,
+:where([data-design='glass']) .btn.ghost:hover {
+  border-color: transparent;
+  background: transparent;
+  color: var(--tm-text-muted);
+  box-shadow: none;
+}
+
+[data-design='glass'] .btn.queue-btn,
+[data-design='glass'] .btn.queue-btn:hover {
+  color: var(--tm-accent);
+}
+
+[data-design='glass'] .btn.ghost.on,
+[data-design='glass'] .btn.ghost.on:hover,
+[data-design='glass'] .filters-btn.on,
+[data-design='glass'] .filters-btn.on:hover {
+  background: var(--tm-accent-subtle);
+  color: var(--tm-accent);
+}
+
+@media (hover: hover) {
+  :where([data-design='glass']) .btn:hover {
+    background: var(--tm-glass-btn-hover);
+  }
+
+  :where([data-design='glass']) .btn.primary:hover {
+    background: var(--tm-accent-strong);
+  }
+
+  :where([data-design='glass']) .btn.danger:hover {
+    background: color-mix(in srgb, var(--tm-status-failed) 22%, transparent);
+  }
+
+  :where([data-design='glass']) .btn.ghost:hover {
+    background: var(--tm-bg-overlay);
+    color: var(--tm-text);
+  }
+}
+
+/* The terminal's chrome is dark in both schemes, so its ghost buttons keep
+   Classic's light-on-dark greys instead of Glass light's dark label colour. */
+[data-design='glass'] :is(.term-head, .term-compact, .shell-pane-head) .btn.ghost {
+  color: var(--tm-gray-4);
+}
+
+[data-design='glass'] :is(.term-head, .term-compact, .shell-pane-head) .btn.ghost:hover {
+  background: color-mix(in srgb, var(--tm-gray-1) 12%, transparent);
+  color: var(--tm-gray-1);
+}
+
+/* segmented control: a filled track, the pick a raised thumb */
+/* a grid, so the segments are equal (the widest sets the size) and fill the
+   track when a phone's config row stretches it */
+[data-design='glass'] .seg {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 0;
+  padding: 2px;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-bg-inset);
+}
+
+[data-design='glass'] .seg .btn,
+[data-design='glass'] .seg .btn:hover {
+  justify-content: center;
+  padding: 5px 14px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--tm-text);
+  box-shadow: none;
+  font-weight: 500;
+}
+
+[data-design='glass'] .seg .btn.primary,
+[data-design='glass'] .seg .btn.primary:hover {
+  background: var(--tm-seg-thumb);
+  color: var(--tm-text);
+  box-shadow: var(--tm-knob-shadow);
+  font-weight: 600;
+}
+
+/* ---------- fields ---------- */
+
+:where([data-design='glass']) :is(input, textarea, select, button).field {
+  border: 1px solid transparent;
+  border-radius: var(--tm-radius-md);
+  background-color: var(--tm-bg-inset);
+  transition:
+    border-color var(--tm-dur-fast) var(--tm-ease-out),
+    box-shadow var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+/* WebKit draws a native select square whatever its radius: drop the native
+   face and draw the chevron from two gradient triangles in currentColor */
+:where([data-design='glass']) select.field:not([multiple]) {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 30px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) 52%,
+    calc(100% - 11px) 52%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+
+/* `.app.mobile select.field` sets its own padding (0,3,1): keep room for the chevron there too */
+:where([data-design='glass']) .app.mobile select.field:not([multiple]) {
+  padding-right: 30px;
+}
+
+:where([data-design='glass']) :is(input, textarea, select).field:focus,
+:where([data-design='glass']) button.field:focus-visible {
+  border-color: var(--tm-accent);
+  box-shadow: 0 0 0 4px var(--tm-accent-subtle);
+}
+
+[data-design='glass'] .label {
+  font-family: var(--tm-font-body);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+/* ---------- chips and badges: tinted capsules ---------- */
+
+/* the tint is the chip's own colour, so neutral chips read grey and tag
+   chips (coloured inline) read in their hue without a rule per hue */
+[data-design='glass'] .chip {
+  padding: 2px 9px;
+  border: 0;
+  border-radius: var(--tm-radius-pill);
+  background: color-mix(in srgb, currentColor 13%, transparent);
+  font-family: var(--tm-font-body);
+  font-weight: 500;
+}
+
+[data-design='glass'] .badge {
+  padding: 3px 10px;
+  border: 0;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  font-family: var(--tm-font-body);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition:
+    color var(--tm-dur-slow) var(--tm-ease-out),
+    background var(--tm-dur-slow) var(--tm-ease-out);
+}
+
+/* a badge that opens the reviewer's terminal is still a badge */
+[data-design='glass'] button.badge.badge-link {
+  background: color-mix(in srgb, currentColor 16%, transparent);
+}
+
+[data-design='glass'] button.badge.badge-link:hover {
+  background: color-mix(in srgb, currentColor 26%, transparent);
+}
+
+[data-design='glass'] :is(.runcount, .mono.runcount) {
+  font-family: var(--tm-font-body);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- the iOS switch: 51x31, the knob stretches while held ---------- */
+
+[data-design='glass'] .switch .track {
+  width: 51px;
+  height: 31px;
+  border: 0;
+  background: var(--tm-switch-off);
+  transition: background var(--tm-dur-base) var(--tm-ease-out);
+}
+
+[data-design='glass'] .switch .knob {
+  top: 2px;
+  left: 2px;
+  width: 27px;
+  height: 27px;
+  background: var(--tm-knob);
+  box-shadow: var(--tm-knob-shadow);
+  transition:
+    transform var(--tm-dur-spring) var(--tm-ease-spring),
+    width var(--tm-dur-spring) var(--tm-ease-spring);
+}
+
+[data-design='glass'] .switch.on .track {
+  background: var(--tm-switch-on);
+}
+
+[data-design='glass'] .switch.on .knob {
+  left: 2px;
+  background: var(--tm-knob);
+  transform: translateX(20px);
+}
+
+[data-design='glass'] .switch:active .knob {
+  width: 33px;
+}
+
+[data-design='glass'] .switch.on:active .knob {
+  transform: translateX(14px);
+}
+
+/* ---------- top bar controls: floating glass capsules ---------- */
+
+[data-design='glass'] .header :is(.switch, .runcount),
+[data-design='glass'] .header .btn,
+[data-design='glass'] .header .btn:hover {
+  min-height: 40px;
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-glass-bar);
+  -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
+}
+
+/* inline-block, not flex: a flex container would trim the spaces around the
+   usage pill's " · " separators */
+[data-design='glass'] .header .runcount {
+  display: inline-block;
+  line-height: 38px;
+  white-space: nowrap;
+  padding: 0 var(--tm-space-3);
+  color: var(--tm-text);
+  font-weight: 500;
+}
+
+[data-design='glass'] .header .switch {
+  padding: 0 var(--tm-space-3) 0 4px;
+  transition: transform var(--tm-dur-spring) var(--tm-ease-spring);
+}
+
+[data-design='glass'] .header .switch .track {
+  /* 51x31 inside a 40px capsule */
+  transform: scale(0.9);
+  transform-origin: left center;
+  margin-right: -4px;
+}
+
+[data-design='glass'] .header .btn {
+  justify-content: center;
+  min-width: 40px;
+  padding: 0 var(--tm-space-3);
+  color: var(--tm-text);
+}
+
+[data-design='glass'] .header .btn.ghost.on,
+[data-design='glass'] .header .btn.ghost.on:hover,
+[data-design='glass'] .header .tools-btn.on {
+  background: var(--tm-accent-subtle);
+  color: var(--tm-accent);
+}
+
+[data-design='glass'] .header .qchip,
+[data-design='glass'] .header .qchip:hover {
+  color: var(--tm-status-attention);
+}
+
+[data-design='glass'] .header .tools-btn {
+  width: 40px;
+  padding: 0;
+}
+
+/* A phone's bar holds four capsules at most. While a question chip is up the
+   switch keeps its knob and drops its label off screen (the knob's colour
+   is the state; the label stays the switch's accessible name). */
+[data-design='glass'] .app.mobile .header,
+[data-design='glass'] .app.mobile .header .btn {
+  font-size: var(--tm-text-xs);
+}
+
+[data-design='glass'] .app.mobile .header:has(.qchip) .switch > span:not(.track) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+[data-design='glass'] .app.mobile .header:has(.qchip) .switch {
+  padding-right: 4px;
+}
+
+@media (hover: hover) {
+  [data-design='glass'] .header .btn:hover {
+    background: var(--tm-glass-btn-hover);
+  }
+}
+
+/* ---------- the tab bar: a floating capsule with a sliding lens ---------- */
+
+[data-design='glass'] .tabbar {
+  left: calc(var(--tm-space-4) + env(safe-area-inset-left, 0px));
+  right: calc(var(--tm-space-4) + env(safe-area-inset-right, 0px));
+  bottom: var(--tm-tabbar-float);
+  height: var(--tm-tabbar-h);
+  padding: 4px;
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-glass-bar);
+  -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow);
+}
+
+/* --tab-i / --tab-n come from TabBar: the lens rides under the tab that
+   owns the page (More owns everything reached from the More sheet) */
+[data-design='glass'] .tabbar::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc((100% - 8px) / var(--tab-n, 5));
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-glass-lens);
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular);
+  transform: translateX(calc(var(--tab-i, 0) * 100%));
+  transition: transform var(--tm-dur-spring) var(--tm-ease-spring);
+}
+
+/* the lens swells under a finger, as Liquid Glass does */
+[data-design='glass'] .tabbar:active::before {
+  transform: translateX(calc(var(--tab-i, 0) * 100%)) scale(1.05);
+}
+
+[data-design='glass'] .tabbar .nav-link {
+  min-height: 0;
+  padding: 0;
+  gap: 2px;
+  border-radius: var(--tm-radius-pill);
+  color: var(--tm-text);
+  font-size: var(--tm-text-tab);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+[data-design='glass'] .tabbar .nav-link.active,
+[data-design='glass'] .tabbar .nav-link.here {
+  color: var(--tm-accent);
+}
+
+[data-design='glass'] .tabbar .nav-link.active::before {
+  content: none;
+}
+
+[data-design='glass'] .tabbar .nav-link:active {
+  background: transparent;
+}
+
+[data-design='glass'] .tabbar .nav-link svg {
+  width: 23px;
+  height: 23px;
+  transition: transform var(--tm-dur-spring) var(--tm-ease-spring);
+}
+
+[data-design='glass'] .tabbar .nav-link:active svg {
+  transform: scale(0.82);
+  transition-duration: var(--tm-dur-press);
+}
+
+/* ---------- board ---------- */
+
+/* sentence-case section titles; Classic's mono micro-caps stay Classic's.
+   :where() so a group-tinted head (.section-head.group-tint) keeps its hue. */
+:where([data-design='glass']) .section-head {
+  margin: var(--tm-space-5) var(--tm-space-1) var(--tm-space-2);
+  color: var(--tm-text);
+  font-family: var(--tm-font-display);
+  font-size: var(--tm-text-lg);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-transform: none;
+}
+
+:where([data-design='glass']) .section-head .count {
+  padding: 1px 8px;
+  background: var(--tm-bg-inset);
+  color: var(--tm-text-muted);
+  font-family: var(--tm-font-body);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-design='glass'] .section-head.accent,
+[data-design='glass'] .section-head.accent .section-fold:hover {
+  color: var(--tm-text);
+}
+
+[data-design='glass'] .section-head.accent .count {
+  background: var(--tm-accent-subtle);
+  color: var(--tm-accent);
+}
+
+[data-design='glass'] .section-head .section-toggle {
+  color: var(--tm-accent);
+  font-family: var(--tm-font-body);
+  font-size: var(--tm-text-sm);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+[data-design='glass'] :is(.section-head, .task-group-head) .caret {
+  transition: transform var(--tm-dur-spring) var(--tm-ease-spring);
+}
+
+/* inset-grouped sections scroll away with their list, as iOS's do */
+[data-design='glass'] .app.mobile .board .section-head {
+  position: static;
+  margin: var(--tm-space-5) var(--tm-space-1) var(--tm-space-2);
+  padding: 0;
+  background: none;
+}
+
+/* :where(): Classic's .task-row:last-child and :has(+ .dispatch-strip) still drop the line */
+:where([data-design='glass']) .task-row {
+  border-bottom: 0.5px solid var(--tm-border);
+  transition: background var(--tm-dur-exit) var(--tm-ease-out);
+}
+
+/* a row highlights under the finger and fades out on release */
+[data-design='glass'] .task-row:active {
+  background: var(--tm-fill-press);
+  transition-duration: 0ms;
+  /* a scroll view holds a touch a beat before it highlights, so a scroll
+     that starts on a row never flashes it */
+  transition-delay: 60ms;
+}
+
+[data-design='glass'] .task-row .title {
+  font-weight: 600;
+}
+
+[data-design='glass'] .task-row .age {
+  font-family: var(--tm-font-body);
+  font-variant-numeric: tabular-nums;
+}
+
+:where([data-design='glass']) .task-group {
+  border-left: 3px solid var(--tm-group, transparent);
+  border-bottom: 0.5px solid var(--tm-border);
+}
+
+[data-design='glass'] .task-group-head {
+  border-bottom: 0.5px solid var(--tm-border);
+  font-family: var(--tm-font-body);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+[data-design='glass'] .app.mobile .board-toolbar > select.field {
+  min-height: 40px;
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-pill);
+  background-color: var(--tm-glass-btn);
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-shadow-sm);
+}
+
+[data-design='glass'] .app.mobile .board-toolbar > .btn {
+  min-height: 40px;
+}
+
+/* sticky hover on a phone: the last tapped row or item must not stay lit */
+/* at Classic's specificity: a drop target's fill and the press highlight still win */
+@media (hover: none) {
+  :where([data-design='glass']) .task-row:hover,
+  :where([data-design='glass']) .task-row .quick:hover,
+  [data-design='glass'] .sidebar .nav-link:hover:not(.active) {
+    background: transparent;
+  }
+}
+
+/* ---------- config and dashboard ---------- */
+
+[data-design='glass'] .cfg-group h3 {
+  font-size: var(--tm-text-lg);
+  font-weight: 700;
+}
+
+[data-design='glass'] .cfg-row + .cfg-row {
+  border-top: 0.5px solid var(--tm-border);
+}
+
+[data-design='glass'] .tile .value {
+  font-weight: 700;
+}
+
+/* ---------- overlays ---------- */
+
+[data-design='glass'] .overlay {
+  background: var(--tm-scrim);
+  animation: tm-fade-in var(--tm-dur-sheet) var(--tm-ease-smooth);
+}
+
+/* the bottom sheet floats inside the screen's own corners (iOS 26) */
+[data-design='glass'] .more-sheet {
+  left: calc(var(--tm-space-2) + env(safe-area-inset-left, 0px));
+  right: calc(var(--tm-space-2) + env(safe-area-inset-right, 0px));
+  bottom: var(--tm-space-2);
+  max-height: calc(100svh - var(--tm-space-8));
+  padding: var(--tm-space-2) var(--tm-space-4)
+    max(var(--tm-space-4), calc(env(safe-area-inset-bottom, 0px) - var(--tm-space-2)));
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-xl);
+  background: var(--tm-glass-thick);
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-shadow-lg);
+  animation: tm-sheet-in var(--tm-dur-sheet) var(--tm-ease-smooth);
+}
+
+[data-design='glass'] .more-sheet:not(:has(.cmd-pop)) {
+  -webkit-backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+}
+
+[data-design='glass'] .sheet-grip {
+  width: 36px;
+  height: 5px;
+  margin: 2px auto var(--tm-space-1);
+  background: var(--tm-text-faint);
+  opacity: 0.55;
+}
+
+[data-design='glass'] .sheet-title {
+  font-family: var(--tm-font-display);
+  font-size: var(--tm-text-lg);
+  font-weight: 700;
+}
+
+/* the More sheet's nav: Control Center tiles */
+[data-design='glass'] .sheet-nav {
+  gap: var(--tm-space-2);
+}
+
+[data-design='glass'] .sheet-nav .nav-link {
+  min-height: 52px;
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-glass-card);
+  color: var(--tm-text);
+  font-weight: 600;
+  transition:
+    transform var(--tm-dur-spring) var(--tm-ease-spring),
+    background var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+[data-design='glass'] .sheet-nav .nav-link svg {
+  width: 20px;
+  height: 20px;
+  color: var(--tm-accent);
+  opacity: 1;
+}
+
+[data-design='glass'] .sheet-nav .nav-link.active {
+  border-color: transparent;
+  background: var(--tm-accent-subtle);
+  color: var(--tm-accent);
+}
+
+[data-design='glass'] .sheet-nav .nav-link:active {
+  transform: scale(0.96);
+  transition-duration: var(--tm-dur-press);
+}
+
+[data-design='glass'] .sheet-tools {
+  border-top: 0.5px solid var(--tm-border);
+}
+
+[data-design='glass'] .sheet-action {
+  border-radius: var(--tm-radius-md);
+  transition: background var(--tm-dur-exit) var(--tm-ease-out);
+}
+
+[data-design='glass'] .sheet-action:active:not(:disabled) {
+  background: var(--tm-fill-press);
+  transition-duration: 0ms;
+}
+
+[data-design='glass'] .sheet-actions.danger-zone {
+  border-top: 0.5px solid var(--tm-border);
+}
+
+/* New task: a whole-screen form on the wallpaper */
+[data-design='glass'] .full-sheet {
+  background: var(--tm-wallpaper);
+  background-color: var(--tm-bg);
+  animation: tm-sheet-in var(--tm-dur-sheet) var(--tm-ease-smooth);
+}
+
+[data-design='glass'] .full-sheet-head {
+  border-bottom: 0.5px solid var(--tm-border);
+  background: transparent;
+}
+
+[data-design='glass'] .full-sheet-title {
+  font-family: var(--tm-font-display);
+  font-weight: 700;
+}
+
+/* the task panel: a floating pane on a desktop, a card sheet on a phone */
+[data-design='glass'] .slideover {
+  top: var(--tm-space-2);
+  right: var(--tm-space-2);
+  bottom: var(--tm-space-2);
+  overflow: hidden;
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-glass-thick);
+  -webkit-backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-shadow-lg);
+  animation: tm-panel-in var(--tm-dur-sheet) var(--tm-ease-smooth);
+}
+
+[data-design='glass'] .slideover-head,
+[data-design='glass'] .so-bar {
+  border-bottom: 0.5px solid var(--tm-border);
+  background: transparent;
+}
+
+[data-design='glass'] .app.mobile .slideover {
+  top: calc(env(safe-area-inset-top, 0px) + var(--tm-space-2));
+  right: 0;
+  bottom: 0;
+  left: 0;
+  border-width: 1px 0 0;
+  border-radius: var(--tm-radius-lg) var(--tm-radius-lg) 0 0;
+  animation: tm-sheet-in var(--tm-dur-sheet) var(--tm-ease-smooth);
+}
+
+/* the card sheet starts below the status bar, so its head no longer pays that inset */
+[data-design='glass'] .app.mobile .slideover-head {
+  padding-top: var(--tm-space-3);
+}
+
+[data-design='glass'] .app.mobile .slideover-body > .so-save {
+  border-top: 0.5px solid var(--tm-border);
+  background: var(--tm-glass-bar);
+  -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+}
+
+/* an agent's question: an alert that pops in from slightly too big */
+[data-design='glass'] .qmodal {
+  overflow: hidden;
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-xl);
+  background: var(--tm-glass-thick);
+  -webkit-backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-shadow-lg);
+  animation: tm-alert-in var(--tm-dur-spring) var(--tm-ease-spring);
+}
+
+/* popovers grow out of their button */
+[data-design='glass'] :is(.cmd-pop, .group-picker-pop) {
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-glass-thick);
+  -webkit-backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-shadow-lg);
+  transform-origin: top;
+  animation: tm-pop-in var(--tm-dur-spring) var(--tm-ease-spring);
+}
+
+[data-design='glass'] .app.mobile .cmd-pop {
+  transform-origin: bottom;
+}
+
+/* the terminal drawer rises like a sheet; it stays a terminal inside */
+[data-design='glass'] .term-drawer {
+  overflow: hidden;
+  border-top: 0;
+  border-radius: var(--tm-radius-lg) var(--tm-radius-lg) 0 0;
+  animation: tm-sheet-in var(--tm-dur-sheet) var(--tm-ease-smooth);
+}
+
+[data-design='glass'] .app.mobile .term-drawer.full {
+  border-radius: 0;
+}
+
+/* ---------- motion ---------- */
+
+/* pages rise into place. `backwards`, never `both`: a transform left on the
+   page root after the animation would trap every fixed element inside it */
+[data-design='glass'] .main > :first-child {
+  animation: tm-page-in var(--tm-dur-page) var(--tm-ease-smooth) backwards;
+}
+
+/* List rows arrive in a short cascade, but only while the page is entering
+   (`.main[data-entering]`, set by Layout for 900ms per section change). A
+   keyed reorder MOVES rows with insertBefore, which restarts any CSS animation
+   on them, so an always-on cascade would blink the board on every update. */
+[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group) {
+  animation: tm-row-in var(--tm-dur-page) var(--tm-ease-smooth) backwards;
+}
+
+[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(2) { animation-delay: 30ms; }
+[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(3) { animation-delay: 60ms; }
+[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(4) { animation-delay: 90ms; }
+[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(5) { animation-delay: 120ms; }
+[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(6) { animation-delay: 150ms; }
+[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(7) { animation-delay: 180ms; }
+[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(n + 8) { animation-delay: 210ms; }
+
+/* Reduce Motion: theme.css collapses durations but not delays, which would
+   leave staggered rows invisible for a beat. Nothing rises at all instead. */
+@media (prefers-reduced-motion: reduce) {
+  [data-design='glass'] .main > :first-child,
+  [data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group) {
+    animation: none;
+  }
+}
+
+/* Exit: a ghost replays nothing of its own (src/motion.ts) and takes no taps */
+.tm-exit,
+.tm-exit * {
+  animation: none !important;
+  transition: none !important;
+}
+
+.tm-exit {
+  pointer-events: none !important;
+}
+
+[data-design='glass'] .tm-exit.overlay,
+[data-design='glass'] .tm-exit > .overlay {
+  animation: tm-fade-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
+}
+
+[data-design='glass'] .sheet-root.tm-exit > .more-sheet,
+[data-design='glass'] .full-sheet.tm-exit,
+[data-design='glass'] .app.mobile .slideover.tm-exit {
+  animation: tm-sheet-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
+}
+
+[data-design='glass'] .slideover.tm-exit {
+  animation: tm-panel-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
+}
+
+[data-design='glass'] .qmodal.tm-exit {
+  animation: tm-alert-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
+}
+
+/* a design or scheme switch cross-fades the whole page (src/appearance.ts).
+   Unscoped: during a switch TO Classic the root already says classic. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--tm-dur-slow);
+}
+
+@keyframes tm-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes tm-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes tm-sheet-in {
+  from {
+    transform: translateY(105%);
+  }
+}
+
+@keyframes tm-sheet-out {
+  to {
+    transform: translateY(105%);
+  }
+}
+
+@keyframes tm-panel-in {
+  from {
+    transform: translateX(calc(100% + var(--tm-space-4)));
+  }
+}
+
+@keyframes tm-panel-out {
+  to {
+    transform: translateX(calc(100% + var(--tm-space-4)));
+  }
+}
+
+/* `.qmodal` centres itself with a transform, so both ends keep the translate */
+@keyframes tm-alert-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.12);
+  }
+}
+
+@keyframes tm-alert-out {
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.94);
+  }
+}
+
+@keyframes tm-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+@keyframes tm-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+@keyframes tm-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}

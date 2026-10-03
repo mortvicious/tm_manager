@@ -55,6 +55,7 @@ npm-workspaces monorepo: `shared/` (TS types imported as source by both sides �
 ## Rules
 
 - Visual changes must resolve to the `--tm-*` tokens defined in `docs/tm-design-tokens.html` (mirrored in `web/src/theme.css`). No hardcoded colors/spacing/fonts outside that token layer (xterm.js needs concrete values — take them from the sheet's terminal tokens).
+- Two designs (`docs/glass.md`): **Classic** (`theme.css`) and **Glass**, the iOS Liquid Glass layer in `web/src/glass.css`, picked per device (`html[data-design]`, `src/appearance.ts` + its inline twin in `index.html`). Every Glass rule is scoped to `[data-design='glass']` and its tokens are the Glass blocks in `theme.css`, so Classic keeps rendering unchanged; a new component gets Glass colours and type through the remapped tokens and needs a `glass.css` rule only for a material or motion of its own. Never put `backdrop-filter`/`filter`/`transform` on `.main`, `.header` or `.app`: they hold `position: fixed` overlays, and those properties make an element their containing block. Overlays animate out through `exitGhost` (`src/motion.ts`), not a closing state. Glass hides Features and Chat from the menus only; their routes stay for deep links.
 
 - Document all work in `docs/` — updating docs is an exit criterion of every phase/change.
 - Worker prompts must include the standing caps: max 3 subagents per session; orchestrator concurrency stays at 2.

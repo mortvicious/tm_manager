@@ -192,6 +192,218 @@
   --tm-chart-analyze: #6d28d9;
 }
 
+/* ---- design: Glass (docs/glass.md) ----
+   The iOS 26 Liquid Glass design, picked per device (`html[data-design]`,
+   src/appearance.ts). These blocks REMAP the semantic layer for both schemes
+   and add the material and spring tokens that glass.css draws with. Classic
+   never matches them. Colours are Apple's system palette: the plain dark
+   variants, and the increased-contrast light variants wherever a hue is TEXT
+   (the plain light ones read under 3:1 on white). */
+[data-design='glass'] {
+  /* SF on Apple devices, the platform's own UI face elsewhere */
+  --tm-font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+  --tm-font-body: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --tm-font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+  --tm-radius-sm: 8px;
+  --tm-radius-md: 12px;
+  --tm-radius-lg: 22px;
+  /* sheets and alerts: the screen's own corner, roughly */
+  --tm-radius-xl: 32px;
+  /* springs. The cubic fallbacks are close; linear() below is the real curve. */
+  --tm-ease-smooth: cubic-bezier(0.32, 0.72, 0, 1);
+  --tm-ease-spring: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --tm-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --tm-dur-press: 120ms;
+  --tm-dur-exit: 260ms;
+  --tm-dur-page: 440ms;
+  --tm-dur-sheet: 560ms;
+  --tm-dur-spring: 620ms;
+  --tm-press-scale: 0.95;
+  --tm-blur: 24px;
+  --tm-blur-thick: 40px;
+  --tm-blur-edge: 10px;
+  --tm-saturate: 180%;
+  /* the floating tab bar and the transparent top bar */
+  --tm-tabbar-h: 62px;
+  --tm-head-h: 56px;
+  --tm-text-tab: 0.625rem;
+}
+
+/* sampled from a damped spring (bounce 0 and 0.3), SwiftUI's own model */
+@supports (transition-timing-function: linear(0, 1)) {
+  [data-design='glass'] {
+    --tm-ease-smooth: linear(0, 0.099, 0.285, 0.47, 0.623, 0.74, 0.824, 0.883, 0.923, 0.95, 0.968, 0.979, 0.987, 0.992, 0.995, 0.997, 0.998, 0.999, 1);
+    --tm-ease-spring: linear(0, 0.047, 0.158, 0.3, 0.45, 0.592, 0.716, 0.819, 0.9, 0.959, 1, 1.026, 1.04, 1.045, 1.045, 1.041, 1.035, 1.028, 1.021, 1.015, 1.01, 1.006, 1.003, 1.001, 0.999, 0.998, 0.998, 0.998, 0.998, 0.998, 0.999, 0.999, 1);
+  }
+}
+
+[data-design='glass'][data-theme='dark'] {
+  --tm-bg: #06070b;
+  --tm-bg-raised: #1c1c1e;
+  --tm-bg-overlay: rgba(120, 120, 128, 0.24);
+  --tm-bg-inset: rgba(118, 118, 128, 0.2);
+  --tm-border: rgba(84, 84, 88, 0.6);
+  --tm-border-strong: rgba(140, 140, 150, 0.45);
+  --tm-text: #ffffff;
+  --tm-text-muted: rgba(235, 235, 245, 0.62);
+  --tm-text-faint: rgba(235, 235, 245, 0.42);
+  --tm-accent: #0a84ff;
+  --tm-accent-strong: #409cff;
+  --tm-accent-subtle: rgba(10, 132, 255, 0.2);
+  --tm-accent-contrast: #ffffff;
+  --tm-status-queued: #98989f;
+  --tm-status-running: #63e6e2;
+  --tm-status-review: #ff9f0a;
+  --tm-status-done: #30d158;
+  --tm-status-published: #7d7aff;
+  --tm-status-failed: #ff453a;
+  --tm-status-attention: #bf5af2;
+  --tm-group-1: #bf5af2;
+  --tm-group-2: #0a84ff;
+  --tm-group-3: #ffd60a;
+  --tm-group-4: #ff375f;
+  --tm-group-5: #30d158;
+  --tm-group-6: #ff9f0a;
+  --tm-group-7: #40cbe0;
+  --tm-group-tint: 16%;
+  --tm-preset-small: #30d158;
+  --tm-preset-routine: #0a84ff;
+  --tm-preset-complex: #bf5af2;
+  --tm-preset-codexFree: #ff9f0a;
+  --tm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --tm-shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --tm-shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.55);
+  --tm-grid-dot: transparent;
+  /* materials: what sits on the wallpaper (card), floats over content with
+     a blur (bar), or holds a whole sheet (thick) */
+  --tm-wallpaper:
+    radial-gradient(80% 55% at 12% 0%, rgba(10, 132, 255, 0.3), transparent 62%),
+    radial-gradient(70% 50% at 100% 18%, rgba(191, 90, 242, 0.2), transparent 60%),
+    radial-gradient(90% 60% at 40% 105%, rgba(99, 230, 226, 0.15), transparent 62%),
+    linear-gradient(180deg, #0a0d18 0%, #06070b 55%, #050608 100%);
+  --tm-glass-card: rgba(255, 255, 255, 0.065);
+  --tm-glass-card-hover: rgba(255, 255, 255, 0.095);
+  --tm-glass-bar: rgba(30, 30, 36, 0.58);
+  --tm-glass-thick: rgba(28, 28, 32, 0.84);
+  --tm-glass-btn: rgba(255, 255, 255, 0.1);
+  --tm-glass-btn-hover: rgba(255, 255, 255, 0.15);
+  --tm-glass-lens: rgba(255, 255, 255, 0.13);
+  --tm-glass-rim: rgba(255, 255, 255, 0.12);
+  --tm-glass-specular: rgba(255, 255, 255, 0.16);
+  --tm-glass-shadow: 0 1px 1px rgba(0, 0, 0, 0.25), 0 10px 32px rgba(0, 0, 0, 0.38);
+  --tm-glass-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.22), 0 6px 18px rgba(0, 0, 0, 0.16);
+  --tm-edge-tint: rgba(6, 7, 11, 0.55);
+  --tm-scrim: rgba(0, 0, 0, 0.45);
+  --tm-fill-press: rgba(255, 255, 255, 0.08);
+  --tm-switch-on: #30d158;
+  --tm-switch-off: rgba(120, 120, 128, 0.36);
+  --tm-knob: #ffffff;
+  --tm-knob-shadow: 0 3px 8px rgba(0, 0, 0, 0.18), 0 3px 1px rgba(0, 0, 0, 0.06);
+  --tm-seg-thumb: #636366;
+}
+
+[data-design='glass'][data-theme='light'] {
+  --tm-bg: #f2f2f7;
+  --tm-bg-raised: #ffffff;
+  --tm-bg-overlay: rgba(120, 120, 128, 0.12);
+  --tm-bg-inset: rgba(118, 118, 128, 0.12);
+  --tm-border: rgba(60, 60, 67, 0.2);
+  --tm-border-strong: rgba(60, 60, 67, 0.32);
+  --tm-text: #000000;
+  --tm-text-muted: rgba(60, 60, 67, 0.7);
+  --tm-text-faint: rgba(60, 60, 67, 0.5);
+  --tm-accent: #007aff;
+  --tm-accent-strong: #0062cc;
+  --tm-accent-subtle: rgba(0, 122, 255, 0.12);
+  --tm-accent-contrast: #ffffff;
+  --tm-status-queued: #6e6e73;
+  --tm-status-running: #0c817b;
+  --tm-status-review: #c93400;
+  --tm-status-done: #248a3d;
+  --tm-status-published: #3634a3;
+  --tm-status-failed: #d70015;
+  --tm-status-attention: #8944ab;
+  --tm-group-1: #8944ab;
+  --tm-group-2: #0040dd;
+  --tm-group-3: #b25000;
+  --tm-group-4: #d30f45;
+  --tm-group-5: #248a3d;
+  --tm-group-6: #c93400;
+  --tm-group-7: #008299;
+  --tm-group-tint: 10%;
+  --tm-preset-small: #248a3d;
+  --tm-preset-routine: #0040dd;
+  --tm-preset-complex: #8944ab;
+  --tm-preset-codexFree: #c93400;
+  --tm-shadow-sm: 0 1px 2px rgba(30, 40, 80, 0.06);
+  --tm-shadow-md: 0 8px 24px rgba(30, 40, 80, 0.1);
+  --tm-shadow-lg: 0 24px 64px rgba(30, 40, 80, 0.18);
+  --tm-grid-dot: transparent;
+  --tm-wallpaper:
+    radial-gradient(80% 55% at 10% 0%, rgba(0, 122, 255, 0.2), transparent 62%),
+    radial-gradient(70% 50% at 100% 15%, rgba(255, 55, 95, 0.13), transparent 60%),
+    radial-gradient(90% 60% at 40% 105%, rgba(0, 199, 190, 0.16), transparent 62%),
+    linear-gradient(180deg, #f5f7fc 0%, #eef1f7 60%, #eceff6 100%);
+  --tm-glass-card: rgba(255, 255, 255, 0.62);
+  --tm-glass-card-hover: rgba(255, 255, 255, 0.78);
+  --tm-glass-bar: rgba(255, 255, 255, 0.58);
+  --tm-glass-thick: rgba(250, 250, 252, 0.86);
+  --tm-glass-btn: rgba(255, 255, 255, 0.72);
+  --tm-glass-btn-hover: rgba(255, 255, 255, 0.92);
+  --tm-glass-lens: rgba(0, 0, 0, 0.06);
+  --tm-glass-rim: rgba(255, 255, 255, 0.75);
+  --tm-glass-specular: rgba(255, 255, 255, 0.95);
+  --tm-glass-shadow: 0 1px 2px rgba(30, 40, 80, 0.08), 0 10px 32px rgba(30, 40, 80, 0.13);
+  --tm-glass-shadow-sm: 0 1px 2px rgba(30, 40, 80, 0.06), 0 6px 18px rgba(30, 40, 80, 0.07);
+  --tm-edge-tint: rgba(242, 242, 247, 0.6);
+  --tm-scrim: rgba(10, 15, 30, 0.22);
+  --tm-fill-press: rgba(0, 0, 0, 0.05);
+  --tm-switch-on: #34c759;
+  --tm-switch-off: rgba(120, 120, 128, 0.16);
+  --tm-knob: #ffffff;
+  --tm-knob-shadow: 0 3px 8px rgba(0, 0, 0, 0.15), 0 3px 1px rgba(0, 0, 0, 0.06);
+  --tm-seg-thumb: #ffffff;
+}
+
+/* A phone in Glass: iOS's scale (15pt subheadline base, 17pt headline, 34pt
+   large title) and the floating tab bar, whose bottom gap overlaps the
+   home-indicator inset. Keyed off .app.mobile like Classic's own phone overrides. */
+[data-design='glass'] .app.mobile {
+  --tm-text-xs: 0.75rem;
+  --tm-text-sm: 0.9375rem;
+  --tm-text-md: 1.0625rem;
+  --tm-text-lg: 1.25rem;
+  --tm-text-xl: 1.375rem;
+  --tm-text-2xl: 1.75rem;
+  --tm-text-3xl: 2.125rem;
+  --tm-tabbar-float: max(var(--tm-space-2), calc(env(safe-area-inset-bottom, 0px) - var(--tm-space-3)));
+  --tm-tabbar-clear: calc(var(--tm-tabbar-h) + var(--tm-tabbar-float) + var(--tm-space-2));
+}
+
+/* Reduce Transparency (and a browser with no backdrop-filter): every
+   material turns solid, every blur off. Same specificity as the scheme
+   blocks above, later in the sheet, so it wins. */
+@media (prefers-reduced-transparency: reduce) {
+  [data-design='glass'][data-theme] {
+    --tm-glass-card: var(--tm-bg-raised);
+    --tm-glass-card-hover: var(--tm-bg-raised);
+    --tm-glass-bar: var(--tm-bg-raised);
+    --tm-glass-thick: var(--tm-bg-raised);
+    --tm-edge-tint: var(--tm-bg);
+    --tm-blur: 0px;
+    --tm-blur-thick: 0px;
+    --tm-blur-edge: 0px;
+  }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  [data-design='glass'][data-theme] {
+    --tm-glass-bar: var(--tm-bg-raised);
+    --tm-glass-thick: var(--tm-bg-raised);
+    --tm-edge-tint: var(--tm-bg);
+  }
+}
+
 /* ============================================================ */
 
 * {

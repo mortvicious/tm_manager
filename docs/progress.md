@@ -542,3 +542,20 @@ concise markdown, grouped by completion date, Russian or English.
 - **Web**: `/terminals` page (repo + count pickers, tabs | grid), `ShellPane` (embedded xterm), nav item, state/events wiring, drawer label for shells, restart confirm counts shells.
 - **Verified**: typecheck, scratch `vite build`, a route/runner harness on a real PTY pool (docs/terminals.md § Verification).
 - **Not exercised**: a browser pass and the live server.
+
+## Glass design: iOS Liquid Glass, per device (2026-10-03, `docs/glass.md`)
+
+- **Web**:
+  - `appearance.ts`: the per-device store (`tm.design` glass|classic, `tm.theme`, unset = follow the system) with its inline pre-paint twin in `index.html`.
+  - The Glass token blocks in `theme.css`.
+  - `glass.css`: every rule scoped to `[data-design='glass']`.
+  - `motion.ts`: `exitGhost` exit animations and the iOS `:active` enabler.
+  - Config → Appearance (`AppearanceSettings`).
+  - `Layout.tsx`: Glass nav without Features/Chat, the tab-bar lens, the scroll-edge blur, and the theme toggle on the store.
+  - The phone Board's large title.
+  - Exit ghosts on `Sheet`, `FullSheet`, `TaskSlideOver` and `QuestionModal`.
+- **Verified**:
+  - Typecheck and a scratch `vite build`.
+  - Playwright WebKit (iPhone viewport) and Chromium screenshots in both schemes, plus the Classic regression compare.
+  - Exit ghosts created and removed, and the phone header fit with a question chip (docs/glass.md § Verification).
+- **Not exercised**: a real iPhone (headless WebKit never paints `backdrop-filter`), the terminal drawer's look.
