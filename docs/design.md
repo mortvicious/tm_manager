@@ -278,6 +278,10 @@ at `/ws/terminal/cmd-<uuid>`, with a running-state indicator in the header. The
 command text is tokenized and spawned as argv — never through a shell. Runs are
 in-memory by design (a PTY dies with the server, and `tm_runs` means "agent").
 Restarting the server is refused while agents are working.
+Workers start, reuse, restart, stop (their own) and read the logs of these
+commands through `/api/agent/commands` instead of background shells of their
+own, so one dev server is shared by every agent and the human
+(`docs/commands.md` § Agent API).
 
 ## Terminals (`docs/terminals.md`)
 

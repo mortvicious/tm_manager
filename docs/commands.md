@@ -105,6 +105,54 @@ that the dropdown next to every saved command corrects in one click.
 `command.updated` / `command.deleted` / `command.run` ride `/ws/events`, so a
 second tab and the header agree without polling.
 
+## Agent API
+
+Workers use the same commands instead of dev servers in background shells of
+their own (`server/src/routes/agent-commands.ts`, token-authenticated like the
+rest of `/api/agent/*`; the worker-facing how-to is `docs/agent-instructions.md`
+§ Dev servers, and a clause in the standing rules points there). A private
+`npm run dev &` is invisible to the human, fights the next agent for the port,
+dies with the session, and — being a background shell — holds the turn in
+`waiting` for `agent.shellWaitMinutes`. A saved command run is one process per
+definition, shared by everyone, in the commands pool, outliving the turn.
+
+| route | |
+|---|---|
+| `GET /api/agent/commands[?repo=<id\|name>]` | definitions + latest run each (`yours` = this task may stop it); default = caller's repo |
+| `POST /api/agent/commands` | save one in the caller's repo (kind defaults to `service`); same validation as the human route; same command line + cwd already saved → 409 with it; cap `AGENT_COMMAND_DEFINE_CAP` (3) per run |
+| `POST /api/agent/commands/:id/start` | **start or reuse**: already running → `started: false` and that run, not 409 |
+| `POST /api/agent/commands/:id/restart` | stop, wait for the exit (≤ 8s), start; caller's own repo or a run its task started |
+| `POST /api/agent/commands/:id/stop` | only a run the caller's TASK started (`ownerTaskId`), else 403 |
+| `GET /api/agent/commands/:id/logs[?bytes=]` | ANSI-stripped tail of the latest run (default 8000, max 64000) |
+
+- **Start/restart can wait for readiness**: `{waitFor: string | string[], waitMs}`
+  (case-insensitive substrings, `waitMs` default 30s when `waitFor` is given,
+  max 60s) holds the reply until a needle appears in the last 256k of output,
+  the process exits, or time runs out — so a reused server whose ready line
+  was printed an hour ago answers at once. The reply carries `ready`, the run
+  and a 4000-byte `tail`; a dead run plus `ready: false` is a crash and the
+  tail is its log. Substrings, not regexes: an agent-supplied regex would run
+  in the API's event loop.
+- **Ownership** is `CommandRun.ownerTaskId` (+ `startedBy`, the audit actor),
+  set by `CommandRunner.start`. It names the task, not the run, so a later turn
+  of the same task may still stop what an earlier turn started. A restart keeps
+  the previous run's owner: restarting a human's server never gives the agent
+  the right to stop it. Humans stop anything from the UI, as before; the
+  launcher shows `by agent:<run8>` on an agent's run.
+- **Reach**: list/start/logs work on any registered repo's commands (a
+  frontend agent may need the backend's API up). Restart and define are the
+  caller's own repo; stop is the caller's own runs.
+- **Lifetime**: an agent's server is NOT stopped when its task ends — it is
+  shared, and the next agent will want it. The commands pool's own cap
+  (`MAX_LIVE_SESSIONS`, 10) bounds the pile; the human sees it in the header.
+- **Races**: `start()` checks and claims synchronously, so of two agents
+  starting one command in the same tick one gets the run and the other reuses
+  it; the route turns the loser's "already running" into that reuse.
+- Audit: `command.run` (`started` with `ownerTaskId`, `stop-requested`,
+  `restart-requested`) and `command.changed` rows carry `agent:<run8>` and the
+  task id. `GET /api/agent/context` lists the caller's repo's commands with a
+  `running` flag.
+
 ## Restart is refused while agents are working
 
 A restart kills every agent, and **two kinds of agent exist**:

@@ -321,7 +321,7 @@ registerSettingsRoutes(app, storage);
 registerRunRoutes(app, storage, orchestrator, activity);
 registerOrchestratorRoutes(app, storage, orchestrator);
 registerInternalRoutes(app, storage, sessions, orchestrator);
-registerAgentRoutes(app, storage, orchestrator);
+registerAgentRoutes(app, storage, orchestrator, commandRunner);
 registerCommandRoutes(app, storage, commandRunner);
 registerShellRoutes(app, storage, shellRunner);
 registerProposalRoutes(app, storage);

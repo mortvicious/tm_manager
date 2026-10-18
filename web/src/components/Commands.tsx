@@ -84,6 +84,7 @@ function RunRow({
         <span className="cmd-run-name">{run.name}</span>
         <span className="mono muted cmd-run-sub" title={`${run.command}\n${run.cwd}`}>
           {run.repoName} · {run.command}
+          {run.startedBy && run.startedBy !== 'human' ? ` · by ${run.startedBy}` : ''}
         </span>
       </span>
       <span className="mono muted cmd-run-age">

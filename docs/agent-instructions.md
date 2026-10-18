@@ -30,6 +30,11 @@ Through them you can file follow-up tasks and coordinate work in OTHER repos.
   `AskUserQuestion` tool: it reaches the user in the dashboard and on their
   phone, and your session waits for the answer. Decide small things yourself.
 
+- You need a dev server, watcher or the repo's API up to verify your change:
+  **use the repo's saved commands** (see Dev servers), never a background shell
+  of your own. A server another agent or the human already runs is shared —
+  reuse it.
+
 ## API
 
 Discover your context (your task, your repo, all repos with roles):
@@ -236,6 +241,55 @@ curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
     implement it inside your current task unless it is squarely in scope.
   - The request closes by itself when that task lands done/published.
 - Mention every request you wrote, filed or resolved in your final summary.
+
+## Dev servers (repo commands)
+
+Each repo can have **saved commands** — dev servers, watchers, scripts — run by
+the Task Manager in terminals of their own, visible to the human in the header
+launcher. Use them instead of `npm run dev &` or a background Bash shell: one
+server per command is shared by every agent and the human, it survives your
+turn, and a background shell of yours would hold your task in `waiting` until it
+times out. `GET /api/agent/context` lists your repo's commands (`commands`).
+
+```bash
+# your repo's commands (?repo=<id|name> for another repo's), each with its latest run
+curl -s -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/commands"
+
+# start it — or, when it is already running, get the running one back.
+# waitFor (case-insensitive substrings) holds the reply until one shows up in the
+# output, the process exits, or waitMs (default 30000, max 60000) runs out.
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
+  "$TM_CALLBACK_URL/api/agent/commands/<id>/start" -d '{"waitFor": ["ready", "localhost:"]}'
+# → { "started", "ready", "run": { "id", "status", "pid", "startedBy", ... }, "tail", "note" }
+
+# its recent output (ANSI stripped; ?bytes= up to 64000)
+curl -s -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/commands/<id>/logs"
+
+# a fresh process (config/env changed); same body as start
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
+  "$TM_CALLBACK_URL/api/agent/commands/<id>/restart" -d '{}'
+
+# stop one YOUR task started
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/commands/<id>/stop"
+```
+
+- `started: false` means it was already running: **reuse it**. Read its port
+  from `tail`/logs; do not start a copy on another port.
+- `ready: false` with `run.status` not `running` means it crashed — `tail` is
+  the crash log.
+- **Stop** only works on a run your task started (`yours: true` in the list);
+  anything else is shared, and stopping it is refused. Leave a server running
+  at the end of your turn unless you know nobody needs it. **Restart** works
+  on your own repo's commands and on runs your task started.
+- No command for what you need? Save one in your repo (max
+  {{commandDefineCap}} per session), then start it. The command line runs as
+  argv, never through a shell: no `&&`, `|`, `;` or redirects. A command line
+  that is already saved answers 409 with the existing one.
+
+```bash
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
+  "$TM_CALLBACK_URL/api/agent/commands" -d '{"name": "web dev", "command": "npm run dev", "cwd": "web", "kind": "service"}'
+```
 
 ## Rules (server-enforced — do not work around refusals)
 

@@ -25,6 +25,7 @@ a stale reminder silently overrides the new rules for the rest of the session.
 | `$TM_ARTIFACTS_DIR` | The task's shared file space — inputs from the user, deliverables back to the task panel. |
 | Task Manager API | File follow-up/cross-repo work instead of doing it yourself; never work around the API's refusals. |
 | Dispatch before create | A related task already exists → message its session (`docs/dispatch.md`), don't mint a duplicate task. |
+| **Shared dev servers** | Start the repo's saved commands through `/api/agent/commands` and reuse one already running, never a background shell of the agent's own (`docs/commands.md` § Agent API). A private `npm run dev &` is invisible to the human, fights the next agent for the port, and holds the turn in `waiting` for `agent.shellWaitMinutes`. |
 | **Ask on big decisions** | When a choice would materially change the outcome (architecture/library, ambiguous or conflicting requirement, destructive step, scope that could go two ways), ask with `AskUserQuestion` — it reaches the dashboard and the phone and the session waits (`docs/questions.md`). Small things: decide, never ask. |
 | Final summary | The orchestrator stores it as `result_summary`; the review round and the next run read it. |
 | Adversarial review warning | The change is reviewed before the human sees it, so it must compile and hold up. |

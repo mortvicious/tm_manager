@@ -21,6 +21,8 @@ export class CommandRunner {
   private runs = new Map<string, CommandRun>();
   /** runs we asked to die, so their exit reports `killed` rather than `exited` */
   private stopping = new Set<string>();
+  /** callers awaiting a run's exit (agent restart: stop, wait, start) */
+  private exitWaiters = new Map<string, Array<() => void>>();
 
   constructor(
     private storage: Storage,
@@ -33,6 +35,8 @@ export class CommandRunner {
       run.exitCode = exitCode;
       run.endedAt = new Date().toISOString();
       broadcast({ type: 'command.run', run: { ...run } });
+      for (const resolve of this.exitWaiters.get(runId) ?? []) resolve();
+      this.exitWaiters.delete(runId);
       void this.storage
         .appendEvent({
           kind: 'command.run',
@@ -64,7 +68,49 @@ export class CommandRunner {
     return this.running().find((r) => r.commandId === commandId);
   }
 
-  async start(command: RepoCommand, repo: Repo, actor: string): Promise<CommandRun> {
+  /** The newest run of a definition, live or finished — what an agent's logs read. */
+  latestFor(commandId: string): CommandRun | undefined {
+    return this.list().find((r) => r.commandId === commandId);
+  }
+
+  /**
+   * The last `bytes` of a run's terminal output, ANSI stripped, for an agent
+   * that cannot attach a terminal. Readable as long as the PTY session is kept
+   * (a finished one until the session TTL); null when it is gone.
+   */
+  tail(runId: string, bytes: number): string | null {
+    const buf = this.sessions.get(runId)?.buffer.snapshot();
+    if (!buf) return null;
+    return plainText(buf.subarray(Math.max(0, buf.length - bytes)).toString('utf8'));
+  }
+
+  /** Resolves true once the run is no longer `running`, false after `ms`. */
+  waitForExit(runId: string, ms: number): Promise<boolean> {
+    const run = this.runs.get(runId);
+    if (!run || run.status !== 'running') return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        const list = this.exitWaiters.get(runId);
+        const at = list?.indexOf(done) ?? -1;
+        if (list && at >= 0) list.splice(at, 1);
+        if (list?.length === 0) this.exitWaiters.delete(runId);
+        resolve(false);
+      }, ms);
+      const list = this.exitWaiters.get(runId) ?? [];
+      list.push(done);
+      this.exitWaiters.set(runId, list);
+    });
+  }
+
+  /**
+   * `ownerTaskId` is set when an agent starts it (docs/commands.md § Agent API):
+   * that task's sessions may stop it again; nobody else's agent may.
+   */
+  async start(command: RepoCommand, repo: Repo, actor: string, ownerTaskId: string | null = null): Promise<CommandRun> {
     const existing = this.runningFor(command.id);
     if (existing) {
       const err = new Error(`"${command.name}" is already running`) as Error & { conflict?: true };
@@ -102,6 +148,8 @@ export class CommandRunner {
       exitCode: null,
       startedAt: new Date().toISOString(),
       endedAt: null,
+      startedBy: actor,
+      ownerTaskId,
     };
     this.runs.set(id, run);
     broadcast({ type: 'command.run', run: { ...run } });
@@ -109,7 +157,7 @@ export class CommandRunner {
       kind: 'command.run',
       actor,
       repoId: repo.id,
-      data: { action: 'started', name: command.name, command: command.command, cwd, pid: run.pid },
+      data: { action: 'started', name: command.name, command: command.command, cwd, pid: run.pid, ownerTaskId },
     });
     this.trim();
     return run;
@@ -160,4 +208,28 @@ export class CommandRunner {
     const finished = this.list().filter((r) => r.status !== 'running');
     for (const run of finished.slice(MAX_FINISHED)) this.runs.delete(run.id);
   }
+}
+
+/**
+ * Terminal output → what a reader sees: CSI/OSC escapes dropped (same patterns
+ * as limit.ts), CRLF normalised, and a carriage-return redraw (spinners,
+ * progress bars) collapsed to the line's last frame.
+ */
+function plainText(raw: string): string {
+  return (
+    raw
+      // eslint-disable-next-line no-control-regex
+      .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+      // eslint-disable-next-line no-control-regex
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+      // eslint-disable-next-line no-control-regex
+      .replace(/\x1b[()][0-9A-Za-z]|\x1b[=>78]/g, '')
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .map((line) => {
+        const l = line.replace(/\r+$/, '');
+        return l.slice(l.lastIndexOf('\r') + 1);
+      })
+      .join('\n')
+  );
 }

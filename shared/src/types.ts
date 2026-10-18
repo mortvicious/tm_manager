@@ -368,6 +368,10 @@ export interface CommandRun {
   exitCode: number | null;
   startedAt: string;
   endedAt: string | null;
+  /** audit actor that started it: 'human', or `agent:<run8>` via /api/agent/commands */
+  startedBy: string;
+  /** the task whose agent started it (any turn of that task may stop it); null when a human did */
+  ownerTaskId: string | null;
 }
 
 /** One `package.json` script the repo scanner found. */

@@ -76,6 +76,19 @@ POST /api/agent/tasks/:id/move   { place, targetId? }                       → 
 - **Move** is `moveTask` from `task-actions.ts` with the agent actor, so the places, `reparentRefusal` and the `task.moved` audit are the board's. One extra 409: the resolved new parent is a `blocked` split parent. Group name/colour are not settable by agents.
 - Why and what was rejected: `docs/decisions.md` 2026-10-03.
 
+### 7. Repo commands — shared dev servers (2026-10-18, `server/src/routes/agent-commands.ts`)
+
+```
+GET  /api/agent/commands[?repo=]                 → { repoId, commands: [{id, name, command, kind, cwd, run, yours}] }
+POST /api/agent/commands  { name, command, kind?, cwd? }      → { command }
+POST /api/agent/commands/:id/start|restart  { waitFor?, waitMs? } → { started|restarted, ready, run, tail, note? }
+POST /api/agent/commands/:id/stop                → { ok, exited, run }
+GET  /api/agent/commands/:id/logs[?bytes=]       → { run, tail }
+```
+
+Start is start-OR-REUSE; stop is limited to runs the caller's task started.
+Full rules in `docs/commands.md` § Agent API.
+
 ### Out of scope (explicitly)
 
 - PTY-to-PTY message injection.

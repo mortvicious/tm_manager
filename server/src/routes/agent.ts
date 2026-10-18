@@ -9,7 +9,9 @@ import { onEvent } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import { spaceForRepo } from '../spaces/service.ts';
+import type { CommandRunner } from '../commands/runner.ts';
 import { maxSpawnDepth, perRunCap, QUEUED_AGENT_CEILING } from './agent-caps.ts';
+import { AGENT_COMMAND_DEFINE_CAP, registerAgentCommandRoutes } from './agent-commands.ts';
 import { registerAgentSharedRoutes, SHARED_NOTE_RUN_CAP } from './agent-shared.ts';
 import { AGENT_CLOSE_RUN_CAP, registerAgentTaskRoutes } from './agent-tasks.ts';
 
@@ -58,7 +60,12 @@ const dispatchBody = z
   })
   .strict();
 
-export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orchestrator: Orchestrator) {
+export function registerAgentRoutes(
+  app: FastifyInstance,
+  storage: Storage,
+  orchestrator: Orchestrator,
+  commandRunner: CommandRunner,
+) {
   const authRun = async (req: FastifyRequest): Promise<Run | null> => {
     const token = String(req.headers['x-tm-token'] ?? '');
     if (!token) return null;
@@ -86,6 +93,7 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
     const dispatched = await storage.countDispatchesByRun(run.id);
     // the task whose session filed THIS task — the natural dispatch-back address
     const creatorRun = task?.createdByRun ? await storage.getRun(task.createdByRun) : null;
+    const commands = run.repoId ? await storage.listCommands(run.repoId) : [];
     return {
       taskId: run.taskId,
       repoId: run.repoId,
@@ -102,6 +110,13 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
       repos: repos.map((r) => ({ id: r.id, name: r.name, role: r.role })),
       // docs/shared-spaces.md — GET /api/agent/shared has the ledger
       sharedSpace: space ? { id: space.id, name: space.name, path: space.path, repoIds: space.repoIds } : null,
+      // docs/commands.md § Agent API — GET /api/agent/commands has the detail
+      commands: commands.map((c) => ({
+        id: c.id,
+        name: c.name,
+        kind: c.kind,
+        running: !!commandRunner.runningFor(c.id),
+      })),
     };
   });
 
@@ -119,7 +134,8 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
       .replaceAll('{{sharedNoteRunCap}}', String(SHARED_NOTE_RUN_CAP))
       .replaceAll('{{dispatchRunCap}}', String(DISPATCH_RUN_CAP))
       .replaceAll('{{dispatchPairCap}}', String(DISPATCH_PAIR_CAP))
-      .replaceAll('{{closeRunCap}}', String(AGENT_CLOSE_RUN_CAP));
+      .replaceAll('{{closeRunCap}}', String(AGENT_CLOSE_RUN_CAP))
+      .replaceAll('{{commandDefineCap}}', String(AGENT_COMMAND_DEFINE_CAP));
     return reply.type('text/markdown').send(md);
   });
 
@@ -128,6 +144,8 @@ export function registerAgentRoutes(app: FastifyInstance, storage: Storage, orch
   registerAgentSharedRoutes(app, storage, orchestrator, authRun);
   // Close and move (docs/agent-api-design.md § Close and move) — same prefix too.
   registerAgentTaskRoutes(app, storage, orchestrator, authRun);
+  // Repo commands (docs/commands.md § Agent API) — shared dev servers.
+  registerAgentCommandRoutes(app, storage, commandRunner, authRun);
 
   app.post('/api/agent/tasks', async (req, reply) => {
     const run = await authRun(req);
