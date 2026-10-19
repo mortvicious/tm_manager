@@ -46,9 +46,19 @@ state a review verdict the same way.
 | `chat` | claude replied in a chat whose last message was typed in the **browser**. A phone-typed turn is already answered in Telegram | `/chat/<id>` |
 | `report` | a client report became `ready` or `failed` | `/reports` |
 | `queue` | queue drained: nothing queued, running or waiting (TTL 1h) | `/` |
+| `anomaly` | an anomaly or budget alert (`anomaly.raised`): a long run, an expensive task, a stale review, a task's or the day's budget reached — one per task per type per episode, decided and remembered by `AnomalyAlerts` (`docs/telegram.md` § Anomalies). Sent as it arrives, tag `anomaly-<key>` | `/?task=<id>`, or `/` for the day budget |
 
 The kinds and their defaults live in ONE list, `PUSH_KINDS` in `shared/`. The
 server's validation, the defaults for a new device and the SPA toggles all read it.
+A kind added later (`anomaly`, 2026-10-19) is on by default for a NEW
+subscription only: a device subscribed before keeps its stored list until you
+toggle the kind on in its settings.
+
+**The `budget.runMinutes` fuse rides `attention`**, not `anomaly`: it raises the
+run's needs-attention flag, so the ping is the attention ping with its own words
+(⏱ Over N min — still working, nothing was stopped), carried by
+`reason: 'run-minutes'` on the `run.needs-attention` event. One ping, on the kind
+every device already has.
 
 **Coalescing.** Task news is merged per task for 5s and re-read from the row at
 flush, exactly like the bot. Status pings share the tag `task-<id>`, so the lock

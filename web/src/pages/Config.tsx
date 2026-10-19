@@ -646,6 +646,104 @@ export function ConfigPage() {
       </div>
 
       <div className="panel cfg-group">
+        <h3>Budget &amp; alerts</h3>
+        <div className="hint" style={{ marginBottom: 6 }}>
+          fuses and anomaly notifications (docs/token-budget.md § Fuses) — pings go to Telegram and to devices with
+          the Anomalies push kind on
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Task budget ($)</div>
+            <div className="hint">no AUTOMATIC turn — review fix round, dispatch wake-up, auto wake-up — starts once a task has cost this much; your own clicks always work. 0 = off</div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={0}
+            step={0.5}
+            style={{ width: 90 }}
+            value={cfg['budget.taskUsd'] ?? DEFAULT_SETTINGS['budget.taskUsd']}
+            onChange={(e) => set('budget.taskUsd', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Day budget ($)</div>
+            <div className="hint">stop claiming new tasks (global, overflow and custom queue) for the rest of the day once today's spend reaches this; running turns finish. 0 = off</div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={0}
+            step={1}
+            style={{ width: 90 }}
+            value={cfg['budget.dayUsd'] ?? DEFAULT_SETTINGS['budget.dayUsd']}
+            onChange={(e) => set('budget.dayUsd', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Turn time limit (min)</div>
+            <div className="hint">a worker turn running longer than this is flagged needs-attention and you are pinged — it is never killed. 0 = off</div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={0}
+            step={5}
+            style={{ width: 90 }}
+            value={cfg['budget.runMinutes'] ?? DEFAULT_SETTINGS['budget.runMinutes']}
+            onChange={(e) => set('budget.runMinutes', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Long run alert (min)</div>
+            <div className="hint">ping once per turn that runs longer than this (Dashboard + anomaly notification)</div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={5}
+            step={5}
+            style={{ width: 90 }}
+            value={cfg['anomaly.longRunMin'] ?? DEFAULT_SETTINGS['anomaly.longRunMin']}
+            onChange={(e) => set('anomaly.longRunMin', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Expensive task alert ($)</div>
+            <div className="hint">ping once per task whose total cost passes this</div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={0.5}
+            step={0.5}
+            style={{ width: 90 }}
+            value={cfg['anomaly.costUsd'] ?? DEFAULT_SETTINGS['anomaly.costUsd']}
+            onChange={(e) => set('anomaly.costUsd', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Stale review alert (h)</div>
+            <div className="hint">ping once when a task has sat in review this long</div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={1}
+            step={1}
+            style={{ width: 90 }}
+            value={cfg['anomaly.staleReviewHours'] ?? DEFAULT_SETTINGS['anomaly.staleReviewHours']}
+            onChange={(e) => set('anomaly.staleReviewHours', Number(e.target.value))}
+          />
+        </div>
+      </div>
+
+      <div className="panel cfg-group">
         <h3>Board</h3>
         <div className="cfg-row">
           <div>

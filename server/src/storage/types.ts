@@ -441,6 +441,11 @@ export interface Storage {
    *  given runs even when the concurrency cap is reached. */
   claimNextAgentChildTask(eligibleRunIds: string[], actor: string): Promise<Task | null>;
   createRun(r: NewRun): Promise<Run>;
+  /**
+   * Writing `stats` also rewrites `tm_runs.cost_usd` and the roll-up of the
+   * task the run belongs to (`tm_tasks.cost_usd`, `runTaskId`) — the caller
+   * re-reads the task when it wants to broadcast the new figure.
+   */
   updateRun(
     id: string,
     patch: Partial<
@@ -630,5 +635,7 @@ export interface Storage {
   deleteSharedNote(id: string): Promise<boolean>;
 
   getSettings(): Promise<AppSettings>;
+  /** Total `cost_usd` of every run (any mode) STARTED at or after this ISO time — the `budget.dayUsd` measure. */
+  spendSince(sinceIso: string): Promise<number>;
   setSetting<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void>;
 }

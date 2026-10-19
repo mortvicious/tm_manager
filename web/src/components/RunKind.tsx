@@ -1,4 +1,4 @@
-import type { Run, RunKind, Task } from '@tm/shared';
+import { runTaskId as sharedRunTaskId, type Run, type RunKind, type Task } from '@tm/shared';
 
 /**
  * Every claude the server spawns is a terminal (docs/design.md § PTY
@@ -25,11 +25,8 @@ export function KindBadge({ kind }: { kind: RunKind }) {
   );
 }
 
-/** The task an aux session is about, when it is about one (review, compact). */
-export function runTaskId(r: Run): string | null {
-  if (r.taskId) return r.taskId;
-  return r.kind === 'review' || r.kind === 'compact' ? r.subjectId : null;
-}
+/** The task an aux session is about, when it is about one (review, compact) — shared with the server's cost roll-up. */
+export const runTaskId = sharedRunTaskId;
 
 /** Where a click on the run's title goes. */
 export function runLink(r: Run): { taskId: string } | { path: string } | null {

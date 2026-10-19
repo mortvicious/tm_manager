@@ -68,7 +68,7 @@ The whole block, with the fields you actually have to set at the top:
     "notify": {
       "review": true, "attention": true, "failed": true, "blocked": true,
       "published": true, "proposal": true, "feature": true,
-      "usage": true, "queue": true, "boot": true
+      "usage": true, "queue": true, "boot": true, "anomaly": true
     },
     "digest": { "enabled": false, "hour": 9 },
     "chat": { "enabled": true, "allowWrite": false }
@@ -250,7 +250,7 @@ The practical shape of this: **"the bot stopped answering" is the signal, and wa
 |---|---|---|
 | Log repeats `getUpdates failed: … 409 … — another process is polling this bot token (a second server, or a webhook still set)` | **Two pollers, one token.** Telegram gives `getUpdates` to one consumer at a time. Usually a second copy of the server (an isolated instance, a `tsx watch` that did not die, a stale `npm start` in another terminal), or a webhook left over from an experiment. | `pgrep -fl "server/src/index.ts"` and kill the extra. For a webhook: `curl "https://api.telegram.org/bot<token>/deleteWebhook"`. Give any second instance its own token, or `telegram.enabled: false`. The bot backs off and retries, so it heals itself once the other poller stops. |
 | Log says `bot enabled, answering user id N only`, but **nothing you send is answered** | **Wrong id in the allowlist.** The gate wants `from.id === chat.id === telegram.allowedUserId` in a **private** chat. A mistyped digit, your `@handle` instead of the number, or a group chat all land here. | Send **`/start`** (the one command a stranger gets an answer to) and read the id it quotes back; put that in `telegram.allowedUserId`; restart. Check `/status`'s `Rejected: N update(s) from K other id(s)` — a climbing count with silence is this exact fault. |
-| Commands answer, but **no notifications ever arrive** | **A muted class.** `/mute` sets all ten classes off; `/notify <class> off` sets one. Muting is read at *flush* time, so it also silences messages already in the 5s coalescing window. | `/notify` with no argument lists all ten with their state; `/notify review on` re-enables one, `/unmute` re-enables everything. Note `digest` is deliberately *not* a notify class — `/mute` does not cancel tomorrow's digest. |
+| Commands answer, but **no notifications ever arrive** | **A muted class.** `/mute` sets all eleven classes off; `/notify <class> off` sets one. Muting is read at *flush* time, so it also silences messages already in the 5s coalescing window. | `/notify` with no argument lists all eleven with their state; `/notify review on` re-enables one, `/unmute` re-enables everything. Note `digest` is deliberately *not* a notify class — `/mute` does not cancel tomorrow's digest. |
 | `telegram: … refused by Telegram (getMe: Unauthorized). The token … is wrong, revoked, or belongs to a deleted bot — the bot is stopping until the server restarts.` | A real Telegram `401`/`404` envelope. The token is wrong, was `/revoke`d, or the bot was deleted. This is the one error the bot treats as **fatal**: it stops rather than hammering a token that will never work. | Re-copy the token from BotFather (`/mybots` → your bot → API Token), paste it in, **restart** — a fatal stop does not retry on its own. |
 | Boot line: `telegram.botToken` is not in BotFather's `<id>:<secret>` form — bot NOT started | The string does not match `/^\d+:[A-Za-z0-9_-]{20,}$/` — almost always a partial copy, a stray space, or smart quotes from a notes app. No API call is made at all. | Paste the token again, plain text, no surrounding whitespace. |
 | `enabled but telegram.allowedUserId is 0 — bot NOT started` | The default. `0` means nobody is allowed, so the bot refuses to start rather than run a bot no one can use. | Use the step-2 placeholder (`1`), find your id, put it in. |
@@ -340,7 +340,7 @@ Network errors back off exponentially, 1s → 60s with ±20% jitter, and a 429 h
     "notify": {
       "review": true, "attention": true, "failed": true, "blocked": true,
       "published": true, "proposal": true, "feature": true,
-      "usage": true, "queue": true, "boot": true
+      "usage": true, "queue": true, "boot": true, "anomaly": true
     },
     "digest": { "enabled": false, "hour": 9 },
     "chat": { "enabled": true, "allowWrite": false }
@@ -360,7 +360,7 @@ Network errors back off exponentially, 1s → 60s with ±20% jitter, and a 429 h
 | `chat.enabled` | chat mode from the phone ([`chat.md`](chat.md)); **on** by default — a read-only chat is the safe half of the feature |
 | `chat.allowWrite` | whether the phone may **use** a `write` chat — one that can edit files and run commands. **Off** by default, and there is no way to turn it on from the phone: that is the point (§ What the bot does not do). Checked at every send, not just at `/mode`, so a chat switched to write in the browser is still refused from the phone. The web UI can always do it |
 
-`digest` is a sibling of `notify`, not an eleventh notify class, because `/mute` flips every class at once and muting event pushes for an afternoon must not silently cancel tomorrow's digest.
+`digest` is a sibling of `notify`, not a twelfth notify class, because `/mute` flips every class at once and muting event pushes for an afternoon must not silently cancel tomorrow's digest.
 
 Validated on load. Type errors throw (`telegram.pollTimeoutSec must be an integer in 1..50`); `enabled: true` with a missing token or user id does **not** — that would take the whole server down, and under the front door into a respawn loop, over the one subsystem that is optional. The bot refuses to start and says which key is missing.
 
@@ -395,7 +395,8 @@ All three are bot state, not knobs: they are deliberately absent from the `PUT /
 |---|---|---|---|
 | `task.updated` | status became `review` with a **settled** `reviewState` (`passed`/`flagged`/`skipped`/`error`/null), or the state settled on a task already in `review` (see below) | `review` | 📋 title `id8` is in **review** · ✓ reviewed by <model> — clean / ⚠ review flagged N issue(s) / bare when the change was never auto-reviewed; then the task's `error` when set (⚠ the failed-publish reason), else the reviewer's overall **summary** of the work, else the worker's `resultSummary` — clipped to 1500 chars (**Mark done / Publish / Proceed**) |
 | `task.updated` | a **requested** review (`/review`, 🔍, the SPA's Review now) settled on a task NOT in `review` (`done`/`failed`/`blocked`) — asked of the orchestrator at the settling broadcast, so an automatic round on an autoComplete `done` task stays silent | `review` | 🔍 title `id8` (status) was reviewed · verdict; then the reviewer's summary. No buttons — the status was deliberately left alone |
-| `run.needs-attention` | the event carries a RAISED flag, and at flush the run is still `running`, not idle and still flagged | `attention` | ✋ title **needs attention** — the agent is waiting on a prompt |
+| `run.needs-attention` | the event carries a RAISED flag, and at flush the run is still `running`, not idle and still flagged | `attention` | ✋ title **needs attention** — the agent is waiting on a prompt. When the flag was raised by the `budget.runMinutes` fuse (the event carries `reason: 'run-minutes'`): ⏱ title has run **over N min** — still working, nothing was stopped ([`token-budget.md`](token-budget.md) § Fuses) |
+| `anomaly.raised` | an anomaly or budget alert went out of `AnomalyAlerts` (already one per task per type per episode — § Anomalies below); NOT re-coalesced | `anomaly` | 🐢 Long run / 💸 Expensive task / 🕰 Stale review / 🧯 Task budget reached / 🧯 Day budget reached · title `id8`, then the one-line message |
 | `question.updated` | status `pending` — sent at once, NOT coalesced and NOT gated by the notify flags: an agent is blocked on it ([`questions.md`](questions.md)) | — | ❓ title **asks you**: one message per question with the options as buttons (`q:` namespace), `✔ Done` on multi-select, `✍️ Other…` for free text; answered in the browser → ✅ summary; expired → ⌛ with the reason |
 | `task.updated` | status became `failed` | `failed` | ❌ title **failed**: the task's `error` |
 | `task.updated` | status became `blocked` | `blocked` | ⛔ title is **blocked** (waiting on its subtasks) |
@@ -418,6 +419,20 @@ Every task-scoped notification waits **5s** and then **re-reads the entity from 
 - **Mute is honoured late.** The class switches are read at flush time, so `/mute` also silences what was already in flight.
 
 Transition detection is a last-seen-status (and last-seen-review-state) memory primed from storage at start — without priming, the first broadcast about a pre-existing task (a title edit on something sitting in `review` since before boot) would read as a transition and ping the phone about old news. Same-status broadcasts are content edits and stay silent. The queue-drained check arms itself when it sees queued/running work and fires once per drain, not once per event; the usage watcher compares consecutive snapshots, so thresholds re-arm automatically when a window resets.
+
+### Anomalies
+
+The Dashboard's `anomaly.*` thresholds used to be display-only. They are now also pushed, together with the budget fuses tripping ([`token-budget.md`](token-budget.md) § Fuses), as the `anomaly` class here and the `anomaly` push kind ([`push.md`](push.md) § What pings). The orchestrator's minute sweep decides; `server/src/anomalies.ts` (`AnomalyAlerts`) owns the coalescing and broadcasts `anomaly.raised`, which this notifier and the push notifier both turn into ONE message each. Labels and icons come from one record in `shared/` (`ANOMALY_ALERT_LABELS`), so the two surfaces cannot name an alert differently.
+
+| type | fires when | once per |
+|---|---|---|
+| `long-run` | a live, non-idle worker turn is older than `anomaly.longRunMin` | turn (run) |
+| `cost-high` | a task's roll-up (`Task.costUsd`) passes `anomaly.costUsd` — only tasks with a run in the last 24h or live, the Dashboard's recent-or-live rule, so the first boot does not ping all of history | task |
+| `stale-review` | a task has sat in `review` longer than `anomaly.staleReviewHours`, and crossed that line within the last day (same reason) | stay in review (`updatedAt`) |
+| `task-budget` | an automatic turn was refused by `budget.taskUsd` | task and cap |
+| `day-budget` | claiming stopped for the day (`budget.dayUsd`) | server-local day |
+
+The coalescing memory is the audit log: every alert is an `anomaly.notified` row carrying its key, and a boot re-reads the last 30 days of them, so a restart never re-pings the same stale review. The Dashboard's per-RUN `cost-high` is unchanged; the notification is per TASK on purpose — it is the number on the card and the one the budget measures.
 
 ### Buttons
 

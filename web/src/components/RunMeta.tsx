@@ -17,6 +17,20 @@ export function Elapsed({ since, until }: { since: string; until?: string | null
 }
 
 /** Compact usage chips for a run: duration · model · cost · context %. */
+/**
+ * What the TASK has cost so far (docs/token-budget.md § Fuses): every worker
+ * turn plus the review and compact sessions about it — the figure
+ * `budget.taskUsd` is measured against. Nothing under a cent is drawn.
+ */
+export function TaskCostChip({ costUsd }: { costUsd: number }) {
+  if (!(costUsd >= 0.01)) return null;
+  return (
+    <span className="chip task-cost" title="this task so far: every agent turn, plus its reviews and compactions">
+      Σ ${costUsd.toFixed(2)}
+    </span>
+  );
+}
+
 export function RunStatsChips({ run }: { run: Run }) {
   const s = run.stats;
   return (

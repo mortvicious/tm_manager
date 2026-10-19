@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { EffortLevel, Run, RunKind, RunStats } from '@tm/shared';
+import { broadcastTaskCost } from '../budget.ts';
 import { broadcast } from '../events.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 import type { Storage } from '../storage/types.ts';
@@ -559,6 +560,8 @@ export class AuxRunner {
       o.transcriptPath = updated?.transcriptPath ?? run?.transcriptPath ?? null;
       o.stats = stats ?? null;
       if (updated) broadcast({ type: 'run.exited', run: updated });
+      // a review/compact session's cost rolls up to its task's card
+      if (updated && stats) await broadcastTaskCost(this.storage, updated);
     } catch {
       // the outcome still has to reach the caller
     } finally {

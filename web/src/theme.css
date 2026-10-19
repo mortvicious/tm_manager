@@ -1215,6 +1215,11 @@ button.badge.badge-link:hover {
   border-color: var(--tm-accent-subtle);
 }
 
+/* the task's cost so far (docs/token-budget.md § Fuses) — figures line up */
+.chip.task-cost {
+  font-variant-numeric: tabular-nums;
+}
+
 /* custom queue sign (docs/queue.md): "queue #n" while a member waits its
    turn, a pulsing "queue" while it holds the queue's single slot */
 .chip.queue-chip {

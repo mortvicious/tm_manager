@@ -154,6 +154,8 @@ export interface TelegramNotifyConfig {
   queue: boolean;
   /** the "back online" message after a boot/restart */
   boot: boolean;
+  /** a long run, an expensive task, a stale review, or a budget fuse tripped — one per task per type (docs/telegram.md § Notifications) */
+  anomaly: boolean;
 }
 
 export const NOTIFY_CLASSES: (keyof TelegramNotifyConfig)[] = [
@@ -167,6 +169,7 @@ export const NOTIFY_CLASSES: (keyof TelegramNotifyConfig)[] = [
   'usage',
   'queue',
   'boot',
+  'anomaly',
 ];
 
 const DEFAULT_CONFIG: BootConfig = {
@@ -195,6 +198,7 @@ const DEFAULT_CONFIG: BootConfig = {
       usage: true,
       queue: true,
       boot: true,
+      anomaly: true,
     },
     digest: { ...DEFAULT_DIGEST },
     chat: { ...DEFAULT_TELEGRAM_CHAT },

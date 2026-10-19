@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import {
   DEFAULT_SETTINGS,
   TERMINAL_TASK_STATUSES,
+  runTaskId,
   type AppSettings,
   type AuditEvent,
   type Chat,
@@ -26,7 +27,8 @@ import {
 import { planCards } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
-import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_IDLE } from './queue-sql.ts';
+import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_IDLE, REPO_EXCLUSIVE_GATE } from './queue-sql.ts';
+import { runCost, taskCostSql } from './cost-sql.ts';
 import {
   MANUAL_CLAIM_ORDER,
   MOVE_SUBTREE_SQL,
@@ -39,7 +41,7 @@ import {
   siblingsQuery,
   type MoveAnchor,
 } from './group.ts';
-import { MIGRATIONS } from './migrations.ts';
+import { COST_MIGRATION_ID, MIGRATIONS } from './migrations.ts';
 import { PUSH_RESULT_FAIL_SQL, PUSH_RESULT_OK_SQL, PUSH_UPSERT_SQL, rowToPushDevice } from './push-sql.ts';
 import type { NewPushDevice, PushDeviceRecord } from './types.ts';
 import type { PushKind } from '@tm/shared';
@@ -68,6 +70,7 @@ import {
   rowToRepo,
   rowToRun,
   rowToTask,
+  safeParse,
 } from './rows.ts';
 import type {
   ChatPatch,
@@ -124,9 +127,32 @@ export class SqliteStorage implements Storage {
       const run = this.db.transaction(() => {
         for (const s of m.statements) this.db.exec(s);
         this.db.prepare(`INSERT INTO tm_migrations (id, applied_at) VALUES (?, ?)`).run(m.id, now());
+        // Same transaction (a savepoint inside it): a crash cannot leave the
+        // migration marked applied with no costs.
+        if (m.id === COST_MIGRATION_ID) this.backfillCosts();
       });
       run();
     }
+  }
+
+  /** Migration 33: lift `stats.costUsd` into `tm_runs.cost_usd` for every existing run, then roll every task up. */
+  private backfillCosts(): void {
+    const rows = this.db.prepare(`SELECT id, stats FROM tm_runs WHERE stats IS NOT NULL`).all() as {
+      id: string;
+      stats: string;
+    }[];
+    const set = this.db.prepare(`UPDATE tm_runs SET cost_usd = ? WHERE id = ?`);
+    this.db.transaction(() => {
+      for (const r of rows) set.run(runCost(safeParse(r.stats, null)), r.id);
+      this.db.exec(`UPDATE tm_tasks SET cost_usd = ${taskCostSql('tm_tasks.id')}`);
+    })();
+  }
+
+  async spendSince(sinceIso: string): Promise<number> {
+    const r = this.db
+      .prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS s FROM tm_runs WHERE started_at >= ?`)
+      .get(sinceIso) as { s: number | null };
+    return Number(r.s ?? 0) || 0;
   }
 
   async close(): Promise<void> {
@@ -602,6 +628,7 @@ export class SqliteStorage implements Storage {
                          AND t.custom_queue_at IS NULL
                          AND t.queue_held_at IS NULL
                          AND ${FEATURE_CLAIM_GATE}
+                         AND ${REPO_EXCLUSIVE_GATE}
                        ORDER BY ${MANUAL_CLAIM_ORDER} LIMIT 1)
            RETURNING *`,
         )
@@ -843,6 +870,7 @@ export class SqliteStorage implements Storage {
                          AND t.custom_queue_at IS NULL
                          AND t.queue_held_at IS NULL
                          AND ${FEATURE_OVERFLOW_GATE}
+                         AND ${REPO_EXCLUSIVE_GATE}
                        ORDER BY t.created_at LIMIT 1)
            RETURNING *`,
         )
@@ -895,22 +923,29 @@ export class SqliteStorage implements Storage {
     if (!cur) return null;
     const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
     const next = { ...cur, ...clean };
-    this.db
-      .prepare(
-        `UPDATE tm_runs SET status=?, pid=?, exit_code=?, needs_attention=?, idle=?, session_id=?, transcript_path=?, stats=?, ended_at=? WHERE id=?`,
-      )
-      .run(
-        next.status,
-        next.pid,
-        next.exitCode,
-        next.needsAttention ? 1 : 0,
-        next.idle ? 1 : 0,
-        next.sessionId,
-        next.transcriptPath,
-        next.stats ? JSON.stringify(next.stats) : null,
-        next.endedAt,
-        id,
-      );
+    const write = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE tm_runs SET status=?, pid=?, exit_code=?, needs_attention=?, idle=?, session_id=?, transcript_path=?, stats=?, cost_usd=?, ended_at=? WHERE id=?`,
+        )
+        .run(
+          next.status,
+          next.pid,
+          next.exitCode,
+          next.needsAttention ? 1 : 0,
+          next.idle ? 1 : 0,
+          next.sessionId,
+          next.transcriptPath,
+          next.stats ? JSON.stringify(next.stats) : null,
+          runCost(next.stats),
+          next.endedAt,
+          id,
+        );
+      // The task's roll-up moves with its runs' stats (docs/token-budget.md § Fuses).
+      const taskId = 'stats' in clean ? runTaskId(next) : null;
+      if (taskId) this.db.prepare(`UPDATE tm_tasks SET cost_usd = ${taskCostSql('tm_tasks.id')} WHERE id = ?`).run(taskId);
+    });
+    write();
     return this.getRun(id);
   }
 

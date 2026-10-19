@@ -74,3 +74,19 @@ export const CUSTOM_QUEUE_HEAD_ORDER = `ORDER BY t.custom_queue_at, t.created_at
 export const CUSTOM_QUEUE_IDLE = `NOT EXISTS (
   SELECT 1 FROM tm_tasks w WHERE w.status = 'running' AND w.custom_queue_at IS NOT NULL
 )`;
+
+/**
+ * Same-repo exclusivity for the GLOBAL claim and the overflow claim
+ * (docs/queue.md § Same-repo exclusivity), over the candidate aliased `t`: no
+ * other task in its repo may be working (`running`/`waiting` — which also
+ * covers a turn inside the resume gate with no PTY yet) or in `review` with an
+ * automatic review round open (the reviewer is reading that checkout, and its
+ * findings are about to be typed back into a session there). `blocked` is
+ * deliberately absent, unlike `heldBy`: a split parent waits on children in
+ * its own repo, and holding the repo for it would deadlock them.
+ * JS twin: `holdsRepoForClaim` in shared/src/types.ts — edit together.
+ */
+export const REPO_EXCLUSIVE_GATE = `NOT EXISTS (SELECT 1 FROM tm_tasks x
+    WHERE x.repo_id = t.repo_id AND x.id <> t.id
+      AND (x.status IN ('running', 'waiting')
+           OR (x.status = 'review' AND x.review_state IN ('pending', 'reviewing', 'fixing'))))`;

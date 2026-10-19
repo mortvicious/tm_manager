@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   DEFAULT_SETTINGS,
   TERMINAL_TASK_STATUSES,
+  runTaskId,
   type AppSettings,
   type AuditEvent,
   type Chat,
@@ -24,7 +25,8 @@ import {
 import { planCards } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
-import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_IDLE } from './queue-sql.ts';
+import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_IDLE, REPO_EXCLUSIVE_GATE } from './queue-sql.ts';
+import { runCost, taskCostSql } from './cost-sql.ts';
 import {
   MANUAL_CLAIM_ORDER,
   MOVE_SUBTREE_SQL,
@@ -37,7 +39,7 @@ import {
   siblingsQuery,
   type MoveAnchor,
 } from './group.ts';
-import { MIGRATIONS } from './migrations.ts';
+import { COST_MIGRATION_ID, MIGRATIONS } from './migrations.ts';
 import { PUSH_RESULT_FAIL_SQL, PUSH_RESULT_OK_SQL, PUSH_UPSERT_SQL, rowToPushDevice } from './push-sql.ts';
 import type { NewPushDevice, PushDeviceRecord } from './types.ts';
 import type { PushKind } from '@tm/shared';
@@ -66,6 +68,7 @@ import {
   rowToRepo,
   rowToRun,
   rowToTask,
+  safeParse,
 } from './rows.ts';
 import type {
   ChatPatch,
@@ -139,6 +142,18 @@ export class PostgresStorage implements Storage {
         try {
           for (const s of m.statements) await client.query(s);
           await client.query(`INSERT INTO tm_migrations (id, applied_at) VALUES ($1, $2)`, [m.id, now()]);
+          // Migration 33's rows are backfilled in the SAME transaction, so a
+          // crash cannot leave the migration marked applied with no costs.
+          if (m.id === COST_MIGRATION_ID) {
+            const rows = (await client.query(`SELECT id, stats FROM tm_runs WHERE stats IS NOT NULL`)).rows as {
+              id: string;
+              stats: string;
+            }[];
+            for (const r of rows) {
+              await client.query(`UPDATE tm_runs SET cost_usd = $1 WHERE id = $2`, [runCost(safeParse(r.stats, null)), r.id]);
+            }
+            await client.query(`UPDATE tm_tasks SET cost_usd = ${taskCostSql('tm_tasks.id')}`);
+          }
           await client.query('COMMIT');
         } catch (e) {
           await client.query('ROLLBACK');
@@ -152,6 +167,11 @@ export class PostgresStorage implements Storage {
 
   async close(): Promise<void> {
     await this.pool.end();
+  }
+
+  async spendSince(sinceIso: string): Promise<number> {
+    const rows = await this.q(`SELECT COALESCE(SUM(cost_usd), 0) AS s FROM tm_runs WHERE started_at >= ?`, [sinceIso]);
+    return Number(rows[0]?.s ?? 0) || 0;
   }
 
   private async appendEventWith(
@@ -604,6 +624,7 @@ export class PostgresStorage implements Storage {
                        AND t.custom_queue_at IS NULL
                        AND t.queue_held_at IS NULL
                        AND ${FEATURE_CLAIM_GATE}
+                       AND ${REPO_EXCLUSIVE_GATE}
                      ORDER BY ${MANUAL_CLAIM_ORDER} LIMIT 1)
          RETURNING *`,
         [now()],
@@ -830,6 +851,7 @@ export class PostgresStorage implements Storage {
                        AND t.custom_queue_at IS NULL
                        AND t.queue_held_at IS NULL
                        AND ${FEATURE_OVERFLOW_GATE}
+                       AND ${REPO_EXCLUSIVE_GATE}
                      ORDER BY t.created_at LIMIT 1)
          RETURNING *`,
         [now(), ...eligibleRunIds],
@@ -882,7 +904,7 @@ export class PostgresStorage implements Storage {
     const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
     const next = { ...cur, ...clean };
     await this.q(
-      `UPDATE tm_runs SET status=?, pid=?, exit_code=?, needs_attention=?, idle=?, session_id=?, transcript_path=?, stats=?, ended_at=? WHERE id=?`,
+      `UPDATE tm_runs SET status=?, pid=?, exit_code=?, needs_attention=?, idle=?, session_id=?, transcript_path=?, stats=?, cost_usd=?, ended_at=? WHERE id=?`,
       [
         next.status,
         next.pid,
@@ -892,10 +914,16 @@ export class PostgresStorage implements Storage {
         next.sessionId,
         next.transcriptPath,
         next.stats ? JSON.stringify(next.stats) : null,
+        runCost(next.stats),
         next.endedAt,
         id,
       ],
     );
+    // The task's roll-up moves with its runs' stats (docs/token-budget.md §
+    // Fuses). One statement recomputing the whole sum, so two runs of the same
+    // task writing at once cannot leave a stale total behind.
+    const taskId = 'stats' in clean ? runTaskId(next) : null;
+    if (taskId) await this.q(`UPDATE tm_tasks SET cost_usd = ${taskCostSql('tm_tasks.id')} WHERE id = ?`, [taskId]);
     return this.getRun(id);
   }
 

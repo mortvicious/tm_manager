@@ -533,6 +533,15 @@ export interface Task {
    * null = not held.
    */
   queueHeldAt: string | null;
+  /**
+   * What this task has cost so far, in USD (docs/token-budget.md § Fuses):
+   * the sum of `RunStats.costUsd` over its worker runs AND the aux runs about
+   * it (subject = this task: review, compact). Kept on the row by the storage
+   * layer whenever a run's stats are written (`tm_tasks.cost_usd`, migration
+   * 33), so every surface that reads a task reads the same number; it is what
+   * `budget.taskUsd` is measured against.
+   */
+  costUsd: number;
   error: string | null;
   createdAt: string;
   updatedAt: string;
@@ -545,6 +554,25 @@ export interface Task {
  * review round is open on it (`customQueueHoldsRepo`). Twin of the in-flight
  * predicate in server/src/storage/queue-sql.ts — edit together.
  */
+/**
+ * Same-repo exclusivity in the GLOBAL claim (docs/queue.md § Same-repo
+ * exclusivity): a queued task is not claimed while another task in its repo is
+ * working (`running`/`waiting`) or in `review` with an automatic review round
+ * still open. Unlike the custom queue, `blocked` does NOT hold the repo — a
+ * split parent waits on children that live in that same repo. JS twin of
+ * `REPO_EXCLUSIVE_GATE` in server/src/storage/queue-sql.ts — edit together.
+ */
+export function holdsRepoForClaim(t: Pick<Task, 'status' | 'reviewState'>): boolean {
+  if (t.status === 'running' || t.status === 'waiting') return true;
+  return t.status === 'review' && !!t.reviewState && REVIEW_BUSY_STATES.includes(t.reviewState);
+}
+
+/** The task a run's cost belongs to: its own task, or the task an aux review/compact session was about. */
+export function runTaskId(r: Pick<Run, 'taskId' | 'kind' | 'subjectId'>): string | null {
+  if (r.taskId) return r.taskId;
+  return r.kind === 'review' || r.kind === 'compact' ? r.subjectId : null;
+}
+
 export const CUSTOM_QUEUE_IN_FLIGHT_STATUSES: readonly TaskStatus[] = ['running', 'waiting', 'blocked'];
 
 /**
@@ -950,9 +978,23 @@ export interface AppSettings {
   'review.maxRounds': number;
   /** max feature-plan re-analysis rounds after a blocker verdict (plan review, not diff review — independent of review.maxRounds) */
   'feature.analysisMaxRounds': number;
+  /** a live worker turn older than this is an anomaly: Dashboard + one `anomaly` notification per turn */
   'anomaly.longRunMin': number;
+  /** a run (Dashboard) / a task's whole roll-up (notification, once per task) costing more than this is an anomaly */
   'anomaly.costUsd': number;
+  /** a task sitting in review this long is an anomaly: Dashboard + one notification per stay in review */
   'anomaly.staleReviewHours': number;
+  /**
+   * Budget fuses (docs/token-budget.md § Fuses). 0 = off, the default for all three.
+   * `budget.taskUsd`: no AUTOMATIC turn (review fix round, dispatch wake, auto
+   * wake-up, later check/transient rounds) starts once the task's `costUsd`
+   * is at or over it; a human click is never blocked.
+   */
+  'budget.taskUsd': number;
+  /** the orchestrator stops CLAIMING (global, overflow and custom queue) once today's spend (server-local day) reaches this; running turns finish */
+  'budget.dayUsd': number;
+  /** wall clock per worker turn, in minutes: past it the run is flagged needs-attention and you are pinged — never killed */
+  'budget.runMinutes': number;
   'pty.scrollbackBytes': number;
   /** how long a finished (idle) or exited PTY stays attachable, in minutes; 0 = forever */
   'pty.sessionTtlMinutes': number;
@@ -1089,6 +1131,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'anomaly.longRunMin': 30,
   'anomaly.costUsd': 10,
   'anomaly.staleReviewHours': 72,
+  'budget.taskUsd': 0,
+  'budget.dayUsd': 0,
+  'budget.runMinutes': 0,
   'pty.scrollbackBytes': 2 * 1024 * 1024,
   // 0 = never evict on age (user request 2026-08-25); the MAX_LIVE_SESSIONS
   // eviction still reclaims the oldest unwatched session under cap pressure.
@@ -1281,7 +1326,11 @@ export type AuditKind =
   /** a worker's AskUserQuestion reached the human / was answered / expired (docs/questions.md) */
   | 'question.asked'
   | 'question.answered'
-  | 'question.expired';
+  | 'question.expired'
+  /** an automatic turn was refused, or claiming stopped for the day, by a budget fuse (docs/token-budget.md § Fuses) */
+  | 'task.budget'
+  /** an anomaly notification went out — also the coalescing memory, so a restart does not re-ping (docs/push.md § What pings) */
+  | 'anomaly.notified';
 
 /** actor: human | hook | orchestrator | system | analyze | telegram | remote | agent:<runId8> */
 export interface AuditEvent {
@@ -1328,6 +1377,32 @@ export interface Anomaly {
   taskId?: string;
   runId?: string;
   at?: string;
+}
+
+/**
+ * The anomalies that are NOTIFIED (push kind `anomaly`, Telegram class
+ * `anomaly`), one per task per type per episode — docs/push.md § What pings.
+ */
+export type AnomalyAlertType = 'long-run' | 'cost-high' | 'stale-review' | 'task-budget' | 'day-budget';
+
+/** How every surface (push, Telegram) names an alert type — one record so they cannot drift. */
+export const ANOMALY_ALERT_LABELS: Record<AnomalyAlertType, { icon: string; label: string }> = {
+  'long-run': { icon: '🐢', label: 'Long run' },
+  'cost-high': { icon: '💸', label: 'Expensive task' },
+  'stale-review': { icon: '🕰', label: 'Stale review' },
+  'task-budget': { icon: '🧯', label: 'Task budget reached' },
+  'day-budget': { icon: '🧯', label: 'Day budget reached' },
+};
+
+export interface AnomalyAlert {
+  type: AnomalyAlertType;
+  severity: AnomalySeverity;
+  /** one line, plain text */
+  message: string;
+  taskId: string | null;
+  runId: string | null;
+  /** the coalescing key — the same key never notifies twice */
+  key: string;
 }
 
 // ---- Chat (docs/chat.md) ----
@@ -1605,7 +1680,15 @@ export type ServerEvent =
   | { type: 'run.started'; run: Run }
   | { type: 'run.updated'; run: Run }
   | { type: 'run.exited'; run: Run }
-  | { type: 'run.needs-attention'; run: Run }
+  | {
+      type: 'run.needs-attention';
+      run: Run;
+      /** set when the flag was raised by the `budget.runMinutes` fuse rather than by a prompt; the ping says so */
+      reason?: 'run-minutes';
+      /** with reason 'run-minutes': the cap that was crossed */
+      minutes?: number;
+    }
+  | { type: 'anomaly.raised'; alert: AnomalyAlert }
   | { type: 'run.activity'; activity: RunActivity }
   | { type: 'proposal.created'; proposal: Proposal }
   | { type: 'dispatch.updated'; dispatch: Dispatch }
@@ -1669,7 +1752,8 @@ export type PushKind =
   | 'feature'
   | 'chat'
   | 'report'
-  | 'queue';
+  | 'queue'
+  | 'anomaly';
 
 /** The one list every surface renders (SPA toggles, server validation, defaults). */
 export const PUSH_KINDS: { kind: PushKind; label: string; hint: string; default: boolean }[] = [
@@ -1686,6 +1770,12 @@ export const PUSH_KINDS: { kind: PushKind; label: string; hint: string; default:
   { kind: 'chat', label: 'Chat replies', hint: 'claude answered in a chat', default: true },
   { kind: 'report', label: 'Reports', hint: 'a client report finished or failed', default: true },
   { kind: 'queue', label: 'Queue drained', hint: 'nothing queued, nothing running', default: true },
+  {
+    kind: 'anomaly',
+    label: 'Anomalies',
+    hint: 'a long run, an expensive task, a stale review, or a budget fuse tripped',
+    default: true,
+  },
 ];
 
 export const DEFAULT_PUSH_KINDS: PushKind[] = PUSH_KINDS.filter((k) => k.default).map((k) => k.kind);

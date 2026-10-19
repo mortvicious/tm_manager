@@ -378,6 +378,74 @@ drops further.
   delta. Its real cost still lands where § The gate says: on the next worker
   run's first turn, as before.
 
+## Fuses: a ceiling before any loop (2026-10-19)
+
+Everything above trims what a turn costs. The fuses bound how many turns get
+bought without a human deciding: autonomy part 1 of 6 (the verify loop,
+on-green landing and loop tasks all rely on them). All three live in `tm_config`
+(Config → Budget & alerts, `PUT /api/config`) and are **off by default** — `0`,
+and a `null` PUT is stored as `0`.
+
+**The measure: `Task.costUsd`.** The sum of `RunStats.costUsd` over the task's
+worker runs AND the aux runs about it (review, compact — `task_id` NULL,
+`subject_id` = the task; attribution `runTaskId` in shared). It is kept on the
+row: `tm_tasks.cost_usd` (migration 33) is rewritten by `updateRun` whenever a
+run's stats are written — one `UPDATE … SET cost_usd = (SELECT SUM …)` over
+`tm_runs.cost_usd`, the `stats.costUsd` figure lifted out of the JSON so both
+dialects sum it with one statement (`storage/cost-sql.ts`). Resumed runs already
+report only their own delta (`netStats`), so the sum never double counts.
+Existing rows were backfilled in JS inside the migration's transaction. Every
+stats writer (the 20s live refresh, the Stop/SessionEnd hooks, exit, an aux
+session's finish) then re-broadcasts the task, so the card's `Σ $x.xx` chip and
+the task panel's moves with the run's own chip. `updateTask` never writes the
+column, so a stale copy of a task cannot clobber it.
+
+**`budgetAllows(task, kind)`** (`server/src/budget.ts`, wrapped as
+`Orchestrator.budgetAllows`) is the ONE gate the later parts call:
+
+| kind | measured against | asked by |
+|---|---|---|
+| `claim` | today's spend vs `budget.dayUsd` | `maybeSchedule`, once per pass |
+| `fix-round` | the task's roll-up vs `budget.taskUsd` | `runReviewRound`, before typing findings back |
+| `dispatch` | ″ | `deliverDispatches`, before a `needs_action` wake |
+| `wake` | ″ | `wakeDue`, before the 5h-window resume |
+| `check-round`, `transient-resume` | ″ | reserved for autonomy parts 3 and 4 |
+
+At or OVER the cap refuses. It returns `{ ok: true }` or
+`{ ok: false, fuse, spentUsd, capUsd, reason }`.
+
+- **`budget.taskUsd`** — no AUTOMATIC turn starts once the task has cost that
+  much. Refused, the reason goes on the row (`error`, keeping any earlier error
+  under it as `Earlier: …`), a `task.budget` audit row records the fuse, and one
+  `task-budget` anomaly ping goes out per task and cap. The task stays where it
+  is parked (`review` for a fix round, `review`/`failed` for a wake); a later
+  caller that refuses a task still `running`/`waiting` moves it to `review`.
+  Per path: the fix round leaves the findings `flagged`; a dispatch is settled
+  `failed` with the reason (the message stays readable on its row, never
+  retried every pass); a wake clears the mark and is audited
+  `task.wake { action: 'refused' }`. **A human click is never gated**: Proceed,
+  Run now, Retry, Follow-up, Apply fixes and Publish do not call it. Auto-publish
+  is not gated either — it ships work already done, and refusing it would strand
+  a finished change unpushed.
+- **`budget.dayUsd`** — the orchestrator stops CLAIMING (custom queue, global
+  and overflow) for the rest of the server-local day once today's spend reaches
+  it. Today's spend is every run of any mode STARTED since local midnight
+  (`spendSince`, indexed on `started_at`) — the Dashboard's attribution, so a
+  turn that started at 23:50 counts for the day it started. Running turns
+  finish; dispatch delivery, fix rounds and wakes are continuations and fall
+  under `budget.taskUsd` instead. One `task.budget` row and one `day-budget`
+  ping per day; the Dashboard shows it as a critical anomaly and stops calling
+  queued tasks starved.
+- **`budget.runMinutes`** — wall clock per worker turn (`run.startedAt`; every
+  resume is a new run). Past it the 60s anomaly sweep raises the run's
+  needs-attention flag and you get the attention ping worded for it (⏱ Over N
+  min). The turn is **never killed**. The flag is deliberately not stamped in
+  `attentionAt`, so the agent's own progress does not clear it (it IS
+  progressing); Stop and exit clear it like any flag. A real permission prompt
+  on that run takes the flag over (`takeOvertimeFlag` in the attention route), so
+  the prompt still gets its own ping and clears on progress as usual. Raised
+  once per run.
+
 ## Re-measuring after a change here
 
 1. `npm run typecheck` && `npm run build`.

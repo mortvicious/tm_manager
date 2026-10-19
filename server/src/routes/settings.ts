@@ -57,6 +57,10 @@ const settingsSchema = z
     'anomaly.longRunMin': z.number().int().min(5),
     'anomaly.costUsd': z.number().min(0.5),
     'anomaly.staleReviewHours': z.number().int().min(1),
+    // Budget fuses (docs/token-budget.md § Fuses): 0 — or null — is off.
+    'budget.taskUsd': z.number().min(0).max(10_000).nullable().transform((v) => v ?? 0),
+    'budget.dayUsd': z.number().min(0).max(100_000).nullable().transform((v) => v ?? 0),
+    'budget.runMinutes': z.number().int().min(0).max(7 * 24 * 60).nullable().transform((v) => v ?? 0),
     'router.enabled': z.boolean(),
     'router.primaryModel': z.string().min(1),
     'router.fallbackModel': z.string().min(1),

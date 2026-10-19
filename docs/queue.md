@@ -202,6 +202,47 @@ The global loop (`claimNextQueuedTask`) and the overflow claim
 member is invisible to them even when the global queue is on. The feature phase
 gate (`FEATURE_CLAIM_GATE`) applies to the custom head as well.
 
+`budget.dayUsd` ([`token-budget.md`](token-budget.md) § Fuses) stops this pump
+too: once today's spend reaches the cap, no member is claimed until midnight
+(server-local), exactly like the global and overflow claims.
+
+## Same-repo exclusivity (global and overflow claims, 2026-10-19)
+
+The custom queue always ran one task per repo; the GLOBAL claim did not, so two
+workers could edit one checkout at once — and a reviewer (or, later, a check
+run) would read a tree another agent was changing. Now both global claims carry
+`REPO_EXCLUSIVE_GATE` (`storage/queue-sql.ts`, shared verbatim by both drivers,
+JS twin `holdsRepoForClaim` in shared — edit together): a queued task is not
+claimed while **another task in its repo** is
+
+- `running` or `waiting` (which also covers a turn inside the resume gate that
+  has no PTY yet — the row, not the live session, is the test), or
+- in `review` with an automatic review round open (`review_state`
+  `pending`/`reviewing`/`fixing`): the reviewer is reading that checkout and its
+  findings are about to be typed back into a session there.
+
+`blocked` does **not** hold the repo, unlike the custom queue's `heldBy`: a
+split parent waits on children in its own repo, and holding it would deadlock
+them. A held task is skipped, not waited on — the next task in priority order
+from another repo is claimed instead, so concurrency stays 2 **across
+different repos**. The test is in the claim statement itself, so the second
+claim of one pass already sees the first as `running`; the scheduler is
+single-flight, which is what makes NOT EXISTS sufficient without row locks on
+Postgres.
+
+**The overflow claim is NOT exempt** (decided 2026-10-19). Overflow exists to
+beat the concurrency CAP — a live worker polling for a child it filed must not
+deadlock the slots — not to put two agents in one checkout. An agent's
+same-repo filing is a draft by rule (`docs/agent-api-design.md`; that doc's "two agents in one tree" caveat is what this gate now closes), so the overflow
+children are normally other-repo tasks and pass the gate untouched; a same-repo
+child a human enqueued waits for its filer's turn to end, like any other
+same-repo task. The Dashboard's `starved-queue` anomaly skips a task whose repo
+is held this way (or the day budget), since that wait is by design.
+
+What the gate does NOT cover: turns that are not claims — a human Run now, a
+dispatch delivery (which checks `repoBusy` itself), a review fix round or a
+wake-up continue an existing task and are not refused by it.
+
 ## API
 
 - `POST /api/tasks/:id/queue` — Add to queue. Same guards as enqueue (repo

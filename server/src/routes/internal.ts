@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { aux } from '../claude/aux.ts';
 import { summarizeRun } from '../claude/stats.ts';
 import { shipHeldForReview } from '../claude/worker.ts';
+import { broadcastTaskCost } from '../budget.ts';
 import { broadcast } from '../events.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
@@ -117,6 +118,7 @@ export function registerInternalRoutes(
       }
     }
     const updated = Object.keys(patch).length ? await storage.updateRun(runId, patch) : run;
+    if (patch.stats && updated) await broadcastTaskCost(storage, updated);
     return { run: updated ?? run, lastAssistantText };
   };
 
@@ -452,7 +454,11 @@ export function registerInternalRoutes(
     if (sessions.isIdle(id)) return { ok: true };
     await recordRunInfo(id, req.body, { skipSummarize: true });
     const run = await storage.getRun(id);
-    if (run && run.status === 'running' && !run.idle && !run.needsAttention) {
+    // A flag the budget.runMinutes fuse raised is not a prompt: a real prompt
+    // on that run takes the flag over (stamped and announced as its own, so
+    // its ping goes out and progress clears it) instead of hiding behind it.
+    const overtime = !!run?.needsAttention && orchestrator.takeOvertimeFlag(id);
+    if (run && run.status === 'running' && !run.idle && (!run.needsAttention || overtime)) {
       const updated = await storage.updateRun(id, { needsAttention: true });
       if (updated) {
         // Stamped BEFORE the row is announced: the activity watcher may report

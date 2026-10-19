@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import type { Anomaly, AuditEvent, StatsOverview } from '@tm/shared';
+import { holdsRepoForClaim, type Anomaly, type AuditEvent, type StatsOverview } from '@tm/shared';
+import { budgetAllows } from '../budget.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 import type { Storage } from '../storage/types.ts';
@@ -256,6 +257,13 @@ export function registerStatsRoutes(
 
     const queuedSinceMs = 30 * 60_000;
     const settingsEnabled = settings['orchestrator.enabled'];
+    // A queued task waiting on its repo (same-repo exclusivity, docs/queue.md)
+    // or on the day budget is held on purpose — not starved.
+    const heldRepos = new Set(tasks.filter((x) => x.repoId && holdsRepoForClaim(x)).map((x) => x.repoId));
+    const day = await budgetAllows(storage, null, 'claim', settings);
+    if (!day.ok) {
+      anomalies.push({ severity: 'critical', kind: 'day-budget', message: day.reason });
+    }
     for (const t of tasks) {
       if (t.status === 'review' && nowMs - Date.parse(t.updatedAt) > staleReviewMs) {
         anomalies.push({
@@ -273,7 +281,13 @@ export function registerStatsRoutes(
           taskId: t.id,
         });
       }
-      if (t.status === 'queued' && settingsEnabled && nowMs - Date.parse(t.updatedAt) > queuedSinceMs) {
+      if (
+        t.status === 'queued' &&
+        settingsEnabled &&
+        day.ok &&
+        !(t.repoId && heldRepos.has(t.repoId)) &&
+        nowMs - Date.parse(t.updatedAt) > queuedSinceMs
+      ) {
         anomalies.push({
           severity: 'critical',
           kind: 'starved-queue',

@@ -1,4 +1,15 @@
-import type { Feature, Proposal, Question, ReviewState, ServerEvent, Task, UsageSnapshot, UsageWindow } from '@tm/shared';
+import {
+  ANOMALY_ALERT_LABELS,
+  type AnomalyAlert,
+  type Feature,
+  type Proposal,
+  type Question,
+  type ReviewState,
+  type ServerEvent,
+  type Task,
+  type UsageSnapshot,
+  type UsageWindow,
+} from '@tm/shared';
 import { usageSnapshot } from '../claude/usage.ts';
 import type { TelegramNotifyConfig } from '../config.ts';
 import { onEvent } from '../events.ts';
@@ -48,6 +59,8 @@ interface PendingTask {
   published?: boolean;
   /** the run whose needs-attention flag was raised — re-read at flush */
   attentionRun?: string;
+  /** set when the flag is the budget.runMinutes fuse's: the cap in minutes */
+  attentionOvertime?: number;
 }
 
 export interface NotifierDeps {
@@ -273,8 +286,15 @@ export class TelegramNotifier {
         // after the prompt was answered) — only a raised flag is news.
         if (e.run.taskId && e.run.needsAttention) {
           const runId = e.run.id;
-          this.mark(e.run.taskId, (p) => (p.attentionRun = runId));
+          const overtime = e.reason === 'run-minutes' ? e.minutes : undefined;
+          this.mark(e.run.taskId, (p) => {
+            p.attentionRun = runId;
+            p.attentionOvertime = overtime;
+          });
         }
+        break;
+      case 'anomaly.raised':
+        await this.onAnomaly(e.alert);
         break;
       case 'run.exited':
         this.scheduleQueueCheck();
@@ -438,10 +458,23 @@ export class TelegramNotifier {
       // is worth a ping, so the run is re-read rather than trusted.
       const run = await this.deps.storage.getRun(p.attentionRun);
       if (run && run.status === 'running' && !run.idle && run.needsAttention) {
-        lines.push(`✋ ${title} <b>needs attention</b> — the agent is waiting on a prompt in its hidden terminal.`);
+        lines.push(
+          p.attentionOvertime
+            ? `⏱ ${title} has run <b>over ${p.attentionOvertime} min</b> (budget.runMinutes) — still working, nothing was stopped.`
+            : `✋ ${title} <b>needs attention</b> — the agent is waiting on a prompt in its hidden terminal.`,
+        );
       }
     }
     if (lines.length) await this.deps.send(lines.join('\n'), keyboard);
+  }
+
+  /** Already coalesced by AnomalyAlerts (one per task per type per episode) — sent as it comes. */
+  private async onAnomaly(a: AnomalyAlert): Promise<void> {
+    if (!this.deps.notify.anomaly) return;
+    const task = a.taskId ? await this.deps.storage.getTask(a.taskId) : null;
+    const { icon, label } = ANOMALY_ALERT_LABELS[a.type];
+    const subject = task ? ` · <b>${escapeHtml(task.title)}</b> <code>${short(task.id)}</code>` : '';
+    await this.deps.send(`${icon} <b>${escapeHtml(label)}</b>${subject}\n${escapeHtml(a.message)}`);
   }
 
   private onProposal(pr: Proposal): void {

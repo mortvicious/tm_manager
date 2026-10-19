@@ -560,4 +560,25 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       )`,
     ],
   },
+  {
+    id: 33,
+    // Budget fuses (docs/token-budget.md § Fuses). `tm_runs.cost_usd` is
+    // `stats.costUsd` lifted out of the JSON so both dialects can SUM it with
+    // the same SQL (the day fuse, the task roll-up); `tm_tasks.cost_usd` is
+    // that roll-up kept on the row (worker runs + review/compact aux runs
+    // about the task), rewritten by `updateRun` whenever a run's stats move.
+    // Existing rows are backfilled in JS by each driver right after this
+    // migration (`backfillCosts`) — JSON extraction is not dialect-neutral.
+    // tm_runs had no task_id index; the roll-up and the per-task run reads
+    // both want one.
+    statements: [
+      `ALTER TABLE tm_runs ADD COLUMN cost_usd DOUBLE PRECISION`,
+      `ALTER TABLE tm_tasks ADD COLUMN cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `CREATE INDEX IF NOT EXISTS tm_runs_task_idx ON tm_runs (task_id)`,
+      `CREATE INDEX IF NOT EXISTS tm_runs_started_idx ON tm_runs (started_at)`,
+    ],
+  },
 ];
+
+/** The migration whose rows each driver backfills in JS once it is applied. */
+export const COST_MIGRATION_ID = 33;

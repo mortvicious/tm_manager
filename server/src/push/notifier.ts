@@ -1,4 +1,17 @@
-import type { Chat, ChatMessage, Feature, Proposal, Question, Report, ReviewState, ServerEvent, Task, TaskStatus } from '@tm/shared';
+import {
+  ANOMALY_ALERT_LABELS,
+  type AnomalyAlert,
+  type Chat,
+  type ChatMessage,
+  type Feature,
+  type Proposal,
+  type Question,
+  type Report,
+  type ReviewState,
+  type ServerEvent,
+  type Task,
+  type TaskStatus,
+} from '@tm/shared';
 import { onEvent } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 import { reviewClause } from '../telegram/notifications.ts';
@@ -31,6 +44,8 @@ interface PendingTask {
   published?: boolean;
   started?: boolean;
   attentionRun?: string;
+  /** set when the flag is the budget.runMinutes fuse's: the cap in minutes */
+  attentionOvertime?: number;
 }
 
 export interface PushNotifierDeps {
@@ -105,8 +120,15 @@ export class PushNotifier {
         // the same event announces the CLEAR — only a raised flag is news
         if (e.run.taskId && e.run.needsAttention) {
           const runId = e.run.id;
-          this.mark(e.run.taskId, (p) => (p.attentionRun = runId));
+          const overtime = e.reason === 'run-minutes' ? e.minutes : undefined;
+          this.mark(e.run.taskId, (p) => {
+            p.attentionRun = runId;
+            p.attentionOvertime = overtime;
+          });
         }
+        break;
+      case 'anomaly.raised':
+        await this.onAnomaly(e.alert);
         break;
       case 'run.exited':
         this.scheduleQueueCheck();
@@ -229,14 +251,22 @@ export class PushNotifier {
     if (p.attentionRun && task.status === 'running') {
       const run = await this.deps.storage.getRun(p.attentionRun);
       if (run && run.status === 'running' && !run.idle && run.needsAttention) {
+        const overtime = p.attentionOvertime;
         await push.deliver(
           'attention',
-          {
-            title: `✋ Needs attention · ${task.title}`,
-            body: 'The agent is waiting on a prompt in its hidden terminal.',
-            tag: `attention-${task.id}`,
-            url,
-          },
+          overtime
+            ? {
+                title: `⏱ Over ${overtime} min · ${task.title}`,
+                body: 'This turn has run past budget.runMinutes. It is still working — nothing was stopped.',
+                tag: `attention-${task.id}`,
+                url,
+              }
+            : {
+                title: `✋ Needs attention · ${task.title}`,
+                body: 'The agent is waiting on a prompt in its hidden terminal.',
+                tag: `attention-${task.id}`,
+                url,
+              },
           { urgency: 'high' },
         );
       }
@@ -298,6 +328,18 @@ export class PushNotifier {
       // only as an expired row, so a day of TTL is enough
       { urgency: 'high' },
     );
+  }
+
+  // ---- anomalies (already coalesced by AnomalyAlerts: one per key) ----------
+
+  private async onAnomaly(a: AnomalyAlert): Promise<void> {
+    const task = a.taskId ? await this.deps.storage.getTask(a.taskId) : null;
+    await this.deps.push.deliver('anomaly', {
+      title: `${ANOMALY_ALERT_LABELS[a.type].icon} ${ANOMALY_ALERT_LABELS[a.type].label}${task ? ` · ${task.title}` : ''}`,
+      body: clip(a.message, SUMMARY_CLIP),
+      tag: `anomaly-${a.key}`,
+      url: task ? taskUrl(task.id) : '/',
+    });
   }
 
   // ---- proposals, features, chats, reports -----------------------------------

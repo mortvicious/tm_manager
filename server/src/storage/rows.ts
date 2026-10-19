@@ -17,7 +17,7 @@ import type {
 } from '@tm/shared';
 
 // One malformed JSON cell must not break every list query (review F4).
-function safeParse<T>(raw: unknown, fallback: T): T {
+export function safeParse<T>(raw: unknown, fallback: T): T {
   if (typeof raw !== 'string' || raw === '') return fallback;
   try {
     return JSON.parse(raw) as T;
@@ -97,6 +97,7 @@ export function rowToTask(r: any): Task {
     reviewRounds: safeParse(r.review_rounds, []),
     wakeAt: r.wake_at ?? null,
     queueHeldAt: r.queue_held_at ?? null,
+    costUsd: Number(r.cost_usd ?? 0) || 0,
     error: r.error ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,

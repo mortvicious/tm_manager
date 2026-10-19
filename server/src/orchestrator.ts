@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
   isCodexModel,
   REVIEW_BUSY_STATES,
+  runTaskId,
   REVIEW_NOW_FROM,
   type AppSettings,
   type Dispatch,
@@ -54,6 +55,15 @@ import {
 import { needsFallbackModel, sessionUsagePct } from './claude/usage.ts';
 import { sharedPromptBlock, spaceForRepo, validateSpacePath, writeFolderDocs, writeSharedMemory } from './spaces/service.ts';
 import { broadcast } from './events.ts';
+import { AnomalyAlerts } from './anomalies.ts';
+import {
+  broadcastTaskCost,
+  budgetAllows,
+  localDayKey,
+  runMinutesCap,
+  type BudgetTurn,
+  type BudgetVerdict,
+} from './budget.ts';
 import { MAX_LIVE_SESSIONS, pidLooksLikeOurs, type SessionManager } from './pty/session-manager.ts';
 import { artifactsRoot } from './config.ts';
 import type { Storage } from './storage/types.ts';
@@ -246,6 +256,19 @@ export class Orchestrator implements OrchestratorApi {
   private readonly wakeDueAt = new Map<string, number>();
   /** single-flight for the wake sweep — a pass can outlive its own interval */
   private wakeSweeping = false;
+  /** Anomaly notifications (docs/push.md § What pings): coalescing memory + emit. */
+  private readonly alerts: AnomalyAlerts;
+  /** single-flight for the anomaly/budget sweep */
+  private anomalySweeping = false;
+  /**
+   * `budget.runMinutes` (docs/token-budget.md § Fuses): runs the fuse has
+   * flagged once — never again for the same run — and the subset whose
+   * needs-attention flag is STILL the fuse's (not a prompt's). The latter is
+   * what lets a real permission prompt on an over-time run raise its own
+   * attention (internal route) instead of hiding behind the fuse's flag.
+   */
+  private readonly overtimeRaised = new Set<string>();
+  private readonly overtimeFlags = new Set<string>();
   /**
    * `waiting` (docs/design.md § Waiting): the subagents each live run has
    * launched and not yet seen return, from the SubagentStart/SubagentStop
@@ -328,6 +351,194 @@ export class Orchestrator implements OrchestratorApi {
     setInterval(() => {
       void this.wakeSweep();
     }, 30_000).unref();
+    // Anomaly notifications + the per-turn wall-clock fuse. A minute is the
+    // resolution every threshold here is stated in.
+    this.alerts = new AnomalyAlerts(storage);
+    setInterval(() => {
+      void this.anomalySweep();
+    }, 60_000).unref();
+  }
+
+  // ---- budget fuses (docs/token-budget.md § Fuses) -------------------------
+
+  /**
+   * The one gate every AUTOMATIC turn and every claim asks (named in
+   * docs/token-budget.md § Fuses): `claim` measures today's spend against
+   * `budget.dayUsd`, every other kind the task's roll-up against
+   * `budget.taskUsd`. Human clicks (Proceed, Run now, Retry, Follow-up,
+   * Apply fixes, Publish) never call it.
+   */
+  budgetAllows(task: Pick<Task, 'id'> | null, kind: BudgetTurn, settings?: AppSettings): Promise<BudgetVerdict> {
+    return budgetAllows(this.storage, task, kind, settings);
+  }
+
+  /**
+   * An automatic turn was refused by `budget.taskUsd`: the reason goes on the
+   * row (`error`), a `task.budget` audit row records it, and one `anomaly`
+   * ping per task per cap goes out. A task caught mid-turn (`running` /
+   * `waiting` — the later transient-resume path) lands in `review`; one that
+   * is already parked keeps its status, since parked IS where it lands.
+   */
+  private async refuseOverBudget(
+    taskId: string,
+    kind: BudgetTurn,
+    v: Extract<BudgetVerdict, { ok: false }>,
+  ): Promise<void> {
+    const task = await this.storage.getTask(taskId);
+    if (!task) return;
+    // Keep whatever the row already said (a wake-parked task's own failure,
+    // say) under the budget reason rather than overwrite it; a repeat refusal
+    // replaces only the previous budget line.
+    const earlier = !task.error
+      ? null
+      : task.error.startsWith('budget:')
+        ? (task.error.split('\n\nEarlier: ')[1] ?? null)
+        : task.error;
+    const error = earlier ? `${v.reason}\n\nEarlier: ${earlier}` : v.reason;
+    const updated =
+      task.status === 'running' || task.status === 'waiting'
+        ? await this.storage.transitionTask(taskId, [task.status], 'review', 'system', { error })
+        : await this.storage.updateTask(taskId, { error });
+    if (updated) broadcast({ type: 'task.updated', task: updated });
+    await this.storage.appendEvent({
+      kind: 'task.budget',
+      actor: 'system',
+      taskId,
+      repoId: task.repoId,
+      data: { fuse: v.fuse, refused: kind, spentUsd: v.spentUsd, capUsd: v.capUsd },
+    });
+    await this.alerts.emit({
+      type: 'task-budget',
+      severity: 'warn',
+      message: `over its $${v.capUsd.toFixed(2)} budget ($${v.spentUsd.toFixed(2)} spent) — automatic turns stopped`,
+      key: `task-budget:${taskId}:${v.capUsd}`,
+      taskId,
+    });
+  }
+
+  /** The day fuse holds: one audit row + one ping per server-local day. */
+  private async dayBudgetReached(v: Extract<BudgetVerdict, { ok: false }>): Promise<void> {
+    const day = localDayKey();
+    const sent = await this.alerts.emit({
+      type: 'day-budget',
+      severity: 'critical',
+      message: v.reason,
+      key: `day-budget:${day}`,
+      data: { spentUsd: v.spentUsd, capUsd: v.capUsd },
+    });
+    if (sent) {
+      await this.storage.appendEvent({
+        kind: 'task.budget',
+        actor: 'system',
+        data: { fuse: v.fuse, refused: 'claim', day, spentUsd: v.spentUsd, capUsd: v.capUsd },
+      });
+    }
+  }
+
+  /** Is this run's needs-attention flag the run-minutes fuse's, not a prompt's? Taking it hands the flag to the prompt. */
+  takeOvertimeFlag(runId: string): boolean {
+    return this.overtimeFlags.delete(runId);
+  }
+
+  /**
+   * Every minute: the `budget.runMinutes` fuse, then the `anomaly.*`
+   * thresholds as notifications (the Dashboard computes the same rules on
+   * request, routes/stats.ts). Never throws into its timer.
+   */
+  private async anomalySweep(): Promise<void> {
+    if (this.anomalySweeping) return;
+    this.anomalySweeping = true;
+    try {
+      const settings = await this.storage.getSettings();
+      const nowMs = Date.now();
+      const live = (await this.storage.listRuns({ status: 'running', mode: 'worker' })).filter((r) => {
+        const s = this.sessions.get(r.id);
+        return !r.idle && s !== undefined && s.exit === null && !s.idle;
+      });
+      const capMin = runMinutesCap(settings);
+      const longRunMin = settings['anomaly.longRunMin'];
+      for (const run of live) {
+        const ageMin = (nowMs - Date.parse(run.startedAt)) / 60_000;
+        if (!Number.isFinite(ageMin)) continue;
+        if (capMin && ageMin >= capMin) await this.raiseOvertime(run, capMin);
+        if (run.taskId && longRunMin > 0 && ageMin > longRunMin) {
+          await this.alerts.emit({
+            type: 'long-run',
+            severity: 'warn',
+            message: `running ${Math.round(ageMin)} min (over the ${longRunMin} min threshold)`,
+            key: `long-run:${run.id}`,
+            taskId: run.taskId,
+            runId: run.id,
+          });
+        }
+      }
+
+      // Cost and stale review read the task rows. Cost only for tasks with a
+      // run started in the last 24h or still live — the Dashboard's
+      // recent-or-live rule — so the first boot does not ping every expensive
+      // task in history; stale review only for a stay that crossed the
+      // threshold in the last day, for the same reason.
+      const costCap = settings['anomaly.costUsd'];
+      const staleMs = settings['anomaly.staleReviewHours'] * 3600_000;
+      const recent = new Set<string>();
+      for (const r of await this.storage.listRuns({ since: new Date(nowMs - 24 * 3600_000).toISOString() })) {
+        const id = runTaskId(r);
+        if (id) recent.add(id);
+      }
+      for (const r of live) if (r.taskId) recent.add(r.taskId);
+      for (const id of recent) {
+        const t = await this.storage.getTask(id);
+        if (!t || !(costCap > 0) || t.costUsd <= costCap) continue;
+        await this.alerts.emit({
+          type: 'cost-high',
+          severity: 'critical',
+          message: `has cost $${t.costUsd.toFixed(2)}, over the $${costCap} threshold`,
+          key: `cost-high:${t.id}`,
+          taskId: t.id,
+        });
+      }
+      if (staleMs > 0) {
+        for (const t of await this.storage.listTasks({ status: 'review' })) {
+          const age = nowMs - Date.parse(t.updatedAt);
+          if (!(age > staleMs) || age > staleMs + 24 * 3600_000) continue;
+          await this.alerts.emit({
+            type: 'stale-review',
+            severity: 'info',
+            message: `in review for ${Math.round(age / 3600_000)}h — waiting on you`,
+            key: `stale-review:${t.id}:${t.updatedAt}`,
+            taskId: t.id,
+          });
+        }
+      }
+    } catch (err) {
+      console.error('orchestrator anomaly sweep error:', err);
+    } finally {
+      this.anomalySweeping = false;
+    }
+  }
+
+  /**
+   * `budget.runMinutes`: flag the run needs-attention and say why — never
+   * kill it. Deliberately NOT stamped in `attentionAt`, so the agent's own
+   * progress does not clear it (an over-time turn is still progressing); Stop
+   * and exit clear it as they clear any flag. A run already flagged by a
+   * prompt is left alone this minute and tried again on the next.
+   */
+  private async raiseOvertime(run: Run, minutes: number): Promise<void> {
+    if (this.overtimeRaised.has(run.id) || run.needsAttention) return;
+    this.overtimeRaised.add(run.id);
+    const updated = await this.storage.updateRun(run.id, { needsAttention: true });
+    if (!updated) return;
+    this.overtimeFlags.add(run.id);
+    await this.storage.appendEvent({
+      kind: 'run.attention',
+      actor: 'system',
+      runId: run.id,
+      taskId: run.taskId,
+      repoId: run.repoId,
+      data: { reason: 'run-minutes', minutes },
+    });
+    broadcast({ type: 'run.needs-attention', run: updated, reason: 'run-minutes', minutes });
   }
 
   /** Recent bytes of a run's terminal, ANSI and all; '' when there is none. */
@@ -564,6 +775,22 @@ export class Orchestrator implements OrchestratorApi {
       // mark stays, so the task wakes the moment the switch comes back.
       if (!settings['orchestrator.enabled'] && !task.customQueueAt) continue;
       if (this.activeWorkers() >= settings['orchestrator.concurrency']) return;
+      // budget.taskUsd: a wake-up is an automatic turn. Refused, the mark is
+      // cleared (the window reopening changes nothing about the budget) and
+      // the task stays parked for a human Proceed.
+      const verdict = await this.budgetAllows(task, 'wake', settings);
+      if (!verdict.ok) {
+        await this.clearWake(taskId);
+        await this.storage.appendEvent({
+          kind: 'task.wake',
+          actor: 'system',
+          taskId,
+          repoId: task.repoId,
+          data: { action: 'refused', reason: 'budget', wakeAt: task.wakeAt },
+        });
+        await this.refuseOverBudget(taskId, 'wake', verdict);
+        continue;
+      }
       // Cleared BEFORE the resume, not after: `startWorker` clears it too, but
       // a resume that fails for a reason of its own must not leave a mark that
       // fires again every thirty seconds forever.
@@ -690,6 +917,7 @@ export class Orchestrator implements OrchestratorApi {
         if (summary) {
           const updated = await this.storage.updateRun(run.id, { stats: summary.stats });
           if (updated) broadcast({ type: 'run.updated', run: updated });
+          await broadcastTaskCost(this.storage, updated);
         }
       }
     } catch {
@@ -862,13 +1090,20 @@ export class Orchestrator implements OrchestratorApi {
           this.rescheduleRequested = false;
           const settings = await this.storage.getSettings();
           const cap = settings['orchestrator.concurrency'];
+          // `budget.dayUsd` (docs/token-budget.md § Fuses): past today's cap
+          // nothing new is CLAIMED — custom queue, global or overflow. Turns
+          // already running finish; dispatch delivery (a continuation, gated
+          // per task by budget.taskUsd) still runs.
+          const day = await this.budgetAllows(null, 'claim', settings);
+          if (!day.ok) await this.dayBudgetReached(day);
           // The custom queue (docs/queue.md) is independent of the global
           // switch: it runs while the queue is stopped, one task at a time.
-          await this.pumpCustomQueue(cap);
-          if (!settings['orchestrator.enabled']) {
-            // The queue is stopped, but dispatch delivery is a continuation of
-            // sessions that already exist — it runs regardless (user decision
-            // 2026-08-27), like a human follow-up would.
+          if (day.ok) await this.pumpCustomQueue(cap);
+          if (!settings['orchestrator.enabled'] || !day.ok) {
+            // The queue is stopped (or the day's budget is spent), but dispatch
+            // delivery is a continuation of sessions that already exist — it
+            // runs regardless (user decision 2026-08-27), like a human
+            // follow-up would.
             await this.deliverDispatches();
             return;
           }
@@ -1304,6 +1539,16 @@ export class Orchestrator implements OrchestratorApi {
         // `activeWorkers()` rather than the raw PTY count, so turns already
         // fired but not yet spawned still occupy their slot.
         if (this.activeWorkers() >= settings['orchestrator.concurrency']) break;
+        // budget.taskUsd: waking the target is an automatic turn. Refused, the
+        // messages fail with the reason (they stay readable on the dispatch
+        // rows) rather than being retried every pass; a human Follow-up on
+        // the target still works.
+        const verdict = await this.budgetAllows(target, 'dispatch', settings);
+        if (!verdict.ok) {
+          await settle(actionable, 'failed', verdict.reason);
+          await this.refuseOverBudget(taskId, 'dispatch', verdict);
+          continue;
+        }
 
         const items: { fromTitle: string; fromTaskId: string; message: string }[] = [];
         for (const d of actionable) {
@@ -2306,6 +2551,7 @@ export class Orchestrator implements OrchestratorApi {
       const summary = await summarizeRun(forStats);
       if (summary) {
         await this.storage.updateRun(runId, { stats: summary.stats });
+        await broadcastTaskCost(this.storage, forStats);
         if (forStats.taskId && summary.lastAssistantText) {
           const t = await this.storage.getTask(forStats.taskId);
           if (t && !t.resultSummary && ['review', 'published', 'done'].includes(t.status)) {
@@ -2629,11 +2875,22 @@ export class Orchestrator implements OrchestratorApi {
     const actionable = result.findings.filter((f) => f.severity === 'blocker' || f.severity === 'major');
     const maxRounds = settings['review.maxRounds'];
     const current = await this.storage.getTask(taskId);
-    const canLoop =
+    let canLoop =
       actionable.length > 0 &&
       fixRound < maxRounds &&
       current?.status === 'review' && // human hasn't taken over
       (await this.hasLiveSession(taskId));
+    // budget.taskUsd: the fix round is an automatic turn. Refused, the
+    // findings stand (`flagged`) and the reason goes on the row — the human
+    // can still Apply fixes, which is a click and never gated.
+    let overBudget: Extract<BudgetVerdict, { ok: false }> | null = null;
+    if (canLoop) {
+      const verdict = await this.budgetAllows({ id: taskId }, 'fix-round', settings);
+      if (!verdict.ok) {
+        overBudget = verdict;
+        canLoop = false;
+      }
+    }
     const round: ReviewRound = {
       round: task.reviewRounds.length + 1,
       at: new Date().toISOString(),
@@ -2702,7 +2959,8 @@ export class Orchestrator implements OrchestratorApi {
         await this.setReviewState(taskId, 'flagged');
       }
     } else {
-      this.fixRounds.delete(taskId); // loop settled (clean, minors, cap, or human took over)
+      this.fixRounds.delete(taskId); // loop settled (clean, minors, cap, budget, or human took over)
+      if (overBudget) await this.refuseOverBudget(taskId, 'fix-round', overBudget);
     }
   }
 
@@ -2756,6 +3014,8 @@ export class Orchestrator implements OrchestratorApi {
   /** The run is over one way or another — forget its flag time. */
   private forgetAttention(runId: string): void {
     this.attentionAt.delete(runId);
+    this.overtimeRaised.delete(runId);
+    this.overtimeFlags.delete(runId);
   }
 
   // ---- waiting lifecycle (docs/design.md § Waiting) ------------------------
