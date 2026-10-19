@@ -29,6 +29,7 @@ import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
 import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_IDLE, REPO_EXCLUSIVE_GATE } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
+import { LOOP_LEAVES_RUNNING_SQL, loopStepSets, stepLoopSql } from './loop-sql.ts';
 import {
   MANUAL_CLAIM_ORDER,
   MOVE_SUBTREE_SQL,
@@ -43,7 +44,8 @@ import {
 } from './group.ts';
 import { COST_MIGRATION_ID, MIGRATIONS } from './migrations.ts';
 import { PUSH_RESULT_FAIL_SQL, PUSH_RESULT_OK_SQL, PUSH_UPSERT_SQL, rowToPushDevice } from './push-sql.ts';
-import type { NewPushDevice, PushDeviceRecord } from './types.ts';
+import type { LoopStep, NewPushDevice, PushDeviceRecord } from './types.ts';
+import type { LoopState } from '@tm/shared';
 import type { PushKind } from '@tm/shared';
 import {
   SHARED_NOTE_INSERT_SQL,
@@ -412,8 +414,8 @@ export class SqliteStorage implements Storage {
     const place = this.placeSync(id, t.parentId);
     this.db
       .prepare(
-        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (${NEXT_SORT_ORDER_SQL}))`,
+        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, kind, loop_goal, loop_max_iterations, loop_budget_usd, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (${NEXT_SORT_ORDER_SQL}))`,
       )
       .run(
         id,
@@ -442,6 +444,10 @@ export class SqliteStorage implements Storage {
         t.reviewEffort ?? null,
         t.acceptance ?? null,
         t.checks == null ? null : JSON.stringify(t.checks),
+        t.kind ?? 'task',
+        t.loopGoal ?? null,
+        t.loopMaxIterations ?? null,
+        t.loopBudgetUsd ?? null,
       );
     const task = rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
     this.appendEventSync({
@@ -501,7 +507,7 @@ export class SqliteStorage implements Storage {
     const isRoot = place.groupId === id;
     this.db
       .prepare(
-        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, landing=?, auto_landed_at=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, review_diff_hash=?, review_state=?, review_rounds=?, wake_at=?, error=?, updated_at=?, review_model=?, review_effort=?, base_sha=?, base_ref=?, base_at=?, queue_held_at=?, acceptance=?, checks=?, check_state=?, check_results=?, check_diff_hash=? WHERE id=?`,
+        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, landing=?, auto_landed_at=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, review_diff_hash=?, review_state=?, review_rounds=?, wake_at=?, error=?, updated_at=?, review_model=?, review_effort=?, base_sha=?, base_ref=?, base_at=?, queue_held_at=?, acceptance=?, checks=?, check_state=?, check_results=?, check_diff_hash=?, loop_goal=?, loop_max_iterations=?, loop_budget_usd=?, loop_iteration=?, loop_state=?, loop_history=? WHERE id=?`,
       )
       .run(
         next.title,
@@ -544,9 +550,22 @@ export class SqliteStorage implements Storage {
         next.checkState ?? null,
         JSON.stringify(next.checkResults ?? []),
         next.checkDiffHash ?? null,
+        next.loopGoal ?? null,
+        next.loopMaxIterations ?? null,
+        next.loopBudgetUsd ?? null,
+        next.loopIteration ?? 0,
+        next.loopState ?? null,
+        JSON.stringify(next.loopHistory ?? []),
         id,
       );
     return rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
+  }
+
+  async stepLoop(id: string, from: (LoopState | null)[], patch: LoopStep): Promise<Task | null> {
+    const { sets, vals } = loopStepSets(patch);
+    const named = from.filter((s): s is LoopState => s !== null);
+    const r = this.db.prepare(stepLoopSql(sets, from)).get(...vals, now(), id, ...named);
+    return r ? rowToTask(r) : null;
   }
 
   async bumpTaskAttempts(id: string): Promise<Task | null> {
@@ -705,7 +724,7 @@ export class SqliteStorage implements Storage {
     from: Task['status'][],
     to: Task['status'],
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'autoLandedAt'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'autoLandedAt' | 'loopState'>>,
     audit?: Record<string, unknown>,
   ): Promise<Task | null> {
     // Conditional single-statement transition — immune to check-then-set races
@@ -728,6 +747,15 @@ export class SqliteStorage implements Storage {
     if (patch && 'checkState' in patch) {
       sets.push('check_state = ?');
       vals.push(patch.checkState ?? null);
+    }
+    if (patch && 'loopState' in patch) {
+      sets.push('loop_state = ?');
+      vals.push(patch.loopState ?? null);
+    } else if (to !== 'running' && to !== 'waiting') {
+      // A loop's in-flight states exist only while the task is `running`
+      // (docs/loops.md § State): whatever moves it out — cancel, Undo, a
+      // budget refusal, an exit, boot recovery — leaves it `paused`.
+      sets.push(LOOP_LEAVES_RUNNING_SQL);
     }
     // An Undo-start hold (docs/queue.md § Undo start) means "queued, but not
     // yet" and exists only for the transition that sets it: every other status

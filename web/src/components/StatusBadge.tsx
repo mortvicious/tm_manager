@@ -1,4 +1,4 @@
-import type { CheckState, ReviewState, TaskStatus } from '@tm/shared';
+import type { CheckState, LoopState, ReviewState, TaskStatus } from '@tm/shared';
 
 const cls: Partial<Record<TaskStatus, string>> = {
   running: 's-running',
@@ -19,7 +19,8 @@ const cls: Partial<Record<TaskStatus, string>> = {
  * it is `running` on that reviewer's findings. The repo checks (docs/checks.md)
  * add `checking` (due or running, before the reviewer) and `checks red` (the
  * fix loop ended with a failing check); a `running` task fixing red checks
- * reads `fixing` too. `needs attention` is the last, from the live run.
+ * reads `fixing` too. A loop task between iterations (docs/loops.md) reads
+ * `loop checks` / `next iteration`. `needs attention` is the last, from the live run.
  */
 export function StatusBadge({
   status,
@@ -27,6 +28,7 @@ export function StatusBadge({
   question,
   reviewState,
   checkState,
+  loopState,
   onOpenReviewer,
 }: {
   status: TaskStatus;
@@ -35,6 +37,8 @@ export function StatusBadge({
   question?: boolean;
   reviewState?: ReviewState | null;
   checkState?: CheckState | null;
+  /** a loop task's state (docs/loops.md): between iterations it is `running` with no session */
+  loopState?: LoopState | null;
   /** set while the reviewer's terminal is live: the auto-review badge opens it */
   onOpenReviewer?: () => void;
 }) {
@@ -87,6 +91,20 @@ export function StatusBadge({
     return (
       <span className="badge s-autoreview" title="the adversarial reviewer is reading this change">
         <span className="dot" /> auto-review
+      </span>
+    );
+  }
+  if (status === 'running' && loopState === 'checking') {
+    return (
+      <span className="badge s-checking" title="a loop iteration ended — the server is committing its leftovers and running the checks">
+        <span className="dot" /> loop checks
+      </span>
+    );
+  }
+  if (status === 'running' && loopState === 'next') {
+    return (
+      <span className="badge s-running s-loopnext" title="the next loop iteration starts as soon as a worker slot is free">
+        <span className="dot" /> next iteration
       </span>
     );
   }

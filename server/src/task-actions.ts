@@ -1,4 +1,4 @@
-import { GROUP_COLOR_COUNT, TASK_MOVE_PLACES, isExternalTask, type EffortLevel, type LandingTier, type TaskMovePlace, type Task, type TaskStatus } from '@tm/shared';
+import { GROUP_COLOR_COUNT, LOOP_DEFAULT_MAX_ITERATIONS, LOOP_MAX_ITERATIONS_LIMIT, TASK_MOVE_PLACES, isExternalTask, type EffortLevel, type LandingTier, type TaskMovePlace, type Task, type TaskStatus } from '@tm/shared';
 import type { ActionResult, OrchestratorApi } from './app-types.ts';
 import { broadcast } from './events.ts';
 import type { MoveAnchor } from './storage/group.ts';
@@ -51,6 +51,10 @@ export interface TaskEdit {
   landing?: LandingTier | null;
   acceptance?: string | null;
   checks?: string[] | null;
+  /** loop tasks only (docs/loops.md); `kind` itself is create-only */
+  loopGoal?: string | null;
+  loopMaxIterations?: number | null;
+  loopBudgetUsd?: number | null;
   groupName?: string | null;
   groupColor?: number | null;
 }
@@ -83,9 +87,38 @@ export function landingRefusal(
   return `an external task (source '${t.source}'${t.createdByRun ? ', filed by an agent' : ''}) never lands above supervised`;
 }
 
+/**
+ * What is wrong with a loop task's definition (docs/loops.md), or null. A loop
+ * needs a repo, a goal and its own budget; the loop fields mean nothing on a
+ * plain task, so they are refused there rather than stored unread.
+ */
+export function loopProblem(
+  t: Pick<NewTask, 'kind' | 'repoId' | 'loopGoal' | 'loopMaxIterations' | 'loopBudgetUsd' | 'parentId'>,
+): string | null {
+  if (t.kind !== 'loop') {
+    return t.loopGoal != null || t.loopMaxIterations != null || t.loopBudgetUsd != null
+      ? 'loopGoal / loopMaxIterations / loopBudgetUsd belong to a loop task (kind: "loop")'
+      : null;
+  }
+  if (!t.repoId) return 'a loop task needs a repo';
+  if (!t.loopGoal?.trim()) return 'a loop task needs a goal';
+  if (!(Number(t.loopBudgetUsd) > 0)) return 'a loop task needs a budget (loopBudgetUsd > 0)';
+  const max = t.loopMaxIterations ?? LOOP_DEFAULT_MAX_ITERATIONS;
+  if (!Number.isInteger(max) || max < 1 || max > LOOP_MAX_ITERATIONS_LIMIT) {
+    return `loopMaxIterations must be 1..${LOOP_MAX_ITERATIONS_LIMIT}`;
+  }
+  return null;
+}
+
+/** The loop fields as stored: goal trimmed, iterations defaulted. */
+function normalizeLoop<T extends Pick<NewTask, 'kind' | 'loopGoal' | 'loopMaxIterations'>>(input: T): T {
+  if (input.kind !== 'loop') return input;
+  return { ...input, loopGoal: input.loopGoal?.trim() ?? null, loopMaxIterations: input.loopMaxIterations ?? LOOP_DEFAULT_MAX_ITERATIONS };
+}
+
 /** POST /api/tasks — create + broadcast. */
 export async function createTask(deps: TaskActionDeps, input: NewTask, actor: string): Promise<Task> {
-  const task = await deps.storage.createTask(normalizeDone(input), actor);
+  const task = await deps.storage.createTask(normalizeLoop(normalizeDone(input)), actor);
   broadcast({ type: 'task.updated', task });
   return task;
 }
@@ -110,6 +143,22 @@ export async function editTask(
   if (!cur) return err(404, 'task not found');
   const landingRefused = landingRefusal(cur, patch.landing);
   if (landingRefused) return err(409, landingRefused);
+  const touchesLoop = patch.loopGoal !== undefined || patch.loopMaxIterations !== undefined || patch.loopBudgetUsd !== undefined;
+  if (touchesLoop) {
+    const merged = {
+      kind: cur.kind,
+      repoId: patch.repoId === undefined ? cur.repoId : patch.repoId,
+      parentId: cur.parentId,
+      loopGoal: patch.loopGoal === undefined ? cur.loopGoal : patch.loopGoal,
+      loopMaxIterations: patch.loopMaxIterations === undefined ? cur.loopMaxIterations : patch.loopMaxIterations,
+      loopBudgetUsd: patch.loopBudgetUsd === undefined ? cur.loopBudgetUsd : patch.loopBudgetUsd,
+    };
+    const loopRefused = loopProblem(merged);
+    if (loopRefused) return err(400, loopRefused);
+    if (patch.loopGoal != null) patch = { ...patch, loopGoal: patch.loopGoal.trim() };
+  } else if (cur.kind === 'loop' && patch.repoId === null) {
+    return err(400, 'a loop task needs a repo');
+  }
   // Naming/colouring is a property of the GROUP, so it is only accepted on the
   // group's root — otherwise two members could claim different names.
   const namesGroup = patch.groupName !== undefined || patch.groupColor !== undefined;
@@ -479,4 +528,13 @@ export async function cancelTask(deps: TaskActionDeps, id: string, actor: string
   }
   if (!deps.orchestrator) return err(503, 'orchestrator not ready');
   return deps.orchestrator.cancel(id, actor);
+}
+
+/**
+ * "Continue" a loop task that stopped short (docs/loops.md) — iterations,
+ * budget, no progress, paused. Shared by the route and the bot like the rest.
+ */
+export async function continueLoopTask(deps: TaskActionDeps, id: string, actor: string): Promise<ActionResult> {
+  if (!deps.orchestrator) return err(503, 'orchestrator not ready');
+  return deps.orchestrator.continueLoop(id, actor);
 }

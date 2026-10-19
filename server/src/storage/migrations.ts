@@ -627,6 +627,23 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `DELETE FROM tm_config WHERE key = 'orchestrator.autoComplete'`,
     ],
   },
+  {
+    id: 37,
+    // Loop tasks (docs/loops.md): `kind` ('task' | 'loop'), the loop's goal,
+    // iteration bound and USD ceiling, and where it stands — iterations
+    // started, `loop_state` (no new task status: between iterations the task
+    // stays `running`) and the per-iteration history (JSON). The checks
+    // subset is the existing `checks` column.
+    statements: [
+      `ALTER TABLE tm_tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'`,
+      `ALTER TABLE tm_tasks ADD COLUMN loop_goal TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN loop_max_iterations INTEGER`,
+      `ALTER TABLE tm_tasks ADD COLUMN loop_budget_usd DOUBLE PRECISION`,
+      `ALTER TABLE tm_tasks ADD COLUMN loop_iteration INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE tm_tasks ADD COLUMN loop_state TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN loop_history TEXT`,
+    ],
+  },
 ];
 
 /** The migration whose rows each driver backfills in JS once it is applied. */

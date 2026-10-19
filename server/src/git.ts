@@ -312,6 +312,11 @@ export async function hasTaskCommit(repo: Repo, taskId: string): Promise<boolean
 export async function handoffCommit(
   repo: Repo,
   task: { id: string; title: string },
+  /** the commit's subject prefix and body — a loop iteration's leftovers say so (docs/loops.md) */
+  why: { subject: string; body: string } = {
+    subject: 'Hand-off',
+    body: 'Uncommitted work this task left in the checkout (a finished turn waiting for review, or one stopped part-way), committed locally by the task manager before the next queued task in this repo started. Not pushed.',
+  },
 ): Promise<{ ok: true; sha: string | null } | { ok: false; error: string }> {
   if (busy.has(repo.id)) return { ok: false, error: 'another git operation is running in this repo' };
   busy.add(repo.id);
@@ -323,13 +328,13 @@ export async function handoffCommit(
     if (add.code !== 0) return { ok: false, error: `git add failed: ${add.out.slice(0, 300)}` };
     const staged = await run(repo.path, 'git', ['diff', '--cached', '--quiet', '--ignore-submodules=dirty']);
     if (staged.code === 0) return { ok: true, sha: null };
-    const subject = `Hand-off: ${task.title}`.replace(/\s+/g, ' ').slice(0, 72);
+    const subject = `${why.subject}: ${task.title}`.replace(/\s+/g, ' ').slice(0, 72);
     const commit = await run(repo.path, 'git', [
       'commit',
       '-m',
       subject,
       '-m',
-      'Uncommitted work this task left in the checkout (a finished turn waiting for review, or one stopped part-way), committed locally by the task manager before the next queued task in this repo started. Not pushed.',
+      why.body,
       '-m',
       `Task: ${task.id}`,
     ]);

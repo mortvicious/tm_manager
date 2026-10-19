@@ -339,7 +339,13 @@ export async function executeKillAll(deps: ActionDeps, actor: string): Promise<K
       }
     }
 
-    for (const t of await deps.storage.listTasks({ status: 'queued' })) {
+    // A loop between iterations (docs/loops.md) is `running` with no session
+    // to kill: its next iteration would start on the next scheduling pass,
+    // whatever the queue switch says. Cancel it like the queued work.
+    const betweenIterations = (await deps.storage.listTasks({ status: 'running' })).filter(
+      (t) => t.kind === 'loop' && (t.loopState === 'checking' || t.loopState === 'next'),
+    );
+    for (const t of [...betweenIterations, ...(await deps.storage.listTasks({ status: 'queued' }))]) {
       const r = await svcCancelTask(deps, t.id, actor);
       if ('error' in r) report.cancelFailed.push({ id: t.id, title: t.title, reason: r.error });
       else {

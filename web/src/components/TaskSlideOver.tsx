@@ -29,6 +29,7 @@ import { StatusBadge } from './StatusBadge.tsx';
 import { KindBadge, liveReviewRun, runTaskId } from './RunKind.tsx';
 import { ReviewPanel } from './ReviewPanel.tsx';
 import { ChecksPanel } from './ChecksPanel.tsx';
+import { LoopPanel } from './LoopPanel.tsx';
 import { DoneFields } from './DoneFields.tsx';
 import { LandingPicker } from './LandingPicker.tsx';
 import { QuestionForm } from './QuestionModal.tsx';
@@ -661,6 +662,7 @@ export function TaskSlideOver({
         question={!!pendingQuestion}
         reviewState={task.reviewState}
         checkState={task.checkState}
+        loopState={task.loopState}
         onOpenReviewer={reviewerRun ? () => onOpenTerminal(reviewerRun.id) : undefined}
       />
       {/* phones: the title stays in view while the body scrolls under it */}
@@ -966,6 +968,7 @@ export function TaskSlideOver({
           held by Undo start — it keeps its place, but the queue skips it until you Release it (or Run now)
         </div>
       )}
+      <LoopPanel task={task} onError={setErr} />
       <ChecksPanel task={task} onOpenTerminal={onOpenTerminal} />
       <div className="so-review">
         <ReviewPanel task={task} />

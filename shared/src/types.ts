@@ -162,7 +162,13 @@ export function isExternalTask(t: Pick<Task, 'source' | 'createdByRun'>): boolea
  * row that has already landed; the orchestrator also requires `review`. The
  * tier is a separate question (`effectiveLanding`).
  */
-export function landingReason(t: Pick<Task, 'reviewState' | 'checkState' | 'checkResults'>): string | null {
+export function landingReason(
+  t: Pick<Task, 'reviewState' | 'checkState' | 'checkResults'> & Partial<Pick<Task, 'kind' | 'loopState'>>,
+): string | null {
+  // A loop task (docs/loops.md) lands on its own only when its goal was met:
+  // a loop that ran out of iterations, budget or progress has green checks
+  // and a clean review of an UNFINISHED goal, which is a human's call.
+  if (t.kind === 'loop' && t.loopState !== 'met') return null;
   const checks =
     t.checkState === 'green'
       ? `checks green${t.checkResults.length ? ` (${t.checkResults.length})` : ''}`
@@ -527,6 +533,83 @@ export interface RepoScripts {
   note: string | null;
 }
 
+/** docs/loops.md: a plain task, or a goal iterated in fresh sessions. */
+export type TaskKind = 'task' | 'loop';
+export const TASK_KINDS: readonly TaskKind[] = ['task', 'loop'];
+export const LOOP_DEFAULT_MAX_ITERATIONS = 5;
+/** the API's bound on maxIterations — a typo of 500 must not mean 500 sessions */
+export const LOOP_MAX_ITERATIONS_LIMIT = 30;
+/** consecutive no-progress iterations that end a loop */
+export const LOOP_NO_PROGRESS_LIMIT = 2;
+
+/**
+ * Where a loop task stands (`tm_tasks.loop_state`, docs/loops.md). There is
+ * deliberately NO new TaskStatus: between iterations the task stays
+ * `running`, and the board reads these as synthetic badges.
+ *  - `iterating`  an iteration's worker session is live
+ *  - `checking`   that session ended; the server is committing leftovers,
+ *                 running the checks and deciding whether to go on
+ *  - `next`       another iteration is due and waits for a worker slot
+ * The rest are ENDS — the task then lands `review` like any Stop:
+ *  - `met`             checks green and the agent says the goal is met
+ *  - `max-iterations`  ran out of iterations
+ *  - `budget`          `loopBudgetUsd` (or `budget.taskUsd`) reached
+ *  - `no-progress`     LOOP_NO_PROGRESS_LIMIT iterations changed nothing measurable
+ *  - `paused`          an iteration asked a question / raised needs-attention,
+ *                      or the server restarted mid-iteration — Continue resumes
+ *  - `error`           the iteration could not be judged (checks/git failed)
+ */
+export type LoopState =
+  | 'iterating'
+  | 'checking'
+  | 'next'
+  | 'met'
+  | 'max-iterations'
+  | 'budget'
+  | 'no-progress'
+  | 'paused'
+  | 'error';
+export const LOOP_IN_FLIGHT_STATES: readonly LoopState[] = ['iterating', 'checking', 'next'];
+/** an ended loop the human may Continue (`met` is finished; the rest stopped short) */
+export const LOOP_CONTINUABLE_STATES: readonly LoopState[] = ['max-iterations', 'budget', 'no-progress', 'paused', 'error'];
+
+export function loopInFlight(t: Pick<Task, 'kind' | 'loopState'>): boolean {
+  return t.kind === 'loop' && t.loopState !== null && LOOP_IN_FLIGHT_STATES.includes(t.loopState);
+}
+
+/** One ended iteration of a loop task (`Task.loopHistory`). */
+export interface LoopIteration {
+  n: number;
+  /** the worker run this iteration was */
+  runId: string;
+  endedAt: string;
+  /** the agent's structured result; null = it gave none (counts as not met) */
+  goalMet: boolean | null;
+  /** the agent's one-line progress note (or the start of its last message) */
+  note: string | null;
+  /** the checks' verdict after this iteration; null = no checks apply */
+  checkState: 'green' | 'red' | 'error' | null;
+  /** per check: name + outcome (the latest iteration's full tails are on `checkResults` at the end) */
+  checks: { name: string; outcome: CheckResult['outcome'] }[];
+  /**
+   * The progress metric: the last `TM_METRIC=<number>` a check printed, else
+   * the count of green checks (`metricSource`). Drawn as the card sparkline;
+   * a TM_METRIC that did not move counts as no progress.
+   */
+  metric: number | null;
+  metricSource: 'tm-metric' | 'green-count' | null;
+  /** `workerDiff` hash after the iteration (commits + uncommitted); unchanged = no progress */
+  diffHash: string | null;
+  /** the server committed what the agent left uncommitted (`handoffCommit`) */
+  handoff: boolean;
+  /** this iteration changed nothing measurable (diff hash, or TM_METRIC, unchanged) */
+  noProgress: boolean;
+  /** the task's cost roll-up when the iteration ended */
+  costUsd: number;
+  /** why the loop stopped after this iteration (an end state), or null when it went on */
+  stop: LoopState | null;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -700,6 +783,25 @@ export interface Task {
   checkResults: CheckResult[];
   /** the change hash (`workerDiff`) the latest checks ran over; a Stop with the same hash and green checks does not re-run them */
   checkDiffHash: string | null;
+  /**
+   * `task` (one worker session, then review) or `loop` (docs/loops.md): a
+   * goal worked in FRESH sessions, one per iteration, over a server-fed
+   * progress ledger, until the checks are green and the agent says the goal
+   * is met — or iterations, budget or progress run out. Create-only.
+   */
+  kind: TaskKind;
+  /** the loop's goal (required for `kind: 'loop'`, null otherwise) */
+  loopGoal: string | null;
+  /** iterations at most (loop only; default LOOP_DEFAULT_MAX_ITERATIONS) */
+  loopMaxIterations: number | null;
+  /** the loop's own USD ceiling against `costUsd` (loop only, required) — read by `budgetAllows` */
+  loopBudgetUsd: number | null;
+  /** iterations STARTED so far (0 = never ran); the n of the current or last one */
+  loopIteration: number;
+  /** where the loop stands — see `LoopState`; null = not started (or not a loop) */
+  loopState: LoopState | null;
+  /** one entry per iteration that ended, oldest first */
+  loopHistory: LoopIteration[];
   error: string | null;
   createdAt: string;
   updatedAt: string;
@@ -1448,6 +1550,8 @@ export type AuditKind =
   | 'run.reviewed'
   /** the repo checks ran over a task's change, or were skipped with a reason (docs/checks.md) */
   | 'task.checked'
+  /** a loop task's iteration started, ended (goalMet, checks, metric, stop) or was continued (docs/loops.md) */
+  | 'task.loop'
   /** a human/the bot asked for an on-demand adversarial review ("Review now") */
   | 'task.review-requested'
   | 'task.deleted'

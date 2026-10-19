@@ -27,6 +27,7 @@ import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
 import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_IDLE, REPO_EXCLUSIVE_GATE } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
+import { LOOP_LEAVES_RUNNING_SQL, loopStepSets, stepLoopSql } from './loop-sql.ts';
 import {
   MANUAL_CLAIM_ORDER,
   MOVE_SUBTREE_SQL,
@@ -41,7 +42,8 @@ import {
 } from './group.ts';
 import { COST_MIGRATION_ID, MIGRATIONS } from './migrations.ts';
 import { PUSH_RESULT_FAIL_SQL, PUSH_RESULT_OK_SQL, PUSH_UPSERT_SQL, rowToPushDevice } from './push-sql.ts';
-import type { NewPushDevice, PushDeviceRecord } from './types.ts';
+import type { LoopStep, NewPushDevice, PushDeviceRecord } from './types.ts';
+import type { LoopState } from '@tm/shared';
 import type { PushKind } from '@tm/shared';
 import {
   SHARED_NOTE_INSERT_SQL,
@@ -407,8 +409,8 @@ export class PostgresStorage implements Storage {
     const ts = now();
     const place = await this.placeWith(c, id, t.parentId);
     await c.query(
-      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, sort_order)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, (${NEXT_SORT_ORDER_SQL}))`,
+      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, kind, loop_goal, loop_max_iterations, loop_budget_usd, sort_order)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, (${NEXT_SORT_ORDER_SQL}))`,
       [
         id,
         t.title,
@@ -436,6 +438,10 @@ export class PostgresStorage implements Storage {
         t.reviewEffort ?? null,
         t.acceptance ?? null,
         t.checks == null ? null : JSON.stringify(t.checks),
+        t.kind ?? 'task',
+        t.loopGoal ?? null,
+        t.loopMaxIterations ?? null,
+        t.loopBudgetUsd ?? null,
       ],
     );
     const r = await c.query(`SELECT * FROM tm_tasks WHERE id = $1`, [id]);
@@ -496,7 +502,7 @@ export class PostgresStorage implements Storage {
     // Only a group ROOT carries the group's name/colour.
     const isRoot = place.groupId === id;
     await c.query(
-      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, landing=$17, custom_queue_at=$18, feature_id=$19, feature_phase=$20, result_summary=$21, review_summary=$22, review_diff_hash=$23, review_state=$24, review_rounds=$25, wake_at=$26, error=$27, updated_at=$28, review_model=$29, review_effort=$30, base_sha=$31, base_ref=$32, base_at=$33, queue_held_at=$34, acceptance=$35, checks=$36, check_state=$37, check_results=$38, check_diff_hash=$39, auto_landed_at=$40 WHERE id=$41`,
+      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, landing=$17, custom_queue_at=$18, feature_id=$19, feature_phase=$20, result_summary=$21, review_summary=$22, review_diff_hash=$23, review_state=$24, review_rounds=$25, wake_at=$26, error=$27, updated_at=$28, review_model=$29, review_effort=$30, base_sha=$31, base_ref=$32, base_at=$33, queue_held_at=$34, acceptance=$35, checks=$36, check_state=$37, check_results=$38, check_diff_hash=$39, auto_landed_at=$40, loop_goal=$41, loop_max_iterations=$42, loop_budget_usd=$43, loop_iteration=$44, loop_state=$45, loop_history=$46 WHERE id=$47`,
       [
         next.title,
         next.description,
@@ -538,11 +544,24 @@ export class PostgresStorage implements Storage {
         JSON.stringify(next.checkResults ?? []),
         next.checkDiffHash ?? null,
         next.autoLandedAt ?? null,
+        next.loopGoal ?? null,
+        next.loopMaxIterations ?? null,
+        next.loopBudgetUsd ?? null,
+        next.loopIteration ?? 0,
+        next.loopState ?? null,
+        JSON.stringify(next.loopHistory ?? []),
         id,
       ],
     );
     const r = await c.query(`SELECT * FROM tm_tasks WHERE id = $1`, [id]);
     return rowToTask(r.rows[0]);
+  }
+
+  async stepLoop(id: string, from: (LoopState | null)[], patch: LoopStep): Promise<Task | null> {
+    const { sets, vals } = loopStepSets(patch);
+    const named = from.filter((s): s is LoopState => s !== null);
+    const rows = await this.q(stepLoopSql(sets, from), [...vals, now(), id, ...named]);
+    return rows[0] ? rowToTask(rows[0]) : null;
   }
 
   async bumpTaskAttempts(id: string): Promise<Task | null> {
@@ -696,7 +715,7 @@ export class PostgresStorage implements Storage {
     from: Task['status'][],
     to: Task['status'],
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'autoLandedAt'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'autoLandedAt' | 'loopState'>>,
     audit?: Record<string, unknown>,
   ): Promise<Task | null> {
     const sets = ['status = ?', 'updated_at = ?'];
@@ -716,6 +735,15 @@ export class PostgresStorage implements Storage {
     if (patch && 'checkState' in patch) {
       sets.push('check_state = ?');
       vals.push(patch.checkState ?? null);
+    }
+    if (patch && 'loopState' in patch) {
+      sets.push('loop_state = ?');
+      vals.push(patch.loopState ?? null);
+    } else if (to !== 'running' && to !== 'waiting') {
+      // A loop's in-flight states exist only while the task is `running`
+      // (docs/loops.md § State): whatever moves it out — cancel, Undo, a
+      // budget refusal, an exit, boot recovery — leaves it `paused`.
+      sets.push(LOOP_LEAVES_RUNNING_SQL);
     }
     // An Undo-start hold (docs/queue.md § Undo start) means "queued, but not
     // yet" and exists only for the transition that sets it: every other status

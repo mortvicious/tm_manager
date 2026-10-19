@@ -57,6 +57,10 @@ export type TaskWrite = Partial<
     | 'landing'
     | 'acceptance'
     | 'checks'
+    | 'kind'
+    | 'loopGoal'
+    | 'loopMaxIterations'
+    | 'loopBudgetUsd'
     | 'groupName'
     | 'groupColor'
   >
@@ -76,7 +80,8 @@ export function normalizeTask(t: Task): Task {
     t.customQueueAt !== undefined &&
     typeof t.sortOrder === 'number' &&
     Array.isArray(t.reviewRounds) &&
-    Array.isArray(t.checkResults)
+    Array.isArray(t.checkResults) &&
+    Array.isArray(t.loopHistory)
   )
     return t;
   return {
@@ -94,6 +99,13 @@ export function normalizeTask(t: Task): Task {
     checkResults: Array.isArray(t.checkResults) ? t.checkResults : [],
     checkDiffHash: t.checkDiffHash ?? null,
     attempts: typeof t.attempts === 'number' ? t.attempts : 0,
+    kind: t.kind ?? 'task',
+    loopGoal: t.loopGoal ?? null,
+    loopMaxIterations: t.loopMaxIterations ?? null,
+    loopBudgetUsd: t.loopBudgetUsd ?? null,
+    loopIteration: typeof t.loopIteration === 'number' ? t.loopIteration : 0,
+    loopState: t.loopState ?? null,
+    loopHistory: Array.isArray(t.loopHistory) ? t.loopHistory : [],
     groupId: t.groupId ?? t.id,
     groupPath: t.groupPath ?? '/',
     groupName: t.groupName ?? null,
@@ -257,6 +269,10 @@ export const api = {
   stopAgent: (id: string) => req<{ ok: true; closed: number }>('POST', `/api/tasks/${id}/stop-agent`),
   followUp: (id: string, message: string) => req<Task>('POST', `/api/tasks/${id}/follow-up`, { message }),
   applyReview: (id: string) => req<Task>('POST', `/api/tasks/${id}/apply-review`),
+  /** A loop task that stopped short goes on (docs/loops.md) */
+  continueLoop: (id: string) => req<Task>('POST', `/api/tasks/${id}/loop/continue`).then(normalizeTask),
+  /** The loop's ledger ($TM_ARTIFACTS_DIR/progress.md); 404 until an iteration writes it */
+  loopLedger: (id: string) => req<{ text: string; mtime: string }>('GET', `/api/tasks/${id}/loop/ledger`),
   /** "Review now": run the adversarial reviewer on demand (409 while a round is in flight) */
   reviewNow: (id: string) => req<Task>('POST', `/api/tasks/${id}/review`),
   proceed: (id: string, message?: string) =>

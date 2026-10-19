@@ -1,4 +1,5 @@
 import type {
+  LoopState,
   Chat,
   ChatMessage,
   Dispatch,
@@ -20,6 +21,9 @@ import type {
 import { LANDING_TIERS } from '@tm/shared';
 
 const CHECK_STATES: (CheckState | null)[] = ['pending', 'running', 'green', 'red', 'error'];
+const LOOP_STATES = new Set<string>([
+  'iterating', 'checking', 'next', 'met', 'max-iterations', 'budget', 'no-progress', 'paused', 'error',
+] satisfies LoopState[]);
 
 /** `tm_tasks.checks`: a JSON array of check names, or NULL = all checks. Anything else reads as NULL. */
 function checkNames(raw: unknown): string[] | null {
@@ -124,6 +128,13 @@ export function rowToTask(r: any): Task {
     checkState: CHECK_STATES.includes(r.check_state) ? r.check_state : null,
     checkResults: safeParse(r.check_results, []),
     checkDiffHash: r.check_diff_hash ?? null,
+    kind: r.kind === 'loop' ? 'loop' : 'task',
+    loopGoal: r.loop_goal ?? null,
+    loopMaxIterations: r.loop_max_iterations == null ? null : Number(r.loop_max_iterations),
+    loopBudgetUsd: r.loop_budget_usd == null ? null : Number(r.loop_budget_usd),
+    loopIteration: Number(r.loop_iteration ?? 0) || 0,
+    loopState: LOOP_STATES.has(r.loop_state) ? r.loop_state : null,
+    loopHistory: safeParse(r.loop_history, []),
     error: r.error ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,

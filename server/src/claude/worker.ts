@@ -228,6 +228,12 @@ function buildWorkerPrompt(opts: {
   doneNote?: string;
   /** With `followUp`: the `Previous run summary`. Without: the `Previous attempt` block of a retry. */
   previousSummary?: string;
+  /**
+   * A loop iteration (docs/loops.md), fresh prompts only: `note` (goal,
+   * ledger, last checks) sits under the task; `result` (the goalMet block)
+   * is the LAST thing the agent reads.
+   */
+  loop?: { note: string; result: string };
   /** shipHeldForReview(): add SHIP_GATE_RULE (never on the publish turn). */
   shipGate: boolean;
 }): string {
@@ -268,6 +274,7 @@ function buildWorkerPrompt(opts: {
         task.description ? `\n${task.description}` : '',
         // right under the task it defines, above any follow-up and the rules
         opts.doneNote && !isPublishTurn ? `\n\n${opts.doneNote}` : '',
+        opts.loop && !isPublishTurn ? `\n\n${opts.loop.note}` : '',
         opts.followUp
           ? // `previousSummary` is the richer handoff the resume gate builds
             // when it declines to resume an over-cap session (the full last
@@ -287,6 +294,7 @@ function buildWorkerPrompt(opts: {
         `\n\n${STANDING_RULES}`,
         `\n\n${commitTrailerRule(task.id)}`,
         gate ? `\n\n${SHIP_GATE_RULE}` : '',
+        opts.loop && !isPublishTurn ? `\n\n${opts.loop.result}` : '',
       ].join('');
 }
 
@@ -406,6 +414,8 @@ export function buildWorkerInvocation(opts: {
    * set — a resumed session needs no summary of itself.
    */
   previousSummary?: string;
+  /** A loop iteration's blocks (docs/loops.md); ignored on a resume. */
+  loop?: { note: string; result: string };
 }): WorkerInvocation {
   const { task, settings } = opts;
   const model = task.model ?? settings['agent.model'];
@@ -431,6 +441,7 @@ export function buildWorkerInvocation(opts: {
       sharedNote: opts.shared?.note,
       doneNote: opts.doneNote,
       previousSummary: opts.previousSummary,
+      loop: opts.resumeSessionId ? undefined : opts.loop,
       shipGate: shipHeldForReview(task, settings, opts.landing),
     });
     // `-c model_reasoning_effort` has no Codex-CLI-wide free/paid distinction
@@ -605,6 +616,7 @@ export function buildWorkerInvocation(opts: {
     sharedNote: opts.shared?.note,
     doneNote: opts.doneNote,
     previousSummary: opts.previousSummary,
+    loop: opts.resumeSessionId ? undefined : opts.loop,
     shipGate: shipHeldForReview(task, settings, opts.landing),
   });
   args.push(prompt);

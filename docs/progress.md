@@ -691,3 +691,54 @@ concise markdown, grouped by completion date, Russian or English.
   - A real reviewer writing `diffStat`.
   - The bot's real API.
   - The Postgres driver (no schema change).
+
+## Loop tasks — autonomy 6/6 (2026-10-19, `docs/loops.md`)
+
+- **Shared**:
+  - `TaskKind`, `LoopState`, `LoopIteration`, the loop fields on `Task`, `LOOP_*` constants, `loopInFlight`, and the `task.loop` audit kind.
+  - `landingReason` refuses a loop that did not end `met`.
+- **Server**:
+  - Migration 37 (`kind`, `loop_goal`, `loop_max_iterations`, `loop_budget_usd`, `loop_iteration`, `loop_state`, `loop_history`) in both drivers.
+  - The conditional `stepLoop` composite and `LOOP_LEAVES_RUNNING_SQL` in `transitionTask` (`storage/loop-sql.ts`, shared by both drivers).
+  - `server/src/loop.ts` holds the ledger, the prompt blocks, the result parse, the metric and the stop test.
+  - The orchestrator:
+    - `beginLoopIteration` is called from `startWorker`.
+    - `isLoopIterationStop` / `loopIterationStopped` are called from the Stop route, then `settleLoopIteration`, `endLoop`, `pumpLoops` and `continueLoop`.
+    - Guards: `handleExit`, `followUp`, the boot sweep and the spawn-cap step-back.
+  - `budgetAllows` applies `loopBudgetUsd` (fuse `loop.budgetUsd`), with the new kind `loop-iteration`.
+  - `handoffCommit` takes a subject and a body.
+  - Routes: POST/PATCH validation (`loopProblem`; Origin for loops and their ceilings), `POST /api/tasks/:id/loop/continue`, `GET /api/tasks/:id/loop/ledger`.
+  - `/killall` cancels loops between iterations.
+  - Telegram `notify.loop` sends one ping per iteration (default off).
+- **Web**:
+  - `components/LoopPanel.tsx`: `LoopChip` (counter + sparkline) on the card, `LoopPanel` in the task panel (iterations, editable limits, Continue, the ledger as markdown), and `LoopFields` in the new-task form.
+  - `StatusBadge` gains `loop checks` and `next iteration`.
+  - Styles are in `theme.css`, Glass through the remapped tokens.
+- **Verified**:
+  - `npm run typecheck` and the SPA build (to a scratch outDir).
+  - A throwaway script over the pure functions (result parse, metric, no-progress, stop order, `landingReason`) and over the storage on a DB copy: `stepLoop` is conditional, `waiting` keeps `iterating`, cancel turns `next` into `paused`, an end state survives a requeue, and the loop budget beats a higher `budget.taskUsd` while the lower cap wins.
+  - **A real loop**, run against a copy of the live DB by a harness: its own port (5191), internal and task routes only, no boot recovery, no Telegram. Every scheduling source in the copy was neutralised. The repo was a local clone of this repo with a scratch check, `node loop-demo/check.mjs`, which prints `TM_METRIC=<files present>`.
+    - Goal: create `one.txt`, `two.txt` and `three.txt`, one per iteration. Worker `claude-sonnet-5` at low effort; review on, reviewer `claude-sonnet-5` at low effort; landing tier `on-green`, max 5 iterations, budget $4.
+    - The API refused five bad creates: no goal, no budget, loop fields on a plain task, no Origin (403), and 99 iterations. A budget raise without Origin was a 403.
+    - The loop ran 3 iterations in 3 fresh sessions. Checks went red, red, then green; the metric went 1 → 2 → 3. `goalMet` was false, false, then true.
+    - Each agent committed its own work under the `Task:` trailer, so no hand-off commit was needed. Each PTY was closed at its Stop (exit 129).
+    - The loop ended `met`. One review round passed. Then on-green moved it `review → done` with `checks green (1), review clean`, and `autoLandedAt` was stamped. `attempts` stayed at 1.
+    - **Cost: $1.10 in total.** The iterations cost $0.34 + $0.32 + $0.28 = $0.94, and the review $0.15. Wall clock was 2 minutes.
+    - The ledger was rewritten by each iteration as instructed.
+    - In this CLI version the folder-trust dialog defaults to "No, exit". The harness answered it with ↓ then Enter; a first attempt that sent only Enter exited with code 1, which the loop correctly settled as `failed` + `paused`.
+  - **A second real run**, on the stop-short path (max iterations 1, a fresh clone, the same harness):
+    - Iteration 1 ended `max-iterations` with checks red, and the row's error read `loop stopped: 1 iteration used without meeting the goal`.
+    - Continue was refused at the limit (409, `raise maxIterations first`) and without Origin (403).
+    - A PATCH raised the limit to 2. Continue then answered 200 with `next`, and iteration 2 started as a fresh session, numbered on. It ended `max-iterations` again, still red. `landingReason` kept the task in `review` on the on-green tier.
+    - **This run caught a bug, now fixed**: on a red end the reviewer still ran, because `runReviewRound` reads the task's review setting rather than `reviewState`. `endLoop` now goes straight to `landIfClean` when no review is due.
+    - The re-run after the fix wrote only the `run.reviewed { skipped: 'checks-red' }` row and no reviewer session. It cost $0.39 for 2 iterations; the pre-fix run cost $0.55, including two unwanted reviews.
+  - **Total verification spend: about $2.04.**
+- **Not exercised live**:
+  - The Postgres driver; migration 37 uses the same `ALTER TABLE … ADD COLUMN` shape as earlier ones.
+  - The `paused` stop. A real question or permission prompt was not raised; the decision was covered by the script.
+  - `no-progress` and `budget` ends in a real run; both are covered by the script.
+  - Boot recovery of a loop in `checking`/`next`.
+  - `/killall`.
+  - The Telegram ping against the real bot.
+  - The UI in a browser; the SPA only typechecks and builds.
+  - The live server, which was not restarted: the live API has no loop routes yet.

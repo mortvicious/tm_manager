@@ -16,11 +16,27 @@ import type { Storage } from './storage/types.ts';
  * loop (docs/checks.md); `transient-resume` is reserved for the worker
  * StopFailure resume (a later autonomy part).
  */
-export type BudgetTurn = 'claim' | 'fix-round' | 'dispatch' | 'wake' | 'check-round' | 'transient-resume' | 'auto-publish';
+export type BudgetTurn =
+  | 'claim'
+  | 'fix-round'
+  | 'dispatch'
+  | 'wake'
+  | 'check-round'
+  | 'transient-resume'
+  | 'auto-publish'
+  | 'loop-iteration';
+
+/**
+ * `loop.budgetUsd` is a loop task's OWN ceiling (`Task.loopBudgetUsd`,
+ * docs/loops.md), measured like `budget.taskUsd` against the task's roll-up
+ * and applied to every automatic turn on that task, the next iteration
+ * included; the lower of the two caps wins.
+ */
+export type BudgetFuse = 'budget.taskUsd' | 'budget.dayUsd' | 'loop.budgetUsd';
 
 export type BudgetVerdict =
   | { ok: true }
-  | { ok: false; fuse: 'budget.taskUsd' | 'budget.dayUsd'; spentUsd: number; capUsd: number; reason: string };
+  | { ok: false; fuse: BudgetFuse; spentUsd: number; capUsd: number; reason: string };
 
 /** Midnight of the server-local day `d` falls in — the same day the Dashboard buckets on (routes/stats.ts). */
 export function localDayStart(d = new Date()): Date {
@@ -78,18 +94,29 @@ export async function budgetAllows(
       reason: `today's spend ${usd(spent)} reached the ${usd(cap)} day budget — claiming stopped until midnight`,
     };
   }
-  const cap = fuse(s, 'budget.taskUsd');
-  if (!cap || !task) return { ok: true };
+  const taskCap = fuse(s, 'budget.taskUsd');
+  if (!task) return { ok: true };
   const fresh = await storage.getTask(task.id);
   if (!fresh) return { ok: true };
+  const loopCap = fresh.kind === 'loop' ? loopBudget(fresh) : 0;
+  // the lower positive cap wins; a loop's own budget names itself
+  const useLoop = loopCap > 0 && (!taskCap || loopCap <= taskCap);
+  const cap = useLoop ? loopCap : taskCap;
+  if (!cap) return { ok: true };
   if (fresh.costUsd < cap) return { ok: true };
   return {
     ok: false,
-    fuse: 'budget.taskUsd',
+    fuse: useLoop ? 'loop.budgetUsd' : 'budget.taskUsd',
     spentUsd: fresh.costUsd,
     capUsd: cap,
-    reason: `budget: this task has cost ${usd(fresh.costUsd)}, at or over the ${usd(cap)} per-task budget — the automatic ${KIND_LABEL[kind]} was not started. Proceed, Follow-up or Retry still work.`,
+    reason: `budget: this task has cost ${usd(fresh.costUsd)}, at or over the ${usd(cap)} ${useLoop ? 'loop' : 'per-task'} budget — the automatic ${KIND_LABEL[kind]} was not started. ${useLoop ? 'Raise the loop budget and Continue' : 'Proceed, Follow-up or Retry still work'}.`,
   };
+}
+
+/** A loop task's own ceiling; anything not a positive finite number is none. */
+export function loopBudget(t: Pick<Task, 'loopBudgetUsd'>): number {
+  const v = Number(t.loopBudgetUsd);
+  return Number.isFinite(v) && v > 0 ? v : 0;
 }
 
 const KIND_LABEL: Record<BudgetTurn, string> = {
@@ -100,6 +127,7 @@ const KIND_LABEL: Record<BudgetTurn, string> = {
   'check-round': 'check fix round',
   'transient-resume': 'transient-error resume',
   'auto-publish': 'publish turn (auto-publish landing)',
+  'loop-iteration': 'next loop iteration',
 };
 
 /**

@@ -3,6 +3,7 @@ import {
   type AnomalyAlert,
   type Feature,
   type Proposal,
+  LOOP_DEFAULT_MAX_ITERATIONS,
   landingReason,
   type Question,
   type CheckState,
@@ -65,6 +66,8 @@ interface PendingTask {
   attentionRun?: string;
   /** set when the flag is the budget.runMinutes fuse's: the cap in minutes */
   attentionOvertime?: number;
+  /** a loop iteration ended and the loop went on (docs/loops.md): its number */
+  loopIteration?: number;
 }
 
 export interface NotifierDeps {
@@ -240,6 +243,8 @@ export class TelegramNotifier {
   /** last seen review state per task — the "did the reviewer just settle" memory */
   private readonly taskReview = new Map<string, ReviewState | null>();
   private readonly taskCheck = new Map<string, CheckState | null>();
+  /** loop iterations recorded per task, last seen — a longer history is an iteration that ended */
+  private readonly taskLoopN = new Map<string, number>();
   private readonly featureStatus = new Map<string, Feature['status']>();
 
   private readonly pendingTasks = new Map<string, PendingTask>();
@@ -368,6 +373,15 @@ export class TelegramNotifier {
     // `waiting` is a running session between two of its own turns — work, not a pause
     if (t.status === 'queued' || t.status === 'running' || t.status === 'waiting') this.hadWork = true;
     else this.scheduleQueueCheck();
+    if (t.kind === 'loop') {
+      const prevN = this.taskLoopN.get(t.id);
+      this.taskLoopN.set(t.id, t.loopHistory.length);
+      const last = t.loopHistory.at(-1);
+      // only an iteration that went ON: the loop's end is the review ping
+      if (prevN !== undefined && t.loopHistory.length > prevN && last && !last.stop) {
+        this.mark(t.id, (p) => (p.loopIteration = last.n));
+      }
+    }
     const moved = prevStatus !== t.status;
     const reviewMoved = prevReview !== t.reviewState;
     const checkMoved = prevCheck !== t.checkState;
@@ -516,6 +530,21 @@ export class TelegramNotifier {
             ? `⏱ ${title} has run <b>over ${p.attentionOvertime} min</b> (budget.runMinutes) — still working, nothing was stopped.`
             : `✋ ${title} <b>needs attention</b> — the agent is waiting on a prompt in its hidden terminal.`,
         );
+      }
+    }
+    if (n.loop && p.loopIteration !== undefined) {
+      const it = task.loopHistory.find((h) => h.n === p.loopIteration);
+      if (it) {
+        const max = task.loopMaxIterations ?? LOOP_DEFAULT_MAX_ITERATIONS;
+        const bits = [
+          it.checkState ? `checks ${it.checkState}` : 'no checks',
+          it.goalMet ? 'agent says goal met' : 'goal not met',
+          ...(it.metric !== null && it.metricSource === 'tm-metric' ? [`metric ${it.metric}`] : []),
+          ...(it.noProgress ? ['no progress'] : []),
+          `$${it.costUsd.toFixed(2)}`,
+        ];
+        lines.push(`🔁 ${title} · loop iteration <b>${it.n}/${max}</b>: ${escapeHtml(bits.join(', '))}`);
+        if (it.note) lines.push(escapeHtml(clip(it.note, 300)));
       }
     }
     if (lines.length) await this.deps.send(lines.join('\n'), keyboard);

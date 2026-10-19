@@ -280,7 +280,7 @@ function TaskColumns({
               <div className="plan-card clickable" key={t.id} onClick={() => onOpenTask(t.id)}>
                 <span className="card-title">{t.title}</span>
                 <div className="card-meta">
-                  <StatusBadge status={t.status} reviewState={t.reviewState} checkState={t.checkState} />
+                  <StatusBadge status={t.status} reviewState={t.reviewState} checkState={t.checkState} loopState={t.loopState} />
                   {t.category && (
                     <span className="chip" style={{ color: 'var(--tm-accent)' }}>
                       {t.category}

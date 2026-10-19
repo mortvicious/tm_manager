@@ -1,6 +1,7 @@
 import type { MoveAnchor } from './group.ts';
 import type { PushDevice, PushKind } from '@tm/shared';
 import type {
+  LoopState,
   AppSettings,
   AuditEvent,
   AuditKind,
@@ -99,6 +100,9 @@ export interface NewRepo {
   landing?: Repo['landing'];
 }
 
+/** What `stepLoop` may write. */
+export type LoopStep = Partial<Pick<Task, 'loopState' | 'loopIteration' | 'loopHistory' | 'checkResults' | 'checkDiffHash'>>;
+
 /** undefined = leave as-is; null clears the column. */
 export type RepoPatch = Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing'>>;
 
@@ -137,6 +141,11 @@ export interface NewTask {
   acceptance?: string | null;
   /** which repo checks apply, by name; null = all */
   checks?: string[] | null;
+  /** docs/loops.md — create-only */
+  kind?: Task['kind'];
+  loopGoal?: string | null;
+  loopMaxIterations?: number | null;
+  loopBudgetUsd?: number | null;
   createdByRun?: string | null;
   spawnDepth?: number;
   featureId?: string | null;
@@ -405,6 +414,14 @@ export interface Storage {
    * leaves it out so a stale patch can never rewind the counter.
    */
   bumpTaskAttempts(id: string): Promise<Task | null>;
+  /**
+   * Loop tasks (docs/loops.md): a CONDITIONAL write of the loop columns (and
+   * the latest check results they carry) on a `running` loop task whose
+   * `loop_state` is one of `from` (null matches NULL). null when the row did
+   * not match — the task left `running`, or another writer stepped it first.
+   * No audit row: the orchestrator writes `task.loop` itself.
+   */
+  stepLoop(id: string, from: (LoopState | null)[], patch: LoopStep): Promise<Task | null>;
   deleteTask(id: string): Promise<void>;
   /**
    * Re-parent AND position a task in one transaction (docs/grouping.md § Order):
@@ -433,7 +450,7 @@ export interface Storage {
     from: TaskStatus[],
     to: TaskStatus,
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'autoLandedAt'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'autoLandedAt' | 'loopState'>>,
     /** merged into the `task.transition` audit row's data (e.g. a landing's reason) */
     audit?: Record<string, unknown>,
   ): Promise<Task | null>;

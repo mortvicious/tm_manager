@@ -68,7 +68,7 @@ The whole block, with the fields you actually have to set at the top:
     "notify": {
       "review": true, "attention": true, "failed": true, "blocked": true,
       "published": true, "proposal": true, "feature": true,
-      "usage": true, "queue": true, "boot": true, "anomaly": true
+      "usage": true, "queue": true, "boot": true, "anomaly": true, "loop": false
     },
     "digest": { "enabled": false, "hour": 9 },
     "chat": { "enabled": true, "allowWrite": false }
@@ -340,7 +340,7 @@ Network errors back off exponentially, 1s → 60s with ±20% jitter, and a 429 h
     "notify": {
       "review": true, "attention": true, "failed": true, "blocked": true,
       "published": true, "proposal": true, "feature": true,
-      "usage": true, "queue": true, "boot": true, "anomaly": true
+      "usage": true, "queue": true, "boot": true, "anomaly": true, "loop": false
     },
     "digest": { "enabled": false, "hour": 9 },
     "chat": { "enabled": true, "allowWrite": false }
@@ -398,6 +398,7 @@ All three are bot state, not knobs: they are deliberately absent from the `PUT /
 | `task.updated` | status became `done` with `autoLandedAt` — an `on-green` landing (`docs/design.md` § Landing tiers). It replaces that task's review ping, so it speaks under the `review` switch; the review ping is re-checked at flush, so a task that landed meanwhile is not also announced as in review. A human's Mark done stays silent | `review` | ✅ title **auto-landed**: <reason, e.g. checks green, review clean>; then the reviewer's summary (when the review passed), else the worker's `resultSummary` |
 | `run.needs-attention` | the event carries a RAISED flag, and at flush the run is still `running`, not idle and still flagged | `attention` | ✋ title **needs attention** — the agent is waiting on a prompt. When the flag was raised by the `budget.runMinutes` fuse (the event carries `reason: 'run-minutes'`): ⏱ title has run **over N min** — still working, nothing was stopped ([`token-budget.md`](token-budget.md) § Fuses) |
 | `anomaly.raised` | an anomaly or budget alert went out of `AnomalyAlerts` (already one per task per type per episode — § Anomalies below); NOT re-coalesced | `anomaly` | 🐢 Long run / 💸 Expensive task / 🕰 Stale review / 🧯 Task budget reached / 🧯 Day budget reached · title `id8`, then the one-line message |
+| `task.updated` | a loop task's `loopHistory` grew and the iteration that ended did NOT stop the loop (`docs/loops.md`) | `loop` (default **off**) | 🔁 title · loop iteration **n/max**: checks red, goal not met, metric 2, $0.41 — then the iteration's note |
 | `question.updated` | status `pending` — sent at once, NOT coalesced and NOT gated by the notify flags: an agent is blocked on it ([`questions.md`](questions.md)) | — | ❓ title **asks you**: one message per question with the options as buttons (`q:` namespace), `✔ Done` on multi-select, `✍️ Other…` for free text; answered in the browser → ✅ summary; expired → ⌛ with the reason |
 | `task.updated` | status became `failed` | `failed` | ❌ title **failed**: the task's `error` |
 | `task.updated` | status became `blocked` | `blocked` | ⛔ title is **blocked** (waiting on its subtasks) |

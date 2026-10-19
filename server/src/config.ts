@@ -156,6 +156,8 @@ export interface TelegramNotifyConfig {
   boot: boolean;
   /** a long run, an expensive task, a stale review, or a budget fuse tripped — one per task per type (docs/telegram.md § Notifications) */
   anomaly: boolean;
+  /** one line per loop-task iteration that went on (docs/loops.md); off by default — the loop's end is the review ping */
+  loop: boolean;
 }
 
 export const NOTIFY_CLASSES: (keyof TelegramNotifyConfig)[] = [
@@ -170,6 +172,7 @@ export const NOTIFY_CLASSES: (keyof TelegramNotifyConfig)[] = [
   'queue',
   'boot',
   'anomaly',
+  'loop',
 ];
 
 const DEFAULT_CONFIG: BootConfig = {
@@ -199,6 +202,7 @@ const DEFAULT_CONFIG: BootConfig = {
       queue: true,
       boot: true,
       anomaly: true,
+      loop: false,
     },
     digest: { ...DEFAULT_DIGEST },
     chat: { ...DEFAULT_TELEGRAM_CHAT },

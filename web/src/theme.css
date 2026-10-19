@@ -4052,6 +4052,108 @@ tr.repo-open > td {
   font-size: var(--tm-text-sm);
 }
 
+/* loop tasks (docs/loops.md): the card's counter + metric sparkline, and
+   the task panel's iterations / ledger */
+.chip.loop-chip {
+  gap: var(--tm-space-1);
+  color: var(--tm-accent);
+  border-color: var(--tm-accent-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.chip.loop-chip.loop-met {
+  color: var(--tm-status-done);
+}
+
+svg.loop-spark {
+  flex: none;
+  overflow: visible;
+}
+
+svg.loop-spark polyline {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+svg.loop-spark circle {
+  fill: currentColor;
+}
+
+.badge.s-loopnext .dot {
+  animation: pulse 2.4s var(--tm-ease-in-out) infinite;
+}
+
+.loop-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+}
+
+.loop-panel .section-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  color: var(--tm-accent);
+}
+
+.loop-goal {
+  font-size: var(--tm-text-sm);
+  white-space: pre-wrap;
+}
+
+.loop-limits {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--tm-space-3);
+}
+
+.loop-limits .label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+}
+
+.loop-limits .field {
+  width: 120px;
+}
+
+table.loop-iterations {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--tm-text-xs);
+}
+
+table.loop-iterations th,
+table.loop-iterations td {
+  text-align: left;
+  padding: var(--tm-space-1) var(--tm-space-2);
+  border-bottom: 1px solid var(--tm-border);
+  vertical-align: top;
+}
+
+table.loop-iterations th {
+  color: var(--tm-text-muted);
+  font-weight: 500;
+}
+
+table.loop-iterations tr.loop-np td {
+  color: var(--tm-text-muted);
+}
+
+.check-outcome.co-none {
+  color: var(--tm-text-faint);
+}
+
+.loop-ledger summary {
+  cursor: pointer;
+  font-size: var(--tm-text-sm);
+}
+
 pre.check-tail {
   margin: var(--tm-space-1) 0 var(--tm-space-2);
   max-height: 240px;

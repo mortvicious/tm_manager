@@ -10,9 +10,13 @@ import {
   type BulkResponse,
   type BulkResult,
   type LandingTier,
+  LOOP_MAX_ITERATIONS_LIMIT,
+  TASK_KINDS,
+  type TaskKind,
 } from '@tm/shared';
 import { z } from 'zod';
 import { artifactsRoot } from '../config.ts';
+import { LOOP_LEDGER } from '../loop.ts';
 import { broadcast } from '../events.ts';
 import { LANDING_FROM_BROWSER, landingNeedsBrowser } from './repos.ts';
 import type { Storage } from '../storage/types.ts';
@@ -27,7 +31,9 @@ import {
   createTask,
   editTask,
   landingRefusal,
+  continueLoopTask,
   enqueueTask,
+  loopProblem,
   moveTask,
   queueAddTask,
   queueRemoveTask,
@@ -63,6 +69,12 @@ const taskBody = z
     // [] = none)
     acceptance: z.string().max(4000).nullish(),
     checks: z.array(z.string().min(1).max(80)).max(30).nullish(),
+    // loop tasks (docs/loops.md): `kind` is create-only; a loop needs a goal
+    // and its own budget (loopProblem). The checks subset is `checks` above.
+    kind: z.enum(TASK_KINDS as [TaskKind, ...TaskKind[]]).optional(),
+    loopGoal: z.string().max(4000).nullish(),
+    loopMaxIterations: z.number().int().min(1).max(LOOP_MAX_ITERATIONS_LIMIT).nullish(),
+    loopBudgetUsd: z.number().positive().max(10_000).nullish(),
     // group identity lives on the group's ROOT task (docs/grouping.md); the
     // route rejects both on a task that has a parent.
     groupName: z.string().min(1).max(80).nullish(),
@@ -72,7 +84,13 @@ const taskBody = z
 
 // `source` is create-only: it is what keeps an external task supervised
 // (isExternalTask), so a PATCH must not be able to launder it to 'manual'.
-const taskPatch = taskBody.omit({ source: true }).partial().strict();
+const taskPatch = taskBody.omit({ source: true, kind: true }).partial().strict();
+
+/** A loop's ceilings (budget, iterations) are spent automatically, so setting one needs the dashboard, like a landing tier. */
+function loopNeedsBrowser(body: { kind?: TaskKind; loopBudgetUsd?: number | null; loopMaxIterations?: number | null }, origin: string | undefined): boolean {
+  return !origin && (body.kind === 'loop' || body.loopBudgetUsd != null || body.loopMaxIterations != null);
+}
+const LOOP_FROM_BROWSER = 'loop tasks and their budgets are set from the dashboard';
 
 export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
   // The shared action layer (server/src/task-actions.ts) — the same functions
@@ -107,6 +125,9 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
     const refused = landingRefusal({ source: body.source ?? 'manual', createdByRun: null }, body.landing);
     if (refused) return reply.code(409).send({ error: refused });
+    if (loopNeedsBrowser(body, req.headers.origin)) return reply.code(403).send({ error: LOOP_FROM_BROWSER });
+    const loopRefused = loopProblem(body);
+    if (loopRefused) return reply.code(400).send({ error: loopRefused });
     return createTask(deps(), body, 'human');
   });
 
@@ -114,6 +135,7 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     const { id } = req.params as { id: string };
     const body = taskPatch.parse(req.body);
     if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
+    if (loopNeedsBrowser(body, req.headers.origin)) return reply.code(403).send({ error: LOOP_FROM_BROWSER });
     const r = await editTask(deps(), id, body, 'human');
     if ('error' in r) return reply.code(r.code).send({ error: r.error });
     return r.task;
@@ -337,6 +359,26 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     const full = path.join(taskDir(id), entry.name);
     reply.header('content-disposition', `attachment; filename="${encodeURIComponent(entry.name)}"`);
     return reply.type('application/octet-stream').send(fs.createReadStream(full));
+  });
+
+  // Loop tasks (docs/loops.md): go on after a stop short of the goal. From
+  // the dashboard only — it spends money automatically, like a landing tier.
+  app.post('/api/tasks/:id/loop/continue', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!req.headers.origin) return reply.code(403).send({ error: LOOP_FROM_BROWSER });
+    const r = await continueLoopTask(deps(), id, 'human');
+    if ('error' in r) return reply.code(r.code).send({ error: r.error });
+    return r.task;
+  });
+
+  // The loop's ledger ($TM_ARTIFACTS_DIR/progress.md) as text, for the task
+  // panel; 404 until an iteration writes it.
+  app.get('/api/tasks/:id/loop/ledger', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const entry = safeEntries(id).find((f) => f.name === LOOP_LEDGER);
+    if (!entry) return reply.code(404).send({ error: 'no ledger yet' });
+    const text = fs.readFileSync(path.join(taskDir(id), entry.name), 'utf8');
+    return { text: text.length > 200_000 ? text.slice(-200_000) : text, mtime: entry.mtime };
   });
 
   // "Review now": run the adversarial reviewer itself, on demand, over the

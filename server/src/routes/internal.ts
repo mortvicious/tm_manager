@@ -256,6 +256,21 @@ export function registerInternalRoutes(
           data: { children: wait.children, stale: true },
         });
       }
+      // A loop iteration's end (docs/loops.md) is not a landing: the task
+      // stays `running`, the loop closes this session, runs the checks and
+      // decides whether another FRESH iteration follows.
+      if (orchestrator.isLoopIterationStop(pre, publishRun)) {
+        orchestrator.dropWait(id);
+        const last = (body as { last_assistant_message?: unknown } | null)?.last_assistant_message;
+        await orchestrator.loopIterationStopped(
+          id,
+          run.taskId,
+          // the payload's own final message first: the result block ends it,
+          // and the transcript may not have flushed it yet
+          typeof last === 'string' && last.trim() ? last : info.lastAssistantText,
+        );
+        return { ok: true };
+      }
       // Repo checks (docs/checks.md) run on this landing before anything
       // else: decided here so the row that says `review` also says checks are
       // `pending`.

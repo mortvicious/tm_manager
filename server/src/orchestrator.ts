@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   CHECK_BUSY_STATES,
+  LOOP_CONTINUABLE_STATES,
   effectiveLanding,
   isCodexModel,
   landingReason,
@@ -10,8 +11,11 @@ import {
   runTaskId,
   REVIEW_NOW_FROM,
   type AppSettings,
+  type CheckResult,
   type CheckState,
   type Dispatch,
+  type LoopIteration,
+  type LoopState,
   type LandingTier,
   type Repo,
   type ReviewRound,
@@ -72,8 +76,21 @@ import { AnomalyAlerts } from './anomalies.ts';
 import { checkFixMessage, checksVerdict, definitionOfDone, runChecks, selectChecks } from './checks.ts';
 import type { CommandRunner } from './commands/runner.ts';
 import {
+  loopMetric,
+  loopNote,
+  loopResultBlock,
+  loopStop,
+  loopStopText,
+  maxIterations,
+  noProgress,
+  noProgressStreak,
+  parseLoopResult,
+  readLedger,
+} from './loop.ts';
+import {
   broadcastTaskCost,
   budgetAllows,
+  loopBudget,
   localDayKey,
   runMinutesCap,
   type BudgetTurn,
@@ -1097,6 +1114,22 @@ export class Orchestrator implements OrchestratorApi {
     for (const task of live) {
       const runs = await this.storage.listRuns({ taskId: task.id });
       if (runs.some((r) => r.status === 'running')) continue;
+      // A loop between iterations has no run row by design (docs/loops.md).
+      // `next` is a decision already taken — the pump starts the iteration;
+      // `checking` lost its checks with the process — paused for a human.
+      if (task.kind === 'loop' && task.status === 'running' && task.loopState === 'next') continue;
+      if (task.kind === 'loop' && task.status === 'running' && task.loopState === 'checking') {
+        const paused = await this.storage.transitionTask(task.id, ['running'], 'review', 'system', {
+          loopState: 'paused',
+          reviewState: null,
+          error: `server restarted while the loop was checking iteration ${task.loopIteration} — Continue goes on`,
+        });
+        if (paused) {
+          stranded.push(task.id);
+          broadcast({ type: 'task.updated', task: paused });
+        }
+        continue;
+      }
       // Ever had a worker? Then work may be sitting uncommitted in the tree and
       // its session is resumable — `review` is where a human picks that up.
       // Never ran at all, and there is nothing to review.
@@ -1205,6 +1238,9 @@ export class Orchestrator implements OrchestratorApi {
           // The custom queue (docs/queue.md) is independent of the global
           // switch: it runs while the queue is stopped, one task at a time.
           if (day.ok) await this.pumpCustomQueue(cap);
+          // Loop iterations due (docs/loops.md): a task already running, so
+          // the queue switch does not stop it; the day budget does.
+          if (day.ok) await this.pumpLoops(cap);
           if (!settings['orchestrator.enabled'] || !day.ok) {
             // The queue is stopped (or the day's budget is spent), but dispatch
             // delivery is a continuation of sessions that already exist — it
@@ -2046,12 +2082,23 @@ export class Orchestrator implements OrchestratorApi {
       this.gatesInFlight.delete(task.id);
     }
     task = still;
+    // A loop task's fresh start with no instruction of its own IS an
+    // iteration (docs/loops.md): numbered and stepped to `iterating` here,
+    // the one funnel every start goes through (claim, Run now, Retry, the
+    // custom queue, the loop pump). Its prompt carries the ledger instead of
+    // the retry context.
+    const loopTurn = task.kind === 'loop' && !followUp && !resumeFrom && purpose === 'work';
+    if (loopTurn) {
+      const began = await this.beginLoopIteration(task);
+      if (!began) return false;
+      task = began;
+    }
     // Retry with context (docs/design.md § Retry with context): a fresh start
     // with no instruction of its own, of a task that already had a session.
     // Read BEFORE createRun, while "the newest worker run" is still the last
     // attempt's.
     const retryContext =
-      !followUp && !resumeFrom && purpose === 'work'
+      !loopTurn && !followUp && !resumeFrom && purpose === 'work'
         ? await this.retryContext(task, repo.path).catch((e) => {
             console.error('retry context failed, starting without it:', e);
             return undefined;
@@ -2094,10 +2141,17 @@ export class Orchestrator implements OrchestratorApi {
       const shared = await this.sharedContext(task, purpose, resumeSessionId ? resumeFrom ?? null : null);
       // Definition of done (docs/checks.md): the acceptance text plus the
       // checks the Stop will run — a fresh prompt only, never the publish turn.
+      const checksForPrompt = selectChecks(await this.storage.listCommands(repo.id), task);
+      // A loop iteration's block carries the acceptance text and the checks itself.
       const doneNote =
-        resumeSessionId || purpose === 'publish'
-          ? null
-          : definitionOfDone(task.acceptance, selectChecks(await this.storage.listCommands(repo.id), task));
+        resumeSessionId || purpose === 'publish' || loopTurn ? null : definitionOfDone(task.acceptance, checksForPrompt);
+      const loop =
+        loopTurn && !resumeSessionId
+          ? {
+              note: loopNote({ task, n: task.loopIteration, ledger: readLedger(artifactsDir), checks: checksForPrompt }),
+              result: loopResultBlock(),
+            }
+          : undefined;
       const inv = buildWorkerInvocation({
         task: { ...task, model },
         settings,
@@ -2112,6 +2166,7 @@ export class Orchestrator implements OrchestratorApi {
         landing: effectiveLanding(task, repo),
         resumeSessionId,
         previousSummary: handoff.previousSummary ?? retryContext,
+        loop,
       });
       const session = this.sessions.spawn({
         runId: run.id,
@@ -2124,7 +2179,10 @@ export class Orchestrator implements OrchestratorApi {
       // A new claude session is a new attempt (`tm_tasks.attempts`); a resume
       // of any kind is the same attempt carrying on. Counted once the PTY
       // exists, so a spawn that threw is not an attempt.
-      if (!resumeSessionId) task = (await this.storage.bumpTaskAttempts(task.id)) ?? task;
+      // A loop's later iterations are fresh sessions by design, not re-attempts.
+      if (!resumeSessionId && !(loopTurn && task.loopIteration > 1)) {
+        task = (await this.storage.bumpTaskAttempts(task.id)) ?? task;
+      }
       await this.storage.appendEvent({
         kind: 'run.started',
         actor: 'orchestrator',
@@ -2139,6 +2197,7 @@ export class Orchestrator implements OrchestratorApi {
           // Which path the resume gate took, so the saving can be measured
           // against costUsd per run (docs/token-budget.md § The fourth).
           handoff: handoff.kind,
+          ...(loopTurn ? { loopIteration: task.loopIteration } : {}),
           ...(resumeFrom ? { contextTokens: prev?.stats.contextTokens ?? 0 } : {}),
           ...(handoff.detail ?? {}),
         },
@@ -2177,6 +2236,18 @@ export class Orchestrator implements OrchestratorApi {
         data: { error: (err as Error).message.slice(0, 300) },
       });
       if ((err as Error).message.includes('session cap reached')) {
+        if (loopTurn) {
+          // The iteration never started: step it back to `next` (same number)
+          // and let the loop pump retry it when a PTY frees up.
+          const back = await this.storage.stepLoop(task.id, ['iterating'], {
+            loopState: 'next',
+            loopIteration: Math.max(0, task.loopIteration - 1),
+          });
+          if (back) {
+            broadcast({ type: 'task.updated', task: back });
+            return false;
+          }
+        }
         const requeued = await this.storage.transitionTask(task.id, ['running'], 'queued', 'orchestrator');
         if (requeued) broadcast({ type: 'task.updated', task: requeued });
         return false;
@@ -2240,6 +2311,11 @@ export class Orchestrator implements OrchestratorApi {
       // still working — a follow-up mid-turn would interleave; make them wait.
       return { error: 'the agent is still working — wait for it to finish (review), then follow up', code: 409 };
     }
+    if (cur.kind === 'loop' && cur.status === 'running' && (cur.loopState === 'checking' || cur.loopState === 'next')) {
+      // between two iterations (docs/loops.md): there is no session to talk
+      // to, and the next iteration is about to start from the ledger
+      return { error: 'the loop is between iterations — wait for the next one, or cancel it', code: 409 };
+    }
 
     const settings = await this.storage.getSettings();
     const wantResume = mode === 'resume' || (mode === 'auto' && settings['agent.resumeSessions']);
@@ -2273,7 +2349,20 @@ export class Orchestrator implements OrchestratorApi {
       ['draft', 'queued', 'running', 'review', 'published', 'done', 'failed', 'cancelled'],
       'running',
       actor,
-      { error: null },
+      {
+        error: null,
+        // A loop iteration cut short mid-turn (a usage-limit park, a budget
+        // refusal, a crash) that is RESUMED in its own session finishes as
+        // that iteration (docs/loops.md): its Stop goes back to the loop.
+        ...(cur.kind === 'loop' &&
+        cur.loopState === 'paused' &&
+        resumeFrom &&
+        purpose === 'work' &&
+        cur.loopIteration > 0 &&
+        cur.loopHistory.at(-1)?.n !== cur.loopIteration
+          ? { loopState: 'iterating' as const }
+          : {}),
+      },
     );
     if (!task) return { error: `cannot follow up from status '${cur.status}'`, code: 409 };
     broadcast({ type: 'task.updated', task });
@@ -3027,6 +3116,14 @@ export class Orchestrator implements OrchestratorApi {
         this.maybeSchedule();
         return;
       }
+      // A loop iteration whose session the loop itself closed at its Stop
+      // (docs/loops.md): the task is between iterations, not finished.
+      const owner = await this.storage.getTask(run.taskId);
+      if (owner?.kind === 'loop' && owner.status === 'running' && (owner.loopState === 'checking' || owner.loopState === 'next')) {
+        broadcast({ type: 'orchestrator.status', status: await this.status() });
+        this.maybeSchedule();
+        return;
+      }
       // A publish turn that died is settled by git, not by its exit code: it
       // may well have pushed before the terminal went away. `published` when
       // it did, `review` (with the reason) when it did not — never `failed`,
@@ -3653,6 +3750,359 @@ export class Orchestrator implements OrchestratorApi {
     if (!cur || cur.reviewState === state) return;
     const updated = await this.storage.updateTask(taskId, { reviewState: state });
     if (updated) broadcast({ type: 'task.updated', task: updated });
+  }
+
+  // ---- loop tasks (docs/loops.md) -------------------------------------------
+
+  /**
+   * Is this Stop the end of a loop iteration? Then the Stop route hands it to
+   * `loopIterationStopped` instead of landing it: between iterations the task
+   * stays `running` (no new TaskStatus). Not the publish turn, and not a turn
+   * after the loop ended (a review fix round, a follow-up) — those land as
+   * any task's do.
+   */
+  isLoopIterationStop(task: Task | null, publishRun: boolean): boolean {
+    return (
+      !!task &&
+      !publishRun &&
+      task.kind === 'loop' &&
+      task.loopState === 'iterating' &&
+      (task.status === 'running' || task.status === 'waiting')
+    );
+  }
+
+  /**
+   * The iteration's turn is over (from the Stop route). Steps the loop to
+   * `checking` — conditionally, so a cancel that won the race keeps the task
+   * — closes the iteration's session (each iteration is a FRESH one, and a
+   * live PTY would hold a worker slot) and settles the rest off the hook path.
+   */
+  async loopIterationStopped(runId: string, taskId: string, lastText: string | null): Promise<void> {
+    const cur = await this.storage.getTask(taskId);
+    if (!cur || cur.kind !== 'loop' || cur.loopState !== 'iterating') return;
+    const stepped =
+      cur.status === 'waiting'
+        ? await this.storage.transitionTask(taskId, ['waiting'], 'running', 'hook', { loopState: 'checking' })
+        : await this.storage.stepLoop(taskId, ['iterating'], { loopState: 'checking' });
+    if (!stepped) return;
+    this.dropWait(runId);
+    broadcast({ type: 'task.updated', task: stepped });
+    const idled = await this.storage.updateRun(runId, { idle: true, needsAttention: false });
+    if (idled) broadcast({ type: 'run.exited', run: idled });
+    // handleExit leaves the task alone while the loop is `checking`/`next`.
+    this.sessions.kill(runId);
+    await this.waitForSessionExit(runId);
+    broadcast({ type: 'orchestrator.status', status: await this.status() });
+    void this.settleLoopIteration(taskId, runId, lastText);
+  }
+
+  /** Loops whose iteration end is being settled RIGHT NOW — single-flight per task. */
+  private loopSettling = new Set<string>();
+
+  /**
+   * After an iteration: commit what it left, run the checks, measure the
+   * change, record the iteration, then either queue the next one (`next`,
+   * started by `pumpLoops` when a worker slot frees) or END the loop, which
+   * lands `review` like a Stop and hands it to the one review round.
+   */
+  private async settleLoopIteration(taskId: string, runId: string, lastText: string | null): Promise<void> {
+    if (this.loopSettling.has(taskId)) return;
+    this.loopSettling.add(taskId);
+    let task: Task | null = null;
+    try {
+      task = await this.storage.getTask(taskId);
+      if (!task || task.status !== 'running' || task.loopState !== 'checking') return;
+      const repo = task.repoId ? await this.storage.getRepo(task.repoId) : null;
+      if (!repo) {
+        await this.endLoop(task, 'error', null, lastText, 'the task has no repo');
+        return;
+      }
+      const n = task.loopIteration;
+      const result = parseLoopResult(lastText);
+      const humanNeeded = await this.loopNeededHuman(runId, taskId);
+      // Leftovers first: the next iteration must start from a clean tree, and
+      // the checks and the hash below then read exactly what was committed.
+      const handoff = await handoffCommit(repo, task, {
+        subject: `Loop ${n}`,
+        body: `Uncommitted work loop iteration ${n} left in the checkout, committed locally by the task manager so the next iteration starts from a clean tree. Not pushed.`,
+      });
+      if (!handoff.ok) {
+        await this.endLoop(task, 'error', null, lastText, `could not commit what iteration ${n} left: ${handoff.error}`);
+        return;
+      }
+      const runner = this.commandRunner;
+      const checks = runner ? selectChecks(await this.storage.listCommands(repo.id), task) : [];
+      let results: CheckResult[] = [];
+      if (checks.length && runner) {
+        const ran = await runChecks(runner, repo, checks, taskId, async () => {
+          const t = await this.storage.getTask(taskId);
+          return t?.status !== 'running' || t.loopState !== 'checking';
+        });
+        if (!ran) {
+          // cancelled (or otherwise taken) mid-check: no verdict belongs to anyone
+          await this.storage.appendEvent({ kind: 'task.loop', actor: 'system', taskId, repoId: repo.id, data: { phase: 'taken-over', n } });
+          return;
+        }
+        results = ran;
+      }
+      const verdict = results.length ? checksVerdict(results) : null;
+      const scoped = await this.ensureBase(task, repo, false);
+      const change = await workerDiff(repo, await this.changeScope(scoped, repo));
+      const measured = loopMetric(results.length ? results : null);
+      const np = noProgress(task.loopHistory.at(-1), { diffHash: change.hash, ...measured });
+      const budget = await this.budgetAllows(task, 'loop-iteration');
+      const fresh = (await this.storage.getTask(taskId)) ?? task;
+      const entry: LoopIteration = {
+        n,
+        runId,
+        endedAt: new Date().toISOString(),
+        goalMet: result.goalMet,
+        note: result.note,
+        checkState: verdict,
+        checks: results.map((r) => ({ name: r.name, outcome: r.outcome })),
+        ...measured,
+        diffHash: change.hash,
+        handoff: !!handoff.sha,
+        noProgress: np,
+        costUsd: fresh.costUsd,
+        stop: null,
+      };
+      const history = [...task.loopHistory, entry];
+      const max = maxIterations(task);
+      entry.stop = loopStop({
+        n,
+        max,
+        goalMet: result.goalMet,
+        checkState: verdict,
+        humanNeeded: !!humanNeeded,
+        budgetOk: budget.ok,
+        streak: noProgressStreak(history),
+      });
+      const stepped = await this.storage.stepLoop(taskId, ['checking'], {
+        loopHistory: history,
+        checkResults: results,
+        checkDiffHash: change.hash,
+        ...(entry.stop ? {} : { loopState: 'next' as const }),
+      });
+      if (!stepped) return; // cancelled meanwhile
+      await this.storage.appendEvent({
+        kind: 'task.loop',
+        actor: 'system',
+        taskId,
+        runId,
+        repoId: repo.id,
+        data: {
+          phase: 'ended',
+          n,
+          goalMet: entry.goalMet,
+          checks: verdict,
+          metric: entry.metric,
+          metricSource: entry.metricSource,
+          noProgress: np,
+          handoff: handoff.sha,
+          costUsd: entry.costUsd,
+          stop: entry.stop,
+          ...(humanNeeded ? { humanNeeded } : {}),
+          ...(!budget.ok ? { fuse: budget.fuse } : {}),
+        },
+      });
+      broadcast({ type: 'task.updated', task: stepped });
+      if (!entry.stop) {
+        this.maybeSchedule();
+        return;
+      }
+      await this.endLoop(stepped, entry.stop, verdict, lastText, !budget.ok ? budget.reason : null);
+    } catch (e) {
+      console.error(`loop ${taskId}: settling an iteration failed:`, e);
+      const t = await this.storage.getTask(taskId).catch(() => null);
+      if (t && t.status === 'running' && t.loopState === 'checking') {
+        await this.endLoop(t, 'error', null, lastText, `settling the iteration failed: ${(e as Error)?.message ?? e}`).catch(
+          () => {},
+        );
+      }
+    } finally {
+      this.loopSettling.delete(taskId);
+    }
+  }
+
+  /**
+   * Did a human have to step into this iteration? A question it asked
+   * (docs/questions.md) or a permission prompt it raised (`run.attention`
+   * from the Notification hook — never the run-minutes fuse's flag, which is
+   * not a prompt). Read from rows, so it survives the run's in-memory state.
+   */
+  private async loopNeededHuman(runId: string, taskId: string): Promise<'question' | 'attention' | null> {
+    if ((await this.storage.listQuestions({ runId })).length) return 'question';
+    const flags = await this.storage.listEvents({ kind: 'run.attention', taskId, limit: 50 });
+    return flags.some((e) => e.runId === runId && e.actor === 'hook') ? 'attention' : null;
+  }
+
+  /**
+   * End the loop: land `review` in ONE conditional transition that also says
+   * how it ended (`loop_state`), where its checks stand (the last
+   * iteration's verdict — the check stage then has nothing to re-run) and
+   * whether the one review round will read it. Red never reaches the reviewer
+   * (docs/checks.md); a `paused` loop is not reviewed either — it is not over.
+   * The landing tier then decides in `landIfClean`, and `landingReason`
+   * refuses any loop that did not end `met`.
+   */
+  private async endLoop(
+    task: Task,
+    stop: LoopState,
+    verdict: CheckState | null,
+    lastText: string | null,
+    detail: string | null,
+  ): Promise<void> {
+    const settings = await this.storage.getSettings();
+    const n = task.loopIteration;
+    const max = maxIterations(task);
+    const willReview = stop !== 'paused' && stop !== 'error' && verdict !== 'red' && (task.review ?? settings['review.enabled']);
+    const text = loopStopText(stop, n, max) + (detail ? ` — ${detail}` : '');
+    this.holdCustomQueue(task.id);
+    const release = () => this.releaseCustomQueue(task.id);
+    let handedOff = false;
+    try {
+      const landed = await this.storage.transitionTask(
+        task.id,
+        ['running'],
+        'review',
+        'orchestrator',
+        {
+          loopState: stop,
+          checkState: verdict,
+          reviewState: willReview ? 'pending' : null,
+          error: stop === 'met' ? null : text,
+          ...(lastText ? { resultSummary: lastText.slice(0, 4000) } : {}),
+        },
+        { loop: { stop, iterations: n } },
+      );
+      if (!landed) return;
+      if (verdict === 'red' && stop !== 'paused') {
+        await this.storage.appendEvent({
+          kind: 'run.reviewed',
+          actor: 'system',
+          taskId: task.id,
+          repoId: task.repoId,
+          data: { skipped: 'checks-red', state: null, stop: `loop-${stop}` },
+        });
+      }
+      broadcast({ type: 'task.updated', task: landed });
+      await this.resolveCompletion(landed, 'orchestrator');
+      broadcast({ type: 'orchestrator.status', status: await this.status() });
+      this.maybeSchedule();
+      handedOff = true;
+      // The one review round, over every commit the loop made, then the tier.
+      // Not through the review loop when no review is due: `runReviewRound`
+      // reads the task's review SETTING, not `reviewState`, and would review
+      // a red or paused end anyway (measured) — the tier alone decides there.
+      void (willReview ? this.reviewCompletedRun(task.id) : this.landIfClean(task.id)).finally(release);
+    } finally {
+      if (!handedOff) release();
+    }
+  }
+
+  /**
+   * Start the iteration a scheduling pass found due (`next`), while a worker
+   * slot is free — every iteration is a worker run and counts toward
+   * `orchestrator.concurrency`. Runs before the global claim and regardless
+   * of the queue switch (the task is already running), but not past the day
+   * budget; the loop's own budget is re-asked here.
+   */
+  private async pumpLoops(cap: number): Promise<void> {
+    const due = (await this.storage.listTasks({ status: 'running' }))
+      .filter((t) => t.kind === 'loop' && t.loopState === 'next' && !this.loopSettling.has(t.id))
+      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+    for (const task of due) {
+      if (this.activeWorkers() >= cap) return;
+      const v = await this.budgetAllows(task, 'loop-iteration');
+      if (!v.ok) {
+        await this.endLoop(task, 'budget', task.loopHistory.at(-1)?.checkState ?? null, null, v.reason);
+        continue;
+      }
+      await this.startWorker(task);
+    }
+  }
+
+  /**
+   * Number and step the iteration `startWorker` is about to spawn. From
+   * `next` it is the loop going on (n + 1); from anything else it is a fresh
+   * start of the loop — a first claim, Run now, Retry — so the count and the
+   * history restart (the ledger file and the task's cost do not).
+   */
+  private async beginLoopIteration(task: Task): Promise<Task | null> {
+    const continuing = task.loopState === 'next';
+    const n = continuing ? task.loopIteration + 1 : 1;
+    const from: (LoopState | null)[] = continuing
+      ? ['next']
+      : [null, 'iterating', 'checking', 'met', 'max-iterations', 'budget', 'no-progress', 'paused', 'error'];
+    const stepped = await this.storage.stepLoop(task.id, from, {
+      loopState: 'iterating',
+      loopIteration: n,
+      ...(continuing ? {} : { loopHistory: [], checkResults: [], checkDiffHash: null }),
+    });
+    if (!stepped) return null;
+    await this.storage.appendEvent({
+      kind: 'task.loop',
+      actor: 'orchestrator',
+      taskId: task.id,
+      repoId: task.repoId,
+      data: { phase: 'started', n, max: maxIterations(task), ...(continuing ? {} : { fresh: true }) },
+    });
+    return stepped;
+  }
+
+  /**
+   * "Continue" (POST /api/tasks/:id/loop/continue): a loop that stopped short
+   * — iterations, budget, no progress, paused, error — goes on from where it
+   * stood, numbering on. The ceilings are not bypassed: the human raises
+   * them first (PATCH, from the dashboard). The task goes back to `running` in
+   * `next`; the next scheduling pass starts the iteration.
+   */
+  async continueLoop(taskId: string, actor = 'human'): Promise<ActionResult> {
+    const t = await this.storage.getTask(taskId);
+    if (!t) return { error: 'task not found', code: 404 };
+    if (t.kind !== 'loop') return { error: 'not a loop task', code: 409 };
+    if (!['review', 'failed', 'cancelled'].includes(t.status) || !t.loopState || !LOOP_CONTINUABLE_STATES.includes(t.loopState)) {
+      return { error: 'nothing to continue — the loop is running, finished (goal met) or never started', code: 409 };
+    }
+    if (verifyOpen(t)) return { error: 'the review round is still open — wait for its verdict', code: 409 };
+    const max = maxIterations(t);
+    if (t.loopIteration >= max) return { error: `all ${max} iterations are used — raise maxIterations first`, code: 409 };
+    const cap = loopBudget(t);
+    if (cap && t.costUsd >= cap) {
+      return { error: `the loop has cost $${t.costUsd.toFixed(2)} of its $${cap.toFixed(2)} budget — raise it first`, code: 409 };
+    }
+    const runs = await this.storage.listRuns({ taskId });
+    if (runs.some((r) => this.sessions.get(r.id)?.exit === null && !this.sessions.isIdle(r.id))) {
+      return { error: 'the agent is still working', code: 409 };
+    }
+    // an idle terminal of the last turn: the next iteration is a fresh session
+    for (const r of runs) {
+      if (this.sessions.get(r.id)?.exit === null) {
+        this.sessions.kill(r.id);
+        await this.storage.updateRun(r.id, { status: 'killed', endedAt: new Date().toISOString() });
+        await this.waitForSessionExit(r.id);
+      }
+    }
+    const task = await this.storage.transitionTask(
+      taskId,
+      ['review', 'failed', 'cancelled'],
+      'running',
+      actor,
+      { loopState: 'next', error: null, reviewState: null, checkState: null },
+      { loop: 'continue' },
+    );
+    if (!task) return { error: 'the task moved meanwhile', code: 409 };
+    await this.storage.appendEvent({
+      kind: 'task.loop',
+      actor,
+      taskId,
+      repoId: task.repoId,
+      data: { phase: 'continued', from: t.loopState, n: t.loopIteration },
+    });
+    broadcast({ type: 'task.updated', task });
+    this.maybeSchedule();
+    return { task };
   }
 
   // ---- needs-attention lifecycle -------------------------------------------

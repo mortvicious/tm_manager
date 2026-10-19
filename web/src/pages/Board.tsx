@@ -31,6 +31,7 @@ import { SearchChips, SearchPanel, SearchTrigger, useSearchHotkey } from '../com
 import { BulkBar } from '../components/BulkBar.tsx';
 import { DispatchStrip } from '../components/DispatchStrip.tsx';
 import { DoneFields } from '../components/DoneFields.tsx';
+import { LoopChip, LoopFields, loopInput } from '../components/LoopPanel.tsx';
 import { GroupHead } from '../components/GroupHead.tsx';
 import { GroupPicker } from '../components/GroupPicker.tsx';
 import { LandingPicker } from '../components/LandingPicker.tsx';
@@ -79,7 +80,7 @@ const RECENT_LIMIT = 10;
 
 /** Phones: how many tags a row keeps, and which win (docs/mobile.md § Rows). */
 const MOBILE_CHIPS = 2;
-const MOBILE_CHIP_ORDER = ['autolanded', 'repo', 'cost', 'attempts', 'dispatch', 'group', 'category', 'feature', 'landing', 'agent', 'source', 'preset', 'reviewer'];
+const MOBILE_CHIP_ORDER = ['autolanded', 'loop', 'repo', 'cost', 'attempts', 'dispatch', 'group', 'category', 'feature', 'landing', 'agent', 'source', 'preset', 'reviewer'];
 
 const byRecency = (key: 'createdAt' | 'updatedAt') => (a: Task, b: Task) => {
   const d = b[key].localeCompare(a[key]);
@@ -131,6 +132,11 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
   const [reviewModel, setReviewModel] = useState('');
   const [reviewEffort, setReviewEffort] = useState('');
   const [landing, setLanding] = useState<LandingTier | null>(null);
+  // loop task (docs/loops.md): goal + limits; `kind` is create-only
+  const [isLoop, setIsLoop] = useState(false);
+  const [loopGoal, setLoopGoal] = useState('');
+  const [loopMaxIt, setLoopMaxIt] = useState('');
+  const [loopBudget, setLoopBudget] = useState('');
   const reviewOn = reviewIsOn(reviewValueOf(review), settings);
   const [start, setStart] = useState<StartMode>('draft');
   const [busy, setBusy] = useState(false);
@@ -182,11 +188,21 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
   const submit = async () => {
     // Two round-trips now, so a double click is a real duplicate risk.
     if (busy) return;
+    const loop = isLoop ? loopInput(loopGoal, loopMaxIt, loopBudget) : null;
+    if (typeof loop === 'string') {
+      setErr(loop);
+      return;
+    }
+    if (loop && !repoId) {
+      setErr('a loop task needs a repo');
+      return;
+    }
     setBusy(true);
     setErr(null);
     let task: Task;
     try {
       task = await api.createTask({
+        ...(loop ? { kind: 'loop' as const, ...loop } : {}),
         title: finalTitle,
         description: description || null,
         acceptance: acceptance.trim() || null,
@@ -222,6 +238,10 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
     setReviewModel('');
     setReviewEffort('');
     setLanding(null);
+    setIsLoop(false);
+    setLoopGoal('');
+    setLoopMaxIt('');
+    setLoopBudget('');
     if (effectiveStart !== 'draft') {
       try {
         await api.taskAction(task.id, effectiveStart === 'run' ? 'run-now' : 'enqueue');
@@ -324,6 +344,22 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
             ))}
           </datalist>
         </div>
+        <div className="wide">
+          <label className="done-check" title="iterate on a goal in fresh agent sessions over a progress ledger until the checks are green and the goal is met (docs/loops.md)">
+            <input type="checkbox" checked={isLoop} onChange={(e) => setIsLoop(e.target.checked)} /> Loop task — iterate
+            toward a goal in fresh sessions
+          </label>
+        </div>
+        {isLoop && (
+          <LoopFields
+            goal={loopGoal}
+            maxIterations={loopMaxIt}
+            budgetUsd={loopBudget}
+            onGoal={setLoopGoal}
+            onMaxIterations={setLoopMaxIt}
+            onBudgetUsd={setLoopBudget}
+          />
+        )}
         <DoneFields
           repoId={repoId || null}
           acceptance={acceptance}
@@ -1003,6 +1039,8 @@ export function BoardPage({
     if (repo && ctx !== 'repo' && !(mobile && oneRepo)) {
       all.push(['repo', <span key="repo" className="chip">{repo}</span>]);
     }
+    // loop task (docs/loops.md): iteration counter + the check metric's sparkline
+    if (t.kind === 'loop') all.push(['loop', <LoopChip key="loop" task={t} />]);
     // the task's cost so far (worker turns + its reviews/compactions)
     if (t.costUsd >= 0.01) all.push(['cost', <TaskCostChip key="cost" costUsd={t.costUsd} />]);
     // a re-attempt (Retry / Run now / a fresh follow-up) is worth a glance
@@ -1057,6 +1095,7 @@ export function BoardPage({
           question={asking.has(t.id)}
           reviewState={t.reviewState}
           checkState={t.checkState}
+          loopState={t.loopState}
           onOpenReviewer={(() => {
             const rv = liveReviewRun(runs, t.id);
             return rv ? () => onOpenTerminal(rv.id) : undefined;

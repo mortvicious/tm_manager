@@ -412,6 +412,13 @@ column, so a stale copy of a task cannot clobber it.
 | `check-round` | ″ | the repo-check fix round of the verify loop (`docs/checks.md`) |
 | `transient-resume` | ″ | `fireTransient`, before each automatic resume of a turn a transient API error cut short (`docs/design.md` § Transient API errors) |
 | `auto-publish` | ″ | `landIfClean`, before the publish turn of an `auto-publish` landing tier (`docs/design.md` § Landing tiers); labelled "publish turn (auto-publish landing)" |
+| `loop-iteration` | ″, and the loop's own `loopBudgetUsd` | `settleLoopIteration` and `pumpLoops`, before a loop task's next iteration (`docs/loops.md`) |
+
+**Loop tasks (2026-10-19).** On a `kind: 'loop'` task every per-task kind
+above is ALSO measured against the task's own `loopBudgetUsd`; the lower of it
+and `budget.taskUsd` wins, and a refusal by the loop's cap names the fuse
+`loop.budgetUsd` (`loopBudget()` in `budget.ts`). The loop budget is required
+on create and, unlike the global fuses, always on.
 
 At or OVER the cap refuses. It returns `{ ok: true }` or
 `{ ok: false, fuse, spentUsd, capUsd, reason }`.

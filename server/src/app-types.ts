@@ -51,6 +51,8 @@ export interface OrchestratorApi {
    *  unchanged-diff gate; 409 while a round is in flight. */
   reviewNow(taskId: string, actor?: string): Promise<ActionResult>;
   applyReviewFixes(taskId: string, actor?: string): Promise<ActionResult>;
+  /** A loop task that stopped short goes on (docs/loops.md); 409 with the reason otherwise. */
+  continueLoop(taskId: string, actor?: string): Promise<ActionResult>;
   /** True when a PTY for this task is still alive (live or idle post-Stop). */
   hasLiveSession(taskId: string): Promise<boolean>;
   /** Kill every live session of a task (used when completing it); returns count closed. */
