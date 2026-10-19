@@ -441,6 +441,18 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /**
+   * "Blocked on a HUMAN": the run's needs-attention flag is set AND it is not
+   * the `budget.runMinutes` fuse's. Every rule that reads the flag as "a
+   * prompt is waiting, the session will speak again" must ask this instead of
+   * `run.needsAttention` — the fuse's flag means only "this turn is long", and
+   * the session may never speak again (a shell-held park expiring, a turn the
+   * usage limit cut short). Review round 1 of the fuses.
+   */
+  promptAttention(run: Pick<Run, 'id' | 'needsAttention'>): boolean {
+    return run.needsAttention && !this.overtimeFlags.has(run.id);
+  }
+
+  /**
    * Every minute: the `budget.runMinutes` fuse, then the `anomaly.*`
    * thresholds as notifications (the Dashboard computes the same rules on
    * request, routes/stats.ts). Never throws into its timer.
@@ -684,8 +696,9 @@ export class Orchestrator implements OrchestratorApi {
       // waits, so it passes the quiet test forever — and the hunk it is
       // previewing may be a file that quotes a banner. The run row already
       // says so; killing it would throw away the answer it is waiting for
-      // (review R2).
-      if (run.needsAttention) continue;
+      // (review R2). The budget.runMinutes fuse's flag is NOT that: an
+      // over-time turn the account then cut short must still be parked.
+      if (this.promptAttention(run)) continue;
       const task = await this.storage.getTask(run.taskId);
       if (!task || task.wakeAt) continue;
       if (task.status !== 'running' && !WAKE_RESUMABLE_STATUSES.includes(task.status)) continue;

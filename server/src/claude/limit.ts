@@ -61,7 +61,8 @@ export const LIVE_TAIL_STRICT_CHARS = 400;
  * The CLI's permission prompt, which is the other reason a live session sits
  * silent. It is not a stall the account can fix: the agent is waiting for a
  * human, and the previewed hunk above the prompt may itself be a file quoting
- * a banner (this repo has several). `run.needsAttention` is the primary guard;
+ * a banner (this repo has several). A prompt's needs-attention flag
+ * (`Orchestrator.promptAttention` — not the budget.runMinutes fuse's) is the primary guard;
  * this catches the window before the Notification hook has landed.
  */
 const PROMPT_MARKERS: RegExp[] = [

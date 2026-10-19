@@ -444,7 +444,14 @@ At or OVER the cap refuses. It returns `{ ok: true }` or
   progressing); Stop and exit clear it like any flag. A real permission prompt
   on that run takes the flag over (`takeOvertimeFlag` in the attention route), so
   the prompt still gets its own ping and clears on progress as usual. Raised
-  once per run.
+  once per run. **The fuse's flag never means "blocked on a human"**: every
+  rule that read `needsAttention` that way asks `Orchestrator.promptAttention(run)`
+  instead (flag set AND not the fuse's). Two did (review round 1): the
+  shell-wait expiry replay, which held a park on any flag and so left a
+  dev-server park `waiting` forever — holding its slot and, through the
+  same-repo gate, its repo — and now lands it and clears the fuse's flag; and
+  the usage-limit parker, which skipped any flagged run and so never parked an
+  over-time turn the 5h window then cut short.
 
 ## Re-measuring after a change here
 

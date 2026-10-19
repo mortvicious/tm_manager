@@ -160,11 +160,20 @@ export function registerInternalRoutes(
     const run = info.run;
 
     if (replayOf !== null) {
-      // A flag raised during the park means the session is mid-turn and
-      // blocked on a human — its turn end is still to come, as a real Stop.
-      if (run.needsAttention) return { ok: true };
+      // A PROMPT's flag raised during the park means the session is mid-turn
+      // and blocked on a human — its turn end is still to come, as a real
+      // Stop. The budget.runMinutes fuse's flag means nothing of the kind (a
+      // dev-server shell never re-invokes the session), so the expiry lands
+      // the park and clears that flag like a Stop would.
+      if (orchestrator.promptAttention(run)) return { ok: true };
+      if (run.needsAttention) {
+        orchestrator.takeOvertimeFlag(id);
+        const cleared = await storage.updateRun(id, { needsAttention: false });
+        if (cleared) broadcast({ type: 'run.needs-attention', run: cleared });
+      }
     } else {
       if (run.needsAttention) {
+        orchestrator.takeOvertimeFlag(id);
         const cleared = await storage.updateRun(id, { needsAttention: false });
         if (cleared) broadcast({ type: 'run.needs-attention', run: cleared });
       }
