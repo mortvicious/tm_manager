@@ -12,6 +12,7 @@ import { FeaturePage } from './pages/Feature.tsx';
 import { FeaturesPage } from './pages/Features.tsx';
 import { ConfigPage } from './pages/Config.tsx';
 import { HandbookPage } from './pages/Handbook.tsx';
+import { InboxPage } from './pages/Inbox.tsx';
 import { QueuePage } from './pages/Queue.tsx';
 import { SharedPage } from './pages/Shared.tsx';
 import { ReportsPage } from './pages/Reports.tsx';
@@ -28,10 +29,11 @@ export function App() {
   );
 
   return (
-    <Layout onOpenTerminal={openTerm}>
+    <Layout onOpenTerminal={openTerm} onOpenTask={setOpenTask}>
       <Routes>
         <Route path="/" element={<DashboardPage onOpenTask={setOpenTask} />} />
         <Route path="/board" element={<BoardPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
+        <Route path="/inbox" element={<InboxPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
         <Route path="/queue" element={<QueuePage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/chat/:id" element={<ChatPage />} />

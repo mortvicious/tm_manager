@@ -5483,6 +5483,404 @@ pre.check-tail {
   animation: pulse 0.9s var(--tm-ease-in-out) infinite;
 }
 
+/* ---------- task templates (docs/inbox.md § Templates) ---------- */
+
+.template-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+}
+
+.template-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-3);
+}
+
+.template-card {
+  padding: var(--tm-space-3);
+}
+
+.template-card .form-grid {
+  margin-top: var(--tm-space-2);
+}
+
+.template-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+}
+
+.template-head .field {
+  flex: 1;
+}
+
+/* ---------- board multi-select (docs/inbox.md § Bulk actions) ---------- */
+
+.bulk-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+  margin-bottom: var(--tm-space-3);
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-accent);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-raised);
+  box-shadow: var(--tm-shadow-sm);
+}
+
+.bulk-count {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin-right: var(--tm-space-2);
+}
+
+.bulk-bar .spacer {
+  flex: 1;
+}
+
+.field.bulk-select {
+  width: auto;
+}
+
+.bulk-report {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  font-size: var(--tm-text-sm);
+  color: var(--tm-text-muted);
+}
+
+.row-select {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-sm);
+  color: var(--tm-accent-contrast);
+}
+
+.row-select.on {
+  background: var(--tm-accent);
+  border-color: var(--tm-accent);
+}
+
+.row-select svg {
+  width: 12px;
+  height: 12px;
+}
+
+.task-row[data-selected] {
+  background: var(--tm-accent-subtle);
+}
+
+/* phone rows are a grid: the tick takes the grip's column (a selecting board has no drag) */
+.app.mobile .task-row.m.no-grip:has(> .row-select) {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'sel main act'
+    'sel meta meta'
+    'sel err err';
+}
+
+.app.mobile .task-row.m > .row-select {
+  grid-area: sel;
+}
+
+/* ---------- inbox (docs/inbox.md) ---------- */
+
+/* Header chip: the count of decisions waiting. Attention-coloured while a
+   live session waits (a question or a prompt), quiet otherwise. */
+.ichip {
+  gap: var(--tm-space-1);
+  color: var(--tm-text-muted);
+  border-color: var(--tm-border-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.ichip.urgent {
+  color: var(--tm-status-attention);
+  border-color: currentColor;
+}
+
+.inbox-count {
+  font-family: var(--tm-font-body);
+  font-size: var(--tm-text-sm);
+  font-weight: 400;
+  color: var(--tm-text-muted);
+}
+
+.inbox-keys {
+  margin: calc(var(--tm-space-2) * -1) 0 var(--tm-space-4);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+.inbox-keys kbd,
+.inbox-acts kbd {
+  padding: 0 var(--tm-space-1);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-bg-inset);
+  color: var(--tm-text-faint);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  line-height: 1.5;
+}
+
+.inbox-desk {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  max-width: 920px;
+}
+
+.inbox-item {
+  padding: var(--tm-space-3) var(--tm-space-4);
+  cursor: pointer;
+}
+
+.inbox-item.sel {
+  border-color: var(--tm-accent);
+  cursor: default;
+}
+
+.inbox-item-head,
+.inbox-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  min-width: 0;
+}
+
+.inbox-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  min-width: 0;
+}
+
+.inbox-kind {
+  flex: none;
+  padding: 0 var(--tm-space-2);
+  border: 1px solid currentColor;
+  border-radius: var(--tm-radius-pill);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+}
+
+.inbox-kind.k-question,
+.inbox-kind.k-attention {
+  color: var(--tm-status-attention);
+}
+
+.inbox-kind.k-review {
+  color: var(--tm-status-review);
+}
+
+.inbox-kind.k-failed,
+.inbox-kind.k-blocked {
+  color: var(--tm-status-failed);
+}
+
+.inbox-kind.k-proposal,
+.inbox-kind.k-feature {
+  color: var(--tm-accent);
+}
+
+.inbox-title {
+  min-width: 0;
+  font-weight: 600;
+  color: var(--tm-text);
+  overflow-wrap: anywhere;
+}
+
+.inbox-repo,
+.inbox-frees {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+.inbox-frees {
+  color: var(--tm-accent);
+}
+
+.inbox-summary {
+  font-size: var(--tm-text-sm);
+  color: var(--tm-text-muted);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+
+.inbox-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-3);
+  margin-top: var(--tm-space-3);
+  min-width: 0;
+}
+
+.inbox-facts,
+.inbox-checks,
+.inbox-options,
+.inbox-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+}
+
+.inbox-check {
+  padding: 1px var(--tm-space-2);
+  border: 1px solid currentColor;
+  border-radius: var(--tm-radius-sm);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
+.inbox-check.c-green {
+  color: var(--tm-status-done);
+}
+
+.inbox-check.c-red {
+  color: var(--tm-status-failed);
+}
+
+.inbox-check.c-error {
+  color: var(--tm-status-review);
+}
+
+.inbox-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+}
+
+.inbox-block .label {
+  margin: 0;
+}
+
+.inbox-text {
+  font-size: var(--tm-text-sm);
+  color: var(--tm-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 14em;
+  overflow: auto;
+}
+
+.inbox-pre {
+  margin: 0;
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-bg-inset);
+  color: var(--tm-status-failed);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 14em;
+  overflow: auto;
+}
+
+.inbox-findings,
+.inbox-list {
+  margin: 0;
+  padding-left: var(--tm-space-5);
+  font-size: var(--tm-text-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+}
+
+.inbox-sev {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  text-transform: uppercase;
+}
+
+.inbox-findings .sev-blocker .inbox-sev,
+.inbox-findings .sev-major .inbox-sev {
+  color: var(--tm-status-failed);
+}
+
+.inbox-findings .sev-minor .inbox-sev {
+  color: var(--tm-text-faint);
+}
+
+.btn.inbox-option {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--tm-space-1);
+  text-align: left;
+  white-space: normal;
+}
+
+.inbox-acts {
+  margin-top: var(--tm-space-3);
+}
+
+.inbox-acts .btn {
+  gap: var(--tm-space-2);
+}
+
+.inbox-err {
+  margin-top: var(--tm-space-2);
+}
+
+.inbox-empty {
+  padding: var(--tm-space-6) 0;
+  color: var(--tm-text-faint);
+}
+
+/* phone: the rows of the Inbox page and of the header chip's sheet */
+.inbox-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.inbox-row {
+  width: 100%;
+  min-height: var(--tm-tap);
+  padding: var(--tm-space-3) var(--tm-space-2);
+  border: 0;
+  border-bottom: 1px solid var(--tm-border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.inbox-row:last-child {
+  border-bottom: 0;
+}
+
+.inbox-row:active {
+  background: var(--tm-fill-press);
+}
+
+.inbox-sheet-meta .inbox-line {
+  margin-bottom: var(--tm-space-1);
+}
+
+.inbox-sheet-acts {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--tm-space-3);
+}
+
 /* ---------- reports (docs/reports.md) ---------- */
 
 /* Multi-select chips: the repo picker and the range picker. Same `.on` recipe

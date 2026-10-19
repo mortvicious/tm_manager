@@ -1,4 +1,18 @@
-import { EFFORT_LEVELS, LANDING_TIERS, MODEL_OPTIONS, TASK_PRESETS, taskPresets, type EffortLevel, type LandingTier, type Repo, type TaskPreset } from '@tm/shared';
+import {
+  EFFORT_LEVELS,
+  LANDING_TIERS,
+  MODEL_OPTIONS,
+  TASK_PRESETS,
+  applyDescriptionSkeleton,
+  applyTitlePattern,
+  taskPresets,
+  templateChecksFor,
+  type EffortLevel,
+  type LandingTier,
+  type Repo,
+  type TaskPreset,
+  type TaskTemplate,
+} from '@tm/shared';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { Storage } from '../storage/types.ts';
 import type { TaskEdit } from '../task-actions.ts';
@@ -49,6 +63,8 @@ interface FlowData {
   reviewModel?: string | null;
   /** landing tier override (docs/design.md § Landing tiers); null = the repo's */
   landing?: LandingTier | null;
+  /** /new: the content template picked (docs/inbox.md § Templates) — a copy, a form fill, never a link */
+  template?: TaskTemplate | null;
   /** /edit and /proceed */
   taskId?: string;
   /** /edit: which field the next message or press sets */
@@ -212,6 +228,24 @@ async function livePresets(deps: FlowDeps): Promise<TaskPreset[]> {
   } catch {
     return TASK_PRESETS;
   }
+}
+
+/** The saved content templates (`task.templates`); a storage error means none, never a failed wizard. */
+async function liveTemplates(deps: FlowDeps): Promise<TaskTemplate[]> {
+  try {
+    return (await deps.storage.getSettings())['task.templates'] ?? [];
+  } catch {
+    return [];
+  }
+}
+
+// Template ids are `t-xxxx` (TASK_TEMPLATE_ID_RE): they fit the `w:` value slot
+// and can never be the literal `none` below.
+function templateKeyboard(seq: number, templates: TaskTemplate[]): InlineKeyboardMarkup {
+  return grid([
+    ...templates.map((t) => ({ text: t.name, callback_data: wz(seq, 'tpl', t.id) })),
+    { text: '— No template', callback_data: wz(seq, 'tpl', 'none') },
+  ]);
 }
 
 // Custom preset ids are `p-xxxx` (CUSTOM_PRESET_ID_RE): they fit the `w:` value
@@ -415,17 +449,19 @@ export async function handleFlowText(deps: FlowDeps, flows: FlowStore, text: str
   if (!body) return null;
 
   if (flow.kind === 'new' && flow.step === 'title') {
-    flows.advance('desc', { title: body.slice(0, TITLE_MAX) });
-    return step({ html: 'Description? (or skip)', keyboard: skipKeyboard(flows.seq()) });
+    const tpl = flow.data.template;
+    flows.advance('desc', { title: applyTitlePattern(tpl?.title ?? '', body).slice(0, TITLE_MAX) });
+    return step(descPrompt(flows, tpl));
   }
   if (flow.kind === 'new' && flow.step === 'desc') {
-    flows.advance('accept', { description: body });
-    return step({ html: ACCEPT_PROMPT, keyboard: skipKeyboard(flows.seq(), 'accept') });
+    const tpl = flow.data.template;
+    flows.advance('accept', { description: applyDescriptionSkeleton(tpl?.description ?? '', body) });
+    return step(acceptPrompt(flows, tpl));
   }
   if (flow.kind === 'new' && flow.step === 'accept') {
-    const presets = await livePresets(deps);
-    flows.advance('preset', { acceptance: body.slice(0, 4000) });
-    return step({ html: paramsPrompt(flow.data.title ?? ''), keyboard: presetKeyboard(flows.seq(), presets) });
+    // typed text REPLACES a template's definition of done (the skip button keeps it)
+    const next = flows.advance('preset', { acceptance: body.slice(0, 4000) });
+    return step(await paramsStep(deps, flows, next ?? flow));
   }
   if (flow.kind === 'draft' && flow.step === 'confirm') {
     // A second thought while the first is still waiting on its confirm button.
@@ -465,6 +501,68 @@ export async function handleFlowText(deps: FlowDeps, flows: FlowStore, text: str
     return step({ html: `${r.ok ? '✅' : '⚠'} ${escapeHtml(r.text)}` }, r.ok);
   }
   return null;
+}
+
+/** The description step; with a template, what Skip keeps and where typed text goes. */
+function descPrompt(flows: FlowStore, tpl: TaskTemplate | null | undefined): Reply {
+  const skel = tpl?.description.trim();
+  return {
+    html: skel
+      ? `Description? Whatever you send goes above the template's skeleton; Skip keeps the skeleton alone.\n\n<pre>${escapeHtml(skel.slice(0, 600))}${skel.length > 600 ? '…' : ''}</pre>`
+      : 'Description? (or skip)',
+    keyboard: skipKeyboard(flows.seq()),
+  };
+}
+
+/** The definition-of-done step; a template's text is kept by Skip and replaced by a message. */
+function acceptPrompt(flows: FlowStore, tpl: TaskTemplate | null | undefined): Reply {
+  const acc = tpl?.acceptance.trim();
+  if (!acc) return { html: ACCEPT_PROMPT, keyboard: skipKeyboard(flows.seq(), 'accept') };
+  return {
+    html: `Definition of done — the template's, below. Send your own to replace it, or keep it.\n\n<pre>${escapeHtml(acc.slice(0, 600))}${acc.length > 600 ? '…' : ''}</pre>`,
+    keyboard: { inline_keyboard: [[{ text: '✓ Keep the template’s', callback_data: wz(flows.seq(), 'accept', 'skip') }], CANCEL_ROW] },
+  };
+}
+
+/**
+ * After the content: the template's preset when it names one that still
+ * exists (straight to the landing step), else the preset keyboard.
+ */
+async function paramsStep(deps: FlowDeps, flows: FlowStore, flow: Flow): Promise<Reply> {
+  const presets = await livePresets(deps);
+  const want = flow.data.template?.preset;
+  const preset = want ? presets.find((p) => p.id === want) : undefined;
+  if (preset) {
+    flows.advance('landing', { model: preset.model, effort: preset.effort, review: preset.review });
+    return {
+      html: `<b>${escapeHtml(flow.data.title ?? '')}</b>\nPreset <b>${escapeHtml(preset.label)}</b> (from the template).\n\n${landingPrompt()}`,
+      keyboard: landingKeyboard(flows.seq()),
+    };
+  }
+  return { html: paramsPrompt(flow.data.title ?? ''), keyboard: presetKeyboard(flows.seq(), presets) };
+}
+
+/** Where /new goes once the repo (and template, if any) is known. */
+async function afterTemplate(deps: FlowDeps, flows: FlowStore, flow: Flow, repoName: string): Promise<Reply> {
+  const tpl = flow.data.template ?? null;
+  // A seeded title (free text → "create a task") skips the text steps: the
+  // template's pattern, skeleton and definition of done are applied as-is.
+  if (flow.data.title) {
+    const next = flows.advance('preset', {
+      title: applyTitlePattern(tpl?.title ?? '', flow.data.title).slice(0, TITLE_MAX),
+      description: tpl ? applyDescriptionSkeleton(tpl.description, flow.data.description ?? '') || null : flow.data.description,
+      acceptance: tpl?.acceptance.trim() || null,
+    });
+    return paramsStep(deps, flows, next ?? flow);
+  }
+  flows.advance('title');
+  const pattern = tpl?.title.trim();
+  return {
+    html:
+      `Repo <b>${escapeHtml(repoName)}</b>. What is the task? Send the title as one message.` +
+      (pattern ? `\n<i>Title pattern: ${escapeHtml(pattern.includes('{}') ? pattern : `${pattern} {}`)}</i>` : ''),
+    keyboard: { inline_keyboard: [CANCEL_ROW] },
+  };
 }
 
 function paramsPrompt(title: string): string {
@@ -587,33 +685,45 @@ export async function handleFlowButton(deps: FlowDeps, flows: FlowStore, b: Flow
       );
       return deliver({ html: `${r.ok ? '🧩' : '⚠'} ${escapeHtml(r.text)}` }, r.ok ? 'Analysing' : 'Failed', r.ok);
     }
-    // /new: a seeded title (free text → "create a task") skips straight ahead.
-    // `startNew` always writes a `description` key when seeded — `splitText`
-    // returns `string | null`, never undefined — so a seeded flow goes to the
-    // params step and an unseeded one never reaches here with a title.
-    if (flow.data.title) {
-      const presets = await livePresets(deps);
-      flows.advance('preset', { repoId: repo.id });
-      return deliver({ html: paramsPrompt(flow.data.title), keyboard: presetKeyboard(flows.seq(), presets) });
+    // /new: a content template first when any are saved (docs/inbox.md §
+    // Templates). A seeded title (free text → "create a task") then skips
+    // straight to the params step; `startNew` always writes a `description`
+    // key when seeded — `splitText` returns `string | null`, never undefined.
+    const templates = await liveTemplates(deps);
+    if (templates.length) {
+      flows.advance('tpl', { repoId: repo.id });
+      return deliver({
+        html: `Repo <b>${escapeHtml(repo.name)}</b>. Start from a template?`,
+        keyboard: templateKeyboard(flows.seq(), templates),
+      });
     }
-    flows.advance('title', { repoId: repo.id });
-    return deliver({
-      html: `Repo <b>${escapeHtml(repo.name)}</b>. What is the task? Send the title as one message.`,
-      keyboard: { inline_keyboard: [CANCEL_ROW] },
-    });
+    const next = flows.advance('repo', { repoId: repo.id, template: null });
+    return deliver(await afterTemplate(deps, flows, next ?? flow, repo.name));
+  }
+
+  if (b.step === 'tpl') {
+    if (!expects('new', 'tpl')) return expired();
+    // Resolved at press time: a template deleted since the keyboard was drawn is refused.
+    const template = b.value === 'none' ? null : ((await liveTemplates(deps)).find((t) => t.id === b.value) ?? null);
+    if (b.value !== 'none' && !template) {
+      return deliver({ html: '⚠ Unknown template — it may have been deleted on the Config page.' }, 'Unknown template', false);
+    }
+    const repo = flow.data.repoId ? await deps.storage.getRepo(flow.data.repoId) : null;
+    const next = flows.advance('tpl', { template });
+    return deliver(await afterTemplate(deps, flows, next ?? flow, repo?.name ?? '?'));
   }
 
   if (b.step === 'desc') {
     if (!expects('new', 'desc')) return expired();
-    flows.advance('accept', { description: null });
-    return deliver({ html: ACCEPT_PROMPT, keyboard: skipKeyboard(flows.seq(), 'accept') });
+    const tpl = flow.data.template;
+    flows.advance('accept', { description: tpl?.description.trim() || null });
+    return deliver(acceptPrompt(flows, tpl));
   }
 
   if (b.step === 'accept') {
     if (!expects('new', 'accept')) return expired();
-    const presets = await livePresets(deps);
-    flows.advance('preset', { acceptance: null });
-    return deliver({ html: paramsPrompt(flow.data.title ?? ''), keyboard: presetKeyboard(flows.seq(), presets) });
+    const next = flows.advance('preset', { acceptance: flow.data.template?.acceptance.trim() || null });
+    return deliver(await paramsStep(deps, flows, next ?? flow));
   }
 
   if (b.step === 'preset') {
@@ -747,6 +857,10 @@ function summary(d: FlowData, landing: LandingTier | null): string {
     `review: <code>${d.review === null || d.review === undefined ? 'default' : d.review ? 'on' : 'off'}</code>` +
       (d.review === false ? '' : ` · reviewer: <code>${escapeHtml(d.reviewModel ?? 'default')}</code>`) +
       ` · landing: <code>${escapeHtml(landing ?? 'repo default')}</code>`,
+    d.template
+      ? `template: <b>${escapeHtml(d.template.name)}</b>` +
+        (d.template.checks == null ? '' : ` · checks: <code>${escapeHtml(d.template.checks.join(', ') || 'none')}</code>`)
+      : '',
     ``,
     `On create:`,
   ].join('\n');
@@ -772,12 +886,19 @@ async function finishNew(deps: FlowDeps, flows: FlowStore, flow: Flow, onCreate:
   const d = flow.data;
   flows.clear();
   const actionDeps = { storage: deps.storage, orchestrator: deps.orchestrator };
+  // a template's checks are names, and names belong to a repo: keep the ones it has
+  let checks: string[] | null = null;
+  if (d.template && d.repoId) {
+    const names = (await deps.storage.listCommands(d.repoId)).filter((c) => c.isCheck).map((c) => c.name);
+    checks = templateChecksFor(d.template, names);
+  }
   const task = await createTask(
     actionDeps,
     {
       title: d.title ?? 'Untitled',
       description: d.description ?? null,
       acceptance: d.acceptance ?? null,
+      checks,
       repoId: d.repoId ?? null,
       status: 'draft',
       model: d.model ?? null,

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { DEFAULT_SETTINGS, EFFORT_LEVELS, MODEL_OPTIONS, type AppSettings } from '@tm/shared';
+import { DEFAULT_SETTINGS, EFFORT_LEVELS, MODEL_OPTIONS, taskPresets, type AppSettings } from '@tm/shared';
 import { api } from '../api.ts';
 import { AppearanceSettings } from '../components/AppearanceSettings.tsx';
 import { PresetEditor } from '../components/PresetEditor.tsx';
+import { TemplateEditor } from '../components/TemplateEditor.tsx';
 import { PushSettings } from '../components/PushSettings.tsx';
 import { useApp } from '../state.tsx';
 
@@ -790,6 +791,19 @@ export function ConfigPage() {
         <PresetEditor
           value={cfg['presets.custom'] ?? DEFAULT_SETTINGS['presets.custom']}
           onChange={(v) => set('presets.custom', v)}
+        />
+      </div>
+
+      <div className="panel cfg-group">
+        <h3>Templates</h3>
+        <div className="hint" style={{ marginBottom: 6 }}>
+          task content — title pattern, description skeleton, definition of done, checks and a preset — picked on the
+          new-task form and in Telegram's /new (docs/inbox.md § Templates)
+        </div>
+        <TemplateEditor
+          value={cfg['task.templates'] ?? DEFAULT_SETTINGS['task.templates']}
+          onChange={(v) => set('task.templates', v)}
+          presets={taskPresets({ 'presets.custom': cfg['presets.custom'] ?? [] })}
         />
       </div>
 

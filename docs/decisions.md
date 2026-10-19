@@ -1,5 +1,19 @@
 # Decision log
 
+- **2026-10-19 — Inbox, bulk actions and task templates (`docs/inbox.md`)**: autonomy part 5 of 6 (proposal §9). Part 5 makes the human gates left after parts 1–4 fast to clear.
+  - **One list, defined once.** `buildInbox` is a pure function in shared. The SPA runs it over its live store, with no route and no polling. Telegram's existing 📥 board view was rewritten to run the same function over storage, instead of keeping its own ordering. Consequences:
+    - Telegram's order changed to the proposal's: failed now comes before blocked.
+    - A review task whose verify round is still open (checking / auto-review / fixing) left the list: it is the machine's, not the human's.
+    - Needs-attention runs and proposed feature plans stayed in, so neither surface lost anything.
+  - **"How much it unblocks"** is the kind order, then a counted `unblocks` (later open phases of the task's feature plus blocked split ancestors), then a ready review first, then oldest first.
+  - **Diff stat without a second git read.** The rejected alternative was an on-demand route calling `workerDiff`, which runs `git add -N` in a checkout another task may be working in. Instead the stat is counted off the diff text the review round already read and kept on the round (`ReviewRound.diffStat`). A task that was never reviewed shows none.
+  - **Bulk is one route over `task-actions.ts`.** It requires `Origin`, a refusal is that id's result and never the batch's, and ids run in the given order (tick order on the board, which is the custom queue's FIFO). Cancel confirms with a second press, never `confirm()`.
+  - **Templates are a setting** (`task.templates`), not a table, like `presets.custom`. A template names a preset instead of carrying model/effort/review, so presets stay the one place for those.
+    - The title pattern uses a `{}` slot, and without one it is a prefix. It is applied to what was typed, on both surfaces, so the form's Title field never holds half a pattern.
+    - Checks are names, and names are per repo: a template whose names a repo lacks entirely runs all of that repo's checks, never none.
+  - **On a phone the Inbox chip replaces the question chip** (the bar holds four capsules), and the Inbox is a two-high Sheet stack: the list, then the item.
+  - **Verified**: see `docs/inbox.md` § Verification.
+
 - **2026-10-19 — Landing tiers replace `orchestrator.autoComplete`: `supervised` / `on-green` / `auto-publish`, per repo with a per-task override (`docs/design.md` § Landing tiers, `docs/publish.md`)**: autonomy part 4 of 6. What happens after a clean verify round is now a property of the repo (`tm_repos.landing`, default `supervised`) that a task may override (`tm_tasks.landing`, null = the repo's), resolved by `effectiveLanding(task, repo)`. `on-green` lands `review → done` on its own when the checks are green and the review is clean; `auto-publish` runs the publish turn on the same gate.
 
   **Chosen.**

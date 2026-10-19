@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { UsageSnapshot, UsageWindow } from '@tm/shared';
 import { NavLink } from 'react-router-dom';
 import { api } from '../api.ts';
@@ -7,7 +7,8 @@ import { useApp } from '../state.tsx';
 import { CommandsLauncher } from './Commands.tsx';
 import { EmulatorLauncher } from './Emulator.tsx';
 import { Sheet } from './Sheet.tsx';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { InboxChip, InboxSheet } from './Inbox.tsx';
 import {
   IconBoard,
   IconBook,
@@ -15,6 +16,7 @@ import {
   IconChat,
   IconConfig,
   IconFeature,
+  IconInbox,
   IconMoon,
   IconMore,
   IconQueue,
@@ -335,6 +337,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: <IconQueue />, primary: true },
   { to: '/board', label: 'Board', icon: <IconBoard />, primary: true },
+  { to: '/inbox', label: 'Inbox', icon: <IconInbox /> },
   { to: '/queue', label: 'Queue', icon: <IconTerminal />, primary: true },
   { to: '/features', label: 'Features', icon: <IconFeature />, primary: true },
   { to: '/chat', label: 'Chat', icon: <IconChat /> },
@@ -464,14 +467,29 @@ function TabBar({ onMore, moreOpen }: { onMore: () => void; moreOpen: boolean })
   );
 }
 
-export function Layout({ children, onOpenTerminal }: { children: ReactNode; onOpenTerminal: (runId: string) => void }) {
+export function Layout({
+  children,
+  onOpenTerminal,
+  onOpenTask,
+}: {
+  children: ReactNode;
+  onOpenTerminal: (runId: string) => void;
+  onOpenTask: (taskId: string) => void;
+}) {
   const mobile = useIsMobile();
   const nav = useNav();
   const [moreOpen, setMoreOpen] = useState(false);
+  // the phone's Inbox sheet stack, opened from the header chip (docs/inbox.md)
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const navigate = useNavigate();
+  const inboxNav = useMemo(() => ({ onOpenTask, onOpenTerminal }), [onOpenTask, onOpenTerminal]);
   const { pathname } = useLocation();
   // A sheet left open across a breakpoint change or a navigation would sit over
   // a layout that no longer has a tab bar under it.
-  useEffect(() => setMoreOpen(false), [mobile, pathname]);
+  useEffect(() => {
+    setMoreOpen(false);
+    setInboxOpen(false);
+  }, [mobile, pathname]);
   // Glass's row cascade runs only while a section is entering (glass.css § motion):
   // a reorder moves rows, and a moved row would replay an always-on animation.
   const mainRef = useRef<HTMLElement>(null);
@@ -511,7 +529,10 @@ export function Layout({ children, onOpenTerminal }: { children: ReactNode; onOp
         )}
         <OrchestratorSwitch />
         <RunCount />
-        <QuestionChip />
+        {/* A phone's bar holds four capsules: there the Inbox chip stands in
+            for the question chip (questions head the Inbox). */}
+        {!mobile && <QuestionChip />}
+        <InboxChip compact={mobile} onClick={() => (mobile ? setInboxOpen(true) : navigate('/inbox'))} />
         {!mobile && <UsagePill />}
         <span className="spacer" />
         {mobile ? (
@@ -538,6 +559,7 @@ export function Layout({ children, onOpenTerminal }: { children: ReactNode; onOp
       </main>
       {mobile && <TabBar moreOpen={moreOpen} onMore={() => setMoreOpen((v) => !v)} />}
       {mobile && moreOpen && <MoreSheet onClose={() => setMoreOpen(false)} onOpenTerminal={onOpenTerminal} />}
+      {mobile && inboxOpen && <InboxSheet nav={inboxNav} onClose={() => setInboxOpen(false)} />}
     </div>
   );
 }

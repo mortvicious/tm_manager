@@ -329,6 +329,19 @@ export const COMMANDS: BotCommand[] = [
     },
   },
   {
+    command: 'inbox',
+    description: 'Everything waiting on you — /inbox [repo]',
+    async handler(ctx) {
+      // The board's Inbox view: the shared `buildInbox` list (docs/inbox.md),
+      // one row per item with its action-codec buttons, redrawn in place.
+      const raw = ctx.args.trim();
+      if (!raw) return renderBoard(boardDeps(ctx), INBOX);
+      const repo = await resolveRepo(ctx.storage, raw);
+      if (!repo.ok) return repo.error;
+      return renderBoard(boardDeps(ctx), { ...INBOX, repo: short(repo.value.id) });
+    },
+  },
+  {
     command: 'now',
     description: 'What the agents are doing right now',
     async handler(ctx) {

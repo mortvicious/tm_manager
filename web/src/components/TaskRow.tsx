@@ -62,6 +62,7 @@ export function TaskRow({
   depth = 0,
   grip,
   dropClass,
+  select,
   children,
 }: {
   task: Task;
@@ -77,6 +78,9 @@ export function TaskRow({
   grip?: HTMLAttributes<HTMLElement>;
   /** drop indicator while a drag hovers this row (`drop-before`, `dragging`…) */
   dropClass?: string;
+  /** board multi-select (docs/inbox.md § Bulk actions): a click toggles the
+   *  row instead of opening it, and a checkbox leads the row */
+  select?: { on: boolean; toggle: () => void };
   children?: ReactNode;
 }) {
   const { runs, tasks, activity, refresh } = useApp();
@@ -202,8 +206,10 @@ export function TaskRow({
         // on the row, not the title: the meta line below indents by it too
         style={depth > 1 ? ({ '--tm-depth': depth } as CSSProperties) : undefined}
         data-drop-task={grip ? task.id : undefined}
-        onClick={() => onOpenTask(task.id)}
+        onClick={() => (select ? select.toggle() : onOpenTask(task.id))}
+        data-selected={select?.on || undefined}
       >
+        {select && <SelectBox on={select.on} />}
         {grip && (
           <span className="drag-grip" title="Drag: onto a task to group with it, above or below it to reorder" {...grip}>
             <IconGrip />
@@ -322,8 +328,10 @@ export function TaskRow({
     <div
       className={`task-row ${fresh ? 'fresh' : ''} ${dropClass ?? ''}`}
       data-drop-task={grip ? task.id : undefined}
-      onClick={() => onOpenTask(task.id)}
+      onClick={() => (select ? select.toggle() : onOpenTask(task.id))}
+      data-selected={select?.on || undefined}
     >
+      {select && <SelectBox on={select.on} />}
       {grip && (
         <span className="drag-grip" title="Drag: onto a task to group with it, above or below it to reorder" {...grip}>
           <IconGrip />
@@ -396,5 +404,14 @@ export function TaskRow({
         </QuickBtn>
       </span>
     </div>
+  );
+}
+
+/** The multi-select tick: the row itself is the control (its click toggles), so this is the mark. */
+function SelectBox({ on }: { on: boolean }) {
+  return (
+    <span className={`row-select${on ? ' on' : ''}`} role="checkbox" aria-checked={on} aria-label="Select task">
+      {on && <IconCheck />}
+    </span>
   );
 }

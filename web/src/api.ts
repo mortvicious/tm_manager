@@ -2,6 +2,8 @@ import type {
   Anomaly,
   AppSettings,
   AuditEvent,
+  BulkRequest,
+  BulkResponse,
   Chat,
   ChatMessage,
   ChatMode,
@@ -228,6 +230,12 @@ export const api = {
   updateTask: (id: string, b: TaskWrite) =>
     req<Task>('PATCH', `/api/tasks/${id}`, b).then(normalizeTask),
   deleteTask: (id: string) => req<{ ok: true }>('DELETE', `/api/tasks/${id}`),
+  /** Board multi-select (docs/inbox.md § Bulk actions): per-id results, refusals included */
+  bulkTasks: (b: BulkRequest) =>
+    req<BulkResponse>('POST', '/api/tasks/bulk', b).then((r) => ({
+      ...r,
+      results: r.results.map((x) => (x.ok ? { ...x, task: normalizeTask(x.task) } : x)),
+    })),
   /** One board drop / picker choice (docs/grouping.md § Drag and drop) */
   moveTask: (id: string, b: { place: TaskMovePlace; targetId?: string | null }) =>
     req<Task>('POST', `/api/tasks/${id}/move`, b).then(normalizeTask),

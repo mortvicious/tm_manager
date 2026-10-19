@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { checkEvidence } from '../checks.ts';
-import type { Repo, ReviewFinding, ReviewVerdict, Task } from '@tm/shared';
+import type { DiffStat, Repo, ReviewFinding, ReviewVerdict, Task } from '@tm/shared';
 import {
   READ_ONLY_DISALLOWED,
   READ_ONLY_TOOLS,
@@ -271,6 +271,34 @@ export interface WorkerDiff {
   attribution: CommitAttribution;
   /** sha256 of the commit list + `diff`; null when the task changed nothing */
   hash: string | null;
+  /** files / +lines / -lines of `diff` (docs/inbox.md § Review rows) */
+  stat: DiffStat;
+}
+
+/**
+ * Counted off the diff text the reviewer reads, so no second git read: a file
+ * is a distinct `diff --git` path (one touched by a commit AND left
+ * uncommitted counts once), a line is a `+`/`-` line INSIDE a hunk — so the
+ * `+++`/`---` file headers and this module's own `--- committed …` markers
+ * never count, and a removed line that itself began with `--` still does.
+ */
+export function diffStat(diff: string): DiffStat {
+  const files = new Set<string>();
+  let insertions = 0;
+  let deletions = 0;
+  let inHunk = false;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      inHunk = false;
+      const m = / b\/(.*)$/.exec(line);
+      files.add(m ? m[1] : line);
+    } else if (line.startsWith('@@')) inHunk = true;
+    else if (!inHunk) continue;
+    else if (line.startsWith('+')) insertions++;
+    else if (line.startsWith('-')) deletions++;
+    else if (!line.startsWith(' ') && !line.startsWith('\\')) inHunk = false; // a marker or `### commit` line ends it
+  }
+  return { files: files.size, insertions, deletions };
 }
 
 /**
@@ -301,10 +329,12 @@ export async function workerDiff(repo: Repo, scope: ChangeScope): Promise<Worker
     ].join('\n');
   }
   // Commits whose only content is excluded noise changed nothing either.
-  if (!committed.trim() && !uncommitted.trim()) return { diff, commits: list, attribution, hash: null };
+  if (!committed.trim() && !uncommitted.trim()) {
+    return { diff, commits: list, attribution, hash: null, stat: { files: 0, insertions: 0, deletions: 0 } };
+  }
   const hash = createHash('sha256');
   for (const c of list) hash.update(`${c.sha}\n`);
-  return { diff, commits: list, attribution, hash: hash.update(diff).digest('hex') };
+  return { diff, commits: list, attribution, hash: hash.update(diff).digest('hex'), stat: diffStat(diff) };
 }
 
 export interface ReviewResult {

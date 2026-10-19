@@ -535,7 +535,9 @@
 }
 
 [data-design='glass'] .header .qchip,
-[data-design='glass'] .header .qchip:hover {
+[data-design='glass'] .header .qchip:hover,
+[data-design='glass'] .header .ichip.urgent,
+[data-design='glass'] .header .ichip.urgent:hover {
   color: var(--tm-status-attention);
 }
 
@@ -552,7 +554,7 @@
   font-size: var(--tm-text-xs);
 }
 
-[data-design='glass'] .app.mobile .header:has(.qchip) .switch > span:not(.track) {
+[data-design='glass'] .app.mobile .header:has(.qchip, .ichip) .switch > span:not(.track) {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -561,7 +563,7 @@
   white-space: nowrap;
 }
 
-[data-design='glass'] .app.mobile .header:has(.qchip) .switch {
+[data-design='glass'] .app.mobile .header:has(.qchip, .ichip) .switch {
   padding-right: 4px;
 }
 
@@ -1171,4 +1173,31 @@
     opacity: 0;
     transform: translateY(10px);
   }
+}
+
+/* ---------- inbox + board multi-select (docs/inbox.md) ---------- */
+
+/* the selected decision keeps its accent rim over the card's lit one */
+[data-design='glass'] .panel.inbox-item.sel {
+  border-color: var(--tm-accent);
+}
+
+/* the bulk bar floats over the scrolling rows: bar material, like the header's
+   capsules, and it sticks BELOW the floating header (which the rows scroll under) */
+[data-design='glass'] .bulk-bar {
+  top: calc(var(--tm-head-h) + var(--tm-space-2));
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-glass-bar);
+  -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
+}
+
+[data-design='glass'] .app.mobile .bulk-bar {
+  top: calc(var(--tm-head-h) + env(safe-area-inset-top, 0px) + var(--tm-space-2));
+}
+
+[data-design='glass'] .inbox-row:active {
+  background: var(--tm-glass-btn-hover);
 }

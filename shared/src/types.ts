@@ -67,6 +67,13 @@ export interface ReviewFinding {
   detail: string | null;
 }
 
+/** Files touched and lines added/removed by a change — counted off the reviewed diff text. */
+export interface DiffStat {
+  files: number;
+  insertions: number;
+  deletions: number;
+}
+
 /** One adversarial review of a task's diff (docs/design.md § Adversarial review). */
 export interface ReviewRound {
   /** 1-based, in the order the task received them */
@@ -83,6 +90,8 @@ export interface ReviewRound {
   fixRound: number;
   /** sha256 of the diff this round judged */
   diffHash: string | null;
+  /** size of that diff (docs/inbox.md); absent on rounds recorded before it was kept */
+  diffStat?: DiffStat;
   /** set when the reviewer could not run — `verdict` is then `concerns` by convention */
   error: string | null;
   /** who asked for this round with "Review now" (`human` | `telegram`); null/absent
@@ -1126,6 +1135,8 @@ export interface AppSettings {
   'board.groupColors': boolean;
   /** the user's own task presets, after the built-in `TASK_PRESETS` (docs/handbook.md § Quick start, Custom presets) */
   'presets.custom': CustomTaskPreset[];
+  /** task content templates, picked on the new-task form and Telegram /new (docs/inbox.md § Templates) */
+  'task.templates': TaskTemplate[];
   /** run an adversarial review of each worker's change before it lands in review */
   'review.enabled': boolean;
   /** reviewer model; falls back to Opus 5 xhigh when unavailable */
@@ -1289,6 +1300,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'agent.allowedTools': [],
   'board.groupColors': true,
   'presets.custom': [],
+  'task.templates': [],
   'review.enabled': true,
   'review.model': 'claude-fable-5-1',
   'review.maxRounds': 1,
@@ -1986,4 +1998,277 @@ export interface PushMessage {
   /** in-app path the click opens, e.g. `/?task=<id>` */
   url: string;
   kind: PushKind | 'test';
+}
+
+// ---- Inbox (docs/inbox.md) --------------------------------------------------
+
+export type InboxKind = 'question' | 'attention' | 'review' | 'failed' | 'blocked' | 'proposal' | 'feature';
+
+/**
+ * The order the kinds are listed in — by how much one decision unblocks: a
+ * question or a permission prompt holds a LIVE session (its slot and its
+ * repo), a review holds a landing (and any later feature phase), a failure
+ * holds a retry, a blocked split parent its tree; proposals and planned
+ * features are new work nobody waits on yet.
+ */
+export const INBOX_KINDS: InboxKind[] = ['question', 'attention', 'review', 'failed', 'blocked', 'proposal', 'feature'];
+
+/** A `failed` task older than this has been seen and left alone — it drops out of the inbox (the board still lists it). */
+export const INBOX_FAILED_DAYS = 7;
+
+interface InboxBase {
+  /** stable list key: `<kind>:<id>` */
+  key: string;
+  /**
+   * open tasks this decision releases besides the item itself: later-phase
+   * tasks of its feature (the phase gate waits on it) plus blocked split
+   * ancestors (a parent waits on every child). The within-kind sort key.
+   */
+  unblocks: number;
+}
+
+export type InboxItem =
+  | (InboxBase & { kind: 'question'; task: Task; questions: Question[] })
+  | (InboxBase & { kind: 'attention'; task: Task; run: Run })
+  | (InboxBase & {
+      kind: 'review';
+      task: Task;
+      /** `landingReason` — non-null means checks green/none AND review clean/none: one keystroke lands it */
+      ready: string | null;
+    })
+  | (InboxBase & { kind: 'failed'; task: Task })
+  | (InboxBase & { kind: 'blocked'; task: Task; children: { total: number; open: number; failed: number } })
+  | (InboxBase & { kind: 'proposal'; proposal: Proposal; task: Task | null })
+  | (InboxBase & { kind: 'feature'; feature: Feature });
+
+export interface InboxInput {
+  tasks: Task[];
+  /** pending ones are used; others are ignored */
+  questions: Question[];
+  /** live runs; a `running` task's non-idle run flagged needsAttention is an item */
+  runs: Run[];
+  /** pending ones are used */
+  proposals: Proposal[];
+  /** `proposed` ones are used */
+  features: Feature[];
+  now?: number;
+}
+
+/**
+ * Everything waiting on the human, in decision order (docs/inbox.md). Pure and
+ * shared, so the SPA's Inbox page, its header chip and Telegram's `/inbox`
+ * board view list the same items in the same order. A task appears once, under
+ * its most urgent kind. Not in it: a `review` task whose automatic verify round
+ * is still open (`verifyOpen` — the machine is not done with it yet), and a
+ * `waiting` task (background work, nobody's decision).
+ */
+export function buildInbox(input: InboxInput): InboxItem[] {
+  const now = input.now ?? Date.now();
+  const byId = new Map(input.tasks.map((t) => [t.id, t]));
+  const open = (t: Task) => !TERMINAL_TASK_STATUSES.includes(t.status);
+  const unblocks = (t: Task): number => {
+    let n = 0;
+    if (t.featureId != null && t.featurePhase != null) {
+      for (const o of input.tasks) {
+        if (o.featureId === t.featureId && (o.featurePhase ?? 0) > t.featurePhase && open(o)) n++;
+      }
+    }
+    for (const id of groupAncestors(t)) if (byId.get(id)?.status === 'blocked') n++;
+    return n;
+  };
+  const oldest = (a: Task, b: Task) => a.updatedAt.localeCompare(b.updatedAt);
+  const byWeight = (a: { unblocks: number; at: string }, b: { unblocks: number; at: string }) =>
+    b.unblocks - a.unblocks || a.at.localeCompare(b.at);
+  const seen = new Set<string>();
+  const out: InboxItem[] = [];
+
+  // questions — one item per task, however many it asks
+  const asked = new Map<string, Question[]>();
+  for (const q of input.questions) {
+    if (q.status !== 'pending' || !byId.has(q.taskId)) continue;
+    asked.set(q.taskId, [...(asked.get(q.taskId) ?? []), q]);
+  }
+  const questions = [...asked].map(([taskId, qs]) => {
+    const task = byId.get(taskId)!;
+    const sorted = [...qs].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return { task, qs: sorted, unblocks: unblocks(task), at: sorted[0].createdAt };
+  });
+  for (const q of questions.sort(byWeight)) {
+    seen.add(q.task.id);
+    out.push({ kind: 'question', key: `question:${q.task.id}`, task: q.task, questions: q.qs, unblocks: q.unblocks });
+  }
+
+  // permission prompts / needs-attention on a live worker
+  const attention: { task: Task; run: Run; unblocks: number; at: string }[] = [];
+  for (const r of input.runs) {
+    if (r.status !== 'running' || r.idle || !r.needsAttention || !r.taskId) continue;
+    const task = byId.get(r.taskId);
+    if (!task || task.status !== 'running' || seen.has(task.id)) continue;
+    seen.add(task.id);
+    attention.push({ task, run: r, unblocks: unblocks(task), at: r.startedAt });
+  }
+  for (const a of attention.sort(byWeight)) {
+    out.push({ kind: 'attention', key: `attention:${a.task.id}`, task: a.task, run: a.run, unblocks: a.unblocks });
+  }
+
+  const taskKind = <K extends 'review' | 'failed' | 'blocked'>(
+    kind: K,
+    match: (t: Task) => boolean,
+    extra: (t: Task) => Omit<Extract<InboxItem, { kind: K }>, 'kind' | 'key' | 'task' | 'unblocks'>,
+    first?: (t: Task) => boolean,
+  ) => {
+    const rows = input.tasks
+      .filter((t) => !seen.has(t.id) && match(t))
+      .map((t) => ({ t, unblocks: unblocks(t), at: t.updatedAt }))
+      .sort(
+        (a, b) =>
+          b.unblocks - a.unblocks || (first ? Number(first(b.t)) - Number(first(a.t)) : 0) || oldest(a.t, b.t),
+      );
+    for (const r of rows) {
+      seen.add(r.t.id);
+      out.push({ kind, key: `${kind}:${r.t.id}`, task: r.t, unblocks: r.unblocks, ...extra(r.t) } as InboxItem);
+    }
+  };
+
+  // review — a ready one (one keystroke lands it) ahead of one that needs reading
+  taskKind(
+    'review',
+    (t) => t.status === 'review' && !verifyOpen(t),
+    (t) => ({ ready: landingReason(t) }),
+    (t) => landingReason(t) !== null,
+  );
+  // recent failures
+  const since = new Date(now - INBOX_FAILED_DAYS * 86_400_000).toISOString();
+  taskKind('failed', (t) => t.status === 'failed' && t.updatedAt >= since, () => ({}));
+  // blocked split parents
+  taskKind(
+    'blocked',
+    (t) => t.status === 'blocked',
+    (t) => {
+      const kids = input.tasks.filter((c) => c.parentId === t.id);
+      return {
+        children: {
+          total: kids.length,
+          open: kids.filter(open).length,
+          failed: kids.filter((c) => c.status === 'failed').length,
+        },
+      };
+    },
+  );
+
+  // proposals — oldest first
+  for (const p of [...input.proposals].filter((p) => p.status === 'pending').sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+    out.push({ kind: 'proposal', key: `proposal:${p.id}`, proposal: p, task: p.taskId ? byId.get(p.taskId) ?? null : null, unblocks: 0 });
+  }
+  // planned features waiting for approval
+  for (const f of [...input.features].filter((f) => f.status === 'proposed').sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+    out.push({ kind: 'feature', key: `feature:${f.id}`, feature: f, unblocks: 0 });
+  }
+  return out;
+}
+
+// ---- Bulk actions (docs/inbox.md § Bulk actions) ----------------------------
+
+export type BulkAction = 'enqueue' | 'queue' | 'cancel' | 'complete' | 'edit';
+export const BULK_ACTIONS: BulkAction[] = ['enqueue', 'queue', 'cancel', 'complete', 'edit'];
+/** ids per bulk call */
+export const BULK_MAX = 100;
+
+export interface BulkRequest {
+  action: BulkAction;
+  ids: string[];
+  /** `edit` only: the per-task overrides it sets (null = back to the default) */
+  patch?: { model?: string | null; effort?: EffortLevel | null };
+}
+
+/** One id's outcome; a refusal is reported here, never fatal to the batch. */
+export type BulkResult = { id: string; ok: true; task: Task } | { id: string; ok: false; code: number; error: string };
+
+export interface BulkResponse {
+  action: BulkAction;
+  results: BulkResult[];
+  ok: number;
+  failed: number;
+}
+
+// ---- Task content templates (docs/inbox.md § Templates) ---------------------
+
+/**
+ * Reusable task CONTENT ("Bug fix", "UI change + screenshot"), stored as the
+ * `task.templates` setting. A template fills the form; it is never a live link
+ * — editing it later changes no task. Model/effort/review stay the job of
+ * presets: a template only names one (`preset`).
+ */
+export interface TaskTemplate {
+  /** `TASK_TEMPLATE_ID_RE` — short enough for a Telegram `w:` callback */
+  id: string;
+  name: string;
+  /** title pattern: `{}` is where the typed title goes; without `{}` it is a prefix */
+  title: string;
+  /** description skeleton ('' = none) */
+  description: string;
+  /** definition of done ('' = none) */
+  acceptance: string;
+  /** repo check names to run; null = the repo's default (all) */
+  checks: string[] | null;
+  /** a `TaskPreset` id (built-in or custom); null = none */
+  preset: string | null;
+}
+
+export const TASK_TEMPLATE_MAX = 20;
+export const TASK_TEMPLATE_NAME_MAX = 32;
+export const TASK_TEMPLATE_ID_RE = /^t-[a-z0-9]{4,16}$/;
+
+/** The title a template's pattern makes of what was typed. Empty typed text leaves the pattern's fixed part. */
+export function applyTitlePattern(pattern: string, typed: string): string {
+  const t = typed.trim();
+  if (!pattern.trim()) return t;
+  if (pattern.includes('{}')) return pattern.replace('{}', t).replace(/\s+/g, ' ').trim();
+  return t ? `${pattern.trimEnd()} ${t}` : pattern.trim();
+}
+
+/** The description a skeleton makes of what was typed: the typed text on top, the skeleton below it. */
+export function applyDescriptionSkeleton(skeleton: string, typed: string): string {
+  const t = typed.trim();
+  const s = skeleton.trim();
+  return [t, s].filter(Boolean).join('\n\n');
+}
+
+/**
+ * The checks a template selects IN ONE REPO: check names belong to a repo, so
+ * only the names that repo actually has are kept. A template whose names match
+ * none of the repo's checks falls back to null (all of them) — a template
+ * written for another repo must never silently switch the checks off.
+ */
+export function templateChecksFor(template: Pick<TaskTemplate, 'checks'>, repoCheckNames: string[]): string[] | null {
+  if (template.checks == null) return null;
+  if (!template.checks.length) return [];
+  const kept = template.checks.filter((n) => repoCheckNames.includes(n));
+  return kept.length ? kept : null;
+}
+
+/** Why a `task.templates` list cannot be saved, or null. Shared by the settings route and the Config page. */
+export function taskTemplateProblem(list: TaskTemplate[], presets: TaskPreset[] = TASK_PRESETS): string | null {
+  if (list.length > TASK_TEMPLATE_MAX) return `at most ${TASK_TEMPLATE_MAX} templates`;
+  const ids = new Set<string>();
+  const names = new Set<string>();
+  for (const t of list) {
+    const name = t.name.trim();
+    const label = name || '(unnamed)';
+    if (!TASK_TEMPLATE_ID_RE.test(t.id)) return `template "${label}": invalid id`;
+    if (ids.has(t.id)) return `template "${label}": duplicate id`;
+    ids.add(t.id);
+    if (!name) return 'every template needs a name';
+    if (name.length > TASK_TEMPLATE_NAME_MAX) return `template "${name}": name is over ${TASK_TEMPLATE_NAME_MAX} characters`;
+    if (names.has(name.toLowerCase())) return `template "${name}": the name is already used`;
+    names.add(name.toLowerCase());
+    if (t.title.length > 200) return `template "${name}": title pattern is over 200 characters`;
+    if ((t.title.match(/\{\}/g) ?? []).length > 1) return `template "${name}": the title pattern may hold one {} slot`;
+    if (t.description.length > 8000) return `template "${name}": description is over 8000 characters`;
+    if (t.acceptance.length > 4000) return `template "${name}": definition of done is over 4000 characters`;
+    if (t.checks != null && (!Array.isArray(t.checks) || t.checks.some((c) => typeof c !== 'string' || !c.trim())))
+      return `template "${name}": invalid checks`;
+    if (t.preset != null && !presets.some((p) => p.id === t.preset)) return `template "${name}": unknown preset`;
+  }
+  return null;
 }

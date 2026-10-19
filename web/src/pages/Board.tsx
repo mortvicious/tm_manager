@@ -2,14 +2,18 @@ import { Fragment, useCallback, useEffect, useMemo, useState, type CSSProperties
 import {
   EFFORT_LEVELS,
   MODEL_OPTIONS,
+  applyDescriptionSkeleton,
+  applyTitlePattern,
   effectiveLanding,
   groupColorSlot,
   groupLabel,
   matchTaskPreset,
+  templateChecksFor,
   type EffortLevel,
   type LandingTier,
   type Task,
   type TaskStatus,
+  type TaskTemplate,
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
@@ -24,6 +28,7 @@ import {
   type SearchToken,
 } from '../boardSearch.ts';
 import { SearchChips, SearchPanel, SearchTrigger, useSearchHotkey } from '../components/BoardSearch.tsx';
+import { BulkBar } from '../components/BulkBar.tsx';
 import { DispatchStrip } from '../components/DispatchStrip.tsx';
 import { DoneFields } from '../components/DoneFields.tsx';
 import { GroupHead } from '../components/GroupHead.tsx';
@@ -106,7 +111,12 @@ const START_MODES: { id: StartMode; label: string; hint: string; title: string }
 ];
 
 function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mobile?: boolean }) {
-  const { repos, settings } = useApp();
+  const { repos, settings, commands } = useApp();
+  const presets = useTaskPresets();
+  const templates = settings?.['task.templates'] ?? [];
+  // the content template picked (docs/inbox.md § Templates) — a form fill, never a link
+  const [templateId, setTemplateId] = useState('');
+  const template = templates.find((t) => t.id === templateId) ?? null;
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -145,6 +155,29 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
   // created and then 409 on the second call, so the control is not offered.
   const canStart = !!repoId;
   const effectiveStart: StartMode = canStart ? start : 'draft';
+  const checkNames = (repo: string) => commands.filter((c) => c.repoId === repo && c.isCheck).map((c) => c.name);
+  // the title the pattern makes of what is typed — what Create files
+  const finalTitle = applyTitlePattern(template?.title ?? '', title);
+
+  // A template fills the fields; what the previous template put there (and
+  // nobody edited since) is replaced rather than stacked under the new one.
+  const pickTemplate = (next: TaskTemplate | null) => {
+    setTemplateId(next?.id ?? '');
+    if (!next) return;
+    const prevDesc = template?.description.trim() ?? '';
+    const base = prevDesc && description.trim() === prevDesc ? '' : description;
+    setDescription(applyDescriptionSkeleton(next.description, base));
+    if (next.acceptance.trim() && (!acceptance.trim() || acceptance.trim() === template?.acceptance.trim())) {
+      setAcceptance(next.acceptance.trim());
+    }
+    if (repoId) setChecks(templateChecksFor(next, checkNames(repoId)));
+    const preset = next.preset ? presets.find((p) => p.id === next.preset) : undefined;
+    if (preset) {
+      setModel(preset.model);
+      setEffort(preset.effort);
+      setReview(reviewChoiceOf(preset.review));
+    }
+  };
 
   const submit = async () => {
     // Two round-trips now, so a double click is a real duplicate risk.
@@ -154,7 +187,7 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
     let task: Task;
     try {
       task = await api.createTask({
-        title,
+        title: finalTitle,
         description: description || null,
         acceptance: acceptance.trim() || null,
         // a pick only means something in the repo it was made in
@@ -181,6 +214,7 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
     setDescription('');
     setAcceptance('');
     setChecks(null);
+    setTemplateId('');
     setParentId('');
     setModel('');
     setEffort('');
@@ -210,9 +244,43 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
   const form = (
     <div className="panel new-task-panel" style={{ padding: 14, maxWidth: 640 }}>
       <div className="form-grid">
+        {templates.length > 0 && (
+          <div className="wide">
+            <label className="label">Template</label>
+            <div className="template-row">
+              <button
+                type="button"
+                className={`btn pick-btn${!template ? ' on' : ''}`}
+                aria-pressed={!template}
+                onClick={() => pickTemplate(null)}
+              >
+                none
+              </button>
+              {templates.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={`btn pick-btn${template?.id === t.id ? ' on' : ''}`}
+                  aria-pressed={template?.id === t.id}
+                  title={[t.title && `title: ${t.title}`, t.preset && `preset: ${t.preset}`].filter(Boolean).join(' · ') || undefined}
+                  onClick={() => pickTemplate(t)}
+                >
+                  {t.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="wide">
           <label className="label">Title</label>
-          <input className="field" autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />
+          <input
+            className="field"
+            autoFocus
+            placeholder={template?.title.trim() ? `pattern: ${template.title.includes('{}') ? template.title : `${template.title.trim()} {}`}` : undefined}
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+          {template?.title.trim() && title.trim() && <div className="hint">Files as: {finalTitle}</div>}
         </div>
         <div className="wide">
           <label className="label">Description</label>
@@ -226,7 +294,8 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
             onChange={(e) => {
               setRepoId(e.target.value);
               // check names belong to a repo: another repo starts from "all"
-              setChecks(null);
+              // (or from the template's pick, mapped onto THAT repo's checks)
+              setChecks(template && e.target.value ? templateChecksFor(template, checkNames(e.target.value)) : null);
               // never leave "Run now" lit on a task that has nowhere to run
               if (!e.target.value) setStart('draft');
             }}
@@ -535,6 +604,22 @@ export function BoardPage({
   const mobile = useIsMobile();
   const presets = useTaskPresets();
   const [searchOpen, setSearchOpen] = useState(false);
+  // board multi-select (docs/inbox.md § Bulk actions); insertion order = tick order
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const toggleSelected = (id: string) =>
+    setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  const exitSelect = () => {
+    setSelecting(false);
+    setSelected([]);
+  };
+  // a deleted task leaves the selection
+  useEffect(() => {
+    setSelected((cur) => {
+      const next = cur.filter((id) => tasks.some((t) => t.id === id));
+      return next.length === cur.length ? cur : next;
+    });
+  }, [tasks]);
   const now = useNow();
   const setPref = <K extends keyof Prefs>(k: K, v: Prefs[K]) => setPrefs((p) => ({ ...p, [k]: v }));
   const setGroupBy = (v: GroupBy) => setPref('groupBy', v);
@@ -959,9 +1044,11 @@ export function BoardPage({
         onOpenTerminal={onOpenTerminal}
         fresh={fresh}
         depth={depth}
-        // `recent` is a flat lookup list — nothing to drop beside or into there
-        grip={ctx === 'recent' ? undefined : gripProps(t)}
-        dropClass={ctx === 'recent' ? undefined : dropClass(t.id, 'task')}
+        // `recent` is a flat lookup list — nothing to drop beside or into there;
+        // while selecting, a press ticks the row, so nothing drags either
+        grip={ctx === 'recent' || selecting ? undefined : gripProps(t)}
+        dropClass={ctx === 'recent' || selecting ? undefined : dropClass(t.id, 'task')}
+        select={selecting ? { on: selected.includes(t.id), toggle: () => toggleSelected(t.id) } : undefined}
       >
         {!focus && rowChips(t, ctx, g, pendingOut)}
         <StatusBadge
@@ -1128,6 +1215,18 @@ export function BoardPage({
     />
   );
 
+  const selectToggle = (
+    <button
+      type="button"
+      className={`btn ghost select-toggle${selecting ? ' on' : ''}`}
+      aria-pressed={selecting}
+      title="Select several tasks and act on them at once"
+      onClick={() => (selecting ? exitSelect() : setSelecting(true))}
+    >
+      {selecting ? 'Selecting' : 'Select'}
+    </button>
+  );
+
   return (
     <div className="board">
       {mobile ? (
@@ -1136,6 +1235,7 @@ export function BoardPage({
           <h1 className="page-title glass-only">Board</h1>
           <div className="board-toolbar">
             {trigger}
+            {selectToggle}
             <NewTaskForm onCreated={refresh} mobile />
           </div>
           {chips}
@@ -1146,10 +1246,14 @@ export function BoardPage({
             Board
             <span style={{ flex: 1 }} />
             {trigger}
+            {selectToggle}
             {focusToggle}
           </h1>
           {chips}
         </>
+      )}
+      {selecting && (
+        <BulkBar ids={selected} tasks={tasks} onSettled={setSelected} onExit={exitSelect} />
       )}
       {searchOpen && (
         <SearchPanel

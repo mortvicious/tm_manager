@@ -8,7 +8,12 @@ import {
   CUSTOM_PRESET_MAX,
   CUSTOM_PRESET_MODEL_RE,
   GROUP_COLOR_COUNT,
+  TASK_TEMPLATE_ID_RE,
+  TASK_TEMPLATE_MAX,
+  TASK_TEMPLATE_NAME_MAX,
   customPresetProblem,
+  taskPresets,
+  taskTemplateProblem,
   type AppSettings,
 } from '@tm/shared';
 import { serverRoot } from '../config.ts';
@@ -36,6 +41,25 @@ const customPresetsSchema = z
     if (problem) ctx.addIssue({ code: 'custom', message: problem });
   });
 
+// Shape per entry; the list rules (unique ids/names, a preset that exists)
+// are `taskTemplateProblem`, run in the PUT handler because a template's preset
+// may be a custom one saved in the same body (docs/inbox.md § Templates).
+const taskTemplatesSchema = z
+  .array(
+    z
+      .object({
+        id: z.string().regex(TASK_TEMPLATE_ID_RE),
+        name: z.string().trim().min(1).max(TASK_TEMPLATE_NAME_MAX),
+        title: z.string().max(200),
+        description: z.string().max(8000),
+        acceptance: z.string().max(4000),
+        checks: z.array(z.string().trim().min(1).max(80)).max(30).nullable(),
+        preset: z.string().min(1).max(40).nullable(),
+      })
+      .strict(),
+  )
+  .max(TASK_TEMPLATE_MAX);
+
 const settingsSchema = z
   .object({
     'orchestrator.enabled': z.boolean(),
@@ -49,6 +73,7 @@ const settingsSchema = z
     'agent.maxSpawnDepth': z.number().int().min(1).max(50),
     'board.groupColors': z.boolean(),
     'presets.custom': customPresetsSchema,
+    'task.templates': taskTemplatesSchema,
     'review.enabled': z.boolean(),
     'review.model': z.string().min(1),
     'review.maxRounds': z.number().int().min(0).max(5),
@@ -113,9 +138,14 @@ const settingsSchema = z
 export function registerSettingsRoutes(app: FastifyInstance, storage: Storage) {
   app.get('/api/config', async () => storage.getSettings());
 
-  app.put('/api/config', async (req) => {
+  app.put('/api/config', async (req, reply) => {
     // Whole body validated before any write — no half-applied configs.
     const body = settingsSchema.parse(req.body);
+    if (body['task.templates']) {
+      const custom = body['presets.custom'] ?? (await storage.getSettings())['presets.custom'];
+      const problem = taskTemplateProblem(body['task.templates'], taskPresets({ 'presets.custom': custom }));
+      if (problem) return reply.code(400).send({ error: problem });
+    }
     for (const [key, value] of Object.entries(body)) {
       await storage.setSetting(key as keyof AppSettings, value as never);
     }

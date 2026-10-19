@@ -246,8 +246,22 @@ component.
   cannot hover. It matters most for a disabled action, whose "why not?" used to
   exist only in that tooltip. Disabled dims the label and icon, never the hint.
 - **Glass:** every sheet is Liquid Glass (`docs/glass.md` § Materials).
+- **Stacks.** The Inbox (`docs/inbox.md`) is the one deliberate two-high
+  stack: the header chip opens a tall sheet of rows, and a row opens its own
+  sheet ABOVE it (`zIndex={36}`) with the detail and the actions. A decision
+  closes the item sheet back onto the list (which has already dropped the
+  item); Open / Terminal close the whole stack first so it never shares the
+  screen with the task panel or the drawer. On a phone the Inbox chip stands
+  in for the question chip — the bar holds four capsules.
 
 ## Board
+
+**Select mode** (`docs/inbox.md` § Bulk actions): the toolbar's **Select**
+turns a press on a row into a tick; the tick takes the grip's grid column
+(`.task-row.m.no-grip:has(> .row-select)`, drag is off while selecting) and
+the sticky bulk bar wraps onto two or three lines at phone width. In Glass the
+bar sticks below the floating header, not under it. The toolbar line is
+`[🔍 Search · n] [Select] [+ New]` since.
 
 **Toolbar.** One line replaces the page title, the seven filter selects and the
 New button: `[🔍 Search · n] [+ New]`. That was about 340px of screen, 40% of a
@@ -436,6 +450,13 @@ compact/breakpoint/run change. The reasoning is in `docs/decisions.md`,
   longer to ingest could still see the Enter arrive early.
 
 ## Verification
+
+**Inbox + Select mode (2026-10-19)**: Playwright at 393×852 (touch, iPhone UA,
+`platform = 'iPhone'`), both designs, synthetic tasks injected into the GET
+responses and every write aborted: no horizontal overflow on the header or the
+page with the Inbox chip up; the chip opened the sheet and a row stacked its
+item sheet on top; Select ticked two rows with the tick in its own column.
+See `docs/inbox.md` § Verification.
 
 **Sheets on react-modal-sheet (2026-10-03)**: Playwright (`playwright-core`
 1.63.0, cached chromium-1243) at 393×852, touch, iPhone UA and

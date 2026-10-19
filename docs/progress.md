@@ -659,3 +659,35 @@ concise markdown, grouped by completion date, Russian or English.
   - A browser pass.
   - The Postgres driver.
   - The live server, which was not restarted.
+
+## Inbox, bulk actions, task templates — autonomy 5/6 (2026-10-19, `docs/inbox.md`)
+
+- **Shared**:
+  - `buildInbox` (+ `InboxItem`, `INBOX_KINDS`, `INBOX_FAILED_DAYS`): the one definition of "waiting on the human", ordered by kind, then by what it unblocks.
+  - `DiffStat` and `ReviewRound.diffStat`.
+  - `BulkAction` / `BulkRequest` / `BulkResult` / `BulkResponse`.
+  - `TaskTemplate` + the `task.templates` setting, `applyTitlePattern`, `applyDescriptionSkeleton`, `templateChecksFor`, `taskTemplateProblem`.
+- **Server**:
+  - `workerDiff` returns `stat` (`diffStat()` counted off the reviewed diff text), and every review round stores it.
+  - `POST /api/tasks/bulk` loops the `task-actions.ts` functions per id, requires `Origin`, and reports per-id results.
+  - The settings schema and the PUT validate `task.templates` against the presets (including custom presets saved in the same body).
+  - Telegram:
+    - The board's 📥 view is `buildInbox`. Review rows show the check, review and diff stat clauses; blocked rows show their subtasks line.
+    - New `/inbox [repo]`.
+    - `/new` gets a template step: pattern, skeleton, definition of done, preset skip, checks.
+- **Web**:
+  - The `/inbox` page (j/k/a/r/x/t/o), the `InboxChip` header chip (it replaces the question chip on a phone) and the phone `InboxSheet` stack.
+  - Board **Select** mode with `BulkBar`; `TaskRow` `select` prop.
+  - The template chips in NewTaskForm and **Config → Templates** (`TemplateEditor`).
+  - Classic tokens in `theme.css`, Glass materials in `glass.css`.
+- **Verified**:
+  - `npm run typecheck` and the SPA build (to a scratch outDir).
+  - A curl harness over a copy of the live DB for the bulk and config routes.
+  - A script over the same copy for the helpers, `/inbox` and the `/new` template flow.
+  - Playwright at 1440×900 and 393×852 in both designs, with synthetic tasks and every write blocked.
+  - Details are in `docs/inbox.md` § Verification.
+- **Not exercised**:
+  - The live server, which was not restarted, so the live API has no bulk route yet.
+  - A real reviewer writing `diffStat`.
+  - The bot's real API.
+  - The Postgres driver (no schema change).

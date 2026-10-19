@@ -1,7 +1,16 @@
 import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
-import { GROUP_COLOR_COUNT, LANDING_TIERS, type LandingTier } from '@tm/shared';
+import {
+  BULK_ACTIONS,
+  BULK_MAX,
+  GROUP_COLOR_COUNT,
+  LANDING_TIERS,
+  type BulkAction,
+  type BulkResponse,
+  type BulkResult,
+  type LandingTier,
+} from '@tm/shared';
 import { z } from 'zod';
 import { artifactsRoot } from '../config.ts';
 import { broadcast } from '../events.ts';
@@ -402,5 +411,61 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     const r = await cancelTask(deps(), id, 'human');
     if ('error' in r) return reply.code(r.code).send({ error: r.error });
     return r.task;
+  });
+
+  // Board multi-select (docs/inbox.md § Bulk actions): ONE route that runs the
+  // same task-actions.ts function each single-task route runs, id by id, in
+  // the order given (Add to queue is FIFO by that order). A refusal is that
+  // id's result, never the batch's: the reply is 200 with per-id outcomes.
+  // A human surface only — a worker's curl carries no Origin.
+  const bulkBody = z
+    .object({
+      action: z.enum(BULK_ACTIONS as [BulkAction, ...BulkAction[]]),
+      ids: z.array(z.string().min(1)).min(1).max(BULK_MAX),
+      patch: z
+        .object({
+          model: z.string().min(1).nullable().optional(),
+          effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullable().optional(),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict()
+    .superRefine((b, ctx) => {
+      const keys = Object.keys(b.patch ?? {});
+      if (b.action === 'edit' && !keys.length) ctx.addIssue({ code: 'custom', message: 'edit needs a patch (model and/or effort)' });
+      if (b.action !== 'edit' && b.patch) ctx.addIssue({ code: 'custom', message: 'patch is for the edit action only' });
+    });
+  app.post('/api/tasks/bulk', async (req, reply) => {
+    if (!req.headers.origin) return reply.code(403).send({ error: 'bulk actions are a browser action (Origin required)' });
+    const body = bulkBody.parse(req.body);
+    const run = (id: string) => {
+      switch (body.action) {
+        case 'enqueue':
+          return enqueueTask(deps(), id, ENQUEUE_FROM, 'human');
+        case 'queue':
+          return queueAddTask(deps(), id, 'human');
+        case 'cancel':
+          return cancelTask(deps(), id, 'human');
+        case 'complete':
+          return completeTask(deps(), id, 'human');
+        case 'edit':
+          return editTask(deps(), id, body.patch!, 'human');
+      }
+    };
+    const results: BulkResult[] = [];
+    // a repeated id would run twice and report a confusing 409 the second time
+    for (const id of [...new Set(body.ids)]) {
+      try {
+        const r = await run(id);
+        results.push('error' in r ? { id, ok: false, code: r.code, error: r.error } : { id, ok: true, task: r.task });
+      } catch (e) {
+        req.log.error({ err: e, id, action: body.action }, 'bulk action failed');
+        results.push({ id, ok: false, code: 500, error: (e as Error).message || 'internal error' });
+      }
+    }
+    const ok = results.filter((r) => r.ok).length;
+    const res: BulkResponse = { action: body.action, results, ok, failed: results.length - ok };
+    return res;
   });
 }

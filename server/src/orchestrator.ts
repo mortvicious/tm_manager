@@ -3406,6 +3406,7 @@ export class Orchestrator implements OrchestratorApi {
       findings: result.findings,
       fixRound,
       diffHash: hash,
+      diffStat: change.stat,
       error: result.error,
       requestedBy,
     };

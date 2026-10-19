@@ -2,6 +2,7 @@ import {
   REVIEW_BUSY_STATES,
   REVIEW_NOW_FROM,
   TERMINAL_TASK_STATUSES,
+  buildInbox,
   customQueueHoldsRepo,
   customQueueWaiting,
   matchTaskPreset,
@@ -353,8 +354,6 @@ export interface BoardDeps {
 
 /** Rows per page. Keyboard stays far under Telegram's 100 buttons. */
 export const PAGE_SIZE = 8;
-/** A failure older than this has left the inbox; the ⚠ tab still lists it. */
-const INBOX_FAILED_DAYS = 7;
 
 interface Snapshot {
   tasks: Task[];
@@ -506,94 +505,99 @@ function liveDetail(snap: Snapshot, t: Task): (max: number) => string[] {
   };
 }
 
+/**
+ * The Inbox view IS the shared `buildInbox` list (docs/inbox.md) — the SPA's
+ * Inbox page and header chip read the same function, so the phone and the
+ * browser never disagree about what is waiting or in which order. This only
+ * draws each item and hangs the action-codec buttons on it.
+ */
 function inboxItems(snap: Snapshot, state: BoardState, inRepo: (id: string | null) => boolean): Item[] {
-  const items: Item[] = [];
-  const seen = new Set<string>();
-  const tasks = snap.tasks.filter((t) => inRepo(t.repoId));
-  const byId = new Map(tasks.map((t) => [t.id, t]));
-  const newest = (a: Task, b: Task) => b.updatedAt.localeCompare(a.updatedAt);
+  const inbox = buildInbox({
+    tasks: snap.tasks.filter((t) => inRepo(t.repoId)),
+    questions: snap.questions,
+    runs: snap.live,
+    proposals: snap.proposals.filter((p) => inRepo(p.repoId)),
+    features: snap.features.filter((f) => inRepo(f.repoId)),
+  });
+  const errorLine = (t: Task) => (max: number) => (t.error ? [`⚠ ${escapeHtml(clip(t.error, max + 40))}`] : []);
+  return inbox.map((x): Item => {
+    switch (x.kind) {
+      case 'question': {
+        const qs = x.questions;
+        const it = taskItem(snap, x.task, state, (max) => {
+          const first = qs[0].questions[0];
+          const more = qs.reduce((n, q) => n + q.questions.length, 0) - 1;
+          return first ? [`asks: “${escapeHtml(clip(first.question, max + 40))}”${more > 0 ? ` (+${more})` : ''}`] : [];
+        });
+        it.actions.push({ text: '❓ Answer', callback_data: encodeList({ kind: 'ask', task: x.task.id }) });
+        return it;
+      }
+      case 'attention': {
+        const it = taskItem(snap, x.task, state, liveDetail(snap, x.task));
+        it.actions.push(act('✖ Kill', { kind: 'run.kill', id: x.run.id }));
+        return it;
+      }
+      case 'review': {
+        const t = x.task;
+        const it = taskItem(snap, t, state, () => {
+          const stat = lastDiffStat(t);
+          const parts = [checkClause(t), reviewClause(t), stat].filter((p): p is string => !!p);
+          return parts.length ? [escapeHtml(parts.join(' · '))] : [];
+        });
+        it.actions.push(act('✅ Done', { kind: 'task.done', id: t.id }), act('🚀 Publish', { kind: 'task.publish', id: t.id }));
+        return it;
+      }
+      case 'failed': {
+        const it = taskItem(snap, x.task, state, errorLine(x.task));
+        it.actions.push(act('🔁 Retry', { kind: 'task.retry', id: x.task.id }));
+        return it;
+      }
+      case 'blocked': {
+        const c = x.children;
+        const it = taskItem(snap, x.task, state, (max) => [
+          ...errorLine(x.task)(max),
+          `subtasks: ${c.total - c.open} of ${c.total} settled${c.failed ? `, ${c.failed} failed` : ''}`,
+        ]);
+        it.actions.push(act('⛔ Unblock', { kind: 'task.unblock', id: x.task.id }));
+        return it;
+      }
+      case 'proposal': {
+        const p = x.proposal;
+        const what = p.payload.title ?? p.payload.rationale;
+        const n = p.payload.options?.length ?? 0;
+        return {
+          lines: (max) => [
+            `💡 <b>${escapeHtml(clip(what, max))}</b> <code>${short(p.id)}</code> · ${escapeHtml(p.kind)}${n ? ` · ${n} options` : ''}`,
+          ],
+          open: { label: `💡 ${what}`, data: encodeList({ kind: 'proposal', id: p.id }) },
+          // An options proposal is a CHOICE — accepted from its full message only.
+          actions: [
+            ...(n ? [] : [act('✅ Accept', { kind: 'proposal.accept', id: p.id })]),
+            act('✖ Reject', { kind: 'proposal.reject', id: p.id }),
+          ],
+        };
+      }
+      case 'feature': {
+        const f = x.feature;
+        const phases = f.analysis?.phases.length ?? 0;
+        const count = f.analysis?.phases.reduce((a, ph) => a + ph.tasks.filter((c) => !c.excluded).length, 0) ?? 0;
+        return {
+          lines: (max) => [
+            `🧩 <b>${escapeHtml(clip(f.title, max))}</b> <code>${short(f.id)}</code> · ${phases} phase(s), ${count} task(s)`,
+          ],
+          open: { label: `🧩 ${f.title}`, data: encodeList({ kind: 'feature', id: f.id }) },
+          actions: [act('✅ Approve', { kind: 'feature.approve', id: f.id })],
+        };
+      }
+    }
+  });
+}
 
-  // 1. open questions — one row per task, however many it asks
-  const asked = new Map<string, Question[]>();
-  for (const q of snap.questions) {
-    if (!byId.has(q.taskId)) continue;
-    asked.set(q.taskId, [...(asked.get(q.taskId) ?? []), q]);
-  }
-  for (const [taskId, qs] of asked) {
-    const t = byId.get(taskId)!;
-    seen.add(t.id);
-    const it = taskItem(snap, t, state, (max) => {
-      const first = qs[0].questions[0];
-      const more = qs.reduce((n, q) => n + q.questions.length, 0) - 1;
-      return first ? [`asks: “${escapeHtml(clip(first.question, max + 40))}”${more > 0 ? ` (+${more})` : ''}`] : [];
-    });
-    it.actions.push({ text: '❓ Answer', callback_data: encodeList({ kind: 'ask', task: t.id }) });
-    items.push(it);
-  }
-  // 2. needs-attention runs
-  for (const t of tasks.filter((x) => snap.attention.has(x.id) && !seen.has(x.id)).sort(newest)) {
-    seen.add(t.id);
-    const it = taskItem(snap, t, state, liveDetail(snap, t));
-    const run = snap.liveByTask.get(t.id);
-    if (run) it.actions.push(act('✖ Kill', { kind: 'run.kill', id: run.id }));
-    items.push(it);
-  }
-  // 3. review — flagged verdicts first
-  const flaggedFirst = (a: Task, b: Task) =>
-    Number(b.reviewState === 'flagged') - Number(a.reviewState === 'flagged') || newest(a, b);
-  for (const t of tasks.filter((x) => x.status === 'review' && !seen.has(x.id)).sort(flaggedFirst)) {
-    seen.add(t.id);
-    const it = taskItem(snap, t, state, () => {
-      const r = reviewClause(t);
-      return r ? [escapeHtml(r)] : [];
-    });
-    it.actions.push(act('✅ Done', { kind: 'task.done', id: t.id }), act('🚀 Publish', { kind: 'task.publish', id: t.id }));
-    items.push(it);
-  }
-  // 4. blocked
-  for (const t of tasks.filter((x) => x.status === 'blocked' && !seen.has(x.id)).sort(newest)) {
-    seen.add(t.id);
-    const it = taskItem(snap, t, state, (max) => (t.error ? [`⚠ ${escapeHtml(clip(t.error, max + 40))}`] : []));
-    it.actions.push(act('⛔ Unblock', { kind: 'task.unblock', id: t.id }));
-    items.push(it);
-  }
-  // 5. recent failures
-  const since = new Date(Date.now() - INBOX_FAILED_DAYS * 86_400_000).toISOString();
-  for (const t of tasks.filter((x) => x.status === 'failed' && x.updatedAt >= since && !seen.has(x.id)).sort(newest)) {
-    seen.add(t.id);
-    const it = taskItem(snap, t, state, (max) => (t.error ? [`⚠ ${escapeHtml(clip(t.error, max + 40))}`] : []));
-    it.actions.push(act('🔁 Retry', { kind: 'task.retry', id: t.id }));
-    items.push(it);
-  }
-  // 6. pending proposals
-  for (const p of snap.proposals.filter((x) => inRepo(x.repoId))) {
-    const what = p.payload.title ?? p.payload.rationale;
-    const n = p.payload.options?.length ?? 0;
-    items.push({
-      lines: (max) => [
-        `💡 <b>${escapeHtml(clip(what, max))}</b> <code>${short(p.id)}</code> · ${escapeHtml(p.kind)}${n ? ` · ${n} options` : ''}`,
-      ],
-      open: { label: `💡 ${what}`, data: encodeList({ kind: 'proposal', id: p.id }) },
-      // An options proposal is a CHOICE — accepted from its full message only.
-      actions: [
-        ...(n ? [] : [act('✅ Accept', { kind: 'proposal.accept', id: p.id })]),
-        act('✖ Reject', { kind: 'proposal.reject', id: p.id }),
-      ],
-    });
-  }
-  // 7. proposed features
-  for (const f of snap.features.filter((x) => inRepo(x.repoId))) {
-    const phases = f.analysis?.phases.length ?? 0;
-    const count = f.analysis?.phases.reduce((a, ph) => a + ph.tasks.filter((c) => !c.excluded).length, 0) ?? 0;
-    items.push({
-      lines: (max) => [
-        `🧩 <b>${escapeHtml(clip(f.title, max))}</b> <code>${short(f.id)}</code> · ${phases} phase(s), ${count} task(s)`,
-      ],
-      open: { label: `🧩 ${f.title}`, data: encodeList({ kind: 'feature', id: f.id }) },
-      actions: [act('✅ Approve', { kind: 'feature.approve', id: f.id })],
-    });
-  }
-  return items;
+/** "3 files +120 −8" from the newest review round that kept a stat, or null. */
+export function lastDiffStat(t: Task): string | null {
+  const s = [...t.reviewRounds].reverse().find((r) => r.diffStat)?.diffStat;
+  if (!s) return null;
+  return `${s.files} file${s.files === 1 ? '' : 's'} +${s.insertions} −${s.deletions}`;
 }
 
 function viewTasks(snap: Snapshot, view: BoardView, search: string | null): Task[] {
