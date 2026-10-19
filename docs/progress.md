@@ -608,3 +608,30 @@ concise markdown, grouped by completion date, Russian or English.
   - A browser pass.
   - The Postgres driver.
   - The live server, which was not restarted.
+
+## Transient StopFailure resume + retry with context — autonomy 3/6 (2026-10-19, `docs/design.md` § Transient API errors / § Retry with context)
+
+- **Shared**:
+  - `Task.attempts`.
+  - AuditKinds `run.stop-failure`, `run.transient-retry` and `task.retry`.
+- **Server**:
+  - Workers inject a `StopFailure` hook (`claude/worker.ts`). The `/stop-failure` route hands worker runs to `Orchestrator.onStopFailure`, after recording the turn's stats.
+  - `claude/transient.ts` classifies the CLI's own code (measured on 2.1.280):
+    - `overloaded`/`server_error` → back off 30 s / 2 min, then resume the same session, 2 per turn. Each resume first passes `budgetAllows(…, 'transient-resume')`.
+    - `rate_limit` → left to the wake path.
+    - Anything else, or a third transient → the turn fails with the reason and the terminal ends.
+  - The resume types `continue` into the live PTY and checks the transcript grew 20 s later. If it did not, or the terminal is gone, it uses `followUp(…, 'resume')`.
+  - The state is cleared by a real Stop (`settleStop`), by any spawn the path did not start (`startWorker`), and by Cancel/Undo.
+  - `retryContext` builds a `## Previous attempt` block via `freshHandoff`, which gained `intro`/`error`/`checks`. `buildWorkerPrompt` renders `previousSummary` without a follow-up.
+  - `enqueueTask` and `runNow` write `task.retry` with the error they clear.
+  - Migration 35 adds `tm_tasks.attempts` with a backfill. `bumpTaskAttempts` is in both drivers and is called once the PTY of a non-resume spawn exists.
+- **Web**: `TaskAttemptsChip` on the board row (from 2 attempts; in the phone chip order after cost) and in the slide-over beside the cost. `normalizeTask` default.
+- **Verified**:
+  - `npm run typecheck` and `npm run build`.
+  - A throwaway harness (fresh SQLite, temp git repo, fake CLI on a real PTY, `app.inject` on the internal route, Retry through the real claim loop): **48/48**. The cases are listed in decisions.md. The rendered Retry prompt is in this task's artifacts (`retry-prompt-sample.md`).
+  - Migration 35 on a copy of the live DB: 76 tasks at 0, 534 at 1, 27 at 2, 2 above.
+- **Not exercised**:
+  - A real CLI hitting a real 529/5xx: the payload shape is the binary's own, but the typed `continue` was submitted to a fake prompt, not to claude's.
+  - The Postgres driver.
+  - The live server, which was not restarted.
+  - A browser pass of the chip.

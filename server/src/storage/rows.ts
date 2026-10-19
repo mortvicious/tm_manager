@@ -109,6 +109,7 @@ export function rowToTask(r: any): Task {
     wakeAt: r.wake_at ?? null,
     queueHeldAt: r.queue_held_at ?? null,
     costUsd: Number(r.cost_usd ?? 0) || 0,
+    attempts: Number(r.attempts ?? 0) || 0,
     acceptance: r.acceptance ?? null,
     checks: checkNames(r.checks),
     checkState: CHECK_STATES.includes(r.check_state) ? r.check_state : null,

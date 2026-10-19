@@ -1,5 +1,40 @@
 # Decision log
 
+- **2026-10-19 — Worker StopFailure: transient API errors resume the SAME session; Retry carries context; `tm_tasks.attempts` (`docs/design.md` § Transient API errors, § Retry with context)**: autonomy part 3 of 6 (the autonomy proposal's §4–§5).
+
+  **This is not the rejected auto-retry (2026-08-24, "No auto-retry").** That decision rejected starting a fresh agent on a tree a failed one half-edited. Here no new agent is ever started. A turn the API dropped (`overloaded`, `server_error`) is continued by the same agent in the same conversation: first by typing `continue` into its live terminal, otherwise by `claude --resume` of its session. There are at most 2 resumes per turn, after 30 s and 2 min, each one asks the budget helper, and each is audited (`run.transient-retry`). Anything that is not transient fails the turn, and starting over stays a human click (Retry).
+
+  **Chosen.**
+  - **Match the CLI's own code.** It was measured, not guessed: claude 2.1.280's StopFailure matcher list, and its internal error mapping shows every 5xx, capacity error, dropped connection and missing response becomes `server_error`. `overloaded` + `server_error` is exactly the CLI's own `isTransient` set.
+  - **`rate_limit` is left entirely to the wake path.** It is how the 5h window reports itself, and resuming against an exhausted window would race the parker for nothing. That keeps decisions.md 2026-09-06 intact: overloaded/429 are never PARKED, they are backed off for minutes.
+  - **Other codes fail the turn at once**, because waiting fixes neither auth nor billing nor a too-long prompt. Before this hook such a task sat `running` forever.
+  - **The typed delivery is verified.** Injected text failing to submit is exactly what the 2026-08-24 follow-up-injection fix was about. A transcript that has not grown 20 s after the keystrokes means the line never submitted, so the turn falls back to `--resume`.
+  - **A failed turn ends its terminal**, so Retry is not refused for a live session.
+  - **Retry with context reuses `freshHandoff`.** The previous error survives Retry/Run now clearing it from the row through a `task.retry` audit row.
+  - **`attempts` is bumped by one atomic statement** outside `updateTask`'s column list, so no stale patch can rewind it.
+
+  **Rejected:**
+  - Treating `rate_limit` as transient (it races the wake parker).
+  - Parking overloaded until a reset (there is none).
+  - Always resuming by `--resume` (it re-buys the whole context, ≈$15 on a 400k session, when the live process still holds it).
+  - Typing without checking (the 2026-08-24 wedge).
+  - Leaving the PTY alive on a failed turn (Retry would 409).
+  - Clearing the count on every spawn (its own `--resume` fallback is the same turn, so `startWorker` skips the reset only for the transient path's own spawn).
+  - A new `TaskStatus` for "backing off". The task stays `running`, since the session and the slot are still its own.
+
+  **Verified** with an isolated harness: a fresh SQLite DB, a temp git repo and a fake CLI on a real PTY; `claude` never runs. The StopFailure route was driven with `app.inject`, and the Retry prompt through the real claim loop. **48/48:**
+  - the 403 token guard
+  - arm, then a typed resume that submits
+  - attempt 2, then exhausted → `failed` with the terminal ended
+  - `authentication_failed` → `failed`
+  - `rate_limit` untouched
+  - an unsubmitted line → `--resume` of the same session, with lineage kept, attempts unchanged and the count kept
+  - a human Proceed and Cancel dropping the path
+  - the budget fuse refusing → `review`
+  - a Retry prompt carrying the error, last text, summary, red check and dirty files, with `attempts` 1→2, while a first start carries no block
+
+  Migration 35's backfill was run on a copy of the live DB.
+
 - **2026-10-19 — Repo checks + the verify loop: a server-run definition of done (`docs/checks.md`)**: autonomy part 2 of 6 (the autonomy proposal's §1–§2). Decisions the user had already taken: checks run in the COMMANDS pool as normal attachable runs; a loop that ends still red lands in `review` with `check_state 'red'` and the output on the row, never `failed`.
 
   **Chosen.** A check is a saved repo command with `is_check` + `timeout_sec` (migration 34), so the argv tokenizer and the shell-operator rule are the whole execution surface and there is nothing new to secure. Checks run at the top of every `reviewLoop` pass (`runCheckStage`), so they inherit the review round's single-flight lock, its recheck pass, the stop route's custom-queue hold and boot recovery for free. The row is the truth (`check_state`, `check_results`, `check_diff_hash`), written in the same transition that parks the task, as `review_state` is. **Red never reaches the reviewer**: the fix turn comes first, and a spent loop skips the review with an audited `checks-red`, because a Fable session over code that does not build is the spend this exists to avoid. **Error is not red** (timeout, could not start, stopped mid-run): no fix turn, no re-run, and the review still runs, told so. A worker cannot fix a hang it did not cause, and a hang re-run costs another full timeout. **Red beats error** in a mixed set, because the red is fixable. **One silent re-run of a red** (flaky guard), kept and labelled. **The no-progress guard is the change hash**, `workerDiff`'s own: a fix turn that changed nothing and is still red ends the loop at once. **Fix turns use `followUp`**, the review fix loop's resume, not raw PTY input: an idle claude prompt does not reliably submit injected text, the reason `followUp` respawns. **autoComplete defers to the checks**: a task with checks due lands `review` and is promoted `review → done` on a non-red settle, in the same write as the state. Without this, the checks would judge a task already announced `done`, the fix loop (which needs `review`) could never run, and the split parent and feature phase would advance on red work. **Checks hold the repo** while due or running, in every hold (global/overflow claim, custom queue, stacked hand-off): they read the checkout, which is why part 1's same-repo exclusivity was a prerequisite. **`running` spans two short gaps** (a red's fix turn resuming, a green's promotion) so no notifier reads `review` + red as a landing. **Acceptance goes into the FRESH prompt only**, right under the description; the session keeps it, and the standing rules stay terse, as `docs/worker-prompt.md` demands. **Agents cannot mark checks**: a worker must not edit its own definition of done.

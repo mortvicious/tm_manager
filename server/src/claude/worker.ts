@@ -223,6 +223,7 @@ function buildWorkerPrompt(opts: {
   sharedNote?: string;
   /** The definition-of-done block (docs/checks.md): acceptance + the checks the server will run. Fresh prompts only. */
   doneNote?: string;
+  /** With `followUp`: the `Previous run summary`. Without: the `Previous attempt` block of a retry. */
   previousSummary?: string;
   /** shipHeldForReview(): add SHIP_GATE_RULE (never on the publish turn). */
   shipGate: boolean;
@@ -272,7 +273,13 @@ function buildWorkerPrompt(opts: {
             // work. Without it this falls back to the task row's 4000-char
             // `resultSummary`, which is all a plain fresh follow-up ever had.
             `\n\n## Previous run summary\n${opts.previousSummary ?? task.resultSummary ?? '(none recorded)'}\n\n## Follow-up instruction from the user\n${opts.followUp}`
-          : '',
+          : opts.previousSummary
+            ? // A fresh start with no instruction of its own — Retry, Run now,
+              // a re-enqueue — of a task that already had a session: what that
+              // attempt left behind (docs/design.md § Retry with context), so
+              // the new agent is not amnesiac about a tree it did not write.
+              `\n\n## Previous attempt\n${opts.previousSummary}`
+            : '',
         opts.dispatchNote ? `\n\n${opts.dispatchNote}` : '',
         `\n\n${STANDING_RULES}`,
         `\n\n${commitTrailerRule(task.id)}`,
@@ -490,6 +497,13 @@ export function buildWorkerInvocation(opts: {
         { hooks: [{ type: 'command', command: hookCurl('/api/internal/runs/$TM_RUN_ID/session-start') }] },
       ],
       Stop: [{ hooks: [{ type: 'command', command: hookCurl('/api/internal/runs/$TM_RUN_ID/stop') }] }],
+      // Fires INSTEAD of Stop when the API ended the turn (docs/design.md §
+      // Transient API errors): `overloaded`/`server_error` are resumed in the
+      // same session after a back-off, `rate_limit` is the wake path's, the
+      // rest fail the turn. Without it such a task sat `running` forever.
+      StopFailure: [
+        { hooks: [{ type: 'command', command: hookCurl('/api/internal/runs/$TM_RUN_ID/stop-failure') }] },
+      ],
       SessionEnd: [
         { hooks: [{ type: 'command', command: hookCurl('/api/internal/runs/$TM_RUN_ID/session-end') }] },
       ],

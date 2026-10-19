@@ -38,7 +38,7 @@ import {
 } from '../components/PresetPicker.tsx';
 import { ReviewerChip, ReviewerFields, globalReviewModel, reviewIsOn } from '../components/ReviewerPicker.tsx';
 import { liveReviewRun } from '../components/RunKind.tsx';
-import { TaskCostChip } from '../components/RunMeta.tsx';
+import { TaskAttemptsChip, TaskCostChip } from '../components/RunMeta.tsx';
 import { FullSheet } from '../components/Sheet.tsx';
 import { StatusBadge } from '../components/StatusBadge.tsx';
 import { DragGhost, useTaskDrag, type DropZone } from '../components/TaskDrag.tsx';
@@ -71,7 +71,7 @@ const RECENT_LIMIT = 10;
 
 /** Phones: how many tags a row keeps, and which win (docs/mobile.md § Rows). */
 const MOBILE_CHIPS = 2;
-const MOBILE_CHIP_ORDER = ['repo', 'cost', 'dispatch', 'group', 'category', 'feature', 'autopub', 'agent', 'source', 'preset', 'reviewer'];
+const MOBILE_CHIP_ORDER = ['repo', 'cost', 'attempts', 'dispatch', 'group', 'category', 'feature', 'autopub', 'agent', 'source', 'preset', 'reviewer'];
 
 const byRecency = (key: 'createdAt' | 'updatedAt') => (a: Task, b: Task) => {
   const d = b[key].localeCompare(a[key]);
@@ -912,6 +912,8 @@ export function BoardPage({
     }
     // the task's cost so far (worker turns + its reviews/compactions)
     if (t.costUsd >= 0.01) all.push(['cost', <TaskCostChip key="cost" costUsd={t.costUsd} />]);
+    // a re-attempt (Retry / Run now / a fresh follow-up) is worth a glance
+    if (t.attempts >= 2) all.push(['attempts', <TaskAttemptsChip key="attempts" attempts={t.attempts} quiet />]);
     if (!mobile) return all.map(([, node]) => node);
     const rank = (id: string) => {
       const i = MOBILE_CHIP_ORDER.indexOf(id);

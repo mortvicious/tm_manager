@@ -5,7 +5,9 @@ with a prompt whose tail is a fixed block of standing instructions. There are tw
 copies of that block and they are ONE policy:
 
 - `STANDING_RULES` — appended to a **fresh** prompt (`# Task: …` + description
-  [+ previous summary and follow-up instruction]).
+  [+ previous summary and follow-up instruction, or — on a fresh start with no
+  follow-up of a task that already had a session — the `## Previous attempt`
+  block, see below]).
 - `RESUME_REMINDER` — appended to a **resumed** turn (`claude --resume`, i.e.
   Proceed / follow-up / review-fix / dispatch delivery). The session already
   holds the original prompt; this only re-anchors the rules in case the
@@ -82,6 +84,26 @@ expensive failure mode. Plan-first is aimed at that: modelled on turn count
 alone it is only ~5% ($126 → $119), so it should not be judged by tokens per
 turn. It is deliberately the *regular-terminal* habit, not plan mode — no
 approval gate, no separate turn, a couple of sentences for a small task.
+
+## The `Previous attempt` block (2026-10-19, autonomy 3/6)
+
+A fresh prompt with no follow-up of its own — Retry, Run now, a re-enqueue —
+for a task that has had a worker session before carries `## Previous attempt`
+between the definition of done and the standing rules
+(`Orchestrator.retryContext` → `freshHandoff`, `docs/design.md` § Retry with
+context): how the attempt ended (its `error`, kept in the `task.retry` audit
+row because Retry clears it from the task), the last assistant text, the
+task's `resultSummary` when it adds anything, the repo checks' last verdict and
+the dirty files. Its opening tells the new agent it has none of that session's
+context and should decide from the files what to keep. It is context, not an
+instruction, so it never comes last; a first start, a resume and the publish
+turn never get it. A resume gate's `fresh` handoff WITHOUT a follow-up now
+renders under the same heading (it used to be dropped silently, since the
+block was only printed beside a follow-up).
+
+The transient-error resume (`docs/design.md` § Transient API errors) adds no
+block. Its one-line `TRANSIENT_CONTINUE` is typed into the live terminal, or
+it is the `--resume` follow-up, so it gets `RESUME_REMINDER` like any resume.
 
 ## Out of scope here (identified by the same audit, not yet done)
 

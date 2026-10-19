@@ -22,7 +22,7 @@ import { useIsMobile } from './Layout.tsx';
 import { Markdown } from './Markdown.tsx';
 import { PresetPicker, reviewChoiceOf, reviewValueOf, type ReviewChoice } from './PresetPicker.tsx';
 import { ReviewerFields, reviewIsOn } from './ReviewerPicker.tsx';
-import { RunStatsChips, TaskCostChip } from './RunMeta.tsx';
+import { RunStatsChips, TaskAttemptsChip, TaskCostChip } from './RunMeta.tsx';
 import { StatusBadge } from './StatusBadge.tsx';
 import { KindBadge, liveReviewRun, runTaskId } from './RunKind.tsx';
 import { ReviewPanel } from './ReviewPanel.tsx';
@@ -724,9 +724,10 @@ export function TaskSlideOver({
         </div>
       )}
       {/* phones: the run's numbers ride at the top, since the action row they sit in is gone */}
-      {mobile && (latestRun || task.costUsd >= 0.01) && (
+      {mobile && (latestRun || task.costUsd >= 0.01 || task.attempts >= 1) && (
         <div className="so-stats">
           <TaskCostChip costUsd={task.costUsd} />
+          <TaskAttemptsChip attempts={task.attempts} />
           {latestRun && <RunStatsChips run={latestRun} />}
         </div>
       )}
@@ -972,6 +973,7 @@ export function TaskSlideOver({
           <Fragment key={a.id}>
             {/* the run's cost/context chips sit just before Analyze, as they always have */}
             {a.id === 'analyze' && <TaskCostChip costUsd={task.costUsd} />}
+            {a.id === 'analyze' && <TaskAttemptsChip attempts={task.attempts} />}
             {a.id === 'analyze' && latestRun && <RunStatsChips run={latestRun} />}
             <button
               className={`btn${a.cls ? ` ${a.cls}` : ''}`}

@@ -1226,7 +1226,8 @@ button.badge.badge-link:hover {
 }
 
 /* the task's cost so far (docs/token-budget.md § Fuses) — figures line up */
-.chip.task-cost {
+.chip.task-cost,
+.chip.task-attempts {
   font-variant-numeric: tabular-nums;
 }
 

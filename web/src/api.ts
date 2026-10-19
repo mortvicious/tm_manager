@@ -90,6 +90,7 @@ export function normalizeTask(t: Task): Task {
     checkState: t.checkState ?? null,
     checkResults: Array.isArray(t.checkResults) ? t.checkResults : [],
     checkDiffHash: t.checkDiffHash ?? null,
+    attempts: typeof t.attempts === 'number' ? t.attempts : 0,
     groupId: t.groupId ?? t.id,
     groupPath: t.groupPath ?? '/',
     groupName: t.groupName ?? null,

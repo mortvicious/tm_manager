@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import type { CheckResult } from '@tm/shared';
 import { READ_ONLY_DISALLOWED, aux } from './aux.ts';
 
 /**
@@ -206,20 +207,53 @@ export function changedFiles(cwd: string): Promise<string[]> {
   });
 }
 
-/** Assembles that handoff into the `Previous run summary` block. */
+/**
+ * Assembles that handoff into the `Previous run summary` block — and, with an
+ * `intro`, the `Previous attempt` block of a Retry (docs/design.md § Retry
+ * with context), which is the same problem: a NEW session inheriting a tree
+ * another one left behind.
+ */
 export function freshHandoff(opts: {
   lastAssistantText: string | null;
   fallbackSummary: string | null;
   files: string[];
   reason: string;
+  /** replaces the "grew too large" opening (`reason` is then unused) */
+  intro?: string;
+  /** what the previous attempt ended on (the task's `error`), if it did not end cleanly */
+  error?: string | null;
+  /** the repo checks' last verdict on that attempt (docs/checks.md) */
+  checks?: CheckResult[];
 }): string {
   const parts = [
-    `The previous agent session for this task grew too large to continue and was not resumed (${opts.reason}).` +
-      ' You are a NEW session with none of its context. Everything below is what it left behind.',
-    '',
-    '### Its closing report',
-    opts.lastAssistantText ?? opts.fallbackSummary ?? '(none recorded)',
+    opts.intro ??
+      `The previous agent session for this task grew too large to continue and was not resumed (${opts.reason}).` +
+        ' You are a NEW session with none of its context. Everything below is what it left behind.',
   ];
+  if (opts.error) parts.push('', '### How it ended', opts.error);
+  parts.push('', '### Its closing report', opts.lastAssistantText ?? opts.fallbackSummary ?? '(none recorded)');
+  // The row's summary is usually that same text cut to 4000 chars — printed
+  // only when it says something the report does not (a reviewer's summary,
+  // a fix-round note appended to it).
+  if (
+    opts.lastAssistantText &&
+    opts.fallbackSummary &&
+    !opts.lastAssistantText.includes(opts.fallbackSummary.slice(0, 200))
+  ) {
+    parts.push('', '### Its summary on the task', opts.fallbackSummary);
+  }
+  if (opts.checks?.length) {
+    parts.push('', '### The repo checks on its change (docs/checks.md)');
+    for (const c of opts.checks) {
+      parts.push(
+        `- \`${c.name}\` (\`${c.command}\`): ${c.outcome}${c.exit !== null ? `, exit ${c.exit}` : ''}${c.error ? ` — ${c.error}` : ''}`,
+      );
+      // a red's own words, briefly: the full tail is one re-run away
+      if (c.outcome === 'red' && c.tail.trim()) {
+        parts.push('', '```', c.tail.trimEnd().split('\n').slice(-20).join('\n'), '```');
+      }
+    }
+  }
   if (opts.files.length) {
     parts.push(
       '',

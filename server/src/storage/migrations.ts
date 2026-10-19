@@ -597,6 +597,18 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `ALTER TABLE tm_tasks ADD COLUMN check_diff_hash TEXT`,
     ],
   },
+  {
+    id: 35,
+    // Attempts (docs/design.md § Retry with context): fresh worker sessions
+    // the task has had, bumped by `bumpTaskAttempts` on every spawn that is
+    // not a resume. Backfilled from the runs that carry no `resumed_from`
+    // lineage — exact for every fresh start, and a resume gate's `fresh`
+    // handoff (which records no lineage either) counts too, as it does live.
+    statements: [
+      `ALTER TABLE tm_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`,
+      `UPDATE tm_tasks SET attempts = (SELECT COUNT(*) FROM tm_runs r WHERE r.task_id = tm_tasks.id AND r.mode = 'worker' AND r.resumed_from IS NULL)`,
+    ],
+  },
 ];
 
 /** The migration whose rows each driver backfills in JS once it is applied. */

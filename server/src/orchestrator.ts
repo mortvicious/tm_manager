@@ -35,6 +35,14 @@ import {
   freshHandoff,
 } from './claude/compact.ts';
 import {
+  classifyStopFailure,
+  stopFailureError,
+  TRANSIENT_BACKOFF_MS,
+  TRANSIENT_CONTINUE,
+  TRANSIENT_SUBMIT_CHECK_MS,
+  TYPE_ENTER_DELAY_MS,
+} from './claude/transient.ts';
+import {
   handoffCommit,
   hasTaskCommit,
   publishRepo,
@@ -140,6 +148,16 @@ type PublishPlan =
 const STALL_QUIET_MS = 2 * 60_000;
 
 /** What the resume gate decided for one spawn (docs/token-budget.md § The fourth). */
+/** One turn's automatic resumes after transient API errors (docs/design.md § Transient API errors). */
+interface TransientRetry {
+  /** the run whose StopFailure armed this resume */
+  runId: string;
+  /** resumes this turn has used, INCLUDING the one armed */
+  attempts: number;
+  code: string;
+  timer: NodeJS.Timeout | null;
+}
+
 interface ResumeHandoff {
   /**
    * `abort` is not a handoff at all: WE stopped the compaction (`/killall`, a
@@ -162,6 +180,16 @@ interface ResumeHandoff {
  * something is, `error` when the reviewer could not run, `skipped` when the
  * task was never really reviewed.
  */
+/** Bytes in a transcript, or null when there is none to read. */
+function fileSize(p: string | null | undefined): number | null {
+  if (!p) return null;
+  try {
+    return fs.statSync(p).size;
+  } catch {
+    return null;
+  }
+}
+
 export function settledReviewState(rounds: ReviewRound[]): ReviewState {
   const last = rounds[rounds.length - 1];
   if (!last) return 'skipped';
@@ -326,6 +354,16 @@ export class Orchestrator implements OrchestratorApi {
   private shellWaitHandler: ((runId: string, body: unknown, parkedAt: number) => Promise<void>) | null = null;
   /** runs whose rejected banner has already been audited once (see below) */
   private readonly stallSkipsAudited = new Set<string>();
+  /**
+   * Transient-error resumes (docs/design.md § Transient API errors), by TASK:
+   * the count belongs to the turn, and a `--resume` fallback continues that
+   * turn in a new run. Cleared when the turn ends for real (a Stop), when any
+   * turn this path did not start spawns, and when the path gives up. In
+   * memory on purpose: a restart fails a `running` task anyway.
+   */
+  private readonly transientRetries = new Map<string, TransientRetry>();
+  /** tasks whose spawn in flight IS a transient resume (so `startWorker` keeps the count) */
+  private readonly transientResuming = new Set<string>();
 
   /**
    * Questions a worker handed to the human (docs/questions.md). Owned here so
@@ -1828,6 +1866,42 @@ export class Orchestrator implements OrchestratorApi {
   /** Spawns the PTY for a task already in `running`. Reverts the claim on failure.
    *  `purpose: 'publish'` marks the run as the commit-and-push turn so its Stop
    *  is settled against git instead of parking the task in review. */
+  /**
+   * The `Previous attempt` block of a fresh start (docs/design.md § Retry with
+   * context): what the task's last session left behind — how it ended, its
+   * closing words, the row's summary, the repo checks' verdict and the files
+   * dirty in the tree — so Retry stops being amnesiac. Built by the resume
+   * gate's own `freshHandoff`. undefined when the task never had a session.
+   */
+  private async retryContext(task: Task, repoPath: string): Promise<string | undefined> {
+    const prev = (await this.storage.listRuns({ taskId: task.id })).find((r) => r.mode === 'worker');
+    if (!prev) return undefined;
+    const transcript =
+      prev.transcriptPath && fs.existsSync(prev.transcriptPath)
+        ? await summarizeTranscript(prev.transcriptPath, prev.model).catch(() => null)
+        : null;
+    // Retry and Run now clear `error` from the row as they start the task
+    // again; the `task.retry` row they write keeps it for here — only when it
+    // is newer than that attempt, or it belongs to an older one.
+    const retried = (await this.storage.listEvents({ kind: 'task.retry', taskId: task.id, limit: 1 }))[0];
+    const fromRetry = retried && retried.at >= prev.startedAt ? retried.data : null;
+    const error = task.error ?? (typeof fromRetry?.previousError === 'string' ? fromRetry.previousError : null);
+    const ended = typeof fromRetry?.from === 'string' ? ` and ended '${fromRetry.from}'` : '';
+    const files = await changedFiles(repoPath).catch(() => [] as string[]);
+    return freshHandoff({
+      intro:
+        `This task has been attempted before (${task.attempts} session${task.attempts === 1 ? '' : 's'} so far${ended}).` +
+        ' That attempt is over: you are a NEW agent session with none of its context, starting on the working tree it left.' +
+        ' Below is what it left behind — read it, then decide from the files themselves what to keep and what to redo.',
+      reason: 'retry',
+      error,
+      lastAssistantText: transcript?.lastAssistantText ?? null,
+      fallbackSummary: task.resultSummary,
+      checks: task.checkResults,
+      files,
+    });
+  }
+
   private async startWorker(
     // Reassigned once, after the resume gate: a compaction can take minutes,
     // and the row must be re-read before anything is spawned against it.
@@ -1836,6 +1910,10 @@ export class Orchestrator implements OrchestratorApi {
     resumeFrom?: Run | null,
     purpose: 'work' | 'publish' = 'work',
   ): Promise<boolean> {
+    // Any turn the transient-error path did not start ends that path: a human
+    // Proceed during the back-off, a fresh claim (docs/design.md § Transient
+    // API errors). Its own `--resume` keeps the count — two per turn.
+    if (!this.transientResuming.has(task.id)) this.dropTransient(task.id);
     // Claim-loop twin of the runNow guard (review R3b): a task enqueued from
     // review may still have its previous session alive.
     if (await this.hasLiveSession(task.id)) {
@@ -1949,6 +2027,17 @@ export class Orchestrator implements OrchestratorApi {
       this.gatesInFlight.delete(task.id);
     }
     task = still;
+    // Retry with context (docs/design.md § Retry with context): a fresh start
+    // with no instruction of its own, of a task that already had a session.
+    // Read BEFORE createRun, while "the newest worker run" is still the last
+    // attempt's.
+    const retryContext =
+      !followUp && !resumeFrom && purpose === 'work'
+        ? await this.retryContext(task, repo.path).catch((e) => {
+            console.error('retry context failed, starting without it:', e);
+            return undefined;
+          })
+        : undefined;
     // The task's base, once: its first worker spawn (docs/design.md
     // § Adversarial review, "What the reviewer reads"). Before createRun, so
     // "no worker run yet" still means first.
@@ -2005,7 +2094,7 @@ export class Orchestrator implements OrchestratorApi {
         shared,
         doneNote: doneNote ?? undefined,
         resumeSessionId,
-        previousSummary: handoff.previousSummary,
+        previousSummary: handoff.previousSummary ?? retryContext,
       });
       const session = this.sessions.spawn({
         runId: run.id,
@@ -2015,6 +2104,10 @@ export class Orchestrator implements OrchestratorApi {
         env: inv.env,
       });
       const withPid = await this.storage.updateRun(run.id, { pid: session.pty.pid });
+      // A new claude session is a new attempt (`tm_tasks.attempts`); a resume
+      // of any kind is the same attempt carrying on. Counted once the PTY
+      // exists, so a spawn that threw is not an attempt.
+      if (!resumeSessionId) task = (await this.storage.bumpTaskAttempts(task.id)) ?? task;
       await this.storage.appendEvent({
         kind: 'run.started',
         actor: 'orchestrator',
@@ -2422,6 +2515,17 @@ export class Orchestrator implements OrchestratorApi {
       { error: null },
     );
     if (!task) return { error: `cannot run from status '${cur.status}'`, code: 409 };
+    // The error this clears is what the fresh prompt's `Previous attempt`
+    // block reports (retryContext) — kept here, since the row loses it.
+    if (cur.error || cur.status === 'failed' || cur.status === 'cancelled') {
+      await this.storage.appendEvent({
+        kind: 'task.retry',
+        actor,
+        taskId,
+        repoId: cur.repoId,
+        data: { via: 'run-now', from: cur.status, previousError: cur.error },
+      });
+    }
     broadcast({ type: 'task.updated', task });
     const ok = await this.startWorker(task);
     if (!ok) {
@@ -2438,6 +2542,7 @@ export class Orchestrator implements OrchestratorApi {
     // re-checks the status afterwards either way — this is about the money and
     // the minutes, not the correctness.
     abortCompaction(taskId);
+    this.dropTransient(taskId); // a pending transient-error resume must not outlive the cancel
     const runs = await this.storage.listRuns({ taskId, status: 'running' });
     for (const run of runs) {
       this.sessions.kill(run.id);
@@ -2479,6 +2584,7 @@ export class Orchestrator implements OrchestratorApi {
     }
     const to = await this.statusBeforeStart(taskId);
     abortCompaction(taskId); // same reason as cancel(): a gate has no run row yet
+    this.dropTransient(taskId);
     const runs = await this.storage.listRuns({ taskId, status: 'running' });
     for (const run of runs) {
       // Marked `killed` right behind the kill, so handleExit's stale-exit guard
@@ -2581,6 +2687,233 @@ export class Orchestrator implements OrchestratorApi {
   /** PTY exited. Hook-driven completion (Phase 4) usually resolved the task already.
    *  `tail` is the terminal's last bytes, captured by the caller at exit — the
    *  only surface a usage-limit banner ever reaches (docs/wake.md). */
+  // ---- transient API errors (docs/design.md § Transient API errors) ----
+
+  /**
+   * A worker turn the API ended (the CLI's StopFailure hook, which fires
+   * INSTEAD of Stop). Classified by the CLI's own `error` code, never text:
+   * `overloaded`/`server_error` are resumed in the SAME session after a
+   * back-off (30 s, then 2 min; two per turn), `rate_limit` is left to the
+   * wake path (claude/limit.ts), and anything else — or a third transient in
+   * one turn — fails the turn with the reason. This is the same agent carrying
+   * on, never a fresh one on a half-edited tree, which is why it does not
+   * reopen the 2026-08-24 "no auto-retry" decision.
+   */
+  async onStopFailure(runId: string, body: unknown): Promise<void> {
+    const b = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
+    const code = typeof b.error === 'string' && b.error ? b.error : 'unknown';
+    const details =
+      typeof b.error_details === 'string' && b.error_details.trim() ? b.error_details.trim().slice(0, 300) : null;
+    const run = await this.storage.getRun(runId);
+    if (!run?.taskId || run.mode !== 'worker' || run.status !== 'running') return;
+    // The Stop route's stale-hook guards: a human chatting in an old idle
+    // session, or a newer run already working on the task.
+    if (this.sessions.isIdle(runId)) return;
+    const latest = (await this.storage.listRuns({ taskId: run.taskId }))[0];
+    if (latest && latest.id !== runId) return;
+    const task = await this.storage.getTask(run.taskId);
+    if (!task || (task.status !== 'running' && task.status !== 'waiting')) return;
+
+    const cls = classifyStopFailure(code);
+    const prev = this.transientRetries.get(task.id);
+    const used = prev?.attempts ?? 0;
+    const action =
+      cls === 'usage-limit'
+        ? 'left-to-wake'
+        : cls === 'fatal'
+          ? 'failed'
+          : used >= TRANSIENT_BACKOFF_MS.length
+            ? 'exhausted'
+            : 'resume';
+    await this.storage.appendEvent({
+      kind: 'run.stop-failure',
+      actor: 'hook',
+      runId,
+      taskId: task.id,
+      repoId: task.repoId,
+      data: { code, details, action, resumesUsed: used },
+    });
+    if (action === 'left-to-wake') return;
+    if (action === 'failed' || action === 'exhausted') {
+      await this.failTurn(task.id, runId, stopFailureError(code, details, action === 'exhausted' ? 'exhausted' : 'fatal', used));
+      return;
+    }
+    if (prev?.timer) clearTimeout(prev.timer);
+    const entry: TransientRetry = { runId, attempts: used + 1, code, timer: null };
+    this.transientRetries.set(task.id, entry);
+    this.armTransient(task.id, entry, TRANSIENT_BACKOFF_MS[used]);
+  }
+
+  /** Forgets a task's transient-resume state: the turn ended for real, or something else took the task. */
+  dropTransient(taskId: string): void {
+    const e = this.transientRetries.get(taskId);
+    if (e?.timer) clearTimeout(e.timer);
+    this.transientRetries.delete(taskId);
+  }
+
+  /** True while this run's turn waits out a transient-error back-off (its idle-prompt notification is noise). */
+  transientBackingOff(runId: string): boolean {
+    for (const e of this.transientRetries.values()) if (e.runId === runId && e.timer) return true;
+    return false;
+  }
+
+  private armTransient(taskId: string, entry: TransientRetry, delayMs: number): void {
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      this.fireTransient(taskId, entry).catch((e) => console.error('transient resume failed:', e));
+    }, delayMs);
+    entry.timer.unref();
+  }
+
+  private auditTransient(taskId: string, entry: TransientRetry, data: Record<string, unknown>): Promise<unknown> {
+    return this.storage.appendEvent({
+      kind: 'run.transient-retry',
+      actor: 'system',
+      runId: entry.runId,
+      taskId,
+      data: { attempt: entry.attempts, code: entry.code, ...data },
+    });
+  }
+
+  /** The back-off ran out: resume the turn, unless the world moved on meanwhile. */
+  private async fireTransient(taskId: string, entry: TransientRetry): Promise<void> {
+    if (this.transientRetries.get(taskId) !== entry) return;
+    const giveUp = async (reason: string) => {
+      this.dropTransient(taskId);
+      await this.auditTransient(taskId, entry, { action: 'skipped', reason });
+    };
+    const task = await this.storage.getTask(taskId);
+    const run = await this.storage.getRun(entry.runId);
+    if (!task || !run) return giveUp('task or run is gone');
+    // Proceed spawned a newer run, or Cancel / Kill / Undo marked this one
+    // `killed`: whoever did that already decided what the task becomes.
+    const latest = (await this.storage.listRuns({ taskId }))[0];
+    if (latest?.id !== run.id || run.status === 'killed') return giveUp('superseded');
+    const s = this.sessions.get(run.id);
+    const live = s !== undefined && s.exit === null;
+    const inTurn = task.status === 'running' || task.status === 'waiting';
+    // A terminal that died during the back-off was landed by handleExit
+    // (`review` on a clean exit, `failed` otherwise); that landing is where
+    // `--resume` picks the turn up again.
+    const gone = !live && (task.status === 'review' || task.status === 'failed');
+    if (!(live && inTurn) && !gone) {
+      return giveUp(`task is '${task.status}'${live ? ' and its session is not in a turn' : ''}`);
+    }
+    const settings = await this.storage.getSettings();
+    const verdict = await this.budgetAllows(task, 'transient-resume', settings);
+    if (!verdict.ok) {
+      this.dropTransient(taskId);
+      await this.auditTransient(taskId, entry, { action: 'refused', reason: 'budget' });
+      // The terminal sits at its prompt: mark it idle, which is what lets
+      // Proceed retire it later (followUp refuses a session mid-turn).
+      if (live) await this.idleSession(run.id);
+      await this.refuseOverBudget(taskId, 'transient-resume', verdict);
+      return;
+    }
+    if (live) {
+      // The cheap resume: same process, same cache, no re-read of the
+      // conversation. Checked afterwards, because text typed into a prompt is
+      // the one delivery that has failed silently before (decisions.md
+      // 2026-08-24, follow-up injection).
+      const before = fileSize(run.transcriptPath);
+      this.sessions.input(run.id, Buffer.from(TRANSIENT_CONTINUE));
+      setTimeout(() => this.sessions.input(run.id, Buffer.from('\r')), TYPE_ENTER_DELAY_MS).unref();
+      await this.auditTransient(taskId, entry, { action: 'resumed', delivery: 'typed' });
+      setTimeout(() => {
+        this.checkTypedResume(taskId, entry, before).catch((e) => console.error('transient resume check failed:', e));
+      }, TRANSIENT_SUBMIT_CHECK_MS).unref();
+      return;
+    }
+    // Under the concurrency cap like the wake path: the slot this turn held
+    // went free when its terminal died, and may have been claimed since.
+    if (this.activeWorkers() >= settings['orchestrator.concurrency']) {
+      this.armTransient(taskId, entry, 30_000);
+      return;
+    }
+    await this.resumeTransient(taskId, entry, 'session-gone');
+  }
+
+  /** `continue` was typed: if the transcript did not move, it never submitted — resume instead. */
+  private async checkTypedResume(taskId: string, entry: TransientRetry, before: number | null): Promise<void> {
+    // A new StopFailure (a new entry), a Stop (dropped) or a human now owns it.
+    if (this.transientRetries.get(taskId) !== entry || entry.timer) return;
+    if (before === null) return; // nothing to measure against: trust the keystrokes
+    const run = await this.storage.getRun(entry.runId);
+    const s = this.sessions.get(entry.runId);
+    if (!run || run.status !== 'running' || !s || s.exit !== null || this.sessions.isIdle(entry.runId)) return;
+    const after = fileSize(run.transcriptPath);
+    if (after !== null && after > before) return; // the turn took
+    const task = await this.storage.getTask(taskId);
+    if (!task || (task.status !== 'running' && task.status !== 'waiting')) return;
+    await this.resumeTransient(taskId, entry, 'typed-not-submitted');
+  }
+
+  /** The `--resume` delivery: the same claude session in a new process, via followUp. */
+  private async resumeTransient(taskId: string, entry: TransientRetry, why: string): Promise<void> {
+    // A publish turn stays one: git, not the exit, decides how it lands.
+    const purpose = this.publishRuns.has(entry.runId) ? 'publish' : 'work';
+    const s = this.sessions.get(entry.runId);
+    if (s && s.exit === null) {
+      // Retire the live terminal the way every deliberate kill does: `killed`
+      // FIRST, so its exit never lands the task, then idle, which is what
+      // followUp needs to replace it rather than refuse.
+      await this.storage.updateRun(entry.runId, { status: 'killed', endedAt: new Date().toISOString() });
+      await this.idleSession(entry.runId);
+    }
+    this.transientResuming.add(taskId);
+    let res: ActionResult;
+    try {
+      res = await this.followUp(taskId, TRANSIENT_CONTINUE, 'system', 'resume', purpose);
+    } finally {
+      this.transientResuming.delete(taskId);
+    }
+    if ('error' in res) {
+      await this.auditTransient(taskId, entry, { action: 'failed', delivery: 'resume', why, error: res.error });
+      // Nothing resumable (no transcript on disk, a `waiting` row followUp
+      // does not take): end the turn with the reason rather than leave a
+      // `running` row over a session we already retired.
+      await this.failTurn(
+        taskId,
+        entry.runId,
+        `API error (${entry.code}) — the automatic resume could not start: ${res.error}`,
+      );
+      return;
+    }
+    await this.auditTransient(taskId, entry, { action: 'resumed', delivery: 'resume', why });
+  }
+
+  /**
+   * Ends a turn the API stopped and nothing will resume: the reason on the
+   * row, the task `failed` (Proceed resumes the session, Retry starts fresh
+   * with what it left — both accept `failed`), the terminal ended so Retry is
+   * not refused for a live session. Task first, PTY second: handleExit then
+   * finds nothing in `running` to land and just records the exit.
+   */
+  private async failTurn(taskId: string, runId: string, error: string): Promise<void> {
+    this.dropTransient(taskId);
+    if (this.publishRuns.has(runId)) {
+      // a publish turn is settled by git when its terminal ends (handleExit → settlePublish)
+      this.sessions.kill(runId);
+      return;
+    }
+    const failed = await this.storage.transitionTask(taskId, ['running', 'waiting'], 'failed', 'system', {
+      error,
+      reviewState: null,
+    });
+    this.sessions.kill(runId);
+    if (failed) {
+      broadcast({ type: 'task.updated', task: failed });
+      await this.resolveCompletion(failed, 'system');
+    }
+  }
+
+  /** Marks a live session idle (the Stop route's bookkeeping): it frees the slot and lets followUp retire it. */
+  private async idleSession(runId: string): Promise<void> {
+    this.sessions.markIdle(runId);
+    const idled = await this.storage.updateRun(runId, { idle: true });
+    if (idled) broadcast({ type: 'run.exited', run: idled });
+  }
+
   private async handleExit(runId: string, exitCode: number, tail = ''): Promise<void> {
     // Consumed here whatever happens next: this run is over either way.
     const wasPublish = this.publishRuns.delete(runId);

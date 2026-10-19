@@ -158,6 +158,9 @@ export function registerInternalRoutes(
     const info = await recordRunInfo(id, body);
     if (!info) return { ok: false };
     const run = info.run;
+    // A real Stop is a turn the API finished: whatever transient-error resumes
+    // it took, that turn is over (docs/design.md § Transient API errors).
+    if (replayOf === null && run.taskId && run.mode === 'worker') orchestrator.dropTransient(run.taskId);
 
     if (replayOf !== null) {
       // A PROMPT's flag raised during the park means the session is mid-turn
@@ -393,12 +396,18 @@ export function registerInternalRoutes(
     if (await auxHook(id, 'stop', req.body)) return { ok: true };
     return settleStop(id, req.body, null);
   });
-  // StopFailure — the API refused the turn (`model_not_found`, rate limit,
-  // …). Only aux sessions inject it: it is how an unavailable reviewer model
-  // reaches the Fable→Opus fallback now that there is no `-p` envelope.
+  // StopFailure — the API ended the turn (`model_not_found`, overloaded,
+  // rate limit, …), firing INSTEAD of Stop. For aux sessions it is how an
+  // unavailable reviewer model reaches the Fable→Opus fallback; for workers
+  // the orchestrator resumes a transient one in the same session, leaves a
+  // usage limit to the wake path and fails the rest (docs/design.md §
+  // Transient API errors). The stats are recorded either way — the turn did
+  // happen and was paid for.
   app.post('/api/internal/runs/:id/stop-failure', async (req) => {
     const { id } = req.params as { id: string };
-    await auxHook(id, 'stop-failure', req.body);
+    if (await auxHook(id, 'stop-failure', req.body)) return { ok: true };
+    await recordRunInfo(id, req.body);
+    await orchestrator.onStopFailure(id, req.body);
     return { ok: true };
   });
   orchestrator.onShellWaitExpired(async (runId, body, parkedAt) => {
@@ -471,6 +480,10 @@ export function registerInternalRoutes(
     // Completed-idle sessions fire ~60s idle-prompt notifications forever —
     // those are noise, not "needs attention" (user report + review M3).
     if (sessions.isIdle(id)) return { ok: true };
+    // So does a terminal sitting on an API error the server is already
+    // backing off from (docs/design.md § Transient API errors): nobody needs
+    // to look — the resume is armed.
+    if (orchestrator.transientBackingOff(id)) return { ok: true };
     await recordRunInfo(id, req.body, { skipSummarize: true });
     const run = await storage.getRun(id);
     // A flag the budget.runMinutes fuse raised is not a prompt: a real prompt

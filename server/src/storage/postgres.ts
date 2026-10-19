@@ -542,6 +542,11 @@ export class PostgresStorage implements Storage {
     return rowToTask(r.rows[0]);
   }
 
+  async bumpTaskAttempts(id: string): Promise<Task | null> {
+    const rows = await this.q(`UPDATE tm_tasks SET attempts = attempts + 1 WHERE id = ? RETURNING *`, [id]);
+    return rows[0] ? rowToTask(rows[0]) : null;
+  }
+
   async updateTask(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Promise<Task | null> {
     // A re-parent rewrites the moved subtree too, so it must be one transaction.
     return this.tx((c) => this.updateTaskWith(c, id, patch));

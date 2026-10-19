@@ -547,6 +547,11 @@ export class SqliteStorage implements Storage {
     return rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
   }
 
+  async bumpTaskAttempts(id: string): Promise<Task | null> {
+    const r = this.db.prepare(`UPDATE tm_tasks SET attempts = attempts + 1 WHERE id = ? RETURNING *`).get(id);
+    return r ? rowToTask(r) : null;
+  }
+
   async updateTask(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Promise<Task | null> {
     // A re-parent rewrites the moved subtree too, so it must be one transaction.
     return this.inTxn(() => this.updateTaskSync(id, patch));

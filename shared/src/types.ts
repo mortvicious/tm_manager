@@ -594,6 +594,13 @@ export interface Task {
    */
   costUsd: number;
   /**
+   * How many FRESH worker sessions this task has had (`tm_tasks.attempts`,
+   * migration 35): bumped by every spawn that starts a new claude session —
+   * a first claim, Retry, Run now, a fresh follow-up — and never by a resume
+   * (Proceed, a fix round, publish, a transient-error resume). 0 = never ran.
+   */
+  attempts: number;
+  /**
    * The definition of done in the human's words (docs/checks.md): injected
    * into the worker's fresh prompt and handed to the reviewer. null = none.
    */
@@ -1362,6 +1369,12 @@ export type AuditKind =
   | 'run.killed'
   | 'run.attention'
   | 'run.stats-final'
+  /** a worker turn ended on an API error (the CLI's StopFailure hook): the code and what the server did about it (docs/design.md § Transient API errors) */
+  | 'run.stop-failure'
+  /** one automatic resume of a worker turn that a transient API error cut short (typed `continue`, or `--resume`) */
+  | 'run.transient-retry'
+  /** a failed/cancelled task was started again (Retry / Run now): the error the previous attempt ended on, which the fresh prompt carries */
+  | 'task.retry'
   | 'proposal.created'
   | 'proposal.decided'
   | 'feature.created'

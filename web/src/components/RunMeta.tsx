@@ -31,6 +31,23 @@ export function TaskCostChip({ costUsd }: { costUsd: number }) {
   );
 }
 
+/**
+ * How many fresh agent sessions the task has had (`Task.attempts`, docs/design.md
+ * § Retry with context). `quiet` hides the first — on a board row only a
+ * re-attempt is news.
+ */
+export function TaskAttemptsChip({ attempts, quiet = false }: { attempts: number; quiet?: boolean }) {
+  if (!(attempts >= (quiet ? 2 : 1))) return null;
+  return (
+    <span
+      className="chip task-attempts"
+      title="fresh agent sessions this task has had (Retry, Run now, a fresh follow-up); resumes are not counted"
+    >
+      {attempts === 1 ? '1 attempt' : `${attempts} attempts`}
+    </span>
+  );
+}
+
 export function RunStatsChips({ run }: { run: Run }) {
   const s = run.stats;
   return (

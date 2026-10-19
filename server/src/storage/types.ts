@@ -396,6 +396,12 @@ export interface Storage {
   getTask(id: string): Promise<Task | null>;
   createTask(t: NewTask, actor: string): Promise<Task>;
   updateTask(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Promise<Task | null>;
+  /**
+   * `attempts = attempts + 1` in one statement (docs/design.md § Retry with
+   * context) — never through `updateTask`, whose column list deliberately
+   * leaves it out so a stale patch can never rewind the counter.
+   */
+  bumpTaskAttempts(id: string): Promise<Task | null>;
   deleteTask(id: string): Promise<void>;
   /**
    * Re-parent AND position a task in one transaction (docs/grouping.md § Order):

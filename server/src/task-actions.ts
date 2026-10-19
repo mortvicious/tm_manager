@@ -257,6 +257,18 @@ export async function enqueueTask(
     }
     return err(409, `cannot enqueue from status '${cur.status}'`);
   }
+  // The error this clears is what the next fresh prompt's `Previous attempt`
+  // block reports (docs/design.md § Retry with context) — kept in the audit
+  // row, since the row loses it.
+  if (cur.error || cur.status === 'failed' || cur.status === 'cancelled') {
+    await storage.appendEvent({
+      kind: 'task.retry',
+      actor,
+      taskId: id,
+      repoId: cur.repoId,
+      data: { via: 'enqueue', from: cur.status, previousError: cur.error },
+    });
+  }
   broadcast({ type: 'task.updated', task });
   deps.orchestrator?.maybeSchedule();
   return { task };

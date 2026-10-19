@@ -410,7 +410,7 @@ column, so a stale copy of a task cannot clobber it.
 | `dispatch` | ″ | `deliverDispatches`, before a `needs_action` wake |
 | `wake` | ″ | `wakeDue`, before the 5h-window resume |
 | `check-round` | ″ | the repo-check fix round of the verify loop (`docs/checks.md`) |
-| `transient-resume` | ″ | reserved for a later autonomy part |
+| `transient-resume` | ″ | `fireTransient`, before each automatic resume of a turn a transient API error cut short (`docs/design.md` § Transient API errors) |
 
 At or OVER the cap refuses. It returns `{ ok: true }` or
 `{ ok: false, fuse, spentUsd, capUsd, reason }`.
