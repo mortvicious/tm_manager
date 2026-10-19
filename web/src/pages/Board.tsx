@@ -2,10 +2,12 @@ import { Fragment, useCallback, useEffect, useMemo, useState, type CSSProperties
 import {
   EFFORT_LEVELS,
   MODEL_OPTIONS,
+  effectiveLanding,
   groupColorSlot,
   groupLabel,
   matchTaskPreset,
   type EffortLevel,
+  type LandingTier,
   type Task,
   type TaskStatus,
 } from '@tm/shared';
@@ -26,6 +28,7 @@ import { DispatchStrip } from '../components/DispatchStrip.tsx';
 import { DoneFields } from '../components/DoneFields.tsx';
 import { GroupHead } from '../components/GroupHead.tsx';
 import { GroupPicker } from '../components/GroupPicker.tsx';
+import { LandingPicker } from '../components/LandingPicker.tsx';
 import { IconChevron, IconPlus } from '../components/Icons.tsx';
 import { useIsMobile } from '../components/Layout.tsx';
 import {
@@ -71,7 +74,7 @@ const RECENT_LIMIT = 10;
 
 /** Phones: how many tags a row keeps, and which win (docs/mobile.md § Rows). */
 const MOBILE_CHIPS = 2;
-const MOBILE_CHIP_ORDER = ['repo', 'cost', 'attempts', 'dispatch', 'group', 'category', 'feature', 'autopub', 'agent', 'source', 'preset', 'reviewer'];
+const MOBILE_CHIP_ORDER = ['autolanded', 'repo', 'cost', 'attempts', 'dispatch', 'group', 'category', 'feature', 'landing', 'agent', 'source', 'preset', 'reviewer'];
 
 const byRecency = (key: 'createdAt' | 'updatedAt') => (a: Task, b: Task) => {
   const d = b[key].localeCompare(a[key]);
@@ -117,7 +120,7 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
   const [review, setReview] = useState<ReviewChoice>('default');
   const [reviewModel, setReviewModel] = useState('');
   const [reviewEffort, setReviewEffort] = useState('');
-  const [autoPublish, setAutoPublish] = useState(false);
+  const [landing, setLanding] = useState<LandingTier | null>(null);
   const reviewOn = reviewIsOn(reviewValueOf(review), settings);
   const [start, setStart] = useState<StartMode>('draft');
   const [busy, setBusy] = useState(false);
@@ -165,7 +168,7 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
         // a hidden reviewer (review off for this task) is not filed
         reviewModel: (reviewOn && reviewModel) || null,
         reviewEffort: ((reviewOn && reviewEffort) || null) as EffortLevel | null,
-        autoPublish,
+        landing,
       });
     } catch (e) {
       setErr((e as Error).message);
@@ -184,7 +187,7 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
     setReview('default');
     setReviewModel('');
     setReviewEffort('');
-    setAutoPublish(false);
+    setLanding(null);
     if (effectiveStart !== 'draft') {
       try {
         await api.taskAction(task.id, effectiveStart === 'run' ? 'run-now' : 'enqueue');
@@ -256,7 +259,6 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
           repoId={repoId || null}
           acceptance={acceptance}
           checks={checks}
-          autoPublish={autoPublish}
           onAcceptance={setAcceptance}
           onChecks={setChecks}
         />
@@ -325,22 +327,8 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
             settings={settings}
           />
         )}
-        <div className="wide">
-          <label className="label">Auto-publish on end</label>
-          <select
-            className="field"
-            value={autoPublish ? 'on' : 'off'}
-            onChange={(e) => setAutoPublish(e.target.value === 'on')}
-          >
-            <option value="off">off — stop at review, publish by hand</option>
-            <option value="on">on — commit &amp; push when the agent finishes</option>
-          </select>
-          <div className="hint">
-            {autoPublish
-              ? 'Bypasses both gates: no adversarial review round and no human review — the agent commits and pushes in its own terminal, then the task lands in published.'
-              : 'The agent stops at review; the Publish button ships it.'}
-          </div>
-        </div>
+        {/* a task made here is the human's own (source manual) — never external */}
+        <LandingPicker value={landing} onChange={setLanding} repo={repos.find((r) => r.id === repoId)} external={false} />
         <div className="wide">
           <label className="label">On create</label>
           <div className="start-row">
@@ -870,16 +858,36 @@ export function BoardPage({
         </span>,
       ]);
     }
-    if (t.autoPublish) {
+    // the landing tier (docs/design.md § Landing tiers): only the open work
+    // that will land without a human says so; a landing that happened says
+    // `auto-landed` instead
+    const landing = effectiveLanding(t, repos.find((r) => r.id === t.repoId));
+    if (t.autoLandedAt && (t.status === 'done' || t.status === 'published')) {
       all.push([
-        'autopub',
+        'autolanded',
         <span
-          key="autopub"
+          key="autolanded"
           className="chip"
-          style={{ color: 'var(--tm-status-published)' }}
-          title="auto-publish on end — the agent commits and pushes when it finishes, skipping review"
+          style={{ color: 'var(--tm-status-done)' }}
+          title={`landed by the orchestrator (${t.status === 'published' ? 'auto-publish' : 'on-green'}): checks green, review clean — no human click`}
         >
-          auto-publish
+          auto-landed
+        </span>,
+      ]);
+    } else if (landing !== 'supervised' && t.status !== 'done' && t.status !== 'published' && t.status !== 'cancelled') {
+      all.push([
+        'landing',
+        <span
+          key="landing"
+          className="chip"
+          style={{ color: landing === 'auto-publish' ? 'var(--tm-status-published)' : 'var(--tm-status-done)' }}
+          title={
+            landing === 'auto-publish'
+              ? 'auto-publish — commits and pushes on its own once the checks are green and the review is clean'
+              : 'on-green — moves to done on its own once the checks are green and the review is clean'
+          }
+        >
+          {landing}
         </span>,
       ]);
     }

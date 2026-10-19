@@ -16,7 +16,7 @@ import type { Storage } from './storage/types.ts';
  * loop (docs/checks.md); `transient-resume` is reserved for the worker
  * StopFailure resume (a later autonomy part).
  */
-export type BudgetTurn = 'claim' | 'fix-round' | 'dispatch' | 'wake' | 'check-round' | 'transient-resume';
+export type BudgetTurn = 'claim' | 'fix-round' | 'dispatch' | 'wake' | 'check-round' | 'transient-resume' | 'auto-publish';
 
 export type BudgetVerdict =
   | { ok: true }
@@ -99,6 +99,7 @@ const KIND_LABEL: Record<BudgetTurn, string> = {
   wake: 'wake-up resume',
   'check-round': 'check fix round',
   'transient-resume': 'transient-error resume',
+  'auto-publish': 'publish turn (auto-publish landing)',
 };
 
 /**

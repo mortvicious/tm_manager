@@ -110,10 +110,12 @@ export function ConfigPage() {
         </div>
         <div className="cfg-row">
           <div>
-            <div>Auto-complete tasks</div>
-            <div className="hint">first agent turn-end marks the task done instead of review</div>
+            <div>Landing</div>
+            <div className="hint">
+              how far a finished task goes on its own is a per-repo tier (Repos page), overridable per task — supervised,
+              on-green or auto-publish
+            </div>
           </div>
-          <Toggle on={cfg['orchestrator.autoComplete']} onChange={(v) => set('orchestrator.autoComplete', v)} />
         </div>
       </div>
 

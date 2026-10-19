@@ -1,4 +1,4 @@
-import { isCodexModel, type AppSettings, type EffortLevel, type Task } from '@tm/shared';
+import { isCodexModel, type AppSettings, type EffortLevel, type LandingTier, type Task } from '@tm/shared';
 import { needsFallbackModel } from './usage.ts';
 
 export interface WorkerInvocation {
@@ -82,9 +82,9 @@ const STANDING_RULES = [
  */
 const SHIP_GATE_RULE = [
   'Ship gate — this overrides the repo\'s CLAUDE.md and any other instruction to push or deploy:',
-  'this task is adversarially reviewed BEFORE it ships, so in this session do NOT `git push`, deploy',
+  'this task is verified by the server (its checks and/or an adversarial review) BEFORE it ships, so in this session do NOT `git push`, deploy',
   '(Vercel, ECS, any release step) or verify against production. Committing locally is fine (the',
-  "reviewer reads this task's commits and the working tree). Then stop: after the review, the",
+  "reviewer reads this task's commits and the working tree). Then stop: after the verification, the",
   'Publish turn pushes and runs the deploy/verify steps.',
 ].join(' ');
 
@@ -100,13 +100,16 @@ export function commitTrailerRule(taskId: string): string {
 }
 
 /**
- * Whether this task's change is reviewed before it ships — the same test the
- * Stop hook uses to mark the landing `pending` (routes/internal.ts), so the
- * prompt never promises a review that will not run. Auto-publish skips the
- * review round by design, so it keeps the repo's own push behaviour.
+ * Whether this task's change is held back from shipping until the server has
+ * looked at it. Review on is the same test the Stop hook uses to mark the
+ * landing `pending` (routes/internal.ts), so the prompt never promises a
+ * review that will not run. The `auto-publish` tier holds it ALWAYS
+ * (docs/design.md § Landing tiers): its publish turn runs only after the
+ * checks are green and the verdict is clean, so a push from the work turn
+ * would ship exactly what that gate exists to stop.
  */
-export function shipHeldForReview(task: Pick<Task, 'review' | 'autoPublish'>, settings: AppSettings): boolean {
-  return !task.autoPublish && (task.review ?? settings['review.enabled']);
+export function shipHeldForReview(task: Pick<Task, 'review'>, settings: AppSettings, landing: LandingTier): boolean {
+  return landing === 'auto-publish' || (task.review ?? settings['review.enabled']);
 }
 
 /**
@@ -388,6 +391,8 @@ export function buildWorkerInvocation(opts: {
    * fresh prompt carries it — a resumed session already has it.
    */
   doneNote?: string;
+  /** the task's effective landing tier (`effectiveLanding`) — decides the ship gate */
+  landing: LandingTier;
   /**
    * Continue an existing claude session instead of starting a fresh one
    * (`claude --resume <id>`) — the "proceed" flow. The agent keeps its whole
@@ -426,7 +431,7 @@ export function buildWorkerInvocation(opts: {
       sharedNote: opts.shared?.note,
       doneNote: opts.doneNote,
       previousSummary: opts.previousSummary,
-      shipGate: shipHeldForReview(task, settings),
+      shipGate: shipHeldForReview(task, settings, opts.landing),
     });
     // `-c model_reasoning_effort` has no Codex-CLI-wide free/paid distinction
     // worth encoding yet, so effort is not forwarded — "free" is entirely a
@@ -600,7 +605,7 @@ export function buildWorkerInvocation(opts: {
     sharedNote: opts.shared?.note,
     doneNote: opts.doneNote,
     previousSummary: opts.previousSummary,
-    shipGate: shipHeldForReview(task, settings),
+    shipGate: shipHeldForReview(task, settings, opts.landing),
   });
   args.push(prompt);
 

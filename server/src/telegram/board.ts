@@ -5,6 +5,7 @@ import {
   customQueueHoldsRepo,
   customQueueWaiting,
   matchTaskPreset,
+  isExternalTask,
   taskPresets,
   type Feature,
   type Proposal,
@@ -804,7 +805,8 @@ export async function renderCard(deps: BoardDeps, t: Task, back: BoardState): Pr
         (t.review === false
           ? ''
           : `reviewer <code>${escapeHtml(t.reviewModel ?? 'default')}${t.reviewEffort ? ` ${escapeHtml(t.reviewEffort)}` : ''}</code> · `) +
-        `auto-publish <code>${t.autoPublish ? 'on' : 'off'}</code>` +
+        `landing <code>${isExternalTask(t) ? 'supervised (external)' : escapeHtml(t.landing ?? 'repo default')}</code>` +
+        (t.autoLandedAt ? ' · <b>auto-landed</b>' : '') +
         (preset ? ` (${escapeHtml(preset.label)})` : ''),
     );
     if (queue) lines.push(queue);

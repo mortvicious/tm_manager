@@ -3547,6 +3547,16 @@ select.field.cmd-script-select {
   white-space: nowrap;
 }
 
+.repo-landing {
+  display: inline-flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+}
+
+.repo-landing select.field {
+  width: auto;
+}
+
 .repos-tbl td.repo-cmd-cell {
   white-space: normal;
   background: var(--tm-bg-inset);

@@ -113,6 +113,73 @@ export const TERMINAL_TASK_STATUSES: TaskStatus[] = ['published', 'done', 'faile
 
 export type TaskSource = 'manual' | 'sentry' | 'auto' | 'feature';
 
+/**
+ * How far a finished task may go without a human (docs/design.md § Landing
+ * tiers). A repo setting (`Repo.landing`), overridable per task
+ * (`Task.landing`, null = the repo's):
+ * - `supervised`: the task stops in `review` for the human (the default).
+ * - `on-green`: after the checks and the review round, a task whose checks are
+ *   green (or none apply) and whose final verdict has no blocker/major
+ *   finding moves `review → done` on its own. Local commits only: the human
+ *   publishes.
+ * - `auto-publish`: the same gate, and then the task's own session publishes
+ *   (docs/publish.md) — `review → published`.
+ * An external task (`isExternalTask`) never resolves above `supervised`.
+ */
+export type LandingTier = 'supervised' | 'on-green' | 'auto-publish';
+export const LANDING_TIERS: LandingTier[] = ['supervised', 'on-green', 'auto-publish'];
+
+/**
+ * A task whose text came from outside the human's own words — a Sentry
+ * import, a proposal/analysis result, a shared-space filing, anything an agent
+ * filed — and any FUTURE source (schedules, intake): only `manual` and
+ * `feature` (a plan the human approved) are the human's. Such a task can never
+ * land above `supervised` — the prompt-injection line. `createdByRun` is the
+ * belt to the source's braces: a row an agent run created is external whatever
+ * its source says. `source` is immutable after create (routes/tasks.ts).
+ */
+export function isExternalTask(t: Pick<Task, 'source' | 'createdByRun'>): boolean {
+  return (t.source !== 'manual' && t.source !== 'feature') || t.createdByRun !== null;
+}
+
+/**
+ * The landing gate (docs/design.md § Landing tiers), read off the row once
+ * the verify round has settled: checks green or none applied, AND a verdict
+ * with no blocker/major finding — `passed`, `skipped` (the task changed
+ * nothing to judge) or no review at all (review off for this task). Returns
+ * the reason the task may land ("checks green, review clean"), or null when
+ * it may not: red/error checks, a flagged or failed review, or a round still
+ * open. Pure, and status-blind so the notifiers can quote the reason off a
+ * row that has already landed; the orchestrator also requires `review`. The
+ * tier is a separate question (`effectiveLanding`).
+ */
+export function landingReason(t: Pick<Task, 'reviewState' | 'checkState' | 'checkResults'>): string | null {
+  const checks =
+    t.checkState === 'green'
+      ? `checks green${t.checkResults.length ? ` (${t.checkResults.length})` : ''}`
+      : t.checkState === null
+        ? 'no checks'
+        : null;
+  const review =
+    t.reviewState === 'passed'
+      ? 'review clean'
+      : t.reviewState === 'skipped'
+        ? 'nothing to review'
+        : t.reviewState === null
+          ? 'review off'
+          : null;
+  return checks && review ? `${checks}, ${review}` : null;
+}
+
+/** The tier a task actually lands with: its override, else its repo's, clamped to `supervised` for an external task. */
+export function effectiveLanding(
+  t: Pick<Task, 'source' | 'createdByRun' | 'landing'>,
+  repo: Pick<Repo, 'landing'> | null | undefined,
+): LandingTier {
+  if (isExternalTask(t)) return 'supervised';
+  return t.landing ?? repo?.landing ?? 'supervised';
+}
+
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
@@ -320,6 +387,8 @@ export interface Repo {
   role: string | null; // free note: "backend", "frontend", ...
   /** dev-server URL framed by the mobile emulator window (http/https only; null = no preview) */
   previewUrl: string | null;
+  /** how far this repo's tasks land on their own (docs/design.md § Landing tiers); a task may override */
+  landing: LandingTier;
   createdAt: string;
 }
 
@@ -514,12 +583,18 @@ export interface Task {
   /** reviewer --effort; null = the reviewer's default (none, xhigh on the Opus fallback) */
   reviewEffort: EffortLevel | null;
   /**
-   * Skip the human review gate: when the worker finishes, the same agent
-   * session commits and pushes the work and the task lands in `published`
-   * (docs/publish.md). Also skips the adversarial review round — the point of
-   * the flag is "no gate between finishing and shipping".
+   * Landing tier override (docs/design.md § Landing tiers): null = the repo's
+   * `landing`. Resolve with `effectiveLanding`, which clamps an external task
+   * to `supervised` whatever is stored here.
    */
-  autoPublish: boolean;
+  landing: LandingTier | null;
+  /**
+   * When the ORCHESTRATOR landed this task (`on-green` → done, `auto-publish`
+   * → published) rather than a human; null otherwise. Cleared by any move to a
+   * status other than done/published, so it only ever describes the current
+   * landing (the card's `auto-landed` chip).
+   */
+  autoLandedAt: string | null;
   /**
    * Membership in the custom queue (docs/queue.md): set when a human clicks
    * "Add to queue", ISO time of that click = FIFO position. The custom queue
@@ -1016,7 +1091,6 @@ export type TerminalClickOutside = 'close' | 'compact' | 'nothing';
 export interface AppSettings {
   'orchestrator.enabled': boolean;
   'orchestrator.concurrency': number;
-  'orchestrator.autoComplete': boolean;
   /** WORKER model — the heavy implementation work (user policy 2026-08-24: opus) */
   'agent.model': string;
   'agent.effort': EffortLevel;
@@ -1187,7 +1261,6 @@ export interface AppSettings {
 export const DEFAULT_SETTINGS: AppSettings = {
   'orchestrator.enabled': false,
   'orchestrator.concurrency': 2,
-  'orchestrator.autoComplete': false,
   // Role split (user policy 2026-08-24): opus does the heavy work, fable
   // tells it what to do and reviews.
   'agent.model': 'claude-opus-5-5',
@@ -1359,6 +1432,7 @@ export type AuditKind =
   | 'task.follow-up'
   | 'task.dispatch'
   | 'task.publish'
+  | 'task.landing'
   | 'run.reviewed'
   /** the repo checks ran over a task's change, or were skipped with a reason (docs/checks.md) */
   | 'task.checked'
@@ -1861,7 +1935,7 @@ export const PUSH_KINDS: { kind: PushKind; label: string; hint: string; default:
   { kind: 'question', label: 'Questions', hint: 'an agent asks you something (AskUserQuestion)', default: true },
   { kind: 'attention', label: 'Needs attention', hint: 'an agent is stuck on a prompt in its hidden terminal', default: true },
   { kind: 'review', label: 'Ready for review', hint: 'a task landed in review, with the reviewer’s verdict', default: true },
-  { kind: 'done', label: 'Done', hint: 'a task finished straight to done (auto-complete)', default: true },
+  { kind: 'done', label: 'Done', hint: 'a task the orchestrator landed on its own (on-green: checks green, review clean)', default: true },
   { kind: 'failed', label: 'Failed', hint: 'a task failed', default: true },
   { kind: 'blocked', label: 'Blocked', hint: 'a task is waiting on its subtasks', default: true },
   { kind: 'published', label: 'Published', hint: 'a task was committed and pushed', default: true },

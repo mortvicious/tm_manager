@@ -69,9 +69,9 @@ section and the check evidence (below).
 
 ```
 Stop hook (worker turn ends, not waiting, not a publish turn)
-  └─ checks due? (checksDue: repo has selected checks, task not auto-publish)
-       no  ──► today's path, unchanged (review / done, review round)
-       yes ──► land `review` with checkState 'pending' (even under autoComplete)
+  └─ checks due? (checksDue: repo has selected checks; every landing tier)
+       no  ──► today's path, unchanged (`review`, review round)
+       yes ──► land `review` with checkState 'pending' (the Stop never lands `done`)
                └─ reviewCompletedRun → reviewLoop → runCheckStage, then runReviewRound
                     empty diff        ► checkState null, audited, review as today
                     same diff + green ► no re-run (talk-only turn), audited
@@ -83,6 +83,7 @@ Stop hook (worker turn ends, not waiting, not a publish turn)
                             no live session · a human took over
                             spent ► stays `review`, checkState 'red', output on the
                                     row, reviewer skipped (run.reviewed checks-red)
+  round settled ► landIfClean: the landing tier decides (design.md § Landing tiers)
 ```
 
 - **Where.** At the top of every `reviewLoop` pass (`Orchestrator.runCheckStage`),
@@ -122,20 +123,23 @@ Stop hook (worker turn ends, not waiting, not a publish turn)
 - **Flaky tests.** A red result gets one silent re-run before it counts. The
   second result is kept, marked `retried`, and is shown as "red twice", or
   "red once, green on the re-run" when the re-run was green.
-- **autoComplete.** Checks decide "done". A task with checks due therefore
-  lands `review` even under `orchestrator.autoComplete`. A non-red settle
-  (green, empty diff, or checks gone) promotes it `review → done` in the same
-  write as the check state (`settleChecks`), and the review round then runs on
-  the done task exactly as before. `error` and `red` stay in `review` for a
-  human. This is the narrow form of "on-green landing"; the landing tiers in a
-  later part replace it.
+- **Landing tiers (2026-10-19).** Checks decide "done", and the landing tiers
+  (`docs/design.md` § Landing tiers) replaced the narrow autoComplete
+  promotion this stage used to do: `orchestrator.autoComplete` is removed, and
+  `settleChecks` only writes the check state. A task always lands `review`;
+  when the whole round (checks, then review) has settled, `landIfClean` moves
+  an `on-green` task to `done` (or publishes an `auto-publish` one) only when
+  `landingReason` passes: checks `green` or none applied, AND a review
+  `passed`, `skipped` or off. `red` and `error` stay in `review` for a human
+  on every tier, and the review round no longer runs on a `done` task.
 - **Taken over.** While a check runs, the task's status is polled every 2 s. A
   human Proceed, cancel, or Undo that moves it out of `review` stops the
   check. The verdict is dropped and the state is cleared (`taken-over`).
-- **Skipped turns.** Publish and auto-publish turns never run checks
-  (`checksDue` is false for an auto-publish task, and the Stop route leaves
-  `checkState` alone on a publish turn). Enqueue/Retry clears the previous
-  attempt's verdict.
+- **Skipped turns.** The publish turn never runs checks (the Stop route leaves
+  `checkState` alone on it). An `auto-publish` tier task is NOT skipped any
+  more: its checks run at its worker's Stop like any other, and its publish
+  turn comes only after they are green (2026-10-19). Enqueue/Retry clears the
+  previous attempt's verdict.
 
 ## State on the row
 
@@ -146,10 +150,11 @@ belong to). Like `review_state` there is **no new TaskStatus**. The Stop route
 writes `pending` in the same conditional transition that parks the task, so no
 surface sees `review` without knowing checks are due.
 
-- `running` also covers two short gaps: the seconds a red's fix turn takes to
-  resume, and a green about to be promoted. During those, `review + red` would
-  read as a landing to every notifier. The final state is written once the
-  task is `running` again, or in the same write as `done`.
+- `running` also covers a short gap: the seconds a red's fix turn takes to
+  resume. During it, `review + red` would read as a landing to every
+  notifier. The final state is written once the task is `running` again.
+  (A second gap, a green about to be promoted to `done`, went with the
+  autoComplete promotion, 2026-10-19.)
 - **Repo holds.** A task in `review` whose checks are `pending|running` holds
   its repo, exactly as an open review round does. That covers the global and
   overflow claims (`REPO_EXCLUSIVE_GATE`), the custom queue (`heldBy`), and
@@ -179,8 +184,9 @@ surface sees `review` without knowing checks are due.
   review, and opens with `checkClause()`: `✓ checks green (n)`,
   `✗ checks red: typecheck (exit 2)`, or `⚠ checks gave no verdict: …`. The
   task card has a Checks line. Board marks: 🧪 checking, ✗ checks red.
-- **Push.** The same wait and clause. The auto-complete `done` push also fires
-  for the `review → done` promotion.
+- **Push.** The same wait and clause. The `done` push fires for an
+  orchestrator landing (`autoLandedAt`: "✅ Auto-landed · <title>", the
+  landing reason in the body).
 - **Reviewer evidence.** `checkEvidence()` adds `## Repo checks (run by the
   server on this change, not by the worker)` with `checks: <state>`, one line
   per check, and the tails (15 lines for green, 80 for red). It is included
@@ -219,9 +225,12 @@ artifacts as `checks-harness-results.txt`.
   - A 10 s timeout on `sleep 40` gave `error`, not re-run, the run killed, no
     fix turn.
   - autoComplete + green → `done`, and an empty diff → `done` with checks
-    skipped. This one was a bug the harness found and that was fixed.
+    skipped. This one was a bug the harness found and that was fixed. (The
+    promotion was removed by the landing tiers, 2026-10-19; the tiers have
+    their own verification in `docs/decisions.md`.)
   - The budget fuse refusing the check round.
-  - Auto-publish and `checks: []` opting out.
+  - Auto-publish and `checks: []` opting out. (Auto-publish no longer opts
+    out since the landing tiers, 2026-10-19.)
   - A stranded `running` check re-run through the loop.
 - **Not exercised:**
   - A real claude worker typing the fix (the follow-up was stubbed).

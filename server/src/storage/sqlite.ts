@@ -251,8 +251,8 @@ export class SqliteStorage implements Storage {
   async createRepo(r: NewRepo): Promise<Repo> {
     const id = randomUUID();
     this.db
-      .prepare(`INSERT INTO tm_repos (id, name, path, role, preview_url, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(id, r.name, r.path, r.role ?? null, r.previewUrl ?? null, now());
+      .prepare(`INSERT INTO tm_repos (id, name, path, role, preview_url, landing, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, r.name, r.path, r.role ?? null, r.previewUrl ?? null, r.landing ?? 'supervised', now());
     return (await this.getRepo(id))!;
   }
 
@@ -260,12 +260,13 @@ export class SqliteStorage implements Storage {
     const cur = await this.getRepo(id);
     if (!cur) return null;
     this.db
-      .prepare(`UPDATE tm_repos SET name = ?, path = ?, role = ?, preview_url = ? WHERE id = ?`)
+      .prepare(`UPDATE tm_repos SET name = ?, path = ?, role = ?, preview_url = ?, landing = ? WHERE id = ?`)
       .run(
         patch.name ?? cur.name,
         patch.path ?? cur.path,
         patch.role === undefined ? cur.role : patch.role,
         patch.previewUrl === undefined ? cur.previewUrl : patch.previewUrl,
+        patch.landing ?? cur.landing,
         id,
       );
     return this.getRepo(id);
@@ -411,7 +412,7 @@ export class SqliteStorage implements Storage {
     const place = this.placeSync(id, t.parentId);
     this.db
       .prepare(
-        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, auto_publish, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, sort_order)
+        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, sort_order)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (${NEXT_SORT_ORDER_SQL}))`,
       )
       .run(
@@ -430,7 +431,7 @@ export class SqliteStorage implements Storage {
         t.effort ?? null,
         t.category ?? null,
         t.review == null ? null : t.review ? 1 : 0,
-        t.autoPublish ? 1 : 0,
+        t.landing ?? null,
         t.createdByRun ?? null,
         t.spawnDepth ?? 0,
         t.featureId ?? null,
@@ -500,7 +501,7 @@ export class SqliteStorage implements Storage {
     const isRoot = place.groupId === id;
     this.db
       .prepare(
-        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, auto_publish=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, review_diff_hash=?, review_state=?, review_rounds=?, wake_at=?, error=?, updated_at=?, review_model=?, review_effort=?, base_sha=?, base_ref=?, base_at=?, queue_held_at=?, acceptance=?, checks=?, check_state=?, check_results=?, check_diff_hash=? WHERE id=?`,
+        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, landing=?, auto_landed_at=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, review_diff_hash=?, review_state=?, review_rounds=?, wake_at=?, error=?, updated_at=?, review_model=?, review_effort=?, base_sha=?, base_ref=?, base_at=?, queue_held_at=?, acceptance=?, checks=?, check_state=?, check_results=?, check_diff_hash=? WHERE id=?`,
       )
       .run(
         next.title,
@@ -519,7 +520,8 @@ export class SqliteStorage implements Storage {
         next.effort,
         next.category,
         next.review == null ? null : next.review ? 1 : 0,
-        next.autoPublish ? 1 : 0,
+        next.landing ?? null,
+        next.autoLandedAt ?? null,
         next.customQueueAt ?? null,
         next.featureId,
         next.featurePhase,
@@ -703,7 +705,8 @@ export class SqliteStorage implements Storage {
     from: Task['status'][],
     to: Task['status'],
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'autoLandedAt'>>,
+    audit?: Record<string, unknown>,
   ): Promise<Task | null> {
     // Conditional single-statement transition — immune to check-then-set races
     // between route handlers, hook callbacks and the claim loop. Patch keys are
@@ -739,6 +742,15 @@ export class SqliteStorage implements Storage {
     // a mark must never outlive the work, or a later follow-up into `review`
     // would hold its repo's place in the queue again.
     if (TERMINAL_TASK_STATUSES.includes(to)) sets.push('custom_queue_at = NULL');
+    // The auto-landed stamp describes the CURRENT landing only
+    // (docs/design.md § Landing tiers): set by the landing itself, dropped by
+    // any move off done/published (a retry, a reopen).
+    if (patch && 'autoLandedAt' in patch) {
+      sets.push('auto_landed_at = ?');
+      vals.push(patch.autoLandedAt ?? null);
+    } else if (to !== 'done' && to !== 'published') {
+      sets.push('auto_landed_at = NULL');
+    }
     const placeholders = from.map(() => '?').join(', ');
     return this.inTxn((): Task | null => {
       const prev = this.db.prepare(`SELECT status FROM tm_tasks WHERE id = ?`).get(id) as
@@ -754,7 +766,7 @@ export class SqliteStorage implements Storage {
         actor,
         taskId: task.id,
         repoId: task.repoId,
-        data: { from: prev?.status ?? null, to },
+        data: { ...audit, from: prev?.status ?? null, to },
       });
       return task;
     });

@@ -26,14 +26,18 @@ into, and it has three properties the global queue does not:
 ## When the next member starts
 
 (2026-09-28, `docs/decisions.md` "Review no longer holds the custom queue".)
-A member's turn ends in `review` (unless auto-complete is on). While the
+A member's turn always ends in `review` (`orchestrator.autoComplete` is gone,
+2026-10-19). While the
 automatic adversarial review of that turn is open — `pending`, `reviewing`, or
 a fix round (`fixing`, the task is `running` again) — the repo is still held,
 and the stop-hook's in-process hold covers the seconds between the Stop and
-the round (and an auto-publish turn). Once the review settles (`passed`,
-`flagged`, `skipped`, `error`, or no review at all) the task **stays in
-`review`** — it is not moved, completed or dequeued, and keeps its mark — but
-the next same-repo member starts. So "queue five tasks for one repo, walk
+the round (and, on the `auto-publish` tier, the publish turn the round ends
+with). Once the review settles (`passed`, `flagged`, `skipped`, `error`, or no
+review at all) the task **stays in `review`** — it is not moved, completed or
+dequeued, and keeps its mark — but the next same-repo member starts. The one
+exception is the landing tier (`docs/design.md` § Landing tiers): on an
+`on-green` or `auto-publish` repo or task, a member whose checks are green and
+whose review is clean lands `done`/`published` on its own instead. So "queue five tasks for one repo, walk
 away" runs all five back to back, each landing in your review column. The
 board says which is which: `queue · in auto-review` while a member's round
 still holds the repo, `queue · done here` once it is waiting for you and the
@@ -79,8 +83,8 @@ rule, as they were before it: there is no way to approve them short of a retry.
   owns the working tree. The reason is written on the task as `publish held:
   publish in order — "<A>" (review) has unpushed commits under this task's work
   … Publish or Mark done "<A>" first`, and audited `task.publish
-  {phase:'refused'}`. Auto-publish discards publish's result, which is why the
-  row carries it. A refused auto-publish stays in `review`: press Publish once
+  {phase:'refused'}`. An auto-publish landing (`landIfClean`) is not a click
+  that could show publish's result, which is why the row carries it. A refused auto-publish stays in `review`: press Publish once
   the earlier task is out of the way. It is not retried automatically.
 - **Partial** when unapproved work sits *on top* (later commits, or a tree a
   later unapproved task owns). The turn is `publishUpToInstruction` (a publish

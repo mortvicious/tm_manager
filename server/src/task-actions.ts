@@ -1,4 +1,4 @@
-import { GROUP_COLOR_COUNT, TASK_MOVE_PLACES, type EffortLevel, type TaskMovePlace, type Task, type TaskStatus } from '@tm/shared';
+import { GROUP_COLOR_COUNT, TASK_MOVE_PLACES, isExternalTask, type EffortLevel, type LandingTier, type TaskMovePlace, type Task, type TaskStatus } from '@tm/shared';
 import type { ActionResult, OrchestratorApi } from './app-types.ts';
 import { broadcast } from './events.ts';
 import type { MoveAnchor } from './storage/group.ts';
@@ -38,7 +38,8 @@ export interface TaskEdit {
   repoId?: string | null;
   parentId?: string | null;
   priority?: number;
-  source?: 'manual' | 'sentry' | 'auto';
+  // `source` is deliberately absent: it is immutable after create, because
+  // it is what keeps an external task supervised (isExternalTask).
   sourceRef?: string | null;
   model?: string | null;
   effort?: EffortLevel | null;
@@ -46,7 +47,8 @@ export interface TaskEdit {
   review?: boolean | null;
   reviewModel?: string | null;
   reviewEffort?: EffortLevel | null;
-  autoPublish?: boolean;
+  /** landing tier override (docs/design.md § Landing tiers); null = the repo's */
+  landing?: LandingTier | null;
   acceptance?: string | null;
   checks?: string[] | null;
   groupName?: string | null;
@@ -65,6 +67,20 @@ function normalizeDone<T extends { acceptance?: string | null; checks?: string[]
     out.checks = input.checks == null ? null : [...new Set(input.checks.map((n) => n.trim()).filter(Boolean))];
   }
   return out;
+}
+
+/**
+ * The hard rule of the landing tiers (docs/design.md § Landing tiers): an
+ * external task never lands above `supervised`. `effectiveLanding` clamps it
+ * whatever is stored; this refuses the write, so no surface shows a tier the
+ * task will never get.
+ */
+export function landingRefusal(
+  t: Pick<Task, 'source' | 'createdByRun'>,
+  landing: LandingTier | null | undefined,
+): string | null {
+  if (!landing || landing === 'supervised' || !isExternalTask(t)) return null;
+  return `an external task (source '${t.source}'${t.createdByRun ? ', filed by an agent' : ''}) never lands above supervised`;
 }
 
 /** POST /api/tasks — create + broadcast. */
@@ -92,6 +108,8 @@ export async function editTask(
   }
   const cur = await storage.getTask(id);
   if (!cur) return err(404, 'task not found');
+  const landingRefused = landingRefusal(cur, patch.landing);
+  if (landingRefused) return err(409, landingRefused);
   // Naming/colouring is a property of the GROUP, so it is only accepted on the
   // group's root — otherwise two members could claim different names.
   const namesGroup = patch.groupName !== undefined || patch.groupColor !== undefined;

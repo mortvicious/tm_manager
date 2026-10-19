@@ -5,6 +5,7 @@ import {
   type ChatMessage,
   type Feature,
   type Proposal,
+  landingReason,
   type Question,
   type Report,
   type CheckState,
@@ -198,10 +199,10 @@ export class PushNotifier {
         }
         break;
       case 'done':
-        // only the agent finishing straight to done (auto-complete) — a human
-        // pressing Mark done does not need telling. With repo checks the
-        // landing is review → done on green (the checks were due a moment ago).
-        if (moved && (prevStatus === 'running' || prevStatus === 'waiting' || (prevStatus === 'review' && checking(prevCheck)))) {
+        // Only a task that got to done without a human: an on-green landing
+        // (docs/design.md § Landing tiers, `autoLandedAt`) or an agent closing
+        // its own task. A human pressing Mark done does not need telling.
+        if (moved && (prevStatus === 'running' || prevStatus === 'waiting' || !!t.autoLandedAt)) {
           this.mark(t.id, (p) => (p.done = true));
         }
         break;
@@ -299,7 +300,14 @@ export class PushNotifier {
       );
     }
     if (p.done && task.status === 'done') {
-      await send('done', `✅ Done · ${task.title}`, clip(task.resultSummary ?? 'Finished.', SUMMARY_CLIP));
+      if (task.autoLandedAt) {
+        const body = [`auto-landed: ${landingReason(task) ?? 'landed on its own'}`, reviewerSummary ?? task.resultSummary]
+          .filter(Boolean)
+          .join('\n');
+        await send('done', `✅ Auto-landed · ${task.title}`, clip(body, SUMMARY_CLIP));
+      } else {
+        await send('done', `✅ Done · ${task.title}`, clip(task.resultSummary ?? 'Finished.', SUMMARY_CLIP));
+      }
     }
     if (p.failed && task.status === 'failed') {
       await send('failed', `❌ Failed · ${task.title}`, clip(task.error ?? 'The task failed.', SUMMARY_CLIP));

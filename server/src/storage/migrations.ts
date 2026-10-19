@@ -609,6 +609,24 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `UPDATE tm_tasks SET attempts = (SELECT COUNT(*) FROM tm_runs r WHERE r.task_id = tm_tasks.id AND r.mode = 'worker' AND r.resumed_from IS NULL)`,
     ],
   },
+  {
+    id: 36,
+    // Landing tiers (docs/design.md § Landing tiers): a per-repo tier, a
+    // per-task override (null = the repo's) and the stamp of an orchestrator
+    // landing. They replace two flags: the per-task `auto_publish` (carried
+    // over as the task's `auto-publish` override; the column stays, unread)
+    // and the global `orchestrator.autoComplete` setting (removed — a stored
+    // `true` puts every repo on `on-green`, the tier it was the narrow form of).
+    statements: [
+      `ALTER TABLE tm_repos ADD COLUMN landing TEXT NOT NULL DEFAULT 'supervised'`,
+      `ALTER TABLE tm_tasks ADD COLUMN landing TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN auto_landed_at TEXT`,
+      // an external task never lands above supervised (isExternalTask): its old flag is dropped, not carried
+      `UPDATE tm_tasks SET landing = 'auto-publish' WHERE auto_publish = 1 AND source IN ('manual', 'feature') AND created_by_run IS NULL`,
+      `UPDATE tm_repos SET landing = 'on-green' WHERE EXISTS (SELECT 1 FROM tm_config WHERE key = 'orchestrator.autoComplete' AND value = 'true')`,
+      `DELETE FROM tm_config WHERE key = 'orchestrator.autoComplete'`,
+    ],
+  },
 ];
 
 /** The migration whose rows each driver backfills in JS once it is applied. */

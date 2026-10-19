@@ -52,7 +52,7 @@ export type TaskWrite = Partial<
     | 'review'
     | 'reviewModel'
     | 'reviewEffort'
-    | 'autoPublish'
+    | 'landing'
     | 'acceptance'
     | 'checks'
     | 'groupName'
@@ -70,7 +70,7 @@ export function normalizeTask(t: Task): Task {
   if (
     t.groupId &&
     t.groupPath &&
-    t.autoPublish !== undefined &&
+    t.landing !== undefined &&
     t.customQueueAt !== undefined &&
     typeof t.sortOrder === 'number' &&
     Array.isArray(t.reviewRounds) &&
@@ -79,7 +79,8 @@ export function normalizeTask(t: Task): Task {
     return t;
   return {
     ...t,
-    autoPublish: t.autoPublish ?? false,
+    landing: t.landing ?? null,
+    autoLandedAt: t.autoLandedAt ?? null,
     customQueueAt: t.customQueueAt ?? null,
     reviewState: t.reviewState ?? null,
     reviewModel: t.reviewModel ?? null,
@@ -137,7 +138,7 @@ export const api = {
   listRepos: () => req<Repo[]>('GET', '/api/repos'),
   createRepo: (b: { name?: string; path: string; role?: string | null; previewUrl?: string | null }) =>
     req<Repo>('POST', '/api/repos', b),
-  updateRepo: (id: string, b: Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl'>>) =>
+  updateRepo: (id: string, b: Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing'>>) =>
     req<Repo>('PATCH', `/api/repos/${id}`, b),
   deleteRepo: (id: string) => req<{ ok: true }>('DELETE', `/api/repos/${id}`),
   gitStatus: (id: string) => req<{ isRepo: boolean; branch: string | null; dirty: number; ahead: number }>('GET', `/api/repos/${id}/git`),

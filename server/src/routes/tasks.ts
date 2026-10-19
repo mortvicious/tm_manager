@@ -1,10 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
-import { GROUP_COLOR_COUNT } from '@tm/shared';
+import { GROUP_COLOR_COUNT, LANDING_TIERS, type LandingTier } from '@tm/shared';
 import { z } from 'zod';
 import { artifactsRoot } from '../config.ts';
 import { broadcast } from '../events.ts';
+import { LANDING_FROM_BROWSER, landingNeedsBrowser } from './repos.ts';
 import type { Storage } from '../storage/types.ts';
 import {
   ENQUEUE_FROM,
@@ -16,6 +17,7 @@ import {
   completeTask,
   createTask,
   editTask,
+  landingRefusal,
   enqueueTask,
   moveTask,
   queueAddTask,
@@ -44,9 +46,9 @@ const taskBody = z
     // (docs/design.md § Adversarial review)
     reviewModel: z.string().min(1).nullish(),
     reviewEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullish(),
-    // "allow auto-publish on end": skip the review gate and commit+push when
-    // the worker finishes (docs/publish.md)
-    autoPublish: z.boolean().optional(),
+    // landing tier override (docs/design.md § Landing tiers); null = the
+    // repo's. Replaces the old `autoPublish` flag ('auto-publish').
+    landing: z.enum(LANDING_TIERS as [LandingTier, ...LandingTier[]]).nullish(),
     // definition of done (docs/checks.md): injected into the worker prompt and
     // handed to the reviewer; `checks` picks repo checks by name (null = all,
     // [] = none)
@@ -59,7 +61,9 @@ const taskBody = z
   })
   .strict();
 
-const taskPatch = taskBody.partial().strict();
+// `source` is create-only: it is what keeps an external task supervised
+// (isExternalTask), so a PATCH must not be able to launder it to 'manual'.
+const taskPatch = taskBody.omit({ source: true }).partial().strict();
 
 export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
   // The shared action layer (server/src/task-actions.ts) — the same functions
@@ -89,14 +93,18 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     return task;
   });
 
-  app.post('/api/tasks', async (req) => {
+  app.post('/api/tasks', async (req, reply) => {
     const body = taskBody.parse(req.body);
+    if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
+    const refused = landingRefusal({ source: body.source ?? 'manual', createdByRun: null }, body.landing);
+    if (refused) return reply.code(409).send({ error: refused });
     return createTask(deps(), body, 'human');
   });
 
   app.patch('/api/tasks/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const body = taskPatch.parse(req.body);
+    if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
     const r = await editTask(deps(), id, body, 'human');
     if ('error' in r) return reply.code(r.code).send({ error: r.error });
     return r.task;

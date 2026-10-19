@@ -188,7 +188,7 @@ into the agent's **own** repo without the same-repo draft rule:
     into a session in that checkout.
 - **Finished work that only waits for you in `review` does NOT hold a filing.**
   Round 1's first fix held on every unresolved task in the repo. Without
-  auto-publish a review column stays full for days, so a filed request would
+  auto-publish (since 2026-10-19 a landing tier) a review column stays full for days, so a filed request would
   never have run on its own (review round 2). Other tasks' review items are
   the same exposure every human-added member and the global queue already
   accept.

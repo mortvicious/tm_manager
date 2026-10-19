@@ -2,7 +2,6 @@ import type { CheckState, ReviewState } from '@tm/shared';
 import type { FastifyInstance } from 'fastify';
 import { aux } from '../claude/aux.ts';
 import { summarizeRun } from '../claude/stats.ts';
-import { shipHeldForReview } from '../claude/worker.ts';
 import { broadcastTaskCost } from '../budget.ts';
 import { broadcast } from '../events.ts';
 import type { Orchestrator } from '../orchestrator.ts';
@@ -259,21 +258,21 @@ export function registerInternalRoutes(
       }
       // Repo checks (docs/checks.md) run on this landing before anything
       // else: decided here so the row that says `review` also says checks are
-      // `pending`. They decide "done", so a task with checks due lands in
-      // `review` even under autoComplete and is promoted on green.
+      // `pending`.
       const willCheck = !publishRun && !!pre && (await orchestrator.checksDue(pre));
-      // auto-publish overrides auto-complete: the task must pass THROUGH
-      // review so the publish turn has something to pick up.
-      const to =
-        !publishRun && !willCheck && settings['orchestrator.autoComplete'] && !pre?.autoPublish ? 'done' : 'review';
+      // Every turn lands in `review`, whatever the tier (docs/design.md §
+      // Landing tiers): `done` (on-green) and the publish turn (auto-publish)
+      // are decided by the orchestrator AFTER the checks and the review round
+      // (`landIfClean`), never here — landing `done` from the hook is what
+      // used to throw the review fix loop away (the old autoComplete).
+      const to = 'review';
       // Whether the reviewer WILL look at this landing, decided here so the
       // row that says `review` also says `pending` — a surface that reads the
       // status alone can never mistake an unreviewed change for a reviewed
-      // one. Everything else (publish turns, auto-publish, review off) is
-      // simply not auto-reviewed: null. The same test decides whether the
-      // worker's prompt held the push back for this review (shipHeldForReview).
-      const willReview =
-        !publishRun && shipHeldForReview({ review: pre?.review ?? null, autoPublish: pre?.autoPublish ?? false }, settings);
+      // one. Everything else (publish turns, review off) is simply not
+      // auto-reviewed: null. The worker's prompt held the push back on the
+      // same test (shipHeldForReview), or for an auto-publish tier.
+      const willReview = !publishRun && (pre?.review ?? settings['review.enabled']);
       const patch: { resultSummary?: string; reviewState: ReviewState | null; checkState?: CheckState | null } = {
         reviewState: willReview ? 'pending' : null,
         // left alone on a publish turn (the change's last verdict stands); a
@@ -359,11 +358,9 @@ export function registerInternalRoutes(
         if (publishRun) {
           // the agent said it pushed; git decides whether it did
           void orchestrator.settlePublish(run.taskId, ['review'], 'hook').finally(release);
-        } else if (task.autoPublish) {
-          // "allow auto-publish on end": no human gate, and no adversarial
-          // review round either — straight from finished to shipped.
-          void orchestrator.publish(run.taskId, 'system').finally(release);
         } else {
+          // checks → review round → landing tier (the auto-publish tier's
+          // publish turn starts from here too, once green + clean)
           void orchestrator.reviewCompletedRun(run.taskId).finally(release);
         }
       }

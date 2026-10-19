@@ -3,13 +3,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   CHECK_BUSY_STATES,
+  effectiveLanding,
   isCodexModel,
+  landingReason,
   verifyOpen,
   runTaskId,
   REVIEW_NOW_FROM,
   type AppSettings,
   type CheckState,
   type Dispatch,
+  type LandingTier,
   type Repo,
   type ReviewRound,
   type ReviewState,
@@ -114,6 +117,13 @@ const WAKE_RESUMABLE_STATUSES: TaskStatus[] = ['review', 'failed'];
 
 /** `tm_runs.label` of a worker run that is a publish turn. */
 const PUBLISH_RUN_LABEL = 'publish';
+
+/**
+ * The actor of an automatic landing (docs/design.md § Landing tiers): an
+ * on-green `review → done` and the publish an auto-publish tier starts. Kept
+ * apart from 'system' so the audit log tells a landing from a sweep.
+ */
+const LANDING_ACTOR = 'orchestrator';
 
 /**
  * Tasks whose work has not been approved yet (docs/queue.md § Stacked tasks):
@@ -255,6 +265,14 @@ export class Orchestrator implements OrchestratorApi {
   /** runs whose turn is a PUBLISH turn (docs/publish.md): their Stop must land
    *  the task in `published`, not in the human review queue. */
   private publishRuns = new Set<string>();
+  /**
+   * Tasks whose publish was started by the auto-publish landing tier
+   * (`landIfClean`), so `settlePublish` stamps `autoLandedAt` on success. Set
+   * and cleared by `publish()` itself on EVERY call (a human Publish after a
+   * failed automatic one is the human's), consumed by `settlePublish`. Memory
+   * only: a restart is refused while the publish turn works.
+   */
+  private readonly autoPublishing = new Set<string>();
   /** single-flight guard for dispatch delivery (docs/dispatch.md) — the route
    *  and the scheduler may both ask for a sweep at once. */
   private deliveringDispatches = false;
@@ -427,11 +445,12 @@ export class Orchestrator implements OrchestratorApi {
   /**
    * Will the repo checks run on this task's landing (docs/checks.md)? Asked by
    * the Stop hook, which marks `checkState: 'pending'` in the same write that
-   * parks the task. Never for a publish turn or an auto-publish task (they do
-   * not pass through the verify loop), nor without the commands pool.
+   * parks the task. Never for a publish turn (the route asks only for work
+   * turns), nor without the commands pool. Every landing tier passes through
+   * the checks — the auto-publish tier's publish turn waits for green.
    */
-  async checksDue(task: Pick<Task, 'repoId' | 'checks' | 'autoPublish'>): Promise<boolean> {
-    if (!this.commandRunner || !task.repoId || task.autoPublish) return false;
+  async checksDue(task: Pick<Task, 'repoId' | 'checks'>): Promise<boolean> {
+    if (!this.commandRunner || !task.repoId) return false;
     return selectChecks(await this.storage.listCommands(task.repoId), task).length > 0;
   }
 
@@ -2078,10 +2097,7 @@ export class Orchestrator implements OrchestratorApi {
       const doneNote =
         resumeSessionId || purpose === 'publish'
           ? null
-          : definitionOfDone(
-              task.acceptance,
-              task.autoPublish ? [] : selectChecks(await this.storage.listCommands(repo.id), task),
-            );
+          : definitionOfDone(task.acceptance, selectChecks(await this.storage.listCommands(repo.id), task));
       const inv = buildWorkerInvocation({
         task: { ...task, model },
         settings,
@@ -2093,6 +2109,7 @@ export class Orchestrator implements OrchestratorApi {
         dispatchNote: fyi.note,
         shared,
         doneNote: doneNote ?? undefined,
+        landing: effectiveLanding(task, repo),
         resumeSessionId,
         previousSummary: handoff.previousSummary ?? retryContext,
       });
@@ -2326,6 +2343,8 @@ export class Orchestrator implements OrchestratorApi {
     if (task.status !== 'review') {
       return { error: `cannot publish from status '${task.status}' — publish is offered on a task in review`, code: 409 };
     }
+    if (actor === LANDING_ACTOR) this.autoPublishing.add(taskId);
+    else this.autoPublishing.delete(taskId);
     await this.storage.appendEvent({
       kind: 'task.publish',
       actor,
@@ -2448,9 +2467,19 @@ export class Orchestrator implements OrchestratorApi {
     const check = repo
       ? await this.publishedCheck(task, repo)
       : { ok: false, reason: 'task has no repo', branch: null, head: null };
-    const updated = await this.storage.transitionTask(taskId, from, check.ok ? 'published' : 'review', actor, {
-      error: check.ok ? null : `publish did not complete: ${check.reason}`,
-    });
+    // An auto-publish landing (`landIfClean`) is stamped when it actually lands.
+    const auto = this.autoPublishing.delete(taskId);
+    const updated = await this.storage.transitionTask(
+      taskId,
+      from,
+      check.ok ? 'published' : 'review',
+      actor,
+      {
+        error: check.ok ? null : `publish did not complete: ${check.reason}`,
+        ...(check.ok && auto ? { autoLandedAt: new Date().toISOString() } : {}),
+      },
+      auto ? { landing: 'auto-publish' } : undefined,
+    );
     if (!updated) return null;
     broadcast({ type: 'task.updated', task: updated });
     await this.storage.appendEvent({
@@ -3145,7 +3174,12 @@ export class Orchestrator implements OrchestratorApi {
         const review = await this.runCheckStage(taskId);
         // only the first pass is the forced one; a recheck is a Stop's pass
         if (review) await this.runReviewRound(taskId, forced && pass === 0);
-        if (!this.reviewRecheck.has(taskId)) return;
+        if (!this.reviewRecheck.has(taskId)) {
+          // The verify round has settled (or handed a fix turn back, which
+          // the gate reads as not-in-review): the tier decides the rest.
+          await this.landIfClean(taskId);
+          return;
+        }
         // Another pass is only worth it while the task is still parked in
         // review. If the round just started a fix round the task is `running`
         // again and its own Stop will come back through here — reviewing a
@@ -3171,6 +3205,78 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /**
+   * Landing tiers (docs/design.md § Landing tiers): the end of every settled
+   * verify round. A task still in `review` whose effective tier is above
+   * `supervised` and whose row passes `landingReason` (checks green or none,
+   * verdict without blocker/major) lands on its own, audited with the reason
+   * on the `task.transition` row:
+   * - `on-green` → `done` (local commits only), stamped `autoLandedAt`, its
+   *   terminals closed like a human Mark done, and the split parent / feature
+   *   phase re-evaluated — which is what lets phases flow without a click.
+   * - `auto-publish` → the publish turn (`publish(…, LANDING_ACTOR)`), gated
+   *   by `budgetAllows(…, 'auto-publish')`; `settlePublish` stamps the stamp
+   *   and git decides `published` exactly as for a human click.
+   * Anything else — supervised, an external task (clamped by
+   * `effectiveLanding`), red/error checks, a flagged or failed verdict, a fix
+   * turn under way — stays where it is, which is today's `review`.
+   */
+  private async landIfClean(taskId: string): Promise<void> {
+    const task = await this.storage.getTask(taskId);
+    if (!task || task.status !== 'review' || !task.repoId) return;
+    const repo = await this.storage.getRepo(task.repoId);
+    if (!repo) return;
+    const tier: LandingTier = effectiveLanding(task, repo);
+    if (tier === 'supervised') return;
+    const reason = landingReason(task);
+    if (!reason) return;
+    if (tier === 'on-green') {
+      const done = await this.storage.transitionTask(
+        taskId,
+        ['review'],
+        'done',
+        LANDING_ACTOR,
+        { autoLandedAt: new Date().toISOString() },
+        { landing: tier, reason },
+      );
+      if (!done) return; // a human or a newer turn took it in between
+      broadcast({ type: 'task.updated', task: done });
+      await this.closeTaskSessions(taskId, LANDING_ACTOR);
+      await this.resolveCompletion(done, LANDING_ACTOR);
+      return;
+    }
+    const verdict = await this.budgetAllows(task, 'auto-publish');
+    if (!verdict.ok) {
+      await this.refuseOverBudget(taskId, 'auto-publish', verdict);
+      return;
+    }
+    await this.storage.appendEvent({
+      kind: 'task.landing',
+      actor: LANDING_ACTOR,
+      taskId,
+      repoId: repo.id,
+      data: { landing: tier, reason, phase: 'publish' },
+    });
+    const res = await this.publish(taskId, LANDING_ACTOR);
+    if ('error' in res) {
+      this.autoPublishing.delete(taskId);
+      // A refusal already wrote its reason on the row; anything else would be
+      // a silent stop, and the auto-publish chip promised a push.
+      const cur = await this.storage.getTask(taskId);
+      if (cur?.status === 'review' && !cur.error) {
+        const patched = await this.storage.updateTask(taskId, { error: `auto-publish did not start: ${res.error}` });
+        if (patched) broadcast({ type: 'task.updated', task: patched });
+      }
+      await this.storage.appendEvent({
+        kind: 'task.landing',
+        actor: LANDING_ACTOR,
+        taskId,
+        repoId: repo.id,
+        data: { landing: tier, phase: 'refused', error: res.error.slice(0, 300) },
+      });
+    }
+  }
+
+  /**
    * One pass of the gate: decide from the diff hash, then review or skip.
    * `forced` = a review was explicitly decided (a "Review now" request, or a
    * pending/reviewing row boot recovery found): `review.enabled` is not
@@ -3179,8 +3285,8 @@ export class Orchestrator implements OrchestratorApi {
   private async runReviewRound(taskId: string, forced = false): Promise<void> {
     const task = await this.storage.getTask(taskId);
     if (!task || !task.repoId) return;
-    // Only a task that is parked (review, or done under autoComplete) has a
-    // change to judge; anything else means a human or a newer turn took over
+    // Only a task that is parked (review, or done — a human's Mark done
+    // racing the round) has a change to judge; anything else means a human or a newer turn took over
     // between the Stop and this pass. A requested round also accepts
     // blocked/failed. A pending/reviewing mark left on a status this pass
     // will not review is released back to the last verdict, or it would read
@@ -3463,16 +3569,11 @@ export class Orchestrator implements OrchestratorApi {
     // marks the review again), or the loop is spent and the change does not
     // pass its own definition of done.
     const dropReview = verdict === 'red' && cur?.reviewState === 'pending';
-    const promote =
-      verdict === 'green' && cur?.status === 'review' && !cur.autoPublish && settings['orchestrator.autoComplete'];
     const updated = await this.storage.updateTask(taskId, {
       // A fix turn about to be sent keeps reading `running` until the task
       // is `running` again: `review` + red for the seconds the resume takes
       // would read as a landing to every surface (the review ping included).
-      // Likewise a green about to be promoted to `done` lands green in the
-      // same write as the status (promoteAutoComplete), so the notifiers see
-      // checks → done in one step, not a `review` landing first.
-      checkState: (verdict === 'red' && !stop) || (verdict === 'green' && promote) ? 'running' : verdict,
+      checkState: verdict === 'red' && !stop ? 'running' : verdict,
       checkResults: results,
       checkDiffHash: change.hash,
       ...(dropReview ? { reviewState: null } : {}),
@@ -3494,7 +3595,6 @@ export class Orchestrator implements OrchestratorApi {
 
     if (verdict !== 'red') {
       this.checkLoops.delete(taskId);
-      if (promote) await this.settleChecks(taskId, 'green');
       return true;
     }
     if (!stop) {
@@ -3530,23 +3630,11 @@ export class Orchestrator implements OrchestratorApi {
 
   /**
    * Settle the check stage WITHOUT a red/error verdict — green, or nothing to
-   * check (empty diff, checks gone) — writing `state`. The Stop hook lands a
-   * task with checks due in `review` even under `orchestrator.autoComplete`,
-   * because "done" is decided by the checks; so here the landing the setting
-   * asked for happens (`review → done`, in the same write as the state, so
-   * the notifiers see one step), and the review round then runs on the done
-   * task exactly as it always did. Otherwise only the state is written.
+   * check (empty diff, checks gone) — writing `state`. Landing is not decided
+   * here: the review round runs next on every tier, and `landIfClean` reads
+   * both verdicts after it (docs/design.md § Landing tiers).
    */
   private async settleChecks(taskId: string, state: 'green' | null): Promise<void> {
-    const [task, settings] = await Promise.all([this.storage.getTask(taskId), this.storage.getSettings()]);
-    if (task?.status === 'review' && !task.autoPublish && settings['orchestrator.autoComplete']) {
-      const done = await this.storage.transitionTask(taskId, ['review'], 'done', 'system', { checkState: state });
-      if (done) {
-        broadcast({ type: 'task.updated', task: done });
-        await this.resolveCompletion(done, 'system');
-        return;
-      }
-    }
     await this.setCheckState(taskId, state);
   }
 
@@ -3824,8 +3912,13 @@ export class Orchestrator implements OrchestratorApi {
    */
   async resolveCompletion(child: Task, actor = 'system'): Promise<void> {
     if (child.parentId) {
-      const settings = await this.storage.getSettings();
-      const parentDone = settings['orchestrator.autoComplete'] ? 'done' : 'review';
+      // A split parent whose children all resolved lands by ITS OWN tier
+      // (docs/design.md § Landing tiers): a parent has no change of its own to
+      // check or review, so a tier above supervised means `done` (never a
+      // publish — the children carry the commits).
+      const parentRow = await this.storage.getTask(child.parentId);
+      const parentRepo = parentRow?.repoId ? await this.storage.getRepo(parentRow.repoId) : null;
+      const parentDone = parentRow && effectiveLanding(parentRow, parentRepo) !== 'supervised' ? 'done' : 'review';
       const parent = await this.storage.resolveChildCompletion(child.id, parentDone, actor);
       if (parent) broadcast({ type: 'task.updated', task: parent });
     }

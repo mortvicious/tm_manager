@@ -14,8 +14,10 @@ import type {
   SharedNote,
   Space,
   CheckState,
+  LandingTier,
   Task,
 } from '@tm/shared';
+import { LANDING_TIERS } from '@tm/shared';
 
 const CHECK_STATES: (CheckState | null)[] = ['pending', 'running', 'green', 'red', 'error'];
 
@@ -39,6 +41,10 @@ export function safeParse<T>(raw: unknown, fallback: T): T {
 // camelCase in the API types. Postgres returns lowercase column names too,
 // so these work unchanged for both.
 
+function landingTier(v: unknown): LandingTier | null {
+  return LANDING_TIERS.includes(v as LandingTier) ? (v as LandingTier) : null;
+}
+
 export function rowToRepo(r: any): Repo {
   return {
     id: r.id,
@@ -46,6 +52,8 @@ export function rowToRepo(r: any): Repo {
     path: r.path,
     role: r.role ?? null,
     previewUrl: r.preview_url ?? null,
+    // An unknown value (hand-edited row) reads as the safe tier.
+    landing: landingTier(r.landing) ?? 'supervised',
     createdAt: r.created_at,
   };
 }
@@ -97,7 +105,8 @@ export function rowToTask(r: any): Task {
     review: r.review == null ? null : !!Number(r.review),
     reviewModel: r.review_model ?? null,
     reviewEffort: r.review_effort ?? null,
-    autoPublish: !!Number(r.auto_publish ?? 0),
+    landing: landingTier(r.landing),
+    autoLandedAt: r.auto_landed_at ?? null,
     customQueueAt: r.custom_queue_at ?? null,
     reviewSummary: r.review_summary ?? null,
     reviewDiffHash: r.review_diff_hash ?? null,

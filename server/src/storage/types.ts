@@ -95,10 +95,12 @@ export interface NewRepo {
   role?: string | null;
   /** dev-server URL for the mobile emulator; validated http/https at the route */
   previewUrl?: string | null;
+  /** landing tier (docs/design.md § Landing tiers); default supervised */
+  landing?: Repo['landing'];
 }
 
 /** undefined = leave as-is; null clears the column. */
-export type RepoPatch = Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl'>>;
+export type RepoPatch = Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing'>>;
 
 export interface NewCommand {
   repoId: string;
@@ -129,7 +131,8 @@ export interface NewTask {
   review?: boolean | null;
   reviewModel?: string | null;
   reviewEffort?: Task['effort'];
-  autoPublish?: boolean;
+  /** landing tier override (docs/design.md § Landing tiers); null = the repo's */
+  landing?: Task['landing'];
   /** definition of done (docs/checks.md) */
   acceptance?: string | null;
   /** which repo checks apply, by name; null = all */
@@ -430,7 +433,9 @@ export interface Storage {
     from: TaskStatus[],
     to: TaskStatus,
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'autoLandedAt'>>,
+    /** merged into the `task.transition` audit row's data (e.g. a landing's reason) */
+    audit?: Record<string, unknown>,
   ): Promise<Task | null>;
   /**
    * Atomic parent re-evaluation after a child reaches a terminal status.

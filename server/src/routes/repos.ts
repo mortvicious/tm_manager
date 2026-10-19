@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
+import { LANDING_TIERS, type LandingTier } from '@tm/shared';
 import { z } from 'zod';
 import { expandHome } from '../config.ts';
 import { commitRepo, gitStatus, pushRepo } from '../git.ts';
@@ -13,8 +14,21 @@ const repoBody = z
     role: z.string().nullish(),
     // dev-server URL framed by the mobile emulator; '' / null clears it
     previewUrl: z.string().nullish(),
+    // how far this repo's tasks land on their own (docs/design.md § Landing tiers)
+    landing: z.enum(LANDING_TIERS as [LandingTier, ...LandingTier[]]).optional(),
   })
   .strict();
+
+/**
+ * Raising a landing tier lets work reach `done` (or the remote) with no human
+ * in between, so it is the dashboard's to set, never a worker's curl (the
+ * questions/spaces rule: browsers always send Origin, curl does not unless
+ * told to). Lowering back to supervised is always allowed.
+ */
+export function landingNeedsBrowser(landing: LandingTier | null | undefined, origin: string | undefined): boolean {
+  return !!landing && landing !== 'supervised' && !origin;
+}
+export const LANDING_FROM_BROWSER = 'landing tiers are set from the dashboard';
 
 /** The emulator puts this string straight into an iframe `src`, so the scheme
  *  is pinned to http/https here — the one place every write passes through. */
@@ -47,6 +61,7 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
 
   app.post('/api/repos', async (req, reply) => {
     const body = repoBody.parse(req.body);
+    if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
     let abs: string;
     try {
       abs = expandHome(body.path);
@@ -65,14 +80,20 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
-    const repo = await storage.createRepo({ name, path: abs, role: body.role ?? null, previewUrl });
-    await storage.appendEvent({ kind: 'repo.changed', actor: 'human', repoId: repo.id, data: { action: 'created', name } });
+    const repo = await storage.createRepo({ name, path: abs, role: body.role ?? null, previewUrl, landing: body.landing });
+    await storage.appendEvent({
+      kind: 'repo.changed',
+      actor: 'human',
+      repoId: repo.id,
+      data: { action: 'created', name, landing: repo.landing },
+    });
     return repo;
   });
 
   app.patch('/api/repos/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const body = repoBody.partial().parse(req.body);
+    if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
     let abs: string | undefined;
     if (body.path) {
       try {
@@ -94,9 +115,18 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
         return reply.code(400).send({ error: (e as Error).message });
       }
     }
-    const repo = await storage.updateRepo(id, { name: body.name, path: abs, role: body.role, previewUrl });
+    const before = body.landing ? await storage.getRepo(id) : null;
+    const repo = await storage.updateRepo(id, { name: body.name, path: abs, role: body.role, previewUrl, landing: body.landing });
     if (!repo) return reply.code(404).send({ error: 'repo not found' });
-    await storage.appendEvent({ kind: 'repo.changed', actor: 'human', repoId: id, data: { action: 'updated' } });
+    await storage.appendEvent({
+      kind: 'repo.changed',
+      actor: 'human',
+      repoId: id,
+      data: {
+        action: 'updated',
+        ...(before && before.landing !== repo.landing ? { landing: { from: before.landing, to: repo.landing } } : {}),
+      },
+    });
     return repo;
   });
 

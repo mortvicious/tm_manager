@@ -1,4 +1,4 @@
-import { groupAncestors, type Feature, type Repo, type Task, type TaskStatus } from '@tm/shared';
+import { effectiveLanding, groupAncestors, type Feature, type Repo, type Task, type TaskStatus } from '@tm/shared';
 import { MAX_TASK_ID_CANDIDATES, MIN_TASK_ID_PREFIX, findTaskById, normalizeTaskId } from './taskId.ts';
 
 /**
@@ -91,7 +91,9 @@ export type TaskState =
   | 'in-queue'
   | 'held'
   | 'waking'
-  | 'auto-publish';
+  | 'auto-publish'
+  | 'on-green'
+  | 'auto-landed';
 
 const STATE_WORDS: Record<TaskState, { label: string; words: string[] }> = {
   attention: { label: 'needs attention', words: ['attention', 'needs attention', 'permission'] },
@@ -103,6 +105,8 @@ const STATE_WORDS: Record<TaskState, { label: string; words: string[] }> = {
   held: { label: 'held', words: ['held', 'on hold', 'hold'] },
   waking: { label: 'auto wake-up', words: ['waking', 'wake', 'wake-up', 'limit', 'sleeping'] },
   'auto-publish': { label: 'auto-publish', words: ['auto-publish', 'auto publish', 'autopublish'] },
+  'on-green': { label: 'lands on green', words: ['on-green', 'on green', 'lands on green'] },
+  'auto-landed': { label: 'auto-landed', words: ['auto-landed', 'autolanded', 'landed'] },
 };
 
 const SOURCE_WORDS: Record<Provenance, { label: string; words: string[] }> = {
@@ -432,8 +436,12 @@ function stateMatches(state: string, t: Task, ctx: SearchContext): boolean {
       return !!t.queueHeldAt;
     case 'waking':
       return !!t.wakeAt;
+    // the tier the task actually lands with (docs/design.md § Landing tiers)
     case 'auto-publish':
-      return t.autoPublish;
+    case 'on-green':
+      return effectiveLanding(t, ctx.repos.find((r) => r.id === t.repoId)) === state;
+    case 'auto-landed':
+      return !!t.autoLandedAt;
     default:
       return false;
   }

@@ -411,6 +411,7 @@ column, so a stale copy of a task cannot clobber it.
 | `wake` | ″ | `wakeDue`, before the 5h-window resume |
 | `check-round` | ″ | the repo-check fix round of the verify loop (`docs/checks.md`) |
 | `transient-resume` | ″ | `fireTransient`, before each automatic resume of a turn a transient API error cut short (`docs/design.md` § Transient API errors) |
+| `auto-publish` | ″ | `landIfClean`, before the publish turn of an `auto-publish` landing tier (`docs/design.md` § Landing tiers); labelled "publish turn (auto-publish landing)" |
 
 At or OVER the cap refuses. It returns `{ ok: true }` or
 `{ ok: false, fuse, spentUsd, capUsd, reason }`.
@@ -425,9 +426,11 @@ At or OVER the cap refuses. It returns `{ ok: true }` or
   `failed` with the reason (the message stays readable on its row, never
   retried every pass); a wake clears the mark and is audited
   `task.wake { action: 'refused' }`. **A human click is never gated**: Proceed,
-  Run now, Retry, Follow-up, Apply fixes and Publish do not call it. Auto-publish
-  is not gated either — it ships work already done, and refusing it would strand
-  a finished change unpushed.
+  Run now, Retry, Follow-up, Apply fixes and Publish do not call it. An
+  auto-publish landing IS gated since the landing tiers (2026-10-19): the
+  orchestrator starts that publish turn, not a human, so it asks
+  `budgetAllows(task, 'auto-publish')`; a refusal goes through
+  `refuseOverBudget` and leaves the task in `review` for the human's Publish.
 - **`budget.dayUsd`** — the orchestrator stops CLAIMING (custom queue, global
   and overflow) for the rest of the server-local day once today's spend reaches
   it. Today's spend is every run of any mode STARTED since local midnight

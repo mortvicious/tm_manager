@@ -17,26 +17,23 @@ Two things make it more than a commit button:
 
 `review` is the only status Publish is offered from — on the task panel (next to **Mark done**) and as a quick action on the task's board row. Both call `POST /api/tasks/:id/publish`.
 
-## Auto-publish on end
+## Auto-publish — the top landing tier
 
-The new-task form (and the task panel) carries **Auto-publish on end**. With it on, a finished worker never stops for a human:
+**Auto-publish is the `auto-publish` landing tier** (`docs/design.md` § Landing tiers, 2026-10-19), set per repo on the Repos page (**Landing** column) or per task with the **Landing** picker on the new-task form and the task panel (`LandingPicker`; Telegram `/new` and `/edit` have a Landing step). It replaced the per-task **Auto-publish on end** switch; migration 36 carried every `tm_tasks.auto_publish = 1` row of a non-external task into `landing = 'auto-publish'`, and the old column stays, unread. With it, a finished worker does not wait for a human — but only once the server has verified the work:
 
 ```
-running → (Stop hook) → review → publish turn → published
+running → (Stop hook) → review → checks → review round (+ fix loops) → landIfClean → publish turn → published
 ```
 
-It bypasses **both** gates on purpose — that is what "no gate between finishing and shipping" means:
+**Behaviour change.** It used to bypass the checks AND the adversarial review round (Stop → publish straight away). Now it publishes only when `landingReason` passes — checks `green` or none applied, and a verdict with no blocker/major (`passed`, `skipped`, or review off for the task). Red/error checks or a `flagged`/`error` review leave the task in `review` with nothing pushed, exactly as under `supervised`. It still bypasses the human gate: the task does not wait for **Publish**.
 
-- **the human review queue** — the task does not wait for **Mark done**;
-- **the adversarial review round** — no reviewer agent runs, and no work→review→work loop.
+`Orchestrator.landIfClean` (end of `reviewLoop`) audits `task.landing { phase: 'publish' }`, asks `budgetAllows(task, 'auto-publish')` (`docs/token-budget.md`; a refusal goes through `refuseOverBudget`), and calls `publish(taskId, 'orchestrator')`. When git verifies `published`, `settlePublish` stamps `tm_tasks.auto_landed_at` (the **auto-landed** chip) and adds `{landing:'auto-publish'}` to the transition audit. A publish that cannot start writes `auto-publish did not start: …` on the row, unless a refusal (e.g. § Stacked tasks below) already wrote its own reason, and audits `task.landing { phase: 'refused' }`. An external task (Sentry, proposals, filings, anything an agent filed) never resolves to this tier, and raising a tier needs the dashboard (`Origin`) — `docs/design.md` § Landing tiers.
 
-It also overrides `orchestrator.autoComplete`: an auto-publishing task always passes *through* `review` (so the publish turn has something to pick up) rather than jumping straight to `done`.
-
-Auto-publish is per task, stored on the row (`tm_tasks.auto_publish`), and shown on the board as a blue **auto-publish** chip so it is visible before the task ever runs.
+The board shows an **auto-publish** chip on open work whose effective tier is `auto-publish`, so it is visible before the task ever runs.
 
 ## The ship gate — the worker does not push a reviewed change
 
-The gate above assumes the worker leaves its change unshipped, but some repos' CLAUDE.md tell every agent to push and deploy on its own. So when the task's change will be adversarially reviewed (`shipHeldForReview`: review on for the task or globally, and not auto-publish), every worker turn except this publish turn carries a server-injected rule that overrides the repo's CLAUDE.md: no push, no deploy, no production check. Local commits are fine: the reviewer reads the task's commits (by their `Task: <id>` trailer) as well as the working tree. The push **and** the repo's post-push deploy/verify steps then happen here, in the publish turn (step 5 of `PUBLISH_INSTRUCTION`). Tasks with review off, and auto-publish tasks, keep the repo's own behaviour. Details: `docs/design.md` § Adversarial review, *Review before ship*.
+The gate above assumes the worker leaves its change unshipped, but some repos' CLAUDE.md tell every agent to push and deploy on its own. So when the task's change will be verified before it ships (`shipHeldForReview(task, settings, landing)`: review on for the task or globally, OR the `auto-publish` tier — always, since its publish turn is what ships), every worker turn except this publish turn carries a server-injected rule that overrides the repo's CLAUDE.md: no push, no deploy, no production check. Local commits are fine: the reviewer reads the task's commits (by their `Task: <id>` trailer) as well as the working tree. The push **and** the repo's post-push deploy/verify steps then happen here, in the publish turn (step 5 of `PUBLISH_INSTRUCTION`). Tasks with review off on a lower tier keep the repo's own behaviour. Details: `docs/design.md` § Adversarial review, *Review before ship*.
 
 ## What actually happens
 

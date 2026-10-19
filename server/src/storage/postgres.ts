@@ -242,12 +242,13 @@ export class PostgresStorage implements Storage {
 
   async createRepo(r: NewRepo): Promise<Repo> {
     const id = randomUUID();
-    await this.q(`INSERT INTO tm_repos (id, name, path, role, preview_url, created_at) VALUES (?, ?, ?, ?, ?, ?)`, [
+    await this.q(`INSERT INTO tm_repos (id, name, path, role, preview_url, landing, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
       id,
       r.name,
       r.path,
       r.role ?? null,
       r.previewUrl ?? null,
+      r.landing ?? 'supervised',
       now(),
     ]);
     return (await this.getRepo(id))!;
@@ -256,11 +257,12 @@ export class PostgresStorage implements Storage {
   async updateRepo(id: string, patch: RepoPatch): Promise<Repo | null> {
     const cur = await this.getRepo(id);
     if (!cur) return null;
-    await this.q(`UPDATE tm_repos SET name = ?, path = ?, role = ?, preview_url = ? WHERE id = ?`, [
+    await this.q(`UPDATE tm_repos SET name = ?, path = ?, role = ?, preview_url = ?, landing = ? WHERE id = ?`, [
       patch.name ?? cur.name,
       patch.path ?? cur.path,
       patch.role === undefined ? cur.role : patch.role,
       patch.previewUrl === undefined ? cur.previewUrl : patch.previewUrl,
+      patch.landing ?? cur.landing,
       id,
     ]);
     return this.getRepo(id);
@@ -405,7 +407,7 @@ export class PostgresStorage implements Storage {
     const ts = now();
     const place = await this.placeWith(c, id, t.parentId);
     await c.query(
-      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, auto_publish, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, sort_order)
+      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, sort_order)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, (${NEXT_SORT_ORDER_SQL}))`,
       [
         id,
@@ -423,7 +425,7 @@ export class PostgresStorage implements Storage {
         t.effort ?? null,
         t.category ?? null,
         t.review == null ? null : t.review ? 1 : 0,
-        t.autoPublish ? 1 : 0,
+        t.landing ?? null,
         t.createdByRun ?? null,
         t.spawnDepth ?? 0,
         t.featureId ?? null,
@@ -494,7 +496,7 @@ export class PostgresStorage implements Storage {
     // Only a group ROOT carries the group's name/colour.
     const isRoot = place.groupId === id;
     await c.query(
-      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, auto_publish=$17, custom_queue_at=$18, feature_id=$19, feature_phase=$20, result_summary=$21, review_summary=$22, review_diff_hash=$23, review_state=$24, review_rounds=$25, wake_at=$26, error=$27, updated_at=$28, review_model=$29, review_effort=$30, base_sha=$31, base_ref=$32, base_at=$33, queue_held_at=$34, acceptance=$35, checks=$36, check_state=$37, check_results=$38, check_diff_hash=$39 WHERE id=$40`,
+      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, landing=$17, custom_queue_at=$18, feature_id=$19, feature_phase=$20, result_summary=$21, review_summary=$22, review_diff_hash=$23, review_state=$24, review_rounds=$25, wake_at=$26, error=$27, updated_at=$28, review_model=$29, review_effort=$30, base_sha=$31, base_ref=$32, base_at=$33, queue_held_at=$34, acceptance=$35, checks=$36, check_state=$37, check_results=$38, check_diff_hash=$39, auto_landed_at=$40 WHERE id=$41`,
       [
         next.title,
         next.description,
@@ -512,7 +514,7 @@ export class PostgresStorage implements Storage {
         next.effort,
         next.category,
         next.review == null ? null : next.review ? 1 : 0,
-        next.autoPublish ? 1 : 0,
+        next.landing ?? null,
         next.customQueueAt ?? null,
         next.featureId,
         next.featurePhase,
@@ -535,6 +537,7 @@ export class PostgresStorage implements Storage {
         next.checkState ?? null,
         JSON.stringify(next.checkResults ?? []),
         next.checkDiffHash ?? null,
+        next.autoLandedAt ?? null,
         id,
       ],
     );
@@ -693,7 +696,8 @@ export class PostgresStorage implements Storage {
     from: Task['status'][],
     to: Task['status'],
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'autoLandedAt'>>,
+    audit?: Record<string, unknown>,
   ): Promise<Task | null> {
     const sets = ['status = ?', 'updated_at = ?'];
     const vals: unknown[] = [to, now()];
@@ -724,6 +728,13 @@ export class PostgresStorage implements Storage {
     }
     // Terminal status ends custom-queue membership (twin of the sqlite driver).
     if (TERMINAL_TASK_STATUSES.includes(to)) sets.push('custom_queue_at = NULL');
+    // The auto-landed stamp (twin of the sqlite driver).
+    if (patch && 'autoLandedAt' in patch) {
+      sets.push('auto_landed_at = ?');
+      vals.push(patch.autoLandedAt ?? null);
+    } else if (to !== 'done' && to !== 'published') {
+      sets.push('auto_landed_at = NULL');
+    }
     const placeholders = from.map(() => '?').join(', ');
     return this.tx(async (c, sink) => {
       const prevRes = await c.query(`SELECT status FROM tm_tasks WHERE id = $1`, [id]);
@@ -738,7 +749,7 @@ export class PostgresStorage implements Storage {
         actor,
         taskId: task.id,
         repoId: task.repoId,
-        data: { from: prevRes.rows[0]?.status ?? null, to },
+        data: { ...audit, from: prevRes.rows[0]?.status ?? null, to },
       }, sink);
       return task;
     });

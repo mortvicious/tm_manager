@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
+import { LANDING_TIERS, type LandingTier, type Repo } from '@tm/shared';
 import { api } from '../api.ts';
+import { LANDING_HINT } from '../components/LandingPicker.tsx';
 import { useApp } from '../state.tsx';
 import { RepoCommandsMenu, RepoCommandsPanel } from '../components/Commands.tsx';
 import { IconAnalyze, IconPencil } from '../components/Icons.tsx';
@@ -79,6 +81,48 @@ function GitCell({ repoId }: { repoId: string }) {
  *  identity rather than three lines with a form field wedged in.
  *  Saves on blur/Enter; the server normalises "localhost:5173" and rejects
  *  non-http. Escape leaves without saving. */
+/**
+ * The repo's landing tier (docs/design.md § Landing tiers), saved on change.
+ * Tasks inherit it unless they override; external tasks never land above
+ * supervised whatever this says.
+ */
+function LandingCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const current: LandingTier = repo.landing ?? 'supervised';
+  const save = async (landing: LandingTier) => {
+    if (landing === current) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.updateRepo(repo.id, { landing });
+      await onSaved();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="repo-landing">
+      <select
+        className="field"
+        value={current}
+        disabled={busy}
+        title={LANDING_HINT[current]}
+        onChange={(e) => void save(e.target.value as LandingTier)}
+      >
+        {LANDING_TIERS.map((t) => (
+          <option key={t} value={t}>
+            {t}
+          </option>
+        ))}
+      </select>
+      {err && <span className="warn-text">{err}</span>}
+    </span>
+  );
+}
+
 function PreviewCell({ repoId, value, onSaved }: { repoId: string; value: string | null; onSaved: () => Promise<void> }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value ?? '');
@@ -274,6 +318,7 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
               <tr>
                 <th>Repo</th>
                 <th>Role</th>
+                <th title="How far this repo's tasks land on their own — a task may override">Landing</th>
                 <th>Tasks</th>
                 <th>Git</th>
                 <th title="Commands, analysis and repo removal">Actions</th>
@@ -299,6 +344,9 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                       </td>
                       <td data-label="Role">
                         {r.role ? <span className="chip">{r.role}</span> : <span className="muted">—</span>}
+                      </td>
+                      <td data-label="Landing">
+                        <LandingCell repo={r} onSaved={refresh} />
                       </td>
                       <td className="mono" data-label="Tasks">
                         {count(r.id)}
@@ -326,7 +374,7 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                     </tr>
                     {expanded && (
                       <tr className="repo-open">
-                        <td colSpan={5} className="repo-cmd-cell">
+                        <td colSpan={6} className="repo-cmd-cell">
                           <RepoCommandsPanel repoId={r.id} onOpenTerminal={onOpenTerminal} />
                         </td>
                       </tr>

@@ -3,6 +3,7 @@ import {
   type AnomalyAlert,
   type Feature,
   type Proposal,
+  landingReason,
   type Question,
   type CheckState,
   type ReviewState,
@@ -58,6 +59,8 @@ interface PendingTask {
   failed?: boolean;
   blocked?: boolean;
   published?: boolean;
+  /** the orchestrator landed it `done` on its own (docs/design.md § Landing tiers) */
+  autoLanded?: boolean;
   /** the run whose needs-attention flag was raised — re-read at flush */
   attentionRun?: string;
   /** set when the flag is the budget.runMinutes fuse's: the cap in minutes */
@@ -71,7 +74,7 @@ export interface NotifierDeps {
   /**
    * Is a "Review now" round in flight for this task? A verdict on a `done`/
    * `failed`/`blocked` task is only pinged when a human asked for it — the
-   * automatic round on a `done` (autoComplete) task stays as quiet as ever.
+   * automatic round on a task a human already marked `done` stays quiet.
    * Absent in a harness: no such pings.
    */
   requestedReview?(taskId: string): boolean;
@@ -403,6 +406,12 @@ export class TelegramNotifier {
       case 'blocked':
         if (moved) this.mark(t.id, (p) => (p.blocked = true));
         break;
+      case 'done':
+        // Only an on-green landing (docs/design.md § Landing tiers) — it is
+        // the review ping this task would otherwise have sent, so it speaks
+        // under the same switch. A human's Mark done needs no telling.
+        if (moved && t.autoLandedAt) this.mark(t.id, (p) => (p.autoLanded = true));
+        break;
       case 'published':
         if (moved) this.mark(t.id, (p) => (p.published = true));
         break;
@@ -483,8 +492,18 @@ export class TelegramNotifier {
     if (n.blocked && p.blocked && task.status === 'blocked') {
       lines.push(`⛔ ${title} is <b>blocked</b> (waiting on its subtasks).`);
     }
+    if (n.review && p.autoLanded && task.status === 'done' && task.autoLandedAt) {
+      lines.push(`✅ ${title} <b>auto-landed</b>: ${escapeHtml(landingReason(task) ?? 'landed on its own')}.`);
+      const last = task.reviewRounds[task.reviewRounds.length - 1];
+      const summary = task.reviewState === 'passed' && last?.summary ? last.summary : task.resultSummary;
+      if (summary) lines.push(escapeHtml(clip(summary, SUMMARY_CLIP)));
+    }
     if (n.published && p.published && task.status === 'published') {
-      lines.push(`🚀 ${title} was <b>published</b> — committed and pushed.`);
+      lines.push(
+        task.autoLandedAt
+          ? `🚀 ${title} was <b>auto-published</b>: ${escapeHtml(landingReason(task) ?? 'landed on its own')} — committed and pushed.`
+          : `🚀 ${title} was <b>published</b> — committed and pushed.`,
+      );
     }
     if (n.attention && p.attentionRun && task.status === 'running') {
       // The flag is cleared the moment the agent moves on (the prompt was

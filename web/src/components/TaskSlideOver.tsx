@@ -9,7 +9,9 @@ import {
   groupAncestors,
   groupColorSlot,
   groupLabel,
+  isExternalTask,
   type EffortLevel,
+  type LandingTier,
   type Proposal,
   type Task,
 } from '@tm/shared';
@@ -28,6 +30,7 @@ import { KindBadge, liveReviewRun, runTaskId } from './RunKind.tsx';
 import { ReviewPanel } from './ReviewPanel.tsx';
 import { ChecksPanel } from './ChecksPanel.tsx';
 import { DoneFields } from './DoneFields.tsx';
+import { LandingPicker } from './LandingPicker.tsx';
 import { QuestionForm } from './QuestionModal.tsx';
 import { Sheet, SheetAction } from './Sheet.tsx';
 import { exitGhost } from '../motion.ts';
@@ -211,7 +214,7 @@ export function TaskSlideOver({
   const [review, setReview] = useState<ReviewChoice>('default');
   const [reviewModel, setReviewModel] = useState<string>('');
   const [reviewEffort, setReviewEffort] = useState<string>('');
-  const [autoPublish, setAutoPublish] = useState(false);
+  const [landing, setLanding] = useState<LandingTier | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [followUpMsg, setFollowUpMsg] = useState('');
   const [sendingFollowUp, setSendingFollowUp] = useState(false);
@@ -259,7 +262,7 @@ export function TaskSlideOver({
       setReview(reviewChoiceOf(task.review));
       setReviewModel(task.reviewModel ?? '');
       setReviewEffort(task.reviewEffort ?? '');
-      setAutoPublish(task.autoPublish);
+      setLanding(task.landing);
       setFollowUpMsg('');
       setSettingsOpen(task.status === 'draft');
       setMoreOpen(false);
@@ -325,7 +328,7 @@ export function TaskSlideOver({
     review !== reviewChoiceOf(task.review) ||
     reviewModel !== (task.reviewModel ?? '') ||
     reviewEffort !== (task.reviewEffort ?? '') ||
-    autoPublish !== task.autoPublish ||
+    landing !== task.landing ||
     (rootAfter &&
       (groupName !== (task.groupName ?? '') || groupColor !== (task.groupColor == null ? '' : String(task.groupColor))));
 
@@ -359,7 +362,9 @@ export function TaskSlideOver({
         // kept while hidden: switching review off must not forget the pick
         reviewModel: reviewModel || null,
         reviewEffort: (reviewEffort || null) as EffortLevel | null,
-        autoPublish,
+        // only when changed: an external task carrying a pre-tier value must
+        // stay editable (the server refuses raising it, never leaving it)
+        ...(landing !== task.landing ? { landing } : {}),
         ...(rootAfter
           ? { groupName: groupName.trim() || null, groupColor: groupColor === '' ? null : Number(groupColor) }
           : {}),
@@ -680,6 +685,15 @@ export function TaskSlideOver({
           </span>
         )}
         {task.parentId && <span className="chip">subtask</span>}
+        {task.autoLandedAt && (task.status === 'done' || task.status === 'published') && (
+          <span
+            className="chip"
+            style={{ color: 'var(--tm-status-done)' }}
+            title={`landed by the orchestrator ${new Date(task.autoLandedAt).toLocaleString()}: checks green, review clean`}
+          >
+            auto-landed
+          </span>
+        )}
         {task.createdByRun && (
           <span className="chip" title={`filed by agent run ${task.createdByRun.slice(0, 8)} (depth ${task.spawnDepth})`}>
             agent d{task.spawnDepth}
@@ -769,7 +783,6 @@ export function TaskSlideOver({
             repoId={repoId || null}
             acceptance={acceptance}
             checks={checks}
-            autoPublish={autoPublish}
             onAcceptance={setAcceptance}
             onChecks={setChecks}
           />
@@ -880,17 +893,12 @@ export function TaskSlideOver({
               <option value="off">skip (small task)</option>
             </select>
           </div>
-          <div>
-            <label className="label">Auto-publish on end</label>
-            <select
-              className="field"
-              value={autoPublish ? 'on' : 'off'}
-              onChange={(e) => setAutoPublish(e.target.value === 'on')}
-            >
-              <option value="off">off — stop at review</option>
-              <option value="on">on — commit &amp; push at the end</option>
-            </select>
-          </div>
+          <LandingPicker
+            value={landing}
+            onChange={setLanding}
+            repo={repos.find((r) => r.id === repoId)}
+            external={isExternalTask(task)}
+          />
           <div>
             <label className="label">Updated</label>
             <div className="mono muted" style={{ paddingTop: 6 }}>

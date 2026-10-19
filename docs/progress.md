@@ -575,8 +575,8 @@ concise markdown, grouped by completion date, Russian or English.
   - Migration 34 (`tm_commands.is_check/timeout_sec`; `tm_tasks.acceptance/checks/check_state/check_results/check_diff_hash`) in both drivers, and `transitionTask` takes `checkState`.
   - `CommandRunner.runCheck` (timeout, `CI=1`, waits out a live run of the same definition, abortable).
   - `checks.ts`: selection, a serial run with one silent re-run of a red, the verdict, the fix message, the reviewer evidence and the definition of done.
-  - Orchestrator: `runCheckStage` ahead of each review pass, `checkLoops`, `settleChecks` (the autoComplete promotion), `checksDue`, `setCommandRunner`, and boot recovery.
-  - The Stop route marks `pending` and diverts autoComplete.
+  - Orchestrator: `runCheckStage` ahead of each review pass, `checkLoops`, `settleChecks` (the autoComplete promotion, removed by autonomy 4/6), `checksDue`, `setCommandRunner`, and boot recovery.
+  - The Stop route marks `pending` and diverts autoComplete (gone with autonomy 4/6).
   - The repo-hold SQL in `queue-sql.ts` and the stacked hand-off.
   - The review prompt gets acceptance + evidence, and the fresh worker prompt gets `## Definition of done`.
   - Commands route: `isCheck`/`timeoutSec`, service + check refused, unique check names.
@@ -635,3 +635,27 @@ concise markdown, grouped by completion date, Russian or English.
   - The Postgres driver.
   - The live server, which was not restarted.
   - A browser pass of the chip.
+
+## Landing tiers — autonomy 4/6 (2026-10-19, `docs/design.md` § Landing tiers)
+
+- **Shared**:
+  - `LandingTier` + `LANDING_TIERS`; `Repo.landing`, `Task.landing`, `Task.autoLandedAt`; `Task.autoPublish` and `orchestrator.autoComplete` removed.
+  - `effectiveLanding`, `landingReason`, `isExternalTask`; BudgetTurn `auto-publish`; the `done` push hint.
+- **Server**:
+  - Migration 36 (`tm_repos.landing`, `tm_tasks.landing`, `tm_tasks.auto_landed_at`; `auto_publish` → `auto-publish` for non-external tasks, autoComplete → every repo `on-green`, the key deleted) in both drivers; `transitionTask` takes an optional `audit` merged into the `task.transition` row.
+  - Stop route: always `review`, always `reviewCompletedRun`; the auto-publish branch is gone. The check stage's promotion is gone (`settleChecks` only writes the state).
+  - Orchestrator: `landIfClean` at the end of `reviewLoop` (on-green → `done` + `closeTaskSessions` + `resolveCompletion`; auto-publish → budget gate + `publish(…, 'orchestrator')`), `autoPublishing` + the `settlePublish` stamp, the split parent by its own tier.
+  - `shipHeldForReview(task, settings, landing)` and the reworded `SHIP_GATE_RULE`; `checksDue` and the definition of done include auto-publish.
+  - Routes: `landing` on repos and tasks, `Origin` required to raise a tier, `landingRefusal` (409) for external tasks, `source` create-only, `repo.changed {landing}`; the settings schema refuses `orchestrator.autoComplete`.
+  - Telegram: the `/new` + `/edit` Landing step, the card's `landing <tier>` / `auto-landed`, the auto-landed and auto-published pings, the review ping re-checked at flush. Push: the auto-landed `done` push.
+- **Web**:
+  - `LandingPicker` in NewTaskForm and TaskSlideOver (replacing Auto-publish on end), the Repos page **Landing** column (`LandingCell`), the Config pointer.
+  - Card chips `on-green` / `auto-publish` / `auto-landed` (and in the panel); search tokens `on-green`, `auto-publish`, `auto-landed`; `DoneFields` copy.
+- **Verified**: `npm run typecheck`, the SPA build, and a throwaway inject harness over a copy of the live DB (stubbed worker/follow-up/aux spawns, a real `CommandRunner` running `node -e` checks in a scratch git repo with a bare remote, review verdicts seeded through the unchanged-diff hash path): **32/32**. The cases are listed in decisions.md.
+- **Not exercised**:
+  - A real worker and reviewer session.
+  - Boot recovery re-landing (by design it does not: a crash between verdict and landing leaves `review`).
+  - Telegram and push delivery.
+  - A browser pass.
+  - The Postgres driver.
+  - The live server, which was not restarted.

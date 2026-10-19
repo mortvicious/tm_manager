@@ -40,7 +40,6 @@ const settingsSchema = z
   .object({
     'orchestrator.enabled': z.boolean(),
     'orchestrator.concurrency': z.number().int().min(1).max(10),
-    'orchestrator.autoComplete': z.boolean(),
     'agent.model': z.string().min(1),
     'agent.effort': z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
     'analysis.model': z.string().min(1),

@@ -294,8 +294,9 @@ differ, not only their layout). A 3×3 grid:
   Run now, Mark done / Mark as ready, Add to / Remove from queue, and Open
   details. They use the same guards and the same wording as the desktop icons.
 - **Two tags, then `+n`.** `rowChips` builds one list in the desktop order.
-  Phones rank it `repo, dispatch, group, category, feature, auto-publish, agent,
-  source, preset, reviewer` and keep two. Only chips that actually render go in
+  Phones rank it `auto-landed, repo, cost, attempts, dispatch, group, category,
+  feature, landing (on-green / auto-publish), agent, source, preset, reviewer`
+  and keep two. Only chips that actually render go in
   the list (PresetChip and ReviewerChip draw nothing on some rows), so `+n` never
   counts a ghost. With the board filtered to one repo, the repo tag is dropped:
   it would repeat the filter on every row.
@@ -348,7 +349,7 @@ to close; × animates out the same way.
   description, the settings, and the rest in desktop order. What happened comes
   first, then your answer to it, then the task itself.
 - **Settings fold away.** The settings grid (repo, category, group, preset,
-  review, auto-publish, model, effort, reviewer) sits behind a toggle that shows
+  review, landing, model, effort, reviewer) sits behind a toggle that shows
   `repo · model · effort`. The toggle is open for a draft, which is still being
   written, and closed otherwise.
 - **Save is a sticky bottom bar** while there is something to save. It is last

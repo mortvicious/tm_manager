@@ -11,14 +11,12 @@ export function DoneFields({
   repoId,
   acceptance,
   checks,
-  autoPublish,
   onAcceptance,
   onChecks,
 }: {
   repoId: string | null;
   acceptance: string;
   checks: string[] | null;
-  autoPublish: boolean;
   onAcceptance: (v: string) => void;
   onChecks: (v: string[] | null) => void;
 }) {
@@ -73,13 +71,11 @@ export function DoneFields({
                 ))}
               </div>
               <div className="hint">
-                {autoPublish
-                  ? 'Auto-publish skips the checks: the work ships straight from the agent’s turn.'
-                  : checks == null
-                    ? 'All of the repo’s checks (the default, including ones added later). Red ones go back to the agent to fix.'
-                    : checks.length === 0
-                      ? 'No checks for this task.'
-                      : 'Only the ticked checks run for this task.'}
+                {checks == null
+                  ? 'All of the repo’s checks (the default, including ones added later). Red ones go back to the agent to fix.'
+                  : checks.length === 0
+                    ? 'No checks for this task.'
+                    : 'Only the ticked checks run for this task.'}
               </div>
             </>
           )}

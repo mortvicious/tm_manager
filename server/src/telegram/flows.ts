@@ -1,4 +1,4 @@
-import { EFFORT_LEVELS, MODEL_OPTIONS, TASK_PRESETS, taskPresets, type EffortLevel, type Repo, type TaskPreset } from '@tm/shared';
+import { EFFORT_LEVELS, LANDING_TIERS, MODEL_OPTIONS, TASK_PRESETS, taskPresets, type EffortLevel, type LandingTier, type Repo, type TaskPreset } from '@tm/shared';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { Storage } from '../storage/types.ts';
 import type { TaskEdit } from '../task-actions.ts';
@@ -47,7 +47,8 @@ interface FlowData {
   review?: boolean | null;
   /** who reviews the change; null = the global review.model */
   reviewModel?: string | null;
-  autoPublish?: boolean;
+  /** landing tier override (docs/design.md § Landing tiers); null = the repo's */
+  landing?: LandingTier | null;
   /** /edit and /proceed */
   taskId?: string;
   /** /edit: which field the next message or press sets */
@@ -101,7 +102,7 @@ type EditField =
   | 'effort'
   | 'review'
   | 'rmodel'
-  | 'autopublish';
+  | 'landing';
 
 const EDIT_FIELDS: { id: EditField; label: string; free: boolean }[] = [
   { id: 'title', label: 'Title', free: true },
@@ -117,7 +118,7 @@ const EDIT_FIELDS: { id: EditField; label: string; free: boolean }[] = [
   { id: 'effort', label: 'Effort', free: false },
   { id: 'review', label: 'Review', free: false },
   { id: 'rmodel', label: 'Reviewer model', free: false },
-  { id: 'autopublish', label: 'Auto-publish', free: false },
+  { id: 'landing', label: 'Landing', free: false },
 ];
 
 /**
@@ -255,10 +256,16 @@ function reviewKeyboard(seq: number): InlineKeyboardMarkup {
   ], 3);
 }
 
-function autoPublishKeyboard(seq: number): InlineKeyboardMarkup {
+const LANDING_LABEL: Record<LandingTier, string> = {
+  supervised: 'supervised — stop at review',
+  'on-green': 'on-green — done when green + clean',
+  'auto-publish': 'auto-publish — push when green + clean',
+};
+
+function landingKeyboard(seq: number): InlineKeyboardMarkup {
   return grid([
-    { text: 'off — stop at review', callback_data: wz(seq, 'autopub', 'off') },
-    { text: 'on — commit & push', callback_data: wz(seq, 'autopub', 'on') },
+    { text: "repo default", callback_data: wz(seq, 'landing', 'd') },
+    ...LANDING_TIERS.map((t) => ({ text: LANDING_LABEL[t], callback_data: wz(seq, 'landing', t) })),
   ], 1);
 }
 
@@ -619,8 +626,8 @@ export async function handleFlowButton(deps: FlowDeps, flows: FlowStore, b: Flow
     // drawn is refused here, never applied from a stale copy.
     const preset = (await livePresets(deps)).find((p) => p.id === b.value);
     if (!preset) return deliver({ html: '⚠ Unknown preset — it may have been deleted on the Config page.' }, 'Unknown preset', false);
-    flows.advance('autopub', { model: preset.model, effort: preset.effort, review: preset.review });
-    return deliver({ html: autoPublishPrompt(), keyboard: autoPublishKeyboard(flows.seq()) });
+    flows.advance('landing', { model: preset.model, effort: preset.effort, review: preset.review });
+    return deliver({ html: landingPrompt(), keyboard: landingKeyboard(flows.seq()) });
   }
 
   if (b.step === 'model') {
@@ -650,8 +657,8 @@ export async function handleFlowButton(deps: FlowDeps, flows: FlowStore, b: Flow
     if (expects('new', 'review')) {
       // review explicitly off: nobody reviews, so there is no reviewer to ask for
       if (review === false) {
-        flows.advance('autopub', { review, reviewModel: null });
-        return deliver({ html: autoPublishPrompt(), keyboard: autoPublishKeyboard(flows.seq()) });
+        flows.advance('landing', { review, reviewModel: null });
+        return deliver({ html: landingPrompt(), keyboard: landingKeyboard(flows.seq()) });
       }
       flows.advance('rmodel', { review });
       return deliver({ html: 'Reviewer model?', keyboard: reviewerModelKeyboard(flows.seq()) });
@@ -664,8 +671,8 @@ export async function handleFlowButton(deps: FlowDeps, flows: FlowStore, b: Flow
     const reviewModel = b.value === 'd' ? null : (MODEL_OPTIONS[Number(b.value)] ?? null);
     if (b.value !== 'd' && reviewModel === null) return deliver({ html: '⚠ Unknown model.' }, 'Unknown model', false);
     if (expects('new', 'rmodel')) {
-      flows.advance('autopub', { reviewModel });
-      return deliver({ html: autoPublishPrompt(), keyboard: autoPublishKeyboard(flows.seq()) });
+      flows.advance('landing', { reviewModel });
+      return deliver({ html: landingPrompt(), keyboard: landingKeyboard(flows.seq()) });
     }
     if (expects('edit', 'value') && flow.data.field === 'rmodel') {
       return deliver(await applyEditValue(deps, flows, flow, { reviewModel }));
@@ -673,14 +680,15 @@ export async function handleFlowButton(deps: FlowDeps, flows: FlowStore, b: Flow
     return expired();
   }
 
-  if (b.step === 'autopub') {
-    const autoPublish = b.value === 'on';
-    if (expects('new', 'autopub')) {
-      flows.advance('create', { autoPublish });
-      return deliver({ html: summary(flow.data, autoPublish), keyboard: onCreateKeyboard(flows.seq()) });
+  if (b.step === 'landing') {
+    const landing = b.value === 'd' ? null : (LANDING_TIERS.find((t) => t === b.value) ?? null);
+    if (b.value !== 'd' && landing === null) return deliver({ html: '⚠ Unknown landing tier.' }, 'Unknown tier', false);
+    if (expects('new', 'landing')) {
+      flows.advance('create', { landing });
+      return deliver({ html: summary(flow.data, landing), keyboard: onCreateKeyboard(flows.seq()) });
     }
-    if (expects('edit', 'value') && flow.data.field === 'autopublish') {
-      return deliver(await applyEditValue(deps, flows, flow, { autoPublish }));
+    if (expects('edit', 'value') && flow.data.field === 'landing') {
+      return deliver(await applyEditValue(deps, flows, flow, { landing }));
     }
     return expired();
   }
@@ -712,21 +720,22 @@ export async function handleFlowButton(deps: FlowDeps, flows: FlowStore, b: Flow
               ? reviewKeyboard(flows.seq())
               : field.id === 'rmodel'
                 ? reviewerModelKeyboard(flows.seq())
-                : autoPublishKeyboard(flows.seq());
+                : landingKeyboard(flows.seq());
     return deliver({ html: `New <b>${escapeHtml(field.label.toLowerCase())}</b>?`, keyboard });
   }
 
   return expired();
 }
 
-function autoPublishPrompt(): string {
+function landingPrompt(): string {
   return (
-    'Auto-publish when the work finishes?\n\n' +
-    '<i>On</i> skips both the review gate and the adversarial round — the same session commits and pushes.'
+    'How far may it land on its own?\n\n' +
+    '<i>on-green</i> moves it to done once the checks are green and the review is clean; ' +
+    '<i>auto-publish</i> then also commits and pushes. Anything else stops in review.'
   );
 }
 
-function summary(d: FlowData, autoPublish: boolean): string {
+function summary(d: FlowData, landing: LandingTier | null): string {
   return [
     `<b>${escapeHtml(d.title ?? '')}</b>`,
     d.description ? escapeHtml(d.description.slice(0, 300)) + (d.description.length > 300 ? '…' : '') : '',
@@ -737,7 +746,7 @@ function summary(d: FlowData, autoPublish: boolean): string {
     `model: <code>${escapeHtml(d.model ?? 'default')}</code> · effort: <code>${escapeHtml(d.effort ?? 'default')}</code>`,
     `review: <code>${d.review === null || d.review === undefined ? 'default' : d.review ? 'on' : 'off'}</code>` +
       (d.review === false ? '' : ` · reviewer: <code>${escapeHtml(d.reviewModel ?? 'default')}</code>`) +
-      ` · auto-publish: <code>${autoPublish ? 'on' : 'off'}</code>`,
+      ` · landing: <code>${escapeHtml(landing ?? 'repo default')}</code>`,
     ``,
     `On create:`,
   ].join('\n');
@@ -775,7 +784,7 @@ async function finishNew(deps: FlowDeps, flows: FlowStore, flow: Flow, onCreate:
       effort: d.effort ?? null,
       review: d.review ?? null,
       reviewModel: d.review === false ? null : (d.reviewModel ?? null),
-      autoPublish: d.autoPublish ?? false,
+      landing: d.landing ?? null,
     },
     deps.actor,
   );
