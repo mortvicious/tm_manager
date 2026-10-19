@@ -220,6 +220,10 @@ claimed while **another task in its repo** is
 - in `review` with an automatic review round open (`review_state`
   `pending`/`reviewing`/`fixing`): the reviewer is reading that checkout and its
   findings are about to be typed back into a session there.
+- in `review` with its repo checks due or running (`check_state`
+  `pending`/`running`, `docs/checks.md`): they read that checkout too. The same
+  clause is in the custom queue's `heldBy` and in the stacked-task hand-off;
+  the JS twin is `verifyOpen()` in shared.
 
 `blocked` does **not** hold the repo, unlike the custom queue's `heldBy`: a
 split parent waits on children in its own repo, and holding it would deadlock

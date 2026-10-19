@@ -47,13 +47,29 @@ export interface TaskEdit {
   reviewModel?: string | null;
   reviewEffort?: EffortLevel | null;
   autoPublish?: boolean;
+  acceptance?: string | null;
+  checks?: string[] | null;
   groupName?: string | null;
   groupColor?: number | null;
 }
 
+/**
+ * The definition-of-done fields as stored (docs/checks.md): blank acceptance
+ * is none, check names are trimmed and de-duplicated. `undefined` stays
+ * undefined (an edit that does not touch them).
+ */
+function normalizeDone<T extends { acceptance?: string | null; checks?: string[] | null }>(input: T): T {
+  const out = { ...input };
+  if (input.acceptance !== undefined) out.acceptance = input.acceptance?.trim() || null;
+  if (input.checks !== undefined) {
+    out.checks = input.checks == null ? null : [...new Set(input.checks.map((n) => n.trim()).filter(Boolean))];
+  }
+  return out;
+}
+
 /** POST /api/tasks — create + broadcast. */
 export async function createTask(deps: TaskActionDeps, input: NewTask, actor: string): Promise<Task> {
-  const task = await deps.storage.createTask(input, actor);
+  const task = await deps.storage.createTask(normalizeDone(input), actor);
   broadcast({ type: 'task.updated', task });
   return task;
 }
@@ -88,7 +104,7 @@ export async function editTask(
     const refused = await reparentRefusal(storage, cur, patch.parentId ?? null);
     if (refused) return refused;
   }
-  const task = await storage.updateTask(id, patch);
+  const task = await storage.updateTask(id, normalizeDone(patch));
   if (!task) return err(404, 'task not found');
   await storage.appendEvent({
     kind: 'task.edited',
@@ -230,7 +246,8 @@ export async function enqueueTask(
   if (cur.customQueueAt && !(await storage.updateTask(id, { customQueueAt: null }))) {
     return err(404, 'task not found');
   }
-  const task = await storage.transitionTask(id, from, 'queued', actor, { error: null });
+  // a new attempt: the previous attempt's check verdict (docs/checks.md) is not this one's
+  const task = await storage.transitionTask(id, from, 'queued', actor, { error: null, checkState: null });
   if (!task) {
     // Lost a race with a status change since the check above: put the mark back
     // (a member that is now e.g. running keeps its slot semantics).

@@ -53,6 +53,8 @@ export type TaskWrite = Partial<
     | 'reviewModel'
     | 'reviewEffort'
     | 'autoPublish'
+    | 'acceptance'
+    | 'checks'
     | 'groupName'
     | 'groupColor'
   >
@@ -71,7 +73,8 @@ export function normalizeTask(t: Task): Task {
     t.autoPublish !== undefined &&
     t.customQueueAt !== undefined &&
     typeof t.sortOrder === 'number' &&
-    Array.isArray(t.reviewRounds)
+    Array.isArray(t.reviewRounds) &&
+    Array.isArray(t.checkResults)
   )
     return t;
   return {
@@ -82,6 +85,11 @@ export function normalizeTask(t: Task): Task {
     reviewModel: t.reviewModel ?? null,
     reviewEffort: t.reviewEffort ?? null,
     reviewRounds: Array.isArray(t.reviewRounds) ? t.reviewRounds : [],
+    acceptance: t.acceptance ?? null,
+    checks: t.checks ?? null,
+    checkState: t.checkState ?? null,
+    checkResults: Array.isArray(t.checkResults) ? t.checkResults : [],
+    checkDiffHash: t.checkDiffHash ?? null,
     groupId: t.groupId ?? t.id,
     groupPath: t.groupPath ?? '/',
     groupName: t.groupName ?? null,
@@ -190,9 +198,17 @@ export const api = {
     return res.text();
   },
   listCommands: () => req<RepoCommand[]>('GET', '/api/commands'),
-  createCommand: (b: { repoId: string; name: string; command: string; kind?: RepoCommand['kind']; cwd?: string | null }) =>
+  createCommand: (b: {
+    repoId: string;
+    name: string;
+    command: string;
+    kind?: RepoCommand['kind'];
+    cwd?: string | null;
+    isCheck?: boolean;
+    timeoutSec?: number | null;
+  }) =>
     req<RepoCommand>('POST', '/api/commands', b),
-  updateCommand: (id: string, b: Partial<Pick<RepoCommand, 'name' | 'command' | 'kind' | 'cwd' | 'sortOrder'>>) =>
+  updateCommand: (id: string, b: Partial<Pick<RepoCommand, 'name' | 'command' | 'kind' | 'cwd' | 'sortOrder' | 'isCheck' | 'timeoutSec'>>) =>
     req<RepoCommand>('PATCH', `/api/commands/${id}`, b),
   deleteCommand: (id: string) => req<{ ok: true }>('DELETE', `/api/commands/${id}`),
   repoScripts: (repoId: string) => req<RepoScripts>('GET', `/api/repos/${repoId}/scripts`),

@@ -310,10 +310,10 @@ export class SqliteStorage implements Storage {
       );
     this.db
       .prepare(
-        `INSERT INTO tm_commands (id, repo_id, name, command, kind, cwd, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tm_commands (id, repo_id, name, command, kind, cwd, sort_order, is_check, timeout_sec, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, c.repoId, c.name, c.command, c.kind ?? 'task', c.cwd ?? null, sortOrder, at, at);
+      .run(id, c.repoId, c.name, c.command, c.kind ?? 'task', c.cwd ?? null, sortOrder, c.isCheck ? 1 : 0, c.timeoutSec ?? null, at, at);
     return (await this.getCommand(id))!;
   }
 
@@ -321,13 +321,17 @@ export class SqliteStorage implements Storage {
     const cur = await this.getCommand(id);
     if (!cur) return null;
     this.db
-      .prepare(`UPDATE tm_commands SET name = ?, command = ?, kind = ?, cwd = ?, sort_order = ?, updated_at = ? WHERE id = ?`)
+      .prepare(
+        `UPDATE tm_commands SET name = ?, command = ?, kind = ?, cwd = ?, sort_order = ?, is_check = ?, timeout_sec = ?, updated_at = ? WHERE id = ?`,
+      )
       .run(
         patch.name ?? cur.name,
         patch.command ?? cur.command,
         patch.kind ?? cur.kind,
         patch.cwd === undefined ? cur.cwd : patch.cwd,
         patch.sortOrder ?? cur.sortOrder,
+        (patch.isCheck ?? cur.isCheck) ? 1 : 0,
+        patch.timeoutSec === undefined ? cur.timeoutSec : patch.timeoutSec,
         now(),
         id,
       );
@@ -407,8 +411,8 @@ export class SqliteStorage implements Storage {
     const place = this.placeSync(id, t.parentId);
     this.db
       .prepare(
-        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, auto_publish, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (${NEXT_SORT_ORDER_SQL}))`,
+        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, auto_publish, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (${NEXT_SORT_ORDER_SQL}))`,
       )
       .run(
         id,
@@ -435,6 +439,8 @@ export class SqliteStorage implements Storage {
         ts,
         t.reviewModel ?? null,
         t.reviewEffort ?? null,
+        t.acceptance ?? null,
+        t.checks == null ? null : JSON.stringify(t.checks),
       );
     const task = rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
     this.appendEventSync({
@@ -494,7 +500,7 @@ export class SqliteStorage implements Storage {
     const isRoot = place.groupId === id;
     this.db
       .prepare(
-        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, auto_publish=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, review_diff_hash=?, review_state=?, review_rounds=?, wake_at=?, error=?, updated_at=?, review_model=?, review_effort=?, base_sha=?, base_ref=?, base_at=?, queue_held_at=? WHERE id=?`,
+        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, auto_publish=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, review_diff_hash=?, review_state=?, review_rounds=?, wake_at=?, error=?, updated_at=?, review_model=?, review_effort=?, base_sha=?, base_ref=?, base_at=?, queue_held_at=?, acceptance=?, checks=?, check_state=?, check_results=?, check_diff_hash=? WHERE id=?`,
       )
       .run(
         next.title,
@@ -531,6 +537,11 @@ export class SqliteStorage implements Storage {
         next.baseRef ?? null,
         next.baseAt ?? null,
         next.queueHeldAt ?? null,
+        next.acceptance ?? null,
+        next.checks == null ? null : JSON.stringify(next.checks),
+        next.checkState ?? null,
+        JSON.stringify(next.checkResults ?? []),
+        next.checkDiffHash ?? null,
         id,
       );
     return rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
@@ -687,7 +698,7 @@ export class SqliteStorage implements Storage {
     from: Task['status'][],
     to: Task['status'],
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'queueHeldAt'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt'>>,
   ): Promise<Task | null> {
     // Conditional single-statement transition — immune to check-then-set races
     // between route handlers, hook callbacks and the claim loop. Patch keys are
@@ -705,6 +716,10 @@ export class SqliteStorage implements Storage {
     if (patch && 'reviewState' in patch) {
       sets.push('review_state = ?');
       vals.push(patch.reviewState ?? null);
+    }
+    if (patch && 'checkState' in patch) {
+      sets.push('check_state = ?');
+      vals.push(patch.checkState ?? null);
     }
     // An Undo-start hold (docs/queue.md § Undo start) means "queued, but not
     // yet" and exists only for the transition that sets it: every other status

@@ -4,6 +4,7 @@ import {
   type Feature,
   type Proposal,
   type Question,
+  type CheckState,
   type ReviewState,
   type ServerEvent,
   type Task,
@@ -90,6 +91,31 @@ export interface NotifierDeps {
 const short = (id: string) => id.slice(0, 8);
 
 const unsettled = (state: ReviewState | null | undefined): boolean => state === 'pending' || state === 'reviewing';
+/** repo checks due or running (docs/checks.md) — the review ping waits for them too */
+export const checking = (state: CheckState | null | undefined): boolean => state === 'pending' || state === 'running';
+
+/**
+ * The repo-checks clause of the "in review" ping (docs/checks.md): green,
+ * red naming the failing checks, or no verdict. null when no checks ran on
+ * this landing.
+ */
+export function checkClause(task: Task): string | null {
+  const failing = (outcome: 'red' | 'error') =>
+    task.checkResults
+      .filter((r) => r.outcome === outcome)
+      .map((r) => (outcome === 'red' ? `${r.name} (exit ${r.exit ?? '?'})` : `${r.name}: ${r.error ?? 'no verdict'}`))
+      .join(', ');
+  switch (task.checkState) {
+    case 'green':
+      return `✓ checks green (${task.checkResults.length})`;
+    case 'red':
+      return `✗ checks red: ${failing('red') || 'see the task'}`;
+    case 'error':
+      return `⚠ checks gave no verdict: ${failing('error') || 'see the task'}`;
+    default:
+      return null;
+  }
+}
 
 function verdictBadge(verdict: string): string {
   return verdict === 'clean' ? '✓ clean' : verdict === 'blocker' ? '⛔ blocker' : `⚠ ${verdict}`;
@@ -210,6 +236,7 @@ export class TelegramNotifier {
   private readonly taskStatus = new Map<string, Task['status']>();
   /** last seen review state per task — the "did the reviewer just settle" memory */
   private readonly taskReview = new Map<string, ReviewState | null>();
+  private readonly taskCheck = new Map<string, CheckState | null>();
   private readonly featureStatus = new Map<string, Feature['status']>();
 
   private readonly pendingTasks = new Map<string, PendingTask>();
@@ -238,6 +265,7 @@ export class TelegramNotifier {
       for (const t of tasks) {
         this.taskStatus.set(t.id, t.status);
         this.taskReview.set(t.id, t.reviewState);
+        this.taskCheck.set(t.id, t.checkState);
       }
       for (const f of features) this.featureStatus.set(f.id, f.status);
       this.hadWork = tasks.some((t) => t.status === 'queued' || t.status === 'running');
@@ -330,14 +358,17 @@ export class TelegramNotifier {
   private onTask(t: Task): void {
     const prevStatus = this.taskStatus.get(t.id);
     const prevReview = this.taskReview.get(t.id);
+    const prevCheck = this.taskCheck.get(t.id);
     this.taskStatus.set(t.id, t.status);
     this.taskReview.set(t.id, t.reviewState);
+    this.taskCheck.set(t.id, t.checkState);
     // `waiting` is a running session between two of its own turns — work, not a pause
     if (t.status === 'queued' || t.status === 'running' || t.status === 'waiting') this.hadWork = true;
     else this.scheduleQueueCheck();
     const moved = prevStatus !== t.status;
     const reviewMoved = prevReview !== t.reviewState;
-    if (!moved && !reviewMoved) return; // a content edit, not a transition
+    const checkMoved = prevCheck !== t.checkState;
+    if (!moved && !reviewMoved && !checkMoved) return; // a content edit, not a transition
     // A requested review settling on a task parked anywhere but `review` (the
     // `review` arm below already pings that one, with its buttons). Asked
     // synchronously: the settling broadcast is emitted from inside the round,
@@ -360,8 +391,11 @@ export class TelegramNotifier {
         // again) waits the same way, so the phone hears one verdict per
         // change instead of one ping per bounce. The settling update is a
         // review-state move on an unchanged status, hence the second arm.
-        if (unsettled(t.reviewState)) break;
-        if (moved || (reviewMoved && unsettled(prevReview))) this.mark(t.id, (p) => (p.review = true));
+        // Repo checks (docs/checks.md) come first and are waited for the same way.
+        if (unsettled(t.reviewState) || checking(t.checkState)) break;
+        if (moved || (reviewMoved && unsettled(prevReview)) || (checkMoved && checking(prevCheck))) {
+          this.mark(t.id, (p) => (p.review = true));
+        }
         break;
       case 'failed':
         if (moved) this.mark(t.id, (p) => (p.failed = true));
@@ -413,8 +447,8 @@ export class TelegramNotifier {
     // Re-checked against the row: a review that went back into a fix round
     // (running again) or is still being reviewed (the reviewer started after
     // the mark) flushes into nothing — its settling update will mark again.
-    if (n.review && p.review && task.status === 'review' && !unsettled(task.reviewState)) {
-      const verdict = reviewClause(task);
+    if (n.review && p.review && task.status === 'review' && !unsettled(task.reviewState) && !checking(task.checkState)) {
+      const verdict = [checkClause(task), reviewClause(task)].filter(Boolean).join(' · ');
       lines.push(`📋 ${title} is in <b>review</b>${verdict ? ` · ${escapeHtml(verdict)}` : ''}.`);
       const last = task.reviewRounds[task.reviewRounds.length - 1];
       if (task.error) {

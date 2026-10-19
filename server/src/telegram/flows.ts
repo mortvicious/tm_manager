@@ -40,6 +40,8 @@ interface FlowData {
   repoId?: string;
   title?: string;
   description?: string | null;
+  /** definition of done (docs/checks.md); null = none */
+  acceptance?: string | null;
   model?: string | null;
   effort?: EffortLevel | null;
   review?: boolean | null;
@@ -92,6 +94,7 @@ export interface FlowDeps {
 type EditField =
   | 'title'
   | 'description'
+  | 'acceptance'
   | 'category'
   | 'repo'
   | 'model'
@@ -103,6 +106,7 @@ type EditField =
 const EDIT_FIELDS: { id: EditField; label: string; free: boolean }[] = [
   { id: 'title', label: 'Title', free: true },
   { id: 'description', label: 'Description', free: true },
+  { id: 'acceptance', label: 'Definition of done', free: true },
   { id: 'category', label: 'Category', free: true },
   // Without this a repo-less task is a dead end on the phone: every run path
   // refuses with "assign a repo before running this task" and no bot surface
@@ -279,9 +283,13 @@ function editFieldKeyboard(seq: number): InlineKeyboardMarkup {
   return grid(EDIT_FIELDS.map((f) => ({ text: f.label, callback_data: wz(seq, 'field', f.id) })));
 }
 
-const skipKeyboard = (seq: number): InlineKeyboardMarkup => ({
-  inline_keyboard: [[{ text: '⏭ Skip', callback_data: wz(seq, 'desc', 'skip') }], CANCEL_ROW],
+const skipKeyboard = (seq: number, step = 'desc'): InlineKeyboardMarkup => ({
+  inline_keyboard: [[{ text: '⏭ Skip', callback_data: wz(seq, step, 'skip') }], CANCEL_ROW],
 });
+
+/** The optional definition-of-done step of /new (docs/checks.md). */
+const ACCEPT_PROMPT =
+  'Definition of done? What must be true when this is finished — given to the agent and to the reviewer. (or skip)';
 
 const draftConfirmKeyboard = (seq: number): InlineKeyboardMarkup => ({
   inline_keyboard: [
@@ -404,8 +412,12 @@ export async function handleFlowText(deps: FlowDeps, flows: FlowStore, text: str
     return step({ html: 'Description? (or skip)', keyboard: skipKeyboard(flows.seq()) });
   }
   if (flow.kind === 'new' && flow.step === 'desc') {
+    flows.advance('accept', { description: body });
+    return step({ html: ACCEPT_PROMPT, keyboard: skipKeyboard(flows.seq(), 'accept') });
+  }
+  if (flow.kind === 'new' && flow.step === 'accept') {
     const presets = await livePresets(deps);
-    flows.advance('preset', { description: body });
+    flows.advance('preset', { acceptance: body.slice(0, 4000) });
     return step({ html: paramsPrompt(flow.data.title ?? ''), keyboard: presetKeyboard(flows.seq(), presets) });
   }
   if (flow.kind === 'draft' && flow.step === 'confirm') {
@@ -586,8 +598,14 @@ export async function handleFlowButton(deps: FlowDeps, flows: FlowStore, b: Flow
 
   if (b.step === 'desc') {
     if (!expects('new', 'desc')) return expired();
+    flows.advance('accept', { description: null });
+    return deliver({ html: ACCEPT_PROMPT, keyboard: skipKeyboard(flows.seq(), 'accept') });
+  }
+
+  if (b.step === 'accept') {
+    if (!expects('new', 'accept')) return expired();
     const presets = await livePresets(deps);
-    flows.advance('preset', { description: null });
+    flows.advance('preset', { acceptance: null });
     return deliver({ html: paramsPrompt(flow.data.title ?? ''), keyboard: presetKeyboard(flows.seq(), presets) });
   }
 
@@ -712,6 +730,9 @@ function summary(d: FlowData, autoPublish: boolean): string {
   return [
     `<b>${escapeHtml(d.title ?? '')}</b>`,
     d.description ? escapeHtml(d.description.slice(0, 300)) + (d.description.length > 300 ? '…' : '') : '',
+    d.acceptance
+      ? `<i>done when:</i> ${escapeHtml(d.acceptance.slice(0, 200))}${d.acceptance.length > 200 ? '…' : ''}`
+      : '',
     ``,
     `model: <code>${escapeHtml(d.model ?? 'default')}</code> · effort: <code>${escapeHtml(d.effort ?? 'default')}</code>`,
     `review: <code>${d.review === null || d.review === undefined ? 'default' : d.review ? 'on' : 'off'}</code>` +
@@ -747,6 +768,7 @@ async function finishNew(deps: FlowDeps, flows: FlowStore, flow: Flow, onCreate:
     {
       title: d.title ?? 'Untitled',
       description: d.description ?? null,
+      acceptance: d.acceptance ?? null,
       repoId: d.repoId ?? null,
       status: 'draft',
       model: d.model ?? null,
@@ -779,6 +801,10 @@ async function applyEdit(deps: FlowDeps, flows: FlowStore, flow: Flow, text: str
   const field = flow.data.field;
   if (field === 'title') return applyEditValue(deps, flows, flow, { title: text.slice(0, TITLE_MAX) });
   if (field === 'description') return applyEditValue(deps, flows, flow, { description: text });
+  // `-` clears it, like the category
+  if (field === 'acceptance') {
+    return applyEditValue(deps, flows, flow, { acceptance: text.trim() === '-' ? null : text.slice(0, 4000) });
+  }
   if (field === 'category') {
     const v = text.trim();
     if (v.length > 60) {

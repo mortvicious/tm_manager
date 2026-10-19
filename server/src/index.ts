@@ -91,6 +91,8 @@ const shellSessions = new SessionManager(
 initAux(new AuxRunner(storage, auxSessions, `http://127.0.0.1:${cfg.port}`));
 const orchestrator = new Orchestrator(storage, sessions, `http://127.0.0.1:${cfg.port}`);
 const commandRunner = new CommandRunner(storage, commandSessions);
+// Repo checks (docs/checks.md) run as ordinary command runs in that pool.
+orchestrator.setCommandRunner(commandRunner);
 const shellRunner = new ShellRunner(storage, shellSessions);
 // Chat (docs/chat.md): a free-form conversation with claude in a repo, shared
 // by the SPA and the phone. Every turn is an aux terminal (kind `chat`,

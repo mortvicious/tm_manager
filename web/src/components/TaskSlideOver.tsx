@@ -4,6 +4,7 @@ import {
   GROUP_COLOR_COUNT,
   MODEL_OPTIONS,
   REVIEW_BUSY_STATES,
+  CHECK_BUSY_STATES,
   REVIEW_NOW_FROM,
   groupAncestors,
   groupColorSlot,
@@ -25,6 +26,8 @@ import { RunStatsChips, TaskCostChip } from './RunMeta.tsx';
 import { StatusBadge } from './StatusBadge.tsx';
 import { KindBadge, liveReviewRun, runTaskId } from './RunKind.tsx';
 import { ReviewPanel } from './ReviewPanel.tsx';
+import { ChecksPanel } from './ChecksPanel.tsx';
+import { DoneFields } from './DoneFields.tsx';
 import { QuestionForm } from './QuestionModal.tsx';
 import { Sheet, SheetAction } from './Sheet.tsx';
 import { exitGhost } from '../motion.ts';
@@ -187,6 +190,8 @@ export function TaskSlideOver({
   const task = tasks.find((t) => t.id === taskId);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [acceptance, setAcceptance] = useState('');
+  const [checks, setChecks] = useState<string[] | null>(null);
   const [repoId, setRepoId] = useState<string>('');
   const [parentId, setParentId] = useState<string>('');
   const [parentPlace, setParentPlace] = useState<GroupChoicePlace>('ungroup');
@@ -241,6 +246,8 @@ export function TaskSlideOver({
     if (task) {
       setTitle(task.title);
       setDescription(task.description ?? '');
+      setAcceptance(task.acceptance ?? '');
+      setChecks(task.checks);
       setRepoId(task.repoId ?? '');
       setParentId(task.parentId ?? '');
       setParentPlace(placeOfParent(task));
@@ -308,6 +315,8 @@ export function TaskSlideOver({
   const dirty =
     title !== task.title ||
     description !== (task.description ?? '') ||
+    acceptance !== (task.acceptance ?? '') ||
+    JSON.stringify(checks) !== JSON.stringify(task.checks) ||
     repoId !== (task.repoId ?? '') ||
     regroup ||
     model !== (task.model ?? '') ||
@@ -340,6 +349,8 @@ export function TaskSlideOver({
       await api.updateTask(task.id, {
         title,
         description: description || null,
+        acceptance: acceptance.trim() || null,
+        checks,
         repoId: repoId || null,
         model: model || null,
         effort: (effort || null) as EffortLevel | null,
@@ -435,7 +446,10 @@ export function TaskSlideOver({
     }
   };
 
-  const reviewBusy = task.reviewState !== null && REVIEW_BUSY_STATES.includes(task.reviewState);
+  // the repo checks run inside the same round lock (docs/checks.md), so "Review now" waits for them too
+  const reviewBusy =
+    (task.reviewState !== null && REVIEW_BUSY_STATES.includes(task.reviewState)) ||
+    (task.status === 'review' && task.checkState !== null && CHECK_BUSY_STATES.includes(task.checkState));
   const actions: PanelAction[] = [];
   const running = task.status === 'running' || task.status === 'waiting';
   // the client mirror of the server's hasLiveSession() guard (see TaskRow):
@@ -641,6 +655,7 @@ export function TaskSlideOver({
         attention={latestRun?.needsAttention && task.status === 'running'}
         question={!!pendingQuestion}
         reviewState={task.reviewState}
+        checkState={task.checkState}
         onOpenReviewer={reviewerRun ? () => onOpenTerminal(reviewerRun.id) : undefined}
       />
       {/* phones: the title stays in view while the body scrolls under it */}
@@ -749,9 +764,25 @@ export function TaskSlideOver({
       )}
       {(!mobile || settingsOpen) && (
         <div className="form-grid">
+          <DoneFields
+            repoId={repoId || null}
+            acceptance={acceptance}
+            checks={checks}
+            autoPublish={autoPublish}
+            onAcceptance={setAcceptance}
+            onChecks={setChecks}
+          />
           <div>
             <label className="label">Repo</label>
-            <select className="field" value={repoId} onChange={(e) => setRepoId(e.target.value)}>
+            <select
+              className="field"
+              value={repoId}
+              onChange={(e) => {
+                setRepoId(e.target.value);
+                // check names belong to a repo: another repo starts from "all"
+                setChecks(e.target.value === (task.repoId ?? '') ? task.checks : null);
+              }}
+            >
               <option value="">— none —</option>
               {repos.map((r) => (
                 <option key={r.id} value={r.id}>
@@ -926,6 +957,7 @@ export function TaskSlideOver({
           held by Undo start — it keeps its place, but the queue skips it until you Release it (or Run now)
         </div>
       )}
+      <ChecksPanel task={task} onOpenTerminal={onOpenTerminal} />
       <div className="so-review">
         <ReviewPanel task={task} />
       </div>

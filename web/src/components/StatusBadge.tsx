@@ -1,4 +1,4 @@
-import type { ReviewState, TaskStatus } from '@tm/shared';
+import type { CheckState, ReviewState, TaskStatus } from '@tm/shared';
 
 const cls: Partial<Record<TaskStatus, string>> = {
   running: 's-running',
@@ -16,14 +16,17 @@ const cls: Partial<Record<TaskStatus, string>> = {
  * derived from server-owned fields rather than being statuses of their own
  * (docs/design.md § Adversarial review): `auto-review` while a task parked in
  * `review` is still being read by the adversarial reviewer, and `fixing` while
- * it is `running` on that reviewer's findings. `needs attention` is the third,
- * from the live run.
+ * it is `running` on that reviewer's findings. The repo checks (docs/checks.md)
+ * add `checking` (due or running, before the reviewer) and `checks red` (the
+ * fix loop ended with a failing check); a `running` task fixing red checks
+ * reads `fixing` too. `needs attention` is the last, from the live run.
  */
 export function StatusBadge({
   status,
   attention,
   question,
   reviewState,
+  checkState,
   onOpenReviewer,
 }: {
   status: TaskStatus;
@@ -31,6 +34,7 @@ export function StatusBadge({
   /** the agent is waiting on an answer to its question (docs/questions.md) */
   question?: boolean;
   reviewState?: ReviewState | null;
+  checkState?: CheckState | null;
   /** set while the reviewer's terminal is live: the auto-review badge opens it */
   onOpenReviewer?: () => void;
 }) {
@@ -45,6 +49,20 @@ export function StatusBadge({
     return (
       <span className="badge s-attention">
         <span className="dot" /> needs attention
+      </span>
+    );
+  }
+  if (status === 'review' && (checkState === 'pending' || checkState === 'running')) {
+    return (
+      <span className="badge s-checking" title="the server is running the repo checks on this change">
+        <span className="dot" /> checking
+      </span>
+    );
+  }
+  if (status === 'review' && checkState === 'red') {
+    return (
+      <span className="badge s-checksred" title="a repo check still fails — the fix rounds ended; the output is in the task panel">
+        <span className="dot" /> checks red
       </span>
     );
   }
@@ -69,6 +87,13 @@ export function StatusBadge({
     return (
       <span className="badge s-autoreview" title="the adversarial reviewer is reading this change">
         <span className="dot" /> auto-review
+      </span>
+    );
+  }
+  if (status === 'running' && (checkState === 'red' || checkState === 'running')) {
+    return (
+      <span className="badge s-running s-fixing" title="the agent is fixing a failing repo check">
+        <span className="dot" /> fixing checks
       </span>
     );
   }

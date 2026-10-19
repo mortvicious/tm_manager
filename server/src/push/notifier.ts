@@ -7,6 +7,7 @@ import {
   type Proposal,
   type Question,
   type Report,
+  type CheckState,
   type ReviewState,
   type ServerEvent,
   type Task,
@@ -14,7 +15,7 @@ import {
 } from '@tm/shared';
 import { onEvent } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
-import { reviewClause } from '../telegram/notifications.ts';
+import { checkClause, checking, reviewClause } from '../telegram/notifications.ts';
 import type { PushService } from './service.ts';
 
 /**
@@ -58,6 +59,7 @@ export interface PushNotifierDeps {
 export class PushNotifier {
   private readonly taskStatus = new Map<string, TaskStatus>();
   private readonly taskReview = new Map<string, ReviewState | null>();
+  private readonly taskCheck = new Map<string, CheckState | null>();
   private readonly featureStatus = new Map<string, Feature['status']>();
   private readonly reportStatus = new Map<string, Report['status']>();
   /** who wrote each chat's latest user message — a phone-typed turn is answered in Telegram */
@@ -84,6 +86,7 @@ export class PushNotifier {
       for (const t of tasks) {
         this.taskStatus.set(t.id, t.status);
         this.taskReview.set(t.id, t.reviewState);
+        this.taskCheck.set(t.id, t.checkState);
       }
       for (const f of features) this.featureStatus.set(f.id, f.status);
       for (const r of reports) this.reportStatus.set(r.id, r.status);
@@ -165,13 +168,16 @@ export class PushNotifier {
   private onTask(t: Task): void {
     const prevStatus = this.taskStatus.get(t.id);
     const prevReview = this.taskReview.get(t.id);
+    const prevCheck = this.taskCheck.get(t.id);
     this.taskStatus.set(t.id, t.status);
     this.taskReview.set(t.id, t.reviewState);
+    this.taskCheck.set(t.id, t.checkState);
     if (isWork(t.status)) this.hadWork = true;
     else this.scheduleQueueCheck();
     const moved = prevStatus !== t.status;
     const reviewMoved = prevReview !== t.reviewState;
-    if (!moved && !reviewMoved) return;
+    const checkMoved = prevCheck !== t.checkState;
+    if (!moved && !reviewMoved && !checkMoved) return;
     if (
       t.status !== 'review' &&
       !moved &&
@@ -185,13 +191,19 @@ export class PushNotifier {
     switch (t.status) {
       case 'review':
         // one verdict per change: wait for the review to settle, then speak
-        if (unsettled(t.reviewState)) break;
-        if (moved || (reviewMoved && unsettled(prevReview))) this.mark(t.id, (p) => (p.review = true));
+        // ...and for the repo checks before it (docs/checks.md)
+        if (unsettled(t.reviewState) || checking(t.checkState)) break;
+        if (moved || (reviewMoved && unsettled(prevReview)) || (checkMoved && checking(prevCheck))) {
+          this.mark(t.id, (p) => (p.review = true));
+        }
         break;
       case 'done':
         // only the agent finishing straight to done (auto-complete) — a human
-        // pressing Mark done does not need telling
-        if (moved && (prevStatus === 'running' || prevStatus === 'waiting')) this.mark(t.id, (p) => (p.done = true));
+        // pressing Mark done does not need telling. With repo checks the
+        // landing is review → done on green (the checks were due a moment ago).
+        if (moved && (prevStatus === 'running' || prevStatus === 'waiting' || (prevStatus === 'review' && checking(prevCheck)))) {
+          this.mark(t.id, (p) => (p.done = true));
+        }
         break;
       case 'running':
         // picked up from the queue — not a fix round, a wake from waiting or a resume
@@ -271,8 +283,8 @@ export class PushNotifier {
         );
       }
     }
-    if (p.review && task.status === 'review' && !unsettled(task.reviewState)) {
-      const verdict = reviewClause(task);
+    if (p.review && task.status === 'review' && !unsettled(task.reviewState) && !checking(task.checkState)) {
+      const verdict = [checkClause(task), reviewClause(task)].filter(Boolean).join(' · ') || null;
       const body = [verdict, task.error ? `⚠ ${task.error}` : (reviewerSummary ?? task.resultSummary)]
         .filter(Boolean)
         .join('\n');

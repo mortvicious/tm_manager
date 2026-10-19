@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { CHECK_DEFAULT_TIMEOUT_SEC } from '@tm/shared';
 import type { CommandRun, Repo, RepoCommand } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
@@ -110,7 +111,13 @@ export class CommandRunner {
    * `ownerTaskId` is set when an agent starts it (docs/commands.md § Agent API):
    * that task's sessions may stop it again; nobody else's agent may.
    */
-  async start(command: RepoCommand, repo: Repo, actor: string, ownerTaskId: string | null = null): Promise<CommandRun> {
+  async start(
+    command: RepoCommand,
+    repo: Repo,
+    actor: string,
+    ownerTaskId: string | null = null,
+    check: { taskId: string } | null = null,
+  ): Promise<CommandRun> {
     const existing = this.runningFor(command.id);
     if (existing) {
       const err = new Error(`"${command.name}" is already running`) as Error & { conflict?: true };
@@ -132,7 +139,9 @@ export class CommandRunner {
       cwd,
       // Colour: the process gets a real tty, and FORCE_COLOR settles the
       // node tools that check for CI rather than for a tty.
-      env: { FORCE_COLOR: '1' },
+      // A check also gets CI=1: test runners that default to WATCH mode in a
+      // tty (vitest, jest --watch heuristics) would otherwise never exit.
+      env: check ? { FORCE_COLOR: '1', CI: '1' } : { FORCE_COLOR: '1' },
     });
     const run: CommandRun = {
       id,
@@ -150,6 +159,7 @@ export class CommandRunner {
       endedAt: null,
       startedBy: actor,
       ownerTaskId,
+      checkTaskId: check?.taskId ?? null,
     };
     this.runs.set(id, run);
     broadcast({ type: 'command.run', run: { ...run } });
@@ -157,10 +167,84 @@ export class CommandRunner {
       kind: 'command.run',
       actor,
       repoId: repo.id,
-      data: { action: 'started', name: command.name, command: command.command, cwd, pid: run.pid, ownerTaskId },
+      data: {
+        action: 'started',
+        name: command.name,
+        command: command.command,
+        cwd,
+        pid: run.pid,
+        ownerTaskId,
+        ...(check ? { checkTaskId: check.taskId } : {}),
+      },
     });
     this.trim();
     return run;
+  }
+
+  /**
+   * Run one CHECK of a task's change to its end (docs/checks.md): an ordinary,
+   * attachable run in this pool, so a human can watch it like a dev server.
+   * Never throws — every way it can go wrong is an `error` outcome with the
+   * reason, which the verify loop treats as "no verdict" rather than red:
+   *  - past its timeout the run is stopped and the result is `timedOut`;
+   *  - a live run of the same definition (a human pressed it) is waited out
+   *    first, within the same timeout, because one run per definition holds;
+   *  - an unparseable line or a missing binary never produced a process.
+   * `abort` is polled while waiting: the task left the state the check was for.
+   */
+  async runCheck(
+    command: RepoCommand,
+    repo: Repo,
+    taskId: string,
+    abort?: () => boolean | Promise<boolean>,
+  ): Promise<CheckRun> {
+    const timeoutMs = (command.timeoutSec ?? CHECK_DEFAULT_TIMEOUT_SEC) * 1000;
+    const t0 = Date.now();
+    const busy = this.runningFor(command.id);
+    if (busy && !(await this.waitForExit(busy.id, timeoutMs))) {
+      return { runId: null, exit: null, durationMs: 0, tail: '', error: `another run of "${command.name}" is still running` };
+    }
+    let run: CommandRun;
+    try {
+      run = await this.start(command, repo, 'system', taskId, { taskId });
+    } catch (e) {
+      return { runId: null, exit: null, durationMs: 0, tail: '', error: `could not start: ${(e as Error).message}` };
+    }
+    const started = Date.now();
+    const deadline = started + Math.max(0, timeoutMs - (started - t0));
+    let exited = false;
+    let aborted = false;
+    // Short slices so an abort (task taken over) stops the check promptly.
+    while (!exited) {
+      const left = deadline - Date.now();
+      if (left <= 0) break;
+      exited = await this.waitForExit(run.id, Math.min(left, 2000));
+      if (!exited && (await abort?.())) {
+        aborted = true;
+        break;
+      }
+    }
+    if (!exited) {
+      this.stop(run.id);
+      await this.waitForExit(run.id, 6000);
+    }
+    const tail = lastLines(this.tail(run.id, 256 * 1024) ?? '', CHECK_TAIL_LINES, CHECK_TAIL_CHARS);
+    const durationMs = Date.now() - started;
+    if (aborted) return { runId: run.id, exit: null, durationMs, tail, error: 'aborted' };
+    if (!exited) {
+      return {
+        runId: run.id,
+        exit: null,
+        durationMs,
+        tail,
+        error: `timed out after ${Math.round(timeoutMs / 1000)}s`,
+        timedOut: true,
+      };
+    }
+    const done = this.runs.get(run.id);
+    // A run stopped from the UI mid-check is not a verdict either.
+    if (done?.status === 'killed') return { runId: run.id, exit: null, durationMs, tail, error: 'stopped before it finished' };
+    return { runId: run.id, exit: done?.exitCode ?? null, durationMs, tail, error: null };
   }
 
   /** SIGHUP now, SIGKILL after 5s (SessionManager.kill). The exit handler is
@@ -208,6 +292,27 @@ export class CommandRunner {
     const finished = this.list().filter((r) => r.status !== 'running');
     for (const run of finished.slice(MAX_FINISHED)) this.runs.delete(run.id);
   }
+}
+
+/** How much of a check's output the worker and the reviewer get. */
+export const CHECK_TAIL_LINES = 80;
+const CHECK_TAIL_CHARS = 8000;
+
+/** What `runCheck` saw. `error` set = no verdict (timeout, could not start, stopped, aborted). */
+export interface CheckRun {
+  runId: string | null;
+  exit: number | null;
+  durationMs: number;
+  tail: string;
+  error: string | null;
+  timedOut?: boolean;
+}
+
+/** The last `lines` non-trailing-blank lines, bounded to `chars` from the end. */
+export function lastLines(text: string, lines: number, chars: number): string {
+  const all = text.replace(/\s+$/, '').split('\n');
+  const out = all.slice(-lines).join('\n');
+  return out.length > chars ? out.slice(out.length - chars) : out;
 }
 
 /**

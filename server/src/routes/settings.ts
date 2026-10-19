@@ -53,6 +53,7 @@ const settingsSchema = z
     'review.enabled': z.boolean(),
     'review.model': z.string().min(1),
     'review.maxRounds': z.number().int().min(0).max(5),
+    'checks.maxRounds': z.number().int().min(0).max(10),
     'feature.analysisMaxRounds': z.number().int().min(0).max(5),
     'anomaly.longRunMin': z.number().int().min(5),
     'anomaly.costUsd': z.number().min(0.5),

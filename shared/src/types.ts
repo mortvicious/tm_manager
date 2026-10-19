@@ -25,6 +25,42 @@ export type ReviewState = 'pending' | 'reviewing' | 'fixing' | 'passed' | 'flagg
 
 export type ReviewVerdict = 'clean' | 'concerns' | 'blocker';
 
+/**
+ * Where the repo checks of the CURRENT change stand (docs/checks.md). Like
+ * `ReviewState`, a qualifier on the row, never a status:
+ *  - `pending`  the Stop landed, the checks have not started
+ *  - `running`  the checks are running in the commands pool
+ *  - `green`    every selected check exited 0
+ *  - `red`      a check failed and the fix loop ended (or is fixing: `running` task)
+ *  - `error`    a check could not give a verdict (timed out, could not start)
+ *  - null       no checks apply to this change (none configured, publish, auto-publish)
+ */
+export type CheckState = 'pending' | 'running' | 'green' | 'red' | 'error';
+
+/** States in which the checks of the current change are still to come or in flight. */
+export const CHECK_BUSY_STATES: CheckState[] = ['pending', 'running'];
+
+/** One check's latest result (docs/checks.md), as stored in `tm_tasks.check_results`. */
+export interface CheckResult {
+  /** the check command's name — what `Task.checks` selects by */
+  name: string;
+  /** the command line that ran */
+  command: string;
+  /** process exit code; null = no exit to report (timed out, could not start) */
+  exit: number | null;
+  durationMs: number;
+  /** green | red | error, per check */
+  outcome: 'green' | 'red' | 'error';
+  /** why an `error` (timeout, spawn failure); null otherwise */
+  error: string | null;
+  /** a red that was re-run once before it counted (flaky guard); `flaky` = the re-run was green */
+  retried: boolean;
+  /** last ~80 lines of the output, ANSI stripped */
+  tail: string;
+  /** the commands-pool run id (attachable while its PTY is kept) */
+  runId: string | null;
+}
+
 export interface ReviewFinding {
   severity: 'blocker' | 'major' | 'minor';
   summary: string;
@@ -339,9 +375,22 @@ export interface RepoCommand {
   cwd: string | null;
   /** launcher order within the repo, ascending */
   sortOrder: number;
+  /**
+   * A CHECK (docs/checks.md): run by the server after every worker turn, before
+   * the review round, as part of the task's definition of done. Exit 0 = green.
+   */
+  isCheck: boolean;
+  /** a check's wall-clock limit in seconds; null = CHECK_DEFAULT_TIMEOUT_SEC. Past it the check is `error`, not red */
+  timeoutSec: number | null;
   createdAt: string;
   updatedAt: string;
 }
+
+/** A check with no timeout of its own gets this many seconds. */
+export const CHECK_DEFAULT_TIMEOUT_SEC = 600;
+/** Bounds of a check's own timeout, in seconds. */
+export const CHECK_TIMEOUT_MIN_SEC = 10;
+export const CHECK_TIMEOUT_MAX_SEC = 3600;
 
 export type CommandRunStatus = 'running' | 'exited' | 'killed';
 
@@ -372,6 +421,8 @@ export interface CommandRun {
   startedBy: string;
   /** the task whose agent started it (any turn of that task may stop it); null when a human did */
   ownerTaskId: string | null;
+  /** set when the server ran it as a CHECK of this task's change (docs/checks.md); null otherwise */
+  checkTaskId: string | null;
 }
 
 /** One `package.json` script the repo scanner found. */
@@ -542,6 +593,22 @@ export interface Task {
    * `budget.taskUsd` is measured against.
    */
   costUsd: number;
+  /**
+   * The definition of done in the human's words (docs/checks.md): injected
+   * into the worker's fresh prompt and handed to the reviewer. null = none.
+   */
+  acceptance: string | null;
+  /**
+   * Which of the repo's checks apply, by name. null = all of them; [] = none
+   * (an explicit opt-out). A name no longer matching a check is ignored.
+   */
+  checks: string[] | null;
+  /** where the checks of the current change stand; see `CheckState` */
+  checkState: CheckState | null;
+  /** the latest check results, one per check that ran (empty = none yet) */
+  checkResults: CheckResult[];
+  /** the change hash (`workerDiff`) the latest checks ran over; a Stop with the same hash and green checks does not re-run them */
+  checkDiffHash: string | null;
   error: string | null;
   createdAt: string;
   updatedAt: string;
@@ -562,9 +629,21 @@ export interface Task {
  * split parent waits on children that live in that same repo. JS twin of
  * `REPO_EXCLUSIVE_GATE` in server/src/storage/queue-sql.ts — edit together.
  */
-export function holdsRepoForClaim(t: Pick<Task, 'status' | 'reviewState'>): boolean {
+export function holdsRepoForClaim(t: Pick<Task, 'status' | 'reviewState' | 'checkState'>): boolean {
   if (t.status === 'running' || t.status === 'waiting') return true;
-  return t.status === 'review' && !!t.reviewState && REVIEW_BUSY_STATES.includes(t.reviewState);
+  return verifyOpen(t);
+}
+
+/**
+ * A task parked in `review` whose automatic verify round is still open: its
+ * review round (`REVIEW_BUSY_STATES`) or its repo checks (`CHECK_BUSY_STATES`,
+ * docs/checks.md — they read the checkout, so nobody else may edit it). The
+ * `review_state … OR check_state …` clause of the SQL twins in
+ * server/src/storage/queue-sql.ts — edit together.
+ */
+export function verifyOpen(t: Pick<Task, 'status' | 'reviewState' | 'checkState'>): boolean {
+  if (t.status !== 'review') return false;
+  return (!!t.reviewState && REVIEW_BUSY_STATES.includes(t.reviewState)) || (!!t.checkState && CHECK_BUSY_STATES.includes(t.checkState));
 }
 
 /** The task a run's cost belongs to: its own task, or the task an aux review/compact session was about. */
@@ -584,9 +663,9 @@ export const CUSTOM_QUEUE_IN_FLIGHT_STATUSES: readonly TaskStatus[] = ['running'
  * stopping the queue. JS twin of `CUSTOM_QUEUE_HELD_BY` in
  * server/src/storage/queue-sql.ts — edit together.
  */
-export function customQueueHoldsRepo(t: Pick<Task, 'status' | 'reviewState'>): boolean {
+export function customQueueHoldsRepo(t: Pick<Task, 'status' | 'reviewState' | 'checkState'>): boolean {
   if (CUSTOM_QUEUE_IN_FLIGHT_STATUSES.includes(t.status)) return true;
-  return t.status === 'review' && !!t.reviewState && REVIEW_BUSY_STATES.includes(t.reviewState);
+  return verifyOpen(t);
 }
 
 /**
@@ -976,6 +1055,12 @@ export interface AppSettings {
    * the token audit found round 2+ almost never actionable (docs/design.md).
    */
   'review.maxRounds': number;
+  /**
+   * max check→fix→check rounds (docs/checks.md): how many times red checks are
+   * typed back into the worker's live session before the task lands in review
+   * with `checkState: 'red'`. 0 = run the checks, never ask for a fix.
+   */
+  'checks.maxRounds': number;
   /** max feature-plan re-analysis rounds after a blocker verdict (plan review, not diff review — independent of review.maxRounds) */
   'feature.analysisMaxRounds': number;
   /** a live worker turn older than this is an anomaly: Dashboard + one `anomaly` notification per turn */
@@ -1127,6 +1212,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'review.enabled': true,
   'review.model': 'claude-fable-5-1',
   'review.maxRounds': 1,
+  'checks.maxRounds': 3,
   'feature.analysisMaxRounds': 2,
   'anomaly.longRunMin': 30,
   'anomaly.costUsd': 10,
@@ -1267,6 +1353,8 @@ export type AuditKind =
   | 'task.dispatch'
   | 'task.publish'
   | 'run.reviewed'
+  /** the repo checks ran over a task's change, or were skipped with a reason (docs/checks.md) */
+  | 'task.checked'
   /** a human/the bot asked for an on-demand adversarial review ("Review now") */
   | 'task.review-requested'
   | 'task.deleted'

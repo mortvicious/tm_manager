@@ -20,7 +20,7 @@ import type { Storage } from '../storage/types.ts';
 import { encodeAction, type ButtonAction } from './actions.ts';
 import { MAX_MESSAGE_CHARS, escapeHtml, type Reply } from './api.ts';
 import { short } from './ids.ts';
-import { reviewClause } from './notifications.ts';
+import { checkClause, reviewClause } from './notifications.ts';
 import { formatClock } from './status.ts';
 import type { InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup } from './types.ts';
 
@@ -74,6 +74,16 @@ export function reviewStateLine(t: Task): string | null {
     default:
       return null;
   }
+}
+
+/** One line on where the repo checks stand (docs/checks.md). */
+export function checkStateLine(t: Task): string | null {
+  if (t.checkState === 'pending' || t.checkState === 'running') {
+    return t.status === 'running' ? '🔧 <b>fixing</b> red checks' : '🧪 <b>checking</b> — repo checks running';
+  }
+  if (t.status === 'running' && t.checkState === 'red') return '🔧 <b>fixing</b> red checks';
+  const clause = checkClause(t);
+  return clause ? `<b>Checks</b> · ${escapeHtml(clause)}` : null;
 }
 
 /**
@@ -418,12 +428,14 @@ function chipRepo(snap: Snapshot, state: BoardState): Repo | null {
 /**
  * Status icon + the markers the SPA's StatusBadge would show, all at once
  * (a row has room for more than one badge): ❓ asks you · 🔔 needs attention ·
- * 🔍 auto-review · 🔧 fixing · 🚩 review flagged · ➕ custom queue.
+ * 🧪 checking · ✗ checks red · 🔍 auto-review · 🔧 fixing · 🚩 review flagged · ➕ custom queue.
  */
 export function taskMarks(t: Task, sig: { asking: Set<string>; attention: Set<string> }): string {
   let m = STATUS_ICON[t.status];
   if (sig.asking.has(t.id)) m += '❓';
   if (sig.attention.has(t.id)) m += '🔔';
+  if (t.status === 'review' && (t.checkState === 'pending' || t.checkState === 'running')) m += '🧪';
+  if (t.status === 'review' && t.checkState === 'red') m += '✗';
   if (t.status === 'review' && (t.reviewState === 'pending' || t.reviewState === 'reviewing')) m += '🔍';
   if (t.reviewState === 'fixing') m += '🔧';
   if (t.reviewState === 'flagged') m += '🚩';
@@ -798,8 +810,10 @@ export async function renderCard(deps: BoardDeps, t: Task, back: BoardState): Pr
     if (queue) lines.push(queue);
     if (t.featureId) lines.push(`🧩 feature <code>${short(t.featureId)}</code> · phase ${(t.featurePhase ?? 0) + 1}`);
     if (t.resultSummary) lines.push(``, `<b>Result</b>`, escapeHtml(clip(t.resultSummary, Math.round(1000 * k))));
+    const checks = checkStateLine(t);
+    if (checks) lines.push(``, checks);
     const review = reviewStateLine(t);
-    if (review) lines.push(``, review);
+    if (review) lines.push(...(checks ? [] : [``]), review);
     const last = t.reviewRounds[t.reviewRounds.length - 1];
     if (last?.summary) lines.push(escapeHtml(clip(last.summary, Math.round(800 * k))));
     else if (t.reviewSummary) lines.push(escapeHtml(clip(t.reviewSummary, Math.round(800 * k))));

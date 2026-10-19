@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { CHECK_DEFAULT_TIMEOUT_SEC, CHECK_TIMEOUT_MAX_SEC, CHECK_TIMEOUT_MIN_SEC } from '@tm/shared';
 import type { CommandRun, RepoCommand, ScannedScript } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
@@ -84,7 +85,11 @@ function RunRow({
         <span className="cmd-run-name">{run.name}</span>
         <span className="mono muted cmd-run-sub" title={`${run.command}\n${run.cwd}`}>
           {run.repoName} · {run.command}
-          {run.startedBy && run.startedBy !== 'human' ? ` · by ${run.startedBy}` : ''}
+          {run.checkTaskId
+            ? ` · check of task ${run.checkTaskId.slice(0, 8)}`
+            : run.startedBy && run.startedBy !== 'human'
+              ? ` · by ${run.startedBy}`
+              : ''}
         </span>
       </span>
       <span className="mono muted cmd-run-age">
@@ -310,7 +315,55 @@ export function CommandsLauncher({ onOpenTerminal }: { onOpenTerminal: (runId: s
   );
 }
 
-const KIND_HINT = 'service = long-running (dev server, watcher) — those show in the header indicator';
+const KIND_HINT =
+  'service = long-running (dev server, watcher) — those show in the header indicator. ' +
+  'check = a one-shot the server runs after every agent turn, before the review (exit 0 = green; docs/checks.md)';
+
+/** The dropdown's three readings: a check is a one-shot with `isCheck` (docs/checks.md). */
+type KindPick = RepoCommand['kind'] | 'check';
+const kindPick = (c: Pick<RepoCommand, 'kind' | 'isCheck'>): KindPick => (c.isCheck ? 'check' : c.kind);
+const kindFields = (k: KindPick): { kind: RepoCommand['kind']; isCheck: boolean } =>
+  k === 'check' ? { kind: 'task', isCheck: true } : { kind: k, isCheck: false };
+
+/** A check's timeout field: blank = the default; seconds otherwise. */
+function parseTimeout(raw: string): number | null | 'bad' {
+  const v = raw.trim();
+  if (!v) return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= CHECK_TIMEOUT_MIN_SEC && n <= CHECK_TIMEOUT_MAX_SEC ? n : 'bad';
+}
+const TIMEOUT_HINT = `seconds before the check is stopped and counted as "no verdict" (${CHECK_TIMEOUT_MIN_SEC}–${CHECK_TIMEOUT_MAX_SEC}; blank = ${CHECK_DEFAULT_TIMEOUT_SEC})`;
+
+/** A saved check's timeout, edited in place and saved on blur / Enter. */
+function CheckTimeout({ c, onError }: { c: RepoCommand; onError: (e: string | null) => void }) {
+  const [v, setV] = useState(c.timeoutSec == null ? '' : String(c.timeoutSec));
+  useEffect(() => setV(c.timeoutSec == null ? '' : String(c.timeoutSec)), [c.timeoutSec]);
+  const save = async () => {
+    const t = parseTimeout(v);
+    if (t === 'bad') return onError(`timeout: ${TIMEOUT_HINT}`);
+    if (t === c.timeoutSec) return;
+    onError(null);
+    try {
+      await api.updateCommand(c.id, { timeoutSec: t });
+    } catch (e) {
+      onError((e as Error).message);
+    }
+  };
+  return (
+    <input
+      className="field mono cmd-timeout"
+      inputMode="numeric"
+      placeholder={`${CHECK_DEFAULT_TIMEOUT_SEC}s`}
+      title={TIMEOUT_HINT}
+      value={v}
+      onChange={(e) => setV(e.target.value)}
+      onBlur={() => void save()}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') void save();
+      }}
+    />
+  );
+}
 
 /**
  * The repo row's command dropdown: every saved command, one click to run or
@@ -467,7 +520,8 @@ export function RepoCommandsPanel({
   const { busy, err, setErr, run, stop } = useCommandActions(onOpenTerminal);
   const [name, setName] = useState('');
   const [line, setLine] = useState('');
-  const [kind, setKind] = useState<RepoCommand['kind']>('task');
+  const [kind, setKind] = useState<KindPick>('task');
+  const [timeout, setTimeoutText] = useState('');
   const [cwd, setCwd] = useState('');
   const [saving, setSaving] = useState(false);
   const [scripts, setScripts] = useState<ScannedScript[] | null>(null);
@@ -516,6 +570,8 @@ export function RepoCommandsPanel({
   };
 
   const add = async () => {
+    const timeoutSec = kind === 'check' ? parseTimeout(timeout) : null;
+    if (timeoutSec === 'bad') return setErr(`timeout: ${TIMEOUT_HINT}`);
     setSaving(true);
     setErr(null);
     try {
@@ -523,13 +579,15 @@ export function RepoCommandsPanel({
         repoId,
         name: name.trim() || line.trim(),
         command: line.trim(),
-        kind,
+        ...kindFields(kind),
+        timeoutSec,
         cwd: cwd.trim() || null,
       });
       setName('');
       setLine('');
       setCwd('');
       setKind('task');
+      setTimeoutText('');
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -547,10 +605,10 @@ export function RepoCommandsPanel({
     }
   };
 
-  const setKindOf = async (c: RepoCommand, next: RepoCommand['kind']) => {
+  const setKindOf = async (c: RepoCommand, next: KindPick) => {
     setErr(null);
     try {
-      await api.updateCommand(c.id, { kind: next });
+      await api.updateCommand(c.id, kindFields(next));
     } catch (e) {
       setErr((e as Error).message);
     }
@@ -573,14 +631,16 @@ export function RepoCommandsPanel({
                   {c.cwd ? ` · ${c.cwd}` : ''}
                 </span>
               </span>
+              {c.isCheck && <CheckTimeout c={c} onError={setErr} />}
               <select
                 className="field cmd-select"
-                value={c.kind}
+                value={kindPick(c)}
                 title={KIND_HINT}
-                onChange={(e) => setKindOf(c, e.target.value as RepoCommand['kind'])}
+                onChange={(e) => setKindOf(c, e.target.value as KindPick)}
               >
                 <option value="task">one-shot</option>
                 <option value="service">service</option>
+                <option value="check">check</option>
               </select>
               {live ? (
                 <button className="btn" disabled={busy === live.id} onClick={() => stop(live.id)}>
@@ -649,10 +709,21 @@ export function RepoCommandsPanel({
             value={cwd}
             onChange={(e) => setCwd(e.target.value)}
           />
-          <select className="field cmd-select" value={kind} title={KIND_HINT} onChange={(e) => setKind(e.target.value as RepoCommand['kind'])}>
+          <select className="field cmd-select" value={kind} title={KIND_HINT} onChange={(e) => setKind(e.target.value as KindPick)}>
             <option value="task">one-shot</option>
             <option value="service">service</option>
+            <option value="check">check</option>
           </select>
+          {kind === 'check' && (
+            <input
+              className="field mono cmd-timeout"
+              inputMode="numeric"
+              placeholder={`${CHECK_DEFAULT_TIMEOUT_SEC}s`}
+              title={TIMEOUT_HINT}
+              value={timeout}
+              onChange={(e) => setTimeoutText(e.target.value)}
+            />
+          )}
           <button className="btn primary" disabled={saving || !line.trim()} onClick={add}>
             Add command
           </button>

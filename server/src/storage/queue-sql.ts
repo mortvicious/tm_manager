@@ -10,7 +10,9 @@
  * which also covers a turn inside the resume gate with no live PTY yet),
  * `blocked` on its split children, or in `review` with an automatic review
  * round still open (review_state pending/reviewing/fixing — its findings are
- * about to be typed back into a session in this checkout).
+ * about to be typed back into a session in this checkout) or its repo checks
+ * still due or running (check_state pending/running, docs/checks.md — they
+ * read this checkout).
  *
  * Finished work that merely sits in `review` for the human does NOT hold it
  * (decisions.md 2026-09-28, "Review no longer holds the custom queue"): the
@@ -22,7 +24,8 @@
  */
 const heldBy = (a: string) =>
   `(${a}.status IN ('running', 'waiting', 'blocked')
-      OR (${a}.status = 'review' AND ${a}.review_state IN ('pending', 'reviewing', 'fixing')))`;
+      OR (${a}.status = 'review' AND (${a}.review_state IN ('pending', 'reviewing', 'fixing')
+                                       OR ${a}.check_state IN ('pending', 'running'))))`;
 
 /**
  * Selects the head of the custom queue: the oldest-added queued task that is
@@ -81,7 +84,8 @@ export const CUSTOM_QUEUE_IDLE = `NOT EXISTS (
  * other task in its repo may be working (`running`/`waiting` — which also
  * covers a turn inside the resume gate with no PTY yet) or in `review` with an
  * automatic review round open (the reviewer is reading that checkout, and its
- * findings are about to be typed back into a session there). `blocked` is
+ * findings are about to be typed back into a session there) or its repo checks
+ * due/running (docs/checks.md — they read that checkout too). `blocked` is
  * deliberately absent, unlike `heldBy`: a split parent waits on children in
  * its own repo, and holding the repo for it would deadlock them.
  * JS twin: `holdsRepoForClaim` in shared/src/types.ts — edit together.
@@ -89,4 +93,5 @@ export const CUSTOM_QUEUE_IDLE = `NOT EXISTS (
 export const REPO_EXCLUSIVE_GATE = `NOT EXISTS (SELECT 1 FROM tm_tasks x
     WHERE x.repo_id = t.repo_id AND x.id <> t.id
       AND (x.status IN ('running', 'waiting')
-           OR (x.status = 'review' AND x.review_state IN ('pending', 'reviewing', 'fixing'))))`;
+           OR (x.status = 'review' AND (x.review_state IN ('pending', 'reviewing', 'fixing')
+                                         OR x.check_state IN ('pending', 'running')))))`;

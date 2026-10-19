@@ -37,7 +37,7 @@ state a review verdict the same way.
 |---|---|---|
 | `question` | an agent's `AskUserQuestion` is pending (immediately, `Urgency: high`) | `/?task=<id>`, where the question modal pops |
 | `attention` | the run is still flagged at the 5s flush (running, not idle) | `/?task=<id>` |
-| `review` | the task is in `review` AND the review settled: one verdict per change. Also a "Review now" verdict on a non-review task | `/?task=<id>` |
+| `review` | the task is in `review` AND the review settled — and its repo checks too (`docs/checks.md`; the body opens with the check clause): one verdict per change. Also a "Review now" verdict on a non-review task | `/?task=<id>` |
 | `done` | `running`/`waiting` → `done` (auto-complete). A human's Mark done is silent | `/?task=<id>` |
 | `failed` / `blocked` / `published` | the transition, re-read at flush | `/?task=<id>` |
 | `started` | `queued` → `running` (**off by default**) | `/?task=<id>` |

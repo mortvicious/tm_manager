@@ -578,6 +578,25 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS tm_runs_started_idx ON tm_runs (started_at)`,
     ],
   },
+  {
+    id: 34,
+    // Repo checks + the verify loop (docs/checks.md). A check is a saved repo
+    // command flagged `is_check`, with its own timeout (NULL = the default);
+    // a task carries its definition of done (`acceptance`), which checks
+    // apply (`checks`, JSON array of names, NULL = all), and where the checks
+    // of its current change stand (`check_state`, `check_results` JSON, and
+    // `check_diff_hash` — the change the results belong to, so a talk-only
+    // turn does not re-run green checks).
+    statements: [
+      `ALTER TABLE tm_commands ADD COLUMN is_check INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE tm_commands ADD COLUMN timeout_sec INTEGER`,
+      `ALTER TABLE tm_tasks ADD COLUMN acceptance TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN checks TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN check_state TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN check_results TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN check_diff_hash TEXT`,
+    ],
+  },
 ];
 
 /** The migration whose rows each driver backfills in JS once it is applied. */

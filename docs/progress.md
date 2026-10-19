@@ -563,3 +563,48 @@ concise markdown, grouped by completion date, Russian or English.
   - The Glass accent is Classic's teal again, and running, the switch and the wallpaper glow follow it.
   - In Glass, the phone's sort moved into the Filters sheet, and the desktop board bar's pickers are capsules.
   - Verified with a typecheck, a scratch build, and WebKit phone and Chromium desktop screenshots in both schemes. Classic's phone toolbar still carries its sort.
+
+## Repo checks + verify loop — autonomy 2/6 (2026-10-19, `docs/checks.md`)
+
+- **Shared**:
+  - `RepoCommand.isCheck/timeoutSec` and `CHECK_*_SEC`.
+  - `Task.acceptance/checks/checkState/checkResults/checkDiffHash`, plus `CheckState`, `CheckResult` and `CHECK_BUSY_STATES`.
+  - `verifyOpen()`, used by `holdsRepoForClaim` and `customQueueHoldsRepo`.
+  - `CommandRun.checkTaskId`, the setting `checks.maxRounds` (3), and the audit kind `task.checked`.
+- **Server**:
+  - Migration 34 (`tm_commands.is_check/timeout_sec`; `tm_tasks.acceptance/checks/check_state/check_results/check_diff_hash`) in both drivers, and `transitionTask` takes `checkState`.
+  - `CommandRunner.runCheck` (timeout, `CI=1`, waits out a live run of the same definition, abortable).
+  - `checks.ts`: selection, a serial run with one silent re-run of a red, the verdict, the fix message, the reviewer evidence and the definition of done.
+  - Orchestrator: `runCheckStage` ahead of each review pass, `checkLoops`, `settleChecks` (the autoComplete promotion), `checksDue`, `setCommandRunner`, and boot recovery.
+  - The Stop route marks `pending` and diverts autoComplete.
+  - The repo-hold SQL in `queue-sql.ts` and the stacked hand-off.
+  - The review prompt gets acceptance + evidence, and the fresh worker prompt gets `## Definition of done`.
+  - Commands route: `isCheck`/`timeoutSec`, service + check refused, unique check names.
+  - Tasks route and `task-actions` take `acceptance`/`checks` (normalised); Enqueue/Retry clears the old verdict.
+  - Telegram: the `/new` step, the `/edit` field, the review ping's check clause, and the card line and board marks. Push: the same wait and clause.
+- **Web**:
+  - The kind dropdown's **check** value and a timeout field (`Commands.tsx`).
+  - `DoneFields` in NewTaskForm and TaskSlideOver, and `ChecksPanel` in the task panel.
+  - `StatusBadge`: checking / checks red / fixing checks.
+  - Config: Check→fix rounds.
+  - `normalizeTask` defaults.
+- **Verified**: `npm run typecheck` and a scratch `vite build`. An `app.inject` harness ran on a copy of the live DB, with this repo itself as the subject: a `git archive` in the scratchpad with `npm run typecheck` as the check and a deliberate type error. 35/35 passed, covering:
+  - red → fix → green;
+  - no-progress;
+  - max-rounds and the reviewer skip;
+  - a timeout → error;
+  - the autoComplete promotion and the empty-diff skip;
+  - the budget refusal;
+  - the opt-outs;
+  - a stranded-check re-run;
+  - the command API refusals.
+
+  The results are in the task artifact `checks-harness-results.txt`, and the list is in `docs/checks.md` § Verification. The harness caught the autoComplete + empty-diff landing, which is now fixed.
+- **Not exercised**:
+  - A real worker session (the fix turn was a stub).
+  - The reviewer reading the evidence.
+  - `recoverOnBoot` whole (only its check branch).
+  - Telegram and push delivery.
+  - A browser pass.
+  - The Postgres driver.
+  - The live server, which was not restarted.

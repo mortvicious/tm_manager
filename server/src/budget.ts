@@ -12,8 +12,9 @@ import type { Storage } from './storage/types.ts';
 /**
  * What is asking. `claim` is the day fuse (a new task starting); every other
  * kind is an AUTOMATIC turn on an existing task and is measured against that
- * task's roll-up. `check-round` and `transient-resume` are reserved for the
- * verify loop and the worker StopFailure resume (autonomy parts 3 and 4).
+ * task's roll-up. `check-round` is the repo-check fix round of the verify
+ * loop (docs/checks.md); `transient-resume` is reserved for the worker
+ * StopFailure resume (a later autonomy part).
  */
 export type BudgetTurn = 'claim' | 'fix-round' | 'dispatch' | 'wake' | 'check-round' | 'transient-resume';
 

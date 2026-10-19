@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { CHECK_TIMEOUT_MAX_SEC, CHECK_TIMEOUT_MIN_SEC } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import { parseCommandLine, resolveCommandCwd } from '../commands/parse.ts';
 import type { CommandRunner } from '../commands/runner.ts';
@@ -15,8 +16,24 @@ const commandBody = z
     // '' / null = repo root
     cwd: z.string().max(200).nullish(),
     sortOrder: z.number().int().min(0).max(10_000).optional(),
+    // a CHECK runs after every worker turn as part of the definition of done
+    // (docs/checks.md); timeoutSec null = CHECK_DEFAULT_TIMEOUT_SEC
+    isCheck: z.boolean().optional(),
+    timeoutSec: z.number().int().min(CHECK_TIMEOUT_MIN_SEC).max(CHECK_TIMEOUT_MAX_SEC).nullish(),
   })
   .strict();
+
+/** A check must end to give a verdict; a dev server never does. */
+const SERVICE_CHECK = 'a check must be a one-shot command (kind "task") — a service never exits, so it could only time out';
+
+/**
+ * Tasks pick checks BY NAME (`Task.checks`), so two checks of one repo may
+ * not share a name — the pick would be ambiguous. Null = fine.
+ */
+async function checkNameClash(storage: Storage, repoId: string, name: string, selfId: string | null): Promise<string | null> {
+  const clash = (await storage.listCommands(repoId)).find((c) => c.isCheck && c.id !== selfId && c.name === name);
+  return clash ? `a check named "${name}" already exists in this repo — tasks pick checks by name, so rename one` : null;
+}
 
 // The repo a command belongs to is fixed: a command line means nothing outside
 // the directory it was written for.
@@ -41,6 +58,11 @@ export function registerCommandRoutes(app: FastifyInstance, storage: Storage, ru
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
+    if (body.isCheck && body.kind === 'service') return reply.code(400).send({ error: SERVICE_CHECK });
+    if (body.isCheck) {
+      const clash = await checkNameClash(storage, repo.id, body.name.trim(), null);
+      if (clash) return reply.code(409).send({ error: clash });
+    }
     const command = await storage.createCommand({
       repoId: repo.id,
       name: body.name.trim(),
@@ -48,12 +70,14 @@ export function registerCommandRoutes(app: FastifyInstance, storage: Storage, ru
       kind: body.kind ?? 'task',
       cwd: cwd === '' || cwd === '.' ? null : cwd,
       sortOrder: body.sortOrder,
+      isCheck: body.isCheck ?? false,
+      timeoutSec: body.timeoutSec ?? null,
     });
     await storage.appendEvent({
       kind: 'command.changed',
       actor: 'human',
       repoId: repo.id,
-      data: { action: 'created', name: command.name, command: command.command },
+      data: { action: 'created', name: command.name, command: command.command, isCheck: command.isCheck },
     });
     broadcast({ type: 'command.updated', command });
     return command;
@@ -73,19 +97,35 @@ export function registerCommandRoutes(app: FastifyInstance, storage: Storage, ru
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
+    if ((body.isCheck ?? cur.isCheck) && (body.kind ?? cur.kind) === 'service') {
+      return reply.code(400).send({ error: SERVICE_CHECK });
+    }
+    if (body.isCheck ?? cur.isCheck) {
+      const clash = await checkNameClash(storage, cur.repoId, body.name?.trim() ?? cur.name, cur.id);
+      if (clash) return reply.code(409).send({ error: clash });
+    }
     const command = await storage.updateCommand(id, {
       name: body.name?.trim(),
       command: body.command?.trim(),
       kind: body.kind,
       cwd: cwd === undefined ? undefined : cwd === '' || cwd === '.' ? null : cwd,
       sortOrder: body.sortOrder,
+      isCheck: body.isCheck,
+      timeoutSec: body.timeoutSec,
     });
     if (!command) return reply.code(404).send({ error: 'command not found' });
     await storage.appendEvent({
       kind: 'command.changed',
       actor: 'human',
       repoId: command.repoId,
-      data: { action: 'updated', name: command.name, command: command.command },
+      data: {
+        action: 'updated',
+        name: command.name,
+        command: command.command,
+        ...(body.isCheck !== undefined || body.timeoutSec !== undefined
+          ? { isCheck: command.isCheck, timeoutSec: command.timeoutSec }
+          : {}),
+      },
     });
     broadcast({ type: 'command.updated', command });
     return command;

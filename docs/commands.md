@@ -23,6 +23,8 @@ persisted.
 | `kind` | `task` = one-shot (prints, exits) · `service` = long-running (dev server, watcher) — services are what the header counts |
 | `cwd` | subdirectory of the repo, relative and validated to stay inside it; null = repo root |
 | `sort_order` | launcher order (`sort` alone reads as a keyword in too many dialects) |
+| `is_check` | a CHECK (migration 34): run by the server after every worker turn, before the review, as part of the task's definition of done — `docs/checks.md` |
+| `timeout_sec` | a check's wall-clock limit (NULL = 600 s, 10–3600); past it the check is stopped and counts as "no verdict", never red |
 
 **Runs live in memory only** (`CommandRun`, `server/src/commands/runner.ts`). A
 PTY dies with the server, so a persisted "running" row could only ever be a lie
@@ -53,6 +55,20 @@ table. The last 25 finished runs are kept for the launcher's history strip.
   `cmd-`-prefixed, so they never collide with a run id.
 - **Shutdown and restart kill them deliberately** (`stopAll()`), so ports are
   released instead of being held by a process parented to a dead server.
+
+## Checks
+
+A command marked **check** (the third value of the kind dropdown, `isCheck` on
+the API) is part of every task's definition of done in that repo: after each
+worker turn the server runs the task's checks here, as ordinary attachable runs
+in this pool (`CommandRunner.runCheck`, tagged `CommandRun.checkTaskId`, shown
+as `check of task <id8>`), and red ones go back to the worker. The full loop is
+`docs/checks.md`. Rules at this layer: a check is a one-shot (`kind: 'task'`;
+service + check is a 400), check names are unique per repo (409 — tasks pick
+checks by name), the timeout is 10–3600 s, and a check runs with `CI=1` so a
+test runner does not sit in watch mode. A run of the same definition already
+live (a human pressed it) is waited out before the check starts. Agents cannot
+mark checks: `/api/agent/commands` does not take the flag.
 
 ## Scanner
 
@@ -93,7 +109,7 @@ that the dropdown next to every saved command corrects in one click.
 | route | |
 |---|---|
 | `GET /api/commands[?repoId=]` | definitions |
-| `POST /api/commands` | create (validates the command line and the cwd against the repo) |
+| `POST /api/commands` | create (validates the command line and the cwd against the repo; `isCheck`, `timeoutSec` — `docs/checks.md`) |
 | `PATCH /api/commands/:id` | edit (the repo is fixed) |
 | `DELETE /api/commands/:id` | delete; a live run detaches |
 | `GET /api/repos/:id/scripts` | scanner |

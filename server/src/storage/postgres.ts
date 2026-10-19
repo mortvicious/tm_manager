@@ -299,9 +299,9 @@ export class PostgresStorage implements Storage {
           .next,
       );
     await this.q(
-      `INSERT INTO tm_commands (id, repo_id, name, command, kind, cwd, sort_order, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, c.repoId, c.name, c.command, c.kind ?? 'task', c.cwd ?? null, sortOrder, at, at],
+      `INSERT INTO tm_commands (id, repo_id, name, command, kind, cwd, sort_order, is_check, timeout_sec, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, c.repoId, c.name, c.command, c.kind ?? 'task', c.cwd ?? null, sortOrder, c.isCheck ? 1 : 0, c.timeoutSec ?? null, at, at],
     );
     return (await this.getCommand(id))!;
   }
@@ -310,13 +310,15 @@ export class PostgresStorage implements Storage {
     const cur = await this.getCommand(id);
     if (!cur) return null;
     await this.q(
-      `UPDATE tm_commands SET name = ?, command = ?, kind = ?, cwd = ?, sort_order = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE tm_commands SET name = ?, command = ?, kind = ?, cwd = ?, sort_order = ?, is_check = ?, timeout_sec = ?, updated_at = ? WHERE id = ?`,
       [
         patch.name ?? cur.name,
         patch.command ?? cur.command,
         patch.kind ?? cur.kind,
         patch.cwd === undefined ? cur.cwd : patch.cwd,
         patch.sortOrder ?? cur.sortOrder,
+        (patch.isCheck ?? cur.isCheck) ? 1 : 0,
+        patch.timeoutSec === undefined ? cur.timeoutSec : patch.timeoutSec,
         now(),
         id,
       ],
@@ -403,8 +405,8 @@ export class PostgresStorage implements Storage {
     const ts = now();
     const place = await this.placeWith(c, id, t.parentId);
     await c.query(
-      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, auto_publish, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, sort_order)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, (${NEXT_SORT_ORDER_SQL}))`,
+      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, auto_publish, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, sort_order)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, (${NEXT_SORT_ORDER_SQL}))`,
       [
         id,
         t.title,
@@ -430,6 +432,8 @@ export class PostgresStorage implements Storage {
         ts,
         t.reviewModel ?? null,
         t.reviewEffort ?? null,
+        t.acceptance ?? null,
+        t.checks == null ? null : JSON.stringify(t.checks),
       ],
     );
     const r = await c.query(`SELECT * FROM tm_tasks WHERE id = $1`, [id]);
@@ -490,7 +494,7 @@ export class PostgresStorage implements Storage {
     // Only a group ROOT carries the group's name/colour.
     const isRoot = place.groupId === id;
     await c.query(
-      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, auto_publish=$17, custom_queue_at=$18, feature_id=$19, feature_phase=$20, result_summary=$21, review_summary=$22, review_diff_hash=$23, review_state=$24, review_rounds=$25, wake_at=$26, error=$27, updated_at=$28, review_model=$29, review_effort=$30, base_sha=$31, base_ref=$32, base_at=$33, queue_held_at=$34 WHERE id=$35`,
+      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, auto_publish=$17, custom_queue_at=$18, feature_id=$19, feature_phase=$20, result_summary=$21, review_summary=$22, review_diff_hash=$23, review_state=$24, review_rounds=$25, wake_at=$26, error=$27, updated_at=$28, review_model=$29, review_effort=$30, base_sha=$31, base_ref=$32, base_at=$33, queue_held_at=$34, acceptance=$35, checks=$36, check_state=$37, check_results=$38, check_diff_hash=$39 WHERE id=$40`,
       [
         next.title,
         next.description,
@@ -526,6 +530,11 @@ export class PostgresStorage implements Storage {
         next.baseRef ?? null,
         next.baseAt ?? null,
         next.queueHeldAt ?? null,
+        next.acceptance ?? null,
+        next.checks == null ? null : JSON.stringify(next.checks),
+        next.checkState ?? null,
+        JSON.stringify(next.checkResults ?? []),
+        next.checkDiffHash ?? null,
         id,
       ],
     );
@@ -679,7 +688,7 @@ export class PostgresStorage implements Storage {
     from: Task['status'][],
     to: Task['status'],
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'queueHeldAt'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt'>>,
   ): Promise<Task | null> {
     const sets = ['status = ?', 'updated_at = ?'];
     const vals: unknown[] = [to, now()];
@@ -694,6 +703,10 @@ export class PostgresStorage implements Storage {
     if (patch && 'reviewState' in patch) {
       sets.push('review_state = ?');
       vals.push(patch.reviewState ?? null);
+    }
+    if (patch && 'checkState' in patch) {
+      sets.push('check_state = ?');
+      vals.push(patch.checkState ?? null);
     }
     // An Undo-start hold (docs/queue.md § Undo start) means "queued, but not
     // yet" and exists only for the transition that sets it: every other status

@@ -2,11 +2,13 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  CHECK_BUSY_STATES,
   isCodexModel,
-  REVIEW_BUSY_STATES,
+  verifyOpen,
   runTaskId,
   REVIEW_NOW_FROM,
   type AppSettings,
+  type CheckState,
   type Dispatch,
   type Repo,
   type ReviewRound,
@@ -56,6 +58,8 @@ import { needsFallbackModel, sessionUsagePct } from './claude/usage.ts';
 import { sharedPromptBlock, spaceForRepo, validateSpacePath, writeFolderDocs, writeSharedMemory } from './spaces/service.ts';
 import { broadcast } from './events.ts';
 import { AnomalyAlerts } from './anomalies.ts';
+import { checkFixMessage, checksVerdict, definitionOfDone, runChecks, selectChecks } from './checks.ts';
+import type { CommandRunner } from './commands/runner.ts';
 import {
   broadcastTaskCost,
   budgetAllows,
@@ -175,6 +179,16 @@ export class Orchestrator implements OrchestratorApi {
    * reset whenever the loop settles or a human re-arms it (applyReviewFixes).
    */
   private fixRounds = new Map<string, number>();
+  /**
+   * Per-task CHECK-fix loop (docs/checks.md), bounded by `checks.maxRounds`:
+   * how many fix turns red checks have asked for, and the change hash the last
+   * red was measured on — the no-progress guard (a fix turn that left the
+   * hash unchanged and the checks still red ends the loop at once). In memory
+   * like `fixRounds`: a restart starts a fresh budget.
+   */
+  private checkLoops = new Map<string, { round: number; hash: string }>();
+  /** The commands pool's runner — checks run there (docs/checks.md). Wired by index.ts. */
+  private commandRunner: CommandRunner | null = null;
   /**
    * Tasks whose adversarial review round is in flight RIGHT NOW — the
    * single-flight lock behind `reviewCompletedRun`. What other surfaces read
@@ -368,6 +382,21 @@ export class Orchestrator implements OrchestratorApi {
    * `budget.taskUsd`. Human clicks (Proceed, Run now, Retry, Follow-up,
    * Apply fixes, Publish) never call it.
    */
+  setCommandRunner(runner: CommandRunner): void {
+    this.commandRunner = runner;
+  }
+
+  /**
+   * Will the repo checks run on this task's landing (docs/checks.md)? Asked by
+   * the Stop hook, which marks `checkState: 'pending'` in the same write that
+   * parks the task. Never for a publish turn or an auto-publish task (they do
+   * not pass through the verify loop), nor without the commands pool.
+   */
+  async checksDue(task: Pick<Task, 'repoId' | 'checks' | 'autoPublish'>): Promise<boolean> {
+    if (!this.commandRunner || !task.repoId || task.autoPublish) return false;
+    return selectChecks(await this.storage.listCommands(task.repoId), task).length > 0;
+  }
+
   budgetAllows(task: Pick<Task, 'id'> | null, kind: BudgetTurn, settings?: AppSettings): Promise<BudgetVerdict> {
     return budgetAllows(this.storage, task, kind, settings);
   }
@@ -1053,6 +1082,13 @@ export class Orchestrator implements OrchestratorApi {
       } else if (task.reviewState === 'pending' || task.reviewState === 'reviewing' || task.reviewState === 'fixing') {
         if (task.status !== 'running') await this.setReviewState(task.id, null);
       }
+      // Checks left due or mid-run (docs/checks.md): re-run in the same loop,
+      // ahead of the review (single-flight, so a task already started above
+      // is simply joined). Elsewhere the mark is stale.
+      if (task.checkState && CHECK_BUSY_STATES.includes(task.checkState)) {
+        if (task.status !== 'review') await this.setCheckState(task.id, null);
+        else if (!this.pendingReviews.has(task.id)) void this.reviewCompletedRun(task.id);
+      }
     }
     if (orphans.length || stranded.length) {
       await this.storage.appendEvent({
@@ -1218,7 +1254,8 @@ export class Orchestrator implements OrchestratorApi {
     if (!owner) return true;
     // Still working (or inside a resume gate): its tree is not finished — wait.
     if (owner.status === 'running' || owner.status === 'waiting') return false;
-    if (owner.status === 'review' && owner.reviewState && REVIEW_BUSY_STATES.includes(owner.reviewState)) return false;
+    // An open verify round (review or checks) is still reading this tree.
+    if (verifyOpen(owner)) return false;
     // Any other status commits: `review` waiting for the human, and just as
     // much a task an Undo start put back in `queued`/`draft` (review round 2 —
     // its half-finished edits must not become the next task's), or a
@@ -1947,6 +1984,15 @@ export class Orchestrator implements OrchestratorApi {
       const fyi = await this.pendingFyiDispatches(task.id);
       const resumeSessionId = handoff.kind === 'fresh' ? undefined : resumeFrom?.sessionId ?? undefined;
       const shared = await this.sharedContext(task, purpose, resumeSessionId ? resumeFrom ?? null : null);
+      // Definition of done (docs/checks.md): the acceptance text plus the
+      // checks the Stop will run — a fresh prompt only, never the publish turn.
+      const doneNote =
+        resumeSessionId || purpose === 'publish'
+          ? null
+          : definitionOfDone(
+              task.acceptance,
+              task.autoPublish ? [] : selectChecks(await this.storage.listCommands(repo.id), task),
+            );
       const inv = buildWorkerInvocation({
         task: { ...task, model },
         settings,
@@ -1957,6 +2003,7 @@ export class Orchestrator implements OrchestratorApi {
         followUp,
         dispatchNote: fyi.note,
         shared,
+        doneNote: doneNote ?? undefined,
         resumeSessionId,
         previousSummary: handoff.previousSummary,
       });
@@ -2452,6 +2499,7 @@ export class Orchestrator implements OrchestratorApi {
       return { error: `task is no longer running (now '${now?.status ?? 'deleted'}')`, code: 409 };
     }
     this.fixRounds.delete(taskId);
+    this.checkLoops.delete(taskId);
     await this.storage.appendEvent({
       kind: 'task.undo',
       actor,
@@ -2758,8 +2806,12 @@ export class Orchestrator implements OrchestratorApi {
     try {
       for (let pass = 0; ; pass++) {
         this.reviewRecheck.delete(taskId);
+        // Checks come first (docs/checks.md): cheap and deterministic, so a
+        // reviewer never spends a session on a change that does not build.
+        // False = no review this pass (a fix turn was sent, or red landed).
+        const review = await this.runCheckStage(taskId);
         // only the first pass is the forced one; a recheck is a Stop's pass
-        await this.runReviewRound(taskId, forced && pass === 0);
+        if (review) await this.runReviewRound(taskId, forced && pass === 0);
         if (!this.reviewRecheck.has(taskId)) return;
         // Another pass is only worth it while the task is still parked in
         // review. If the round just started a fix round the task is `running`
@@ -2776,6 +2828,7 @@ export class Orchestrator implements OrchestratorApi {
       try {
         const t = await this.storage.getTask(taskId);
         if (t?.reviewState === 'pending' || t?.reviewState === 'reviewing') await this.setReviewState(taskId, 'error');
+        if (t?.checkState && CHECK_BUSY_STATES.includes(t.checkState)) await this.setCheckState(taskId, 'error');
       } catch {
         // boot recovery is the last resort
       }
@@ -2975,6 +3028,201 @@ export class Orchestrator implements OrchestratorApi {
       this.fixRounds.delete(taskId); // loop settled (clean, minors, cap, budget, or human took over)
       if (overBudget) await this.refuseOverBudget(taskId, 'fix-round', overBudget);
     }
+  }
+
+  /**
+   * The check stage of the verify loop (docs/checks.md), run at the top of
+   * every review pass. Acts only on a row whose `checkState` says checks are
+   * due (`pending`, set by the Stop hook in the same write that parked the
+   * task; or `running`, left by a crash). Returns whether the review round
+   * should run this pass:
+   *  - no checks due / none apply any more / empty diff → true (today's path)
+   *  - green → true; the reviewer reads the results from the row as evidence
+   *  - error (a check timed out or could not start) → true: no verdict is not
+   *    a red, the reviewer is told
+   *  - red → the failure is typed into the worker's own session (followUp),
+   *    false; the next Stop comes back through here. Once the loop is spent —
+   *    `checks.maxRounds`, the budget fuse, no progress, no live session, or a
+   *    human took over — the task stays in `review` with `checkState: 'red'`
+   *    and the reviewer is skipped (audited), false.
+   */
+  private async runCheckStage(taskId: string): Promise<boolean> {
+    const task = await this.storage.getTask(taskId);
+    if (!task?.checkState || !CHECK_BUSY_STATES.includes(task.checkState)) return true;
+    if (task.status !== 'review') {
+      // A human or a newer turn took the task between the Stop and here; the
+      // next Stop marks the checks again. The review round releases its own.
+      this.checkLoops.delete(taskId);
+      await this.setCheckState(taskId, null);
+      return true;
+    }
+    const repo = task.repoId ? await this.storage.getRepo(task.repoId) : null;
+    const runner = this.commandRunner;
+    const checks = repo && runner ? selectChecks(await this.storage.listCommands(repo.id), task) : [];
+    if (!repo || !runner || !checks.length) {
+      // the checks were removed (or deselected) between the Stop and now
+      this.checkLoops.delete(taskId);
+      await this.settleChecks(taskId, null);
+      return true;
+    }
+    const scoped = await this.ensureBase(task, repo, false);
+    const change = await workerDiff(repo, await this.changeScope(scoped, repo));
+    const audit = (data: Record<string, unknown>) =>
+      this.storage.appendEvent({ kind: 'task.checked', actor: 'system', taskId, repoId: repo.id, data });
+    if (!change.hash) {
+      // The task changed nothing: there is nothing of its own to verify (the
+      // review round skips it as empty-diff too).
+      this.checkLoops.delete(taskId);
+      await audit({ skipped: 'empty-diff' });
+      await this.settleChecks(taskId, null);
+      return true;
+    }
+    const names = checks.map((c) => c.name).sort().join('\n');
+    if (
+      change.hash === task.checkDiffHash &&
+      task.checkResults.length > 0 &&
+      checksVerdict(task.checkResults) === 'green' &&
+      task.checkResults.map((r) => r.name).sort().join('\n') === names
+    ) {
+      // A talk-only turn (dispatch reply, answered question): the same change
+      // already passed the same checks.
+      this.checkLoops.delete(taskId);
+      await audit({ skipped: 'unchanged-diff', state: 'green' });
+      await this.settleChecks(taskId, 'green');
+      return true;
+    }
+
+    await this.setCheckState(taskId, 'running');
+    const results = await runChecks(runner, repo, checks, taskId, async () => {
+      const t = await this.storage.getTask(taskId);
+      return t?.status !== 'review';
+    });
+    if (!results) {
+      // taken over mid-run: no verdict belongs to anyone
+      this.checkLoops.delete(taskId);
+      await audit({ skipped: 'taken-over' });
+      const t = await this.storage.getTask(taskId);
+      if (t && t.status !== 'review') await this.setCheckState(taskId, null);
+      return true;
+    }
+    const verdict = checksVerdict(results);
+    const settings = await this.storage.getSettings();
+    const maxRounds = settings['checks.maxRounds'];
+    const loop = this.checkLoops.get(taskId);
+    const round = loop?.round ?? 0;
+    let stop: 'no-progress' | 'max-rounds' | 'taken-over' | 'no-session' | 'budget' | null = null;
+    let overBudget: Extract<BudgetVerdict, { ok: false }> | null = null;
+    if (verdict === 'red') {
+      if (loop && loop.hash === change.hash) stop = 'no-progress';
+      else if (round >= maxRounds) stop = 'max-rounds';
+      else if ((await this.storage.getTask(taskId))?.status !== 'review') stop = 'taken-over';
+      else if (!(await this.hasLiveSession(taskId))) stop = 'no-session';
+      else {
+        const v = await this.budgetAllows({ id: taskId }, 'check-round', settings);
+        if (!v.ok) {
+          overBudget = v;
+          stop = 'budget';
+        }
+      }
+    }
+    const cur = await this.storage.getTask(taskId);
+    // Red never reaches the reviewer: a fix turn is coming (whose own Stop
+    // marks the review again), or the loop is spent and the change does not
+    // pass its own definition of done.
+    const dropReview = verdict === 'red' && cur?.reviewState === 'pending';
+    const promote =
+      verdict === 'green' && cur?.status === 'review' && !cur.autoPublish && settings['orchestrator.autoComplete'];
+    const updated = await this.storage.updateTask(taskId, {
+      // A fix turn about to be sent keeps reading `running` until the task
+      // is `running` again: `review` + red for the seconds the resume takes
+      // would read as a landing to every surface (the review ping included).
+      // Likewise a green about to be promoted to `done` lands green in the
+      // same write as the status (promoteAutoComplete), so the notifiers see
+      // checks → done in one step, not a `review` landing first.
+      checkState: (verdict === 'red' && !stop) || (verdict === 'green' && promote) ? 'running' : verdict,
+      checkResults: results,
+      checkDiffHash: change.hash,
+      ...(dropReview ? { reviewState: null } : {}),
+    });
+    if (updated) broadcast({ type: 'task.updated', task: updated });
+    await audit({
+      state: verdict,
+      round,
+      ...(stop ? { stop } : {}),
+      results: results.map((r) => ({
+        name: r.name,
+        outcome: r.outcome,
+        exit: r.exit,
+        durationMs: r.durationMs,
+        retried: r.retried,
+        ...(r.error ? { error: r.error } : {}),
+      })),
+    });
+
+    if (verdict !== 'red') {
+      this.checkLoops.delete(taskId);
+      if (promote) await this.settleChecks(taskId, 'green');
+      return true;
+    }
+    if (!stop) {
+      this.checkLoops.set(taskId, { round: round + 1, hash: change.hash });
+      await this.storage.appendEvent({
+        kind: 'task.follow-up',
+        actor: 'system',
+        taskId,
+        repoId: repo.id,
+        data: { reason: 'checks', round: round + 1, red: results.filter((r) => r.outcome === 'red').map((r) => r.name) },
+      });
+      const res = await this.followUp(taskId, checkFixMessage(results, round + 1, maxRounds), 'system');
+      // the verdict the fix turn is working on (and what its Stop reads to append, not replace, the summary)
+      // (only over the `running` written above: a Stop that already marked `pending` wins)
+      if ((await this.storage.getTask(taskId))?.checkState === 'running') await this.setCheckState(taskId, 'red');
+      if (!('error' in res)) return false;
+      // the session went away between the liveness check and the resume
+      stop = 'no-session';
+    }
+    this.checkLoops.delete(taskId);
+    if (dropReview) {
+      await this.storage.appendEvent({
+        kind: 'run.reviewed',
+        actor: 'system',
+        taskId,
+        repoId: repo.id,
+        data: { skipped: 'checks-red', state: null, stop },
+      });
+    }
+    if (overBudget) await this.refuseOverBudget(taskId, 'check-round', overBudget);
+    return false;
+  }
+
+  /**
+   * Settle the check stage WITHOUT a red/error verdict — green, or nothing to
+   * check (empty diff, checks gone) — writing `state`. The Stop hook lands a
+   * task with checks due in `review` even under `orchestrator.autoComplete`,
+   * because "done" is decided by the checks; so here the landing the setting
+   * asked for happens (`review → done`, in the same write as the state, so
+   * the notifiers see one step), and the review round then runs on the done
+   * task exactly as it always did. Otherwise only the state is written.
+   */
+  private async settleChecks(taskId: string, state: 'green' | null): Promise<void> {
+    const [task, settings] = await Promise.all([this.storage.getTask(taskId), this.storage.getSettings()]);
+    if (task?.status === 'review' && !task.autoPublish && settings['orchestrator.autoComplete']) {
+      const done = await this.storage.transitionTask(taskId, ['review'], 'done', 'system', { checkState: state });
+      if (done) {
+        broadcast({ type: 'task.updated', task: done });
+        await this.resolveCompletion(done, 'system');
+        return;
+      }
+    }
+    await this.setCheckState(taskId, state);
+  }
+
+  /** Persist + broadcast a check-state change; a no-op when it already reads that way. */
+  private async setCheckState(taskId: string, state: CheckState | null): Promise<void> {
+    const cur = await this.storage.getTask(taskId);
+    if (!cur || cur.checkState === state) return;
+    const updated = await this.storage.updateTask(taskId, { checkState: state });
+    if (updated) broadcast({ type: 'task.updated', task: updated });
   }
 
   /** Persist + broadcast a review-state change; a no-op when it already reads that way. */

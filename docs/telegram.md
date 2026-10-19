@@ -517,7 +517,7 @@ Registered with `setMyCommands`, so they autocomplete in the client. The tables 
 
 | command | does |
 |---|---|
-| `/new [text]` | the creation flow: repo picker → title → description (skippable) → **preset** (Small / Routine / Complex / Codex, or ⚙ Custom → model → effort → review → reviewer model, skipped when review is off) → auto-publish → **On create: 📝 draft / ⏳ queue / ➕ custom queue / ▶ run now**. With text after the command the first line seeds the title and the rest the description, and those two steps are skipped |
+| `/new [text]` | the creation flow: repo picker → title → description (skippable) → **definition of done** (skippable, `docs/checks.md`) → **preset** (Small / Routine / Complex / Codex, or ⚙ Custom → model → effort → review → reviewer model, skipped when review is off) → auto-publish → **On create: 📝 draft / ⏳ queue / ➕ custom queue / ▶ run now**. With text after the command the first line seeds the title and the rest the description, and those two steps are skipped |
 | `/edit <id>` | field picker → the new value. Title, description and category are typed (send `-` as the category to clear it); repo, model, effort, review, reviewer model and auto-publish are keyboards. One field per `/edit`. **Repo is on that list deliberately**: a task can arrive repo-less (the REST body allows it, and agents and proposals create them that way), every run path then refuses with "assign a repo before running this task", and without this field the phone had no way to act on that refusal |
 | `/enqueue <id>` | into the global queue (`draft`/`failed`/`cancelled`/`review` → `queued`) |
 | `/run <id>` | run now, jumping the queue |

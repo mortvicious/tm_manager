@@ -23,6 +23,7 @@ import {
 } from '../boardSearch.ts';
 import { SearchChips, SearchPanel, SearchTrigger, useSearchHotkey } from '../components/BoardSearch.tsx';
 import { DispatchStrip } from '../components/DispatchStrip.tsx';
+import { DoneFields } from '../components/DoneFields.tsx';
 import { GroupHead } from '../components/GroupHead.tsx';
 import { GroupPicker } from '../components/GroupPicker.tsx';
 import { IconChevron, IconPlus } from '../components/Icons.tsx';
@@ -106,6 +107,8 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [acceptance, setAcceptance] = useState('');
+  const [checks, setChecks] = useState<string[] | null>(null);
   const [repoId, setRepoId] = useState('');
   const [parentId, setParentId] = useState('');
   const [model, setModel] = useState('');
@@ -150,6 +153,9 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
       task = await api.createTask({
         title,
         description: description || null,
+        acceptance: acceptance.trim() || null,
+        // a pick only means something in the repo it was made in
+        checks: repoId ? checks : null,
         repoId: repoId || null,
         parentId: parentId || null,
         model: model || null,
@@ -170,6 +176,8 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
     // fail, so a second Create cannot file the same task twice.
     setTitle('');
     setDescription('');
+    setAcceptance('');
+    setChecks(null);
     setParentId('');
     setModel('');
     setEffort('');
@@ -214,6 +222,8 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
             value={repoId}
             onChange={(e) => {
               setRepoId(e.target.value);
+              // check names belong to a repo: another repo starts from "all"
+              setChecks(null);
               // never leave "Run now" lit on a task that has nowhere to run
               if (!e.target.value) setStart('draft');
             }}
@@ -242,6 +252,14 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
             ))}
           </datalist>
         </div>
+        <DoneFields
+          repoId={repoId || null}
+          acceptance={acceptance}
+          checks={checks}
+          autoPublish={autoPublish}
+          onAcceptance={setAcceptance}
+          onChecks={setChecks}
+        />
         <div className="wide">
           <label className="label">Group</label>
           {/* a new row takes the global max key, so any choice lands at the END
@@ -941,6 +959,7 @@ export function BoardPage({
           attention={attention(t)}
           question={asking.has(t.id)}
           reviewState={t.reviewState}
+          checkState={t.checkState}
           onOpenReviewer={(() => {
             const rv = liveReviewRun(runs, t.id);
             return rv ? () => onOpenTerminal(rv.id) : undefined;

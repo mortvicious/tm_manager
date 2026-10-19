@@ -47,6 +47,11 @@ const taskBody = z
     // "allow auto-publish on end": skip the review gate and commit+push when
     // the worker finishes (docs/publish.md)
     autoPublish: z.boolean().optional(),
+    // definition of done (docs/checks.md): injected into the worker prompt and
+    // handed to the reviewer; `checks` picks repo checks by name (null = all,
+    // [] = none)
+    acceptance: z.string().max(4000).nullish(),
+    checks: z.array(z.string().min(1).max(80)).max(30).nullish(),
     // group identity lives on the group's ROOT task (docs/grouping.md); the
     // route rejects both on a task that has a parent.
     groupName: z.string().min(1).max(80).nullish(),

@@ -107,10 +107,12 @@ export interface NewCommand {
   kind?: RepoCommand['kind'];
   cwd?: string | null;
   sortOrder?: number;
+  isCheck?: boolean;
+  timeoutSec?: number | null;
 }
 
 /** undefined = leave as-is; `cwd: null` clears it back to the repo root. */
-export type CommandPatch = Partial<Pick<RepoCommand, 'name' | 'command' | 'kind' | 'cwd' | 'sortOrder'>>;
+export type CommandPatch = Partial<Pick<RepoCommand, 'name' | 'command' | 'kind' | 'cwd' | 'sortOrder' | 'isCheck' | 'timeoutSec'>>;
 
 export interface NewTask {
   title: string;
@@ -128,6 +130,10 @@ export interface NewTask {
   reviewModel?: string | null;
   reviewEffort?: Task['effort'];
   autoPublish?: boolean;
+  /** definition of done (docs/checks.md) */
+  acceptance?: string | null;
+  /** which repo checks apply, by name; null = all */
+  checks?: string[] | null;
   createdByRun?: string | null;
   spawnDepth?: number;
   featureId?: string | null;
@@ -418,7 +424,7 @@ export interface Storage {
     from: TaskStatus[],
     to: TaskStatus,
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'queueHeldAt'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt'>>,
   ): Promise<Task | null>;
   /**
    * Atomic parent re-evaluation after a child reaches a terminal status.

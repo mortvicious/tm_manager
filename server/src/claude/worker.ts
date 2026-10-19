@@ -221,6 +221,8 @@ function buildWorkerPrompt(opts: {
   dispatchNote?: string;
   /** The shared-space block (docs/shared-spaces.md); a context note like `dispatchNote`. */
   sharedNote?: string;
+  /** The definition-of-done block (docs/checks.md): acceptance + the checks the server will run. Fresh prompts only. */
+  doneNote?: string;
   previousSummary?: string;
   /** shipHeldForReview(): add SHIP_GATE_RULE (never on the publish turn). */
   shipGate: boolean;
@@ -260,6 +262,8 @@ function buildWorkerPrompt(opts: {
         opts.sharedNote && !isPublishTurn ? `${opts.sharedNote}\n\n` : '',
         `# Task: ${task.title}`,
         task.description ? `\n${task.description}` : '',
+        // right under the task it defines, above any follow-up and the rules
+        opts.doneNote && !isPublishTurn ? `\n\n${opts.doneNote}` : '',
         opts.followUp
           ? // `previousSummary` is the richer handoff the resume gate builds
             // when it declines to resume an over-cap session (the full last
@@ -372,6 +376,12 @@ export function buildWorkerInvocation(opts: {
    */
   shared?: { dir: string; note?: string };
   /**
+   * The definition of done (docs/checks.md, `definitionOfDone()`): the task's
+   * acceptance text and the checks the server will run after the turn. Only a
+   * fresh prompt carries it — a resumed session already has it.
+   */
+  doneNote?: string;
+  /**
    * Continue an existing claude session instead of starting a fresh one
    * (`claude --resume <id>`) — the "proceed" flow. The agent keeps its whole
    * conversation, so the prompt carries only the new instruction.
@@ -407,6 +417,7 @@ export function buildWorkerInvocation(opts: {
       resumeSessionId: opts.resumeSessionId,
       dispatchNote: opts.dispatchNote,
       sharedNote: opts.shared?.note,
+      doneNote: opts.doneNote,
       previousSummary: opts.previousSummary,
       shipGate: shipHeldForReview(task, settings),
     });
@@ -573,6 +584,7 @@ export function buildWorkerInvocation(opts: {
     resumeSessionId: opts.resumeSessionId,
     dispatchNote: opts.dispatchNote,
     sharedNote: opts.shared?.note,
+    doneNote: opts.doneNote,
     previousSummary: opts.previousSummary,
     shipGate: shipHeldForReview(task, settings),
   });

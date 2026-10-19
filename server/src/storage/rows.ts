@@ -13,8 +13,17 @@ import type {
   Run,
   SharedNote,
   Space,
+  CheckState,
   Task,
 } from '@tm/shared';
+
+const CHECK_STATES: (CheckState | null)[] = ['pending', 'running', 'green', 'red', 'error'];
+
+/** `tm_tasks.checks`: a JSON array of check names, or NULL = all checks. Anything else reads as NULL. */
+function checkNames(raw: unknown): string[] | null {
+  const v = safeParse<unknown>(raw, null);
+  return Array.isArray(v) ? v.filter((n): n is string => typeof n === 'string') : null;
+}
 
 // One malformed JSON cell must not break every list query (review F4).
 export function safeParse<T>(raw: unknown, fallback: T): T {
@@ -52,6 +61,8 @@ export function rowToCommand(r: any): RepoCommand {
     kind: r.kind === 'service' ? 'service' : 'task',
     cwd: r.cwd ?? null,
     sortOrder: Number(r.sort_order ?? 0),
+    isCheck: !!Number(r.is_check ?? 0),
+    timeoutSec: r.timeout_sec == null ? null : Number(r.timeout_sec),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -98,6 +109,11 @@ export function rowToTask(r: any): Task {
     wakeAt: r.wake_at ?? null,
     queueHeldAt: r.queue_held_at ?? null,
     costUsd: Number(r.cost_usd ?? 0) || 0,
+    acceptance: r.acceptance ?? null,
+    checks: checkNames(r.checks),
+    checkState: CHECK_STATES.includes(r.check_state) ? r.check_state : null,
+    checkResults: safeParse(r.check_results, []),
+    checkDiffHash: r.check_diff_hash ?? null,
     error: r.error ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,

@@ -1,4 +1,4 @@
-import type { ReviewState } from '@tm/shared';
+import type { CheckState, ReviewState } from '@tm/shared';
 import type { FastifyInstance } from 'fastify';
 import { aux } from '../claude/aux.ts';
 import { summarizeRun } from '../claude/stats.ts';
@@ -254,9 +254,15 @@ export function registerInternalRoutes(
           data: { children: wait.children, stale: true },
         });
       }
+      // Repo checks (docs/checks.md) run on this landing before anything
+      // else: decided here so the row that says `review` also says checks are
+      // `pending`. They decide "done", so a task with checks due lands in
+      // `review` even under autoComplete and is promoted on green.
+      const willCheck = !publishRun && !!pre && (await orchestrator.checksDue(pre));
       // auto-publish overrides auto-complete: the task must pass THROUGH
       // review so the publish turn has something to pick up.
-      const to = !publishRun && settings['orchestrator.autoComplete'] && !pre?.autoPublish ? 'done' : 'review';
+      const to =
+        !publishRun && !willCheck && settings['orchestrator.autoComplete'] && !pre?.autoPublish ? 'done' : 'review';
       // Whether the reviewer WILL look at this landing, decided here so the
       // row that says `review` also says `pending` — a surface that reads the
       // status alone can never mistake an unreviewed change for a reviewed
@@ -265,8 +271,11 @@ export function registerInternalRoutes(
       // worker's prompt held the push back for this review (shipHeldForReview).
       const willReview =
         !publishRun && shipHeldForReview({ review: pre?.review ?? null, autoPublish: pre?.autoPublish ?? false }, settings);
-      const patch: { resultSummary?: string; reviewState: ReviewState | null } = {
+      const patch: { resultSummary?: string; reviewState: ReviewState | null; checkState?: CheckState | null } = {
         reviewState: willReview ? 'pending' : null,
+        // left alone on a publish turn (the change's last verdict stands); a
+        // landing without checks clears any older verdict
+        ...(publishRun ? {} : { checkState: willCheck ? 'pending' : null }),
       };
       if (info.lastAssistantText) {
         const text = info.lastAssistantText.slice(0, 4000);
@@ -274,8 +283,9 @@ export function registerInternalRoutes(
         // original account of the work, never in its place, so the summary
         // keeps saying what was built. Bounded: the oldest fix notes give
         // way first, the original stays.
+        // a check-fix turn (checks were red when it began) appends the same way
         patch.resultSummary =
-          pre?.reviewState === 'fixing' && pre.resultSummary
+          (pre?.reviewState === 'fixing' || pre?.checkState === 'red') && pre.resultSummary
             ? appendFixNote(pre.resultSummary, text, pre.reviewRounds.length)
             : text;
       }

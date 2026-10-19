@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { checkEvidence } from '../checks.ts';
 import type { Repo, ReviewFinding, ReviewVerdict, Task } from '@tm/shared';
 import {
   READ_ONLY_DISALLOWED,
@@ -338,6 +339,20 @@ function reviewPrompt(
     `\n# ${task.title}\n${task.description ?? ''}`,
     `\nWorker's own account of what it did (its last message, not necessarily the whole story):\n${task.resultSummary ?? '(none)'}`,
   ];
+  // The human's definition of done (docs/checks.md): what "satisfies the task" means here.
+  if (task.acceptance?.trim()) {
+    lines.push(`\n## Acceptance criteria (the definition of done — judge the change against these)\n${task.acceptance.trim()}`);
+  }
+  // Evidence, not claims: the checks the SERVER ran on exactly this change.
+  // Results measured on another change (a later edit, a Review now) are left out.
+  const evidence = task.checkDiffHash && task.checkDiffHash === change.hash ? checkEvidence(task) : null;
+  if (evidence) {
+    lines.push(
+      `\n${evidence}`,
+      `A green check is evidence the code builds/passes, not that the task is done — still judge the diff. A check`,
+      `that was weakened, skipped or deleted in the diff to turn green is a blocker.`,
+    );
+  }
   if (previous && previous.fixRound > 0) {
     lines.push(
       `\nThis is fix round ${previous.fixRound}: a previous review returned the findings below and the worker`,

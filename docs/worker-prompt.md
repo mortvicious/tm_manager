@@ -30,6 +30,7 @@ a stale reminder silently overrides the new rules for the rest of the session.
 | Final summary | The orchestrator stores it as `result_summary`; the review round and the next run read it. |
 | Adversarial review warning | The change is reviewed before the human sees it, so it must compile and hold up. |
 | **Commit trailer** | `commitTrailerRule(task.id)`, on EVERY turn including publish: every commit for this task ends with `Task: <id>`. It is how the reviewer finds the task's commits on any ref (`docs/design.md` § Adversarial review, *What the reviewer reads*). |
+| **Definition of done** (conditional) | Only on a FRESH prompt (never resumed, never the publish turn), when the task has `acceptance` text or repo checks apply: a `## Definition of done` block right under the description (`definitionOfDone()` → `doneNote`, built in `startWorker`): the acceptance text, the checks the server runs when the turn ends, and "run them yourself; never weaken or delete one" (`docs/checks.md`). A red check later arrives as a resumed turn whose instruction is the failure itself. |
 | **Ship gate** (conditional) | Only when `shipHeldForReview(task, settings)`, i.e. the change will be reviewed and the task is not auto-publish. It is appended after the standing rules (fresh) and after the reminder (resumed): no push, no deploy, no production verify; local commits are fine. It overrides the repo's CLAUDE.md. The publish turn never gets it; that turn ships (`docs/design.md` § Adversarial review, *Review before ship*). |
 
 ### One exception: the publish turn

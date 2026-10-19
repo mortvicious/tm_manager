@@ -774,6 +774,16 @@ button.badge.badge-link:hover {
   background: var(--tm-accent-subtle);
 }
 
+/* repo checks (docs/checks.md): the server is running them / one still fails */
+.badge.s-checking {
+  color: var(--tm-status-review);
+}
+
+.badge.s-checksred {
+  color: var(--tm-status-failed);
+}
+
+.badge.s-checking .dot,
 .badge.s-autoreview .dot,
 .badge.s-fixing .dot {
   animation: pulse 1.6s var(--tm-ease-in-out) infinite;
@@ -2654,6 +2664,21 @@ table.tbl tr:last-child td {
   margin-top: var(--tm-space-1);
 }
 
+/* a task's repo-check pick (docs/checks.md) */
+.done-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2) var(--tm-space-4);
+}
+
+.done-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+  font-size: var(--tm-text-sm);
+  cursor: pointer;
+}
+
 .warn-text {
   color: var(--tm-status-failed);
   font-size: var(--tm-text-xs);
@@ -3447,6 +3472,14 @@ select.field.cmd-select {
   font-size: var(--tm-text-xs);
 }
 
+/* a check's timeout in seconds (docs/checks.md) */
+input.field.cmd-timeout {
+  width: 9ch;
+  flex: none;
+  padding: 4px 8px;
+  font-size: var(--tm-text-xs);
+}
+
 select.field.cmd-script-select {
   flex: 1;
   min-width: 220px;
@@ -3961,6 +3994,66 @@ tr.repo-open > td {
 /* ReviewPanel renders nothing for a never-reviewed task; the empty wrapper must not cost a gap */
 .so-review:empty {
   display: none;
+}
+
+/* repo checks of the task's latest change (docs/checks.md) */
+.checks-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+}
+
+.checks-panel .section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+}
+
+.checks-state.cs-green,
+.check-outcome.co-green {
+  color: var(--tm-status-done);
+}
+
+.checks-state.cs-red,
+.check-outcome.co-red {
+  color: var(--tm-status-failed);
+}
+
+.checks-state.cs-error,
+.check-outcome.co-error,
+.checks-state.cs-pending,
+.checks-state.cs-running {
+  color: var(--tm-status-review);
+}
+
+.check-outcome {
+  font-size: var(--tm-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.check-row summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  cursor: pointer;
+  font-size: var(--tm-text-sm);
+}
+
+pre.check-tail {
+  margin: var(--tm-space-1) 0 var(--tm-space-2);
+  max-height: 240px;
+  overflow: auto;
+  background: var(--tm-terminal-bg);
+  color: var(--tm-terminal-text);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  padding: var(--tm-space-2) var(--tm-space-3);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .so-save {

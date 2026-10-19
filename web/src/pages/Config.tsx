@@ -384,6 +384,25 @@ export function ConfigPage() {
         </div>
         <div className="cfg-row">
           <div>
+            <div>Check→fix rounds</div>
+            <div className="hint">
+              a red repo check (a command marked <i>check</i>) is handed back to the worker's own session to fix, up
+              to N rounds, before the task lands in review as <i>checks red</i>. A fix turn that changes nothing
+              stops the loop at once; budget.taskUsd applies (0 = run the checks, never ask for a fix).
+            </div>
+          </div>
+          <input
+            className="field"
+            style={{ width: 80 }}
+            type="number"
+            min={0}
+            max={10}
+            value={cfg['checks.maxRounds']}
+            onChange={(e) => set('checks.maxRounds', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
             <div>Feature plan re-analysis rounds</div>
             <div className="hint">
               a blocker verdict on a feature's plan feeds the findings back into a fresh analysis, up to N rounds
