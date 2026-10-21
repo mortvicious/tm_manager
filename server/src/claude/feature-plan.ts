@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { Feature, FeaturePlan, FeaturePlanTask } from '@tm/shared';
+import { AGENT_TITLE_MAX, oneLineTitle } from '@tm/shared';
 
 // Pure plan layer for the Feature interface: the structured-output contract,
 // the prompts, and the server-side text injection. No child_process here — the
@@ -7,7 +8,9 @@ import type { Feature, FeaturePlan, FeaturePlanTask } from '@tm/shared';
 // runner module (feature-analysis.ts) owns the actual `claude -p` calls.
 
 export const planTaskSchema = z.object({
-  title: z.string().min(1).max(300),
+  // a card title is one short line (docs/agent-api-design.md § Title and brief);
+  // the human may still retitle a card freely before approval
+  title: z.string().min(1).max(300).transform((t) => oneLineTitle(t)),
   description: z.string().min(1).max(20_000),
   category: z.string().min(1).max(60).nullish(),
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullish(),
@@ -207,7 +210,8 @@ export function buildPlanPrompt(opts: {
     `  must be implementable when all of phases 0..N-1 are finished and nothing else. Put work that`,
     `  can proceed independently in the SAME phase.`,
     `- Each phase has 1-6 tasks. A task is one worker session's worth of work: a single coherent`,
-    `  change, with a full worker-grade "description" (what to change, where, how to verify) and`,
+    `  change, with a "title" that is ONE short line (at most ${AGENT_TITLE_MAX} chars),`,
+    `  a full worker-grade "description" (what to change, where, how to verify) and`,
     `  "exitCriteria" (concrete, checkable statements). Not a vague theme, not a whole subsystem.`,
     `- Optional per-task "category" (a short domain label, reusing labels the repo already uses),`,
     `  "effort" (low|medium|high|xhigh|max) and "review" (false only for genuinely trivial tasks).`,

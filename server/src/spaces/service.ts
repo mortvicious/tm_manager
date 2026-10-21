@@ -10,6 +10,7 @@ import type {
   SpaceFile,
   Task,
 } from '@tm/shared';
+import { oneLineTitle } from '@tm/shared';
 import type { ActionResult, OrchestratorApi } from '../app-types.ts';
 import { broadcast } from '../events.ts';
 import type { SharedNotePatch, Storage } from '../storage/types.ts';
@@ -492,6 +493,8 @@ export async function fileRequest(
     actor: string;
     placement: 'queue' | 'draft';
     title?: string;
+    /** the filing agent's before-work summary (`Task.brief`); null from the dashboard */
+    brief?: string | null;
     description?: string;
     category?: string | null;
     createdByRun?: string | null;
@@ -518,7 +521,9 @@ export async function fileRequest(
   try {
     task = await storage.createTask(
       {
-        title: (opts.title ?? cur.title).trim().slice(0, 300),
+        // the note's own title was written for the ledger, not the board: one short line
+        title: opts.title?.trim() ? opts.title.trim().slice(0, 300) : oneLineTitle(cur.title),
+        brief: opts.brief ?? null,
         description: opts.description?.trim() || (await filedDescription(storage, space, cur)),
         repoId: cur.toRepoId,
         status: 'draft',

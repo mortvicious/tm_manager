@@ -160,6 +160,10 @@ into the agent's **own** repo without the same-repo draft rule:
 
 - It is only allowed for a `request` whose `to` is the caller's repo (403
   otherwise). The author repo cannot file on the target's behalf.
+- The body needs a `brief`: 1-3 sentences telling the human what will be done
+  (`Task.brief`). An optional `title` must be one line of at most 80 characters.
+  Without a `title`, the request's own title is cut to one line
+  (`docs/agent-api-design.md` § Title and brief).
 - The task is created as a draft with the request body plus provenance (the
   request id, the folder, the files, and how to resolve the request if it is
   already done). It is then moved into the **custom queue** (`queueAddTask`,

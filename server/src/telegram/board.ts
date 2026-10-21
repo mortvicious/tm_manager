@@ -803,6 +803,8 @@ export async function renderCard(deps: BoardDeps, t: Task, back: BoardState): Pr
       lines.push(`${a ? `${a}\n` : ''}${statsLine(run)}`);
     }
     lines.push(``);
+    // agent-filed: the filer's before-work summary, above the (long) description
+    if (t.brief) lines.push(`<b>Brief</b>`, escapeHtml(clip(t.brief, Math.round(400 * k))), ``);
     if (t.description) lines.push(escapeHtml(clip(t.description, Math.round(1200 * k))), ``);
     lines.push(
       `model <code>${escapeHtml(t.model ?? 'default')}</code> · effort <code>${escapeHtml(t.effort ?? 'default')}</code> · ` +

@@ -49,11 +49,22 @@ Create a task (target a repo by id — preferred — or exact name/role):
 curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
   "$TM_CALLBACK_URL/api/agent/tasks" -d '{
     "title": "Adopt the new /v2/orders response shape",
+    "brief": "Switch the orders page to the v2 response (items[] + status). The old shape stops being served next release.",
     "description": "<the precise contract: endpoints, request/response examples, field semantics, what to verify>",
     "repo": "frontend",
     "enqueue": true
   }'
 ```
+
+- **`title`**: ONE short line, at most {{titleMax}} characters, no line breaks.
+  It is what the human scans on the board. Anything longer or multi-line is
+  refused with a 400 telling you why. Shorten it and send again.
+- **`brief`** (required): 1-3 plain sentences, at most {{briefMax}} characters,
+  telling the HUMAN what will be done and why, before any work starts. It is
+  the "before" twin of the summary the worker writes when it finishes. Write it
+  for a reader who will not open the description. No markdown headings, no
+  file lists.
+- **`description`**: the full contract for the agent that does the work (rule 6).
 
 Poll a task you created (long-poll up to 60s per request):
 
@@ -232,7 +243,9 @@ curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
   - **Already done here?** Resolve it with the evidence:
     `POST …/shared/notes/<id>/resolve {"status":"done","resolution":"<commit/file/endpoint>"}`.
     Use `"dismissed"` when it is not needed.
-  - **Not done?** File it: `POST …/shared/notes/<id>/file {}`. This creates the
+  - **Not done?** File it: `POST …/shared/notes/<id>/file {"brief": "<1-3 sentences: what will be done>"}`
+    (`brief` is required, as on create; an optional `title` follows the same
+    one-line rule, and without one the request's own title is cut to one line). This creates the
     task in YOUR repo and puts it in the serial custom queue. It starts only
     once your task is published, done or cancelled and nothing else in this
     repo is working, even while the global queue is stopped. It still counts toward your

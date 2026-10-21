@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { Repo, Task } from '@tm/shared';
+import { AGENT_TITLE_MAX, oneLineTitle } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import { READ_ONLY_DISALLOWED, READ_ONLY_TOOLS, acceptJson, aux, resultInstruction } from './aux.ts';
 import type { Storage } from '../storage/types.ts';
@@ -15,10 +16,11 @@ const proposalSchema = z.object({
       z.object({
         kind: z.enum(['rewrite', 'split', 'new_task', 'solution_options']),
         targetTaskId: z.string().nullish(),
-        title: z.string().nullish(),
+        // task titles are one short line (docs/agent-api-design.md § Title and brief)
+        title: z.string().nullish().transform((t) => (t == null ? t : oneLineTitle(t))),
         description: z.string().nullish(),
         rationale: z.string(),
-        subtasks: z.array(z.object({ title: z.string(), description: z.string() })).nullish(),
+        subtasks: z.array(z.object({ title: z.string().transform((t) => oneLineTitle(t)), description: z.string() })).nullish(),
         options: z
           .array(z.object({ label: z.string(), approach: z.string(), tradeoffs: z.string() }))
           .nullish(),
@@ -104,6 +106,7 @@ function buildPrompt(repo: Repo, tasks: Task[]): string {
     `- "new_task": a task that is missing but clearly needed (set title, description)`,
     `- "solution_options": for an ambiguous task, 2-4 alternative approaches with tradeoffs (set targetTaskId, options)`,
     ``,
+    `Every title you write is ONE short line (at most ${AGENT_TITLE_MAX} chars) — details belong in the description.`,
     `Rules: only reference targetTaskId values from the list above. Every proposal needs a short rationale`,
     `grounded in what you actually found in the repo. Prefer few high-value proposals over many trivial ones.`,
     `Do not spawn more than 3 subagents. Return via the fenced JSON result block described below.`,

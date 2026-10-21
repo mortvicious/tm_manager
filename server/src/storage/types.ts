@@ -147,6 +147,8 @@ export interface NewTask {
   loopMaxIterations?: number | null;
   loopBudgetUsd?: number | null;
   createdByRun?: string | null;
+  /** agent-filed tasks: the filer's before-work summary for the human */
+  brief?: string | null;
   spawnDepth?: number;
   featureId?: string | null;
   featurePhase?: number | null;

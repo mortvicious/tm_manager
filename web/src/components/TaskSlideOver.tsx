@@ -757,6 +757,12 @@ export function TaskSlideOver({
         <label className="label">Title</label>
         <input className="field" value={title} onChange={(e) => setTitle(e.target.value)} />
       </div>
+      {/* agent-filed tasks: the filer's before-work summary (the worker's summary is the after-work twin) */}
+      {task.brief && (
+        <div className="so-brief">
+          <Markdown label="Agent's brief" text={task.brief} />
+        </div>
+      )}
       <div>
         <label className="label">Description</label>
         <textarea

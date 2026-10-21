@@ -22,7 +22,7 @@ Workers already carry `TM_CALLBACK_URL`, `TM_TOKEN`, `TM_RUN_ID` in their PTY en
 ```
 GET  /api/agent/context          → { taskId, repoId, repoRole, repos: [{id, name, role}] }
 POST /api/agent/tasks            → create task
-     { title, description, repo: "<id|name|role>",       # "frontend" resolves by role
+     { title, brief, description, repo: "<id|name|role>", # "frontend" resolves by role
        enqueue?: boolean,                                 # false → draft (default), true → queued
        linkToParent?: boolean }                           # true → parentId = caller's task
 GET  /api/agent/tasks/:id        → { id, status, resultSummary, error }   # poll a task you created
@@ -30,6 +30,7 @@ GET  /api/agent/tasks/:id        → { id, status, resultSummary, error }   # po
 
 - `repo` resolves id → exact name → unique role. Ambiguous role (two "frontend" repos) → 400 listing candidates.
 - Created tasks get `source: 'auto'`, and a new column `created_by_run` for attribution (shown in the UI as an "agent" chip with the creating task's title).
+- **Title and brief** (2026-10-21). `title` must be ONE line of at most `AGENT_TITLE_MAX` (80) characters, because it is what the human scans on the board. A longer or multi-line title gets a 400 whose message says why (`agentTitleProblem` in shared, zod `agentTitle` in `routes/agent-caps.ts`). It is refused rather than clipped, so the agent rewrites it and no meaning is cut off. `brief` is REQUIRED: 1-3 sentences, at most `AGENT_BRIEF_MAX` (400), telling the human what will be done, written before any work. It is stored in `tm_tasks.brief` (migration 39, create-only; null on human, feature and proposal tasks) as `Task.brief`, the before-work twin of `resultSummary`. The task panel shows it as **Agent's brief** between the title and the description, and the Telegram card shows it as **Brief** above the description. Board search indexes it. The worker prompt does not get it, because the description is the worker's contract. The same two fields apply to `POST /api/agent/shared/notes/:id/file`: `brief` is required and `title` is optional with the same rule. Without a `title`, the request note's own title is used, passed through `oneLineTitle`: first line, whitespace collapsed, clipped at a word with `…`. Titles that models write and nobody can be asked to fix go through `oneLineTitle` at parse time: analysis proposals (`claude/analyze.ts`, rewrite/new-task titles and split subtasks) and feature-plan cards (`claude/feature-plan.ts`). Both prompts state the limit. A human may still retitle anything freely, and human titles are not capped.
 - `linkToParent: true` makes it a **sibling-child**: `parentId = caller's task.parentId ?? caller's taskId` — a worker's follow-ups block ITS parent, not itself (a task must never become its own dependency). It also joins the caller's **task group** (`group_id`/`group_path` are derived from the parent row on insert, `docs/grouping.md`), so the follow-up shows up in the same block on the Board.
 
 ### 2. Coordination model: async handoff via tasks (v1)
@@ -38,7 +39,7 @@ No direct PTY-to-PTY channel in v1. The coordination primitive is: **create → 
 
 Backend worker flow for an API contract change:
 1. Implements the backend side; writes the contract (endpoint, shapes, examples) precisely.
-2. `POST /api/agent/tasks { repo: "frontend", enqueue: true, title: "Adopt new /v2/orders contract", description: <contract> }`.
+2. `POST /api/agent/tasks { repo: "frontend", enqueue: true, title: "Adopt new /v2/orders contract", brief: <1-3 sentences for the human>, description: <contract> }`.
 3. Optionally polls `GET /api/agent/tasks/:id` (with sleep between polls) until `review`/`done`/`failed`, reads `resultSummary`, and reconciles (e.g. the frontend agent reports a field it also needs → backend adds it before finishing its own turn).
 
 Why not live bidirectional chat between sessions: two agents talking through PTY injection interleaves with human keystrokes, has no turn-taking discipline, no record on the task, and both sessions burn tokens waiting on each other. The task object already provides an inspectable, durable, human-supervisable mailbox. (A `messages` channel can be layered later if genuinely needed.)

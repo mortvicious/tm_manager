@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import type { Run } from '@tm/shared';
+import { AGENT_BRIEF_MAX, AGENT_TITLE_MAX } from '@tm/shared';
 import { serverRoot } from '../config.ts';
 import { broadcast } from '../events.ts';
 import { onEvent } from '../events.ts';
@@ -10,7 +11,7 @@ import type { Storage } from '../storage/types.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import { spaceForRepo } from '../spaces/service.ts';
 import type { CommandRunner } from '../commands/runner.ts';
-import { maxSpawnDepth, perRunCap, QUEUED_AGENT_CEILING } from './agent-caps.ts';
+import { agentBrief, agentTitle, maxSpawnDepth, perRunCap, QUEUED_AGENT_CEILING } from './agent-caps.ts';
 import { AGENT_COMMAND_DEFINE_CAP, registerAgentCommandRoutes } from './agent-commands.ts';
 import { registerAgentSharedRoutes, SHARED_NOTE_RUN_CAP } from './agent-shared.ts';
 import { AGENT_CLOSE_RUN_CAP, registerAgentTaskRoutes } from './agent-tasks.ts';
@@ -26,7 +27,9 @@ import { AGENT_CLOSE_RUN_CAP, registerAgentTaskRoutes } from './agent-tasks.ts';
 
 const createBody = z
   .object({
-    title: z.string().min(1).max(300),
+    title: agentTitle,
+    // before-work summary for the human (docs/agent-api-design.md § Title and brief)
+    brief: agentBrief,
     description: z.string().max(20_000).nullish(),
     repo: z.string().min(1),
     enqueue: z.boolean().optional(),
@@ -135,7 +138,9 @@ export function registerAgentRoutes(
       .replaceAll('{{dispatchRunCap}}', String(DISPATCH_RUN_CAP))
       .replaceAll('{{dispatchPairCap}}', String(DISPATCH_PAIR_CAP))
       .replaceAll('{{closeRunCap}}', String(AGENT_CLOSE_RUN_CAP))
-      .replaceAll('{{commandDefineCap}}', String(AGENT_COMMAND_DEFINE_CAP));
+      .replaceAll('{{commandDefineCap}}', String(AGENT_COMMAND_DEFINE_CAP))
+      .replaceAll('{{titleMax}}', String(AGENT_TITLE_MAX))
+      .replaceAll('{{briefMax}}', String(AGENT_BRIEF_MAX));
     return reply.type('text/markdown').send(md);
   });
 
@@ -236,6 +241,7 @@ export function registerAgentRoutes(
     const task = await storage.createTask(
       {
         title: body.title,
+        brief: body.brief,
         description: body.description ?? null,
         repoId: target.id,
         parentId,

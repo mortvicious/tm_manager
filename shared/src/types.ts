@@ -664,6 +664,12 @@ export interface Task {
   featureId: string | null;
   /** 0-based phase index inside that feature; phases run in order */
   featurePhase: number | null;
+  /**
+   * Agent-filed tasks only: the filer's one-paragraph "what will be done",
+   * written BEFORE any work, for the human (resultSummary is the after-work
+   * twin). Null on human/feature/proposal tasks.
+   */
+  brief: string | null;
   resultSummary: string | null;
   /** per-task adversarial review override: null = use review.enabled setting */
   review: boolean | null;
@@ -955,6 +961,40 @@ export function isGroupRoot(t: Pick<Task, 'id' | 'groupId'>): boolean {
 export function groupLabel(root: Pick<Task, 'title' | 'groupName'> | undefined, fallback = 'group'): string {
   if (!root) return fallback;
   return root.groupName?.trim() || root.title;
+}
+
+/**
+ * Titles an agent or a model writes are ONE short line (docs/agent-api-design.md
+ * § Title and brief): details belong in the description, the plan in `brief`.
+ */
+export const AGENT_TITLE_MAX = 80;
+/** `Task.brief`: a few sentences, not a second description. */
+export const AGENT_BRIEF_MAX = 400;
+
+/** Why an agent-sent title is refused (the agent rewrites it), or null. */
+export function agentTitleProblem(title: string): string | null {
+  const t = title.trim();
+  if (!t) return 'title is empty';
+  if (/[\r\n]/.test(t)) return 'title must be ONE line — details go in "description", the plan in "brief"';
+  if (t.length > AGENT_TITLE_MAX) {
+    return `title is ${t.length} chars — keep it to one short line of at most ${AGENT_TITLE_MAX}; details go in "description"`;
+  }
+  return null;
+}
+
+/**
+ * A model-written title nobody can be asked to rewrite (analysis proposals,
+ * feature-plan cards, a request note's title): its first non-empty line,
+ * whitespace collapsed, clipped at a word boundary with an ellipsis.
+ */
+export function oneLineTitle(raw: string, max = AGENT_TITLE_MAX): string {
+  const first = raw.split(/[\r\n]+/).find((l) => l.trim()) ?? '';
+  const line = first.replace(/\s+/g, ' ').trim();
+  if (line.length <= max) return line;
+  const cut = line.slice(0, max - 1);
+  const space = cut.lastIndexOf(' ');
+  const head = space > max * 0.6 ? cut.slice(0, space) : cut;
+  return head.replace(/[\s,;:.\-–—]+$/, '') + '…';
 }
 
 /**

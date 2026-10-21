@@ -557,6 +557,7 @@ export function buildHaystacks(ctx: SearchContext): Map<string, string> {
       t.id,
       [
         t.title,
+        t.brief,
         t.description,
         t.resultSummary,
         t.id,

@@ -13,7 +13,7 @@ import {
   spaceForRepo,
 } from '../spaces/service.ts';
 import type { Storage } from '../storage/types.ts';
-import { maxSpawnDepth, perRunCap, QUEUED_AGENT_CEILING } from './agent-caps.ts';
+import { agentBrief, agentTitle, maxSpawnDepth, perRunCap, QUEUED_AGENT_CEILING } from './agent-caps.ts';
 
 // The agent side of shared spaces (docs/shared-spaces.md). Everything is scoped
 // to the space of the CALLER's repo — the token is the identity, so an agent
@@ -44,7 +44,9 @@ const appendBody = z.object({ text: z.string().min(1).max(4000) }).strict();
 
 const fileBody = z
   .object({
-    title: z.string().min(1).max(300).optional(),
+    title: agentTitle.optional(),
+    // before-work summary for the human (docs/agent-api-design.md § Title and brief)
+    brief: agentBrief,
     description: z.string().max(NOTE_BODY_MAX).optional(),
     category: z.string().min(1).max(60).optional(),
   })
@@ -255,6 +257,7 @@ export function registerAgentSharedRoutes(
       placement,
       placementNote,
       title: body.title,
+      brief: body.brief,
       description: body.description,
       category: body.category ?? null,
       createdByRun: c.run.id,

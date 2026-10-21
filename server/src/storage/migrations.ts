@@ -651,6 +651,13 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
     // every status transition clears it.
     statements: [`ALTER TABLE tm_tasks ADD COLUMN hidden_at TEXT`],
   },
+  {
+    id: 39,
+    // Agent brief (docs/agent-api-design.md § Title and brief): the filing agent's short
+    // "what will be done" for the human, written before any work. Required on
+    // the agent create/file routes; null on every other task.
+    statements: [`ALTER TABLE tm_tasks ADD COLUMN brief TEXT`],
+  },
 ];
 
 /** The migration whose rows each driver backfills in JS once it is applied. */

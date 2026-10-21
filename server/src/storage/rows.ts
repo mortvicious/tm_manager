@@ -105,6 +105,7 @@ export function rowToTask(r: any): Task {
     spawnDepth: Number(r.spawn_depth ?? 0),
     featureId: r.feature_id ?? null,
     featurePhase: r.feature_phase == null ? null : Number(r.feature_phase),
+    brief: r.brief ?? null,
     resultSummary: r.result_summary ?? null,
     review: r.review == null ? null : !!Number(r.review),
     reviewModel: r.review_model ?? null,
