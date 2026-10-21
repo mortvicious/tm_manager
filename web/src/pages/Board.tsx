@@ -592,6 +592,7 @@ function Section({
   count,
   accent,
   tint,
+  dim,
   collapsed,
   onToggle,
   action,
@@ -600,6 +601,8 @@ function Section({
   label: string;
   count: number;
   accent?: boolean;
+  /** the Hidden section: rows drawn dimmed (docs/design.md § Hidden tasks) */
+  dim?: boolean;
   /** group colour for the header (`--tm-group`); absent = the neutral header */
   tint?: CSSProperties;
   collapsed: boolean;
@@ -608,7 +611,7 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <div>
+    <div className={dim ? 'section-dim' : undefined}>
       <div className={`section-head ${accent ? 'accent' : ''} ${tint ? 'group-tint' : ''}`} style={tint}>
         <button className="section-fold" aria-expanded={!collapsed} onClick={onToggle}>
           <span className={`caret ${collapsed ? 'closed' : ''}`}>
@@ -773,6 +776,10 @@ export function BoardPage({
   };
 
   const byId = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
+
+  // Hidden tasks (docs/design.md § Hidden tasks) leave every other section —
+  // Active, Drafts, the groupings and Recent — for a dimmed one of their own.
+  const visible = useMemo(() => filtered.filter((t) => !t.hiddenAt), [filtered]);
   // Manual position (docs/grouping.md § Order): the keys from a task's group
   // root down to it. Compared element-wise that is depth-first tree order —
   // how a group's members ALWAYS read, whatever the sort, and how the groups
@@ -840,15 +847,15 @@ export function BoardPage({
     const out = new Map<string, Row[]>();
     if (groupBy === 'status') {
       for (const s of ORDER) {
-        const list = filtered.filter((t) => t.status === s);
+        const list = visible.filter((t) => t.status === s);
         if (list.length) out.set(s, ordered(list));
       }
     } else if (groupBy === 'category') {
       for (const c of categories) {
-        const list = filtered.filter((t) => t.category === c);
+        const list = visible.filter((t) => t.category === c);
         if (list.length) out.set(c, ordered(list));
       }
-      const none = filtered.filter((t) => !t.category);
+      const none = visible.filter((t) => !t.category);
       if (none.length) out.set('uncategorized', ordered(none));
     } else if (groupBy === 'group') {
       // One section per task tree, biggest first — the trees ARE the sections
@@ -856,43 +863,45 @@ export function BoardPage({
       // keyed by group id, not label: two groups may share a title, and the
       // key is also the fold-state id
       for (const g of [...namedGroups].sort((a, b) => b.size - a.size || a.label.localeCompare(b.label))) {
-        const list = filtered.filter((t) => t.groupId === g.id);
+        const list = visible.filter((t) => t.groupId === g.id);
         if (list.length) out.set(g.id, ordered(list));
       }
-      const single = filtered.filter((t) => (groupIndex.get(t.groupId)?.size ?? 1) <= 1);
+      const single = visible.filter((t) => (groupIndex.get(t.groupId)?.size ?? 1) <= 1);
       if (single.length) out.set('ungrouped', ordered(single));
     } else {
       for (const r of repos) {
-        const list = filtered.filter((t) => t.repoId === r.id);
+        const list = visible.filter((t) => t.repoId === r.id);
         if (list.length) out.set(r.name, ordered(list));
       }
-      const none = filtered.filter((t) => !t.repoId);
+      const none = visible.filter((t) => !t.repoId);
       if (none.length) out.set('no repo', ordered(none));
     }
     return out;
     // `ordered` closes over `sort` and `byPosition` — listing them is the honest dep
-  }, [filtered, groupBy, categories, repos, sort, byPosition, namedGroups, groupIndex]);
+  }, [visible, groupBy, categories, repos, sort, byPosition, namedGroups, groupIndex]);
 
   // running first, then review; sorted inside each — never capped, active work
   // is exactly what must stay visible.
   const active = useMemo(
-    () => ACTIVE.flatMap((s) => ordered(filtered.filter((t) => t.status === s))),
-    [filtered, sort, byPosition],
+    () => ACTIVE.flatMap((s) => ordered(visible.filter((t) => t.status === s))),
+    [visible, sort, byPosition],
   );
 
   // Drafts are the inbox — they sit right under the live work now, capped so a
   // long backlog cannot push the rest of the board off screen.
   const drafts = useMemo(
-    () => ordered(filtered.filter((t) => t.status === 'draft')),
-    [filtered, sort, byPosition],
+    () => ordered(visible.filter((t) => t.status === 'draft')),
+    [visible, sort, byPosition],
   );
+
+  const hiddenRows = useMemo(() => ordered(filtered.filter((t) => t.hiddenAt)), [filtered, sort, byPosition]);
 
   // "Recent" ignores the sort control on purpose: it is the by-definition
   // last-touched shortcut, and it now closes the page instead of opening it.
   // Flat by design — it is a lookup list, so no nesting and no group blocks.
   const recent = useMemo(
-    () => [...filtered].sort(byRecency('updatedAt')).slice(0, RECENT_LIMIT).map((task) => ({ task, depth: 0 })),
-    [filtered],
+    () => [...visible].sort(byRecency('updatedAt')).slice(0, RECENT_LIMIT).map((task) => ({ task, depth: 0 })),
+    [visible],
   );
 
   const sortField = SORTS.find((s) => s.key === sort)!.field;
@@ -940,7 +949,7 @@ export function BoardPage({
    */
   const rowChips = (
     t: Task,
-    ctx: GroupBy | 'recent' | 'active' | 'drafts',
+    ctx: GroupBy | 'recent' | 'active' | 'drafts' | 'hidden',
     g: { label: string; size: number } | undefined,
     pendingOut: number,
   ) => {
@@ -1066,7 +1075,7 @@ export function BoardPage({
   };
 
   // one row, shared by the strips and the grouped lists below them
-  const row = (t: Task, ctx: GroupBy | 'recent' | 'active' | 'drafts', depth = 0) => {
+  const row = (t: Task, ctx: GroupBy | 'recent' | 'active' | 'drafts' | 'hidden', depth = 0) => {
     // drafts never ran, so their created time is the honest one; recent is a
     // last-touched list; everywhere else the age matches the active sort.
     const field = ctx === 'drafts' ? 'createdAt' : ctx === 'recent' ? 'updatedAt' : sortField;
@@ -1125,7 +1134,7 @@ export function BoardPage({
    * block. `heads: false` is for the `group: group` sections, where the
    * section header already names the group.
    */
-  const renderRows = (rows: Row[], ctx: GroupBy | 'recent' | 'active' | 'drafts', heads = true) =>
+  const renderRows = (rows: Row[], ctx: GroupBy | 'recent' | 'active' | 'drafts' | 'hidden', heads = true) =>
     blocksOf(rows).map((b) => {
       const g = groupIndex.get(b.groupId);
       if (!heads || !g || g.size < 2) return b.rows.map((r) => row(r.task, ctx, r.depth));
@@ -1386,6 +1395,12 @@ export function BoardPage({
           </Section>
         );
       })}
+      {/* parked out of the way: last, dimmed, and dropped in essentials mode */}
+      {(!focus || searching) && hiddenRows.length > 0 && (
+        <Section label="Hidden" count={hiddenRows.length} dim collapsed={collapsed.has('hidden')} onToggle={() => toggleFold('hidden')}>
+          <div className="panel">{renderRows(hiddenRows, 'hidden')}</div>
+        </Section>
+      )}
       {/* a lookup list — while searching the sections above ARE the lookup */}
       {!focus && !searching && recent.length > 0 && (
         <Section label="Recent" count={recent.length} collapsed={collapsed.has('recent')} onToggle={() => toggleFold('recent')}>

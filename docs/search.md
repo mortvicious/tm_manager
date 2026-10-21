@@ -88,7 +88,7 @@ nothing.
 | `repo` (`r`)                          | a repo name, prefix or inner word; `none`                                                         |
 | `status` (`s`)                        | a status or a word for one (`todo`, `shipped`, `in progress`…)                                    |
 | `is`                                  | a status, else a state                                                                            |
-| `state`                               | `attention`, `asking`, `auto-review`, `fixing`, `flagged`, `in-queue`, `held`, `waking`, `auto-publish`, `on-green`, `auto-landed` |
+| `state`                               | `attention`, `asking`, `auto-review`, `fixing`, `flagged`, `in-queue`, `held`, `hidden`, `waking`, `auto-publish`, `on-green`, `auto-landed` |
 | `source` (`src`, `from`, `by`)        | `human`, `agent`, `sentry`, `analyze`, `feature`                                                  |
 | `cat` (`category`)                    | a category; `uncategorized`                                                                       |
 | `group` (`g`)                         | a group's name, or its root id (4+ characters)                                                    |
@@ -115,7 +115,7 @@ year's.
 - **States are the badges, not statuses**: *needs attention* (a live run's
   permission prompt), *asks you* (a pending question), *auto-review*
   (`review` + review state pending/reviewing), *fixing*, *review flagged*, *in my
-  queue* (`customQueueAt`), *held* (`queueHeldAt`), *auto wake-up* (`wakeAt`),
+  queue* (`customQueueAt`), *held* (`queueHeldAt`), *hidden* (`hiddenAt`), *auto wake-up* (`wakeAt`),
   *auto-publish* and *lands on green* (the task's EFFECTIVE landing tier,
   `effectiveLanding` — repo default or override, external tasks clamped; was the
   per-task `autoPublish` flag), and *auto-landed* (`autoLandedAt`, the

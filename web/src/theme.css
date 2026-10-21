@@ -1866,6 +1866,18 @@ button.badge.badge-link:hover {
   color: var(--tm-accent);
 }
 
+/* the Board's Hidden section (docs/design.md § Hidden tasks): parked rows
+   recede until the pointer or focus reaches them. */
+.section-dim > .panel {
+  opacity: 0.5;
+  transition: opacity var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.section-dim > .panel:hover,
+.section-dim > .panel:focus-within {
+  opacity: 1;
+}
+
 /* collapse/expand control living inside a section header — inherits the
    header's mono micro-type instead of the default button face. */
 .section-head .section-toggle {

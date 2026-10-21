@@ -2,7 +2,7 @@ import { useEffect, useState, type CSSProperties, type HTMLAttributes, type Mous
 import type { Task, TaskStatus } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
-import { IconCheck, IconGrip, IconMore, IconPlay, IconPublish, IconQueue, IconTerminal, IconX } from './Icons.tsx';
+import { IconCheck, IconEye, IconGrip, IconMore, IconPlay, IconPublish, IconQueue, IconTerminal, IconX } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
 import { QueueMark } from './QueueMark.tsx';
 import { Sheet, SheetAction } from './Sheet.tsx';
@@ -129,6 +129,8 @@ export function TaskRow({
   // A waiting member's queue button turns into "remove"; a running member
   // keeps its slot until its turn ends (cancel is the way to stop it).
   const inQueue = !!task.customQueueAt && task.status === 'queued';
+  // hiding is for a task at rest (docs/design.md § Hidden tasks)
+  const working = task.status === 'running' || task.status === 'waiting';
   const canQueue = inQueue || (!!task.repoId && CAN_QUEUE.includes(task.status) && !live);
   const queueLabel = inQueue
     ? 'Remove from queue'
@@ -310,6 +312,13 @@ export function TaskRow({
                 hint={inQueue ? 'Take it out of the one-at-a-time queue' : queueLabel}
                 disabled={busy || !canQueue}
                 onClick={fromSheet(() => void act(null, () => api.taskAction(task.id, inQueue ? 'unqueue' : 'queue')))}
+              />
+              <SheetAction
+                icon={<IconEye off={!task.hiddenAt} />}
+                label={task.hiddenAt ? 'Unhide' : 'Hide'}
+                hint={task.hiddenAt ? 'Back to its usual section' : working ? 'A working task stays visible' : 'Into the dimmed Hidden section, out of Drafts'}
+                disabled={busy || (!task.hiddenAt && working)}
+                onClick={fromSheet(() => void act(null, () => api.taskAction(task.id, task.hiddenAt ? 'unhide' : 'hide')))}
               />
               <SheetAction
                 icon={<IconMore />}

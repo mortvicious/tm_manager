@@ -515,6 +515,25 @@ export async function releaseTask(
 }
 
 /**
+ * Hide / unhide (docs/design.md § Hidden tasks): a board-only flag. Hiding is
+ * refused on a working task (`running`/`waiting` — it would vanish from
+ * Active); the storage write is conditional on the same, so a claim racing the
+ * click cannot leave a working task hidden. Any later status change unhides.
+ */
+export async function setHiddenTask(deps: TaskActionDeps, id: string, hidden: boolean, actor: string): Promise<ActionResult> {
+  const { storage } = deps;
+  const cur = await storage.getTask(id);
+  if (!cur) return err(404, 'task not found');
+  if (hidden && cur.hiddenAt) return { task: cur };
+  if (!hidden && !cur.hiddenAt) return { task: cur };
+  const task = await storage.setTaskHidden(id, hidden);
+  if (!task) return (await storage.getTask(id)) ? err(409, 'a working task cannot be hidden') : err(404, 'task not found');
+  await storage.appendEvent({ kind: hidden ? 'task.hidden' : 'task.unhidden', actor, taskId: id, repoId: task.repoId });
+  broadcast({ type: 'task.updated', task });
+  return { task };
+}
+
+/**
  * Cancel: queued tasks can be de-queued without the orchestrator (R12);
  * anything running goes through it so the PTY dies with the row.
  */

@@ -90,6 +90,7 @@ export type TaskState =
   | 'flagged'
   | 'in-queue'
   | 'held'
+  | 'hidden'
   | 'waking'
   | 'auto-publish'
   | 'on-green'
@@ -103,6 +104,7 @@ const STATE_WORDS: Record<TaskState, { label: string; words: string[] }> = {
   flagged: { label: 'review flagged', words: ['flagged', 'findings'] },
   'in-queue': { label: 'in my queue', words: ['in-queue', 'my queue', 'custom queue', 'queue'] },
   held: { label: 'held', words: ['held', 'on hold', 'hold'] },
+  hidden: { label: 'hidden', words: ['hidden', 'hide'] },
   waking: { label: 'auto wake-up', words: ['waking', 'wake', 'wake-up', 'limit', 'sleeping'] },
   'auto-publish': { label: 'auto-publish', words: ['auto-publish', 'auto publish', 'autopublish'] },
   'on-green': { label: 'lands on green', words: ['on-green', 'on green', 'lands on green'] },
@@ -434,6 +436,8 @@ function stateMatches(state: string, t: Task, ctx: SearchContext): boolean {
       return !!t.customQueueAt;
     case 'held':
       return !!t.queueHeldAt;
+    case 'hidden':
+      return !!t.hiddenAt;
     case 'waking':
       return !!t.wakeAt;
     // the tier the task actually lands with (docs/design.md § Landing tiers)

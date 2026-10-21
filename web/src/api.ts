@@ -89,6 +89,7 @@ export function normalizeTask(t: Task): Task {
     landing: t.landing ?? null,
     autoLandedAt: t.autoLandedAt ?? null,
     customQueueAt: t.customQueueAt ?? null,
+    hiddenAt: t.hiddenAt ?? null,
     reviewState: t.reviewState ?? null,
     reviewModel: t.reviewModel ?? null,
     reviewEffort: t.reviewEffort ?? null,
@@ -264,7 +265,9 @@ export const api = {
       | 'complete'
       | 'publish'
       | 'queue'
-      | 'unqueue',
+      | 'unqueue'
+      | 'hide'
+      | 'unhide',
   ) => req<Task>('POST', `/api/tasks/${id}/${action}`),
   stopAgent: (id: string) => req<{ ok: true; closed: number }>('POST', `/api/tasks/${id}/stop-agent`),
   followUp: (id: string, message: string) => req<Task>('POST', `/api/tasks/${id}/follow-up`, { message }),

@@ -502,7 +502,7 @@ export class PostgresStorage implements Storage {
     // Only a group ROOT carries the group's name/colour.
     const isRoot = place.groupId === id;
     await c.query(
-      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, landing=$17, custom_queue_at=$18, feature_id=$19, feature_phase=$20, result_summary=$21, review_summary=$22, review_diff_hash=$23, review_state=$24, review_rounds=$25, wake_at=$26, error=$27, updated_at=$28, review_model=$29, review_effort=$30, base_sha=$31, base_ref=$32, base_at=$33, queue_held_at=$34, acceptance=$35, checks=$36, check_state=$37, check_results=$38, check_diff_hash=$39, auto_landed_at=$40, loop_goal=$41, loop_max_iterations=$42, loop_budget_usd=$43, loop_iteration=$44, loop_state=$45, loop_history=$46 WHERE id=$47`,
+      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, landing=$17, custom_queue_at=$18, feature_id=$19, feature_phase=$20, result_summary=$21, review_summary=$22, review_diff_hash=$23, review_state=$24, review_rounds=$25, wake_at=$26, error=$27, updated_at=$28, review_model=$29, review_effort=$30, base_sha=$31, base_ref=$32, base_at=$33, queue_held_at=$34, acceptance=$35, checks=$36, check_state=$37, check_results=$38, check_diff_hash=$39, auto_landed_at=$40, loop_goal=$41, loop_max_iterations=$42, loop_budget_usd=$43, loop_iteration=$44, loop_state=$45, loop_history=$46, hidden_at=$47 WHERE id=$48`,
       [
         next.title,
         next.description,
@@ -550,6 +550,7 @@ export class PostgresStorage implements Storage {
         next.loopIteration ?? 0,
         next.loopState ?? null,
         JSON.stringify(next.loopHistory ?? []),
+        next.hiddenAt ?? null,
         id,
       ],
     );
@@ -566,6 +567,16 @@ export class PostgresStorage implements Storage {
 
   async bumpTaskAttempts(id: string): Promise<Task | null> {
     const rows = await this.q(`UPDATE tm_tasks SET attempts = attempts + 1 WHERE id = ? RETURNING *`, [id]);
+    return rows[0] ? rowToTask(rows[0]) : null;
+  }
+
+  async setTaskHidden(id: string, hidden: boolean): Promise<Task | null> {
+    // Twin of the sqlite driver.
+    const at = now();
+    const rows = await this.q(
+      `UPDATE tm_tasks SET hidden_at = ?, updated_at = ? WHERE id = ?${hidden ? ` AND status NOT IN ('running', 'waiting')` : ''} RETURNING *`,
+      [hidden ? at : null, at, id],
+    );
     return rows[0] ? rowToTask(rows[0]) : null;
   }
 
@@ -754,6 +765,8 @@ export class PostgresStorage implements Storage {
     } else {
       sets.push('queue_held_at = NULL');
     }
+    // Any status change unhides (twin of the sqlite driver).
+    sets.push('hidden_at = NULL');
     // Terminal status ends custom-queue membership (twin of the sqlite driver).
     if (TERMINAL_TASK_STATUSES.includes(to)) sets.push('custom_queue_at = NULL');
     // The auto-landed stamp (twin of the sqlite driver).

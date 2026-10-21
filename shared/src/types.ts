@@ -752,6 +752,14 @@ export interface Task {
    */
   queueHeldAt: string | null;
   /**
+   * ISO time the human hid this task (docs/design.md § Hidden tasks): the
+   * board leaves it out of every section but its own dimmed "Hidden" one, and
+   * the Telegram Drafts tab skips it. Board-only — no claim reads it. Refused
+   * on a working task, and every status transition clears it, so a task that
+   * moves on is visible again. null = visible.
+   */
+  hiddenAt: string | null;
+  /**
    * What this task has cost so far, in USD (docs/token-budget.md § Fuses):
    * the sum of `RunStats.costUsd` over its worker runs AND the aux runs about
    * it (subject = this task: review, compact). Kept on the row by the storage
@@ -1543,6 +1551,9 @@ export type AuditKind =
    * is 'undo' | 'release'.
    */
   | 'task.undo'
+  /** a human hid / unhid the task (docs/design.md § Hidden tasks) */
+  | 'task.hidden'
+  | 'task.unhidden'
   | 'task.follow-up'
   | 'task.dispatch'
   | 'task.publish'
@@ -2273,8 +2284,8 @@ export function buildInbox(input: InboxInput): InboxItem[] {
 
 // ---- Bulk actions (docs/inbox.md § Bulk actions) ----------------------------
 
-export type BulkAction = 'enqueue' | 'queue' | 'cancel' | 'complete' | 'edit';
-export const BULK_ACTIONS: BulkAction[] = ['enqueue', 'queue', 'cancel', 'complete', 'edit'];
+export type BulkAction = 'enqueue' | 'queue' | 'cancel' | 'complete' | 'hide' | 'unhide' | 'edit';
+export const BULK_ACTIONS: BulkAction[] = ['enqueue', 'queue', 'cancel', 'complete', 'hide', 'unhide', 'edit'];
 /** ids per bulk call */
 export const BULK_MAX = 100;
 

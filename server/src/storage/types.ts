@@ -415,6 +415,13 @@ export interface Storage {
    */
   bumpTaskAttempts(id: string): Promise<Task | null>;
   /**
+   * Hide/unhide (docs/design.md § Hidden tasks): a CONDITIONAL write of
+   * `hidden_at` — hiding matches only a task that is not `running`/`waiting`,
+   * so a claim racing the click can never leave a working task hidden.
+   * null when the row is gone or no longer hideable.
+   */
+  setTaskHidden(id: string, hidden: boolean): Promise<Task | null>;
+  /**
    * Loop tasks (docs/loops.md): a CONDITIONAL write of the loop columns (and
    * the latest check results they carry) on a `running` loop task whose
    * `loop_state` is one of `from` (null matches NULL). null when the row did

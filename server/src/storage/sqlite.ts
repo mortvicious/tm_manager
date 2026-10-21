@@ -507,7 +507,7 @@ export class SqliteStorage implements Storage {
     const isRoot = place.groupId === id;
     this.db
       .prepare(
-        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, landing=?, auto_landed_at=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, review_diff_hash=?, review_state=?, review_rounds=?, wake_at=?, error=?, updated_at=?, review_model=?, review_effort=?, base_sha=?, base_ref=?, base_at=?, queue_held_at=?, acceptance=?, checks=?, check_state=?, check_results=?, check_diff_hash=?, loop_goal=?, loop_max_iterations=?, loop_budget_usd=?, loop_iteration=?, loop_state=?, loop_history=? WHERE id=?`,
+        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, landing=?, auto_landed_at=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, review_diff_hash=?, review_state=?, review_rounds=?, wake_at=?, error=?, updated_at=?, review_model=?, review_effort=?, base_sha=?, base_ref=?, base_at=?, queue_held_at=?, acceptance=?, checks=?, check_state=?, check_results=?, check_diff_hash=?, loop_goal=?, loop_max_iterations=?, loop_budget_usd=?, loop_iteration=?, loop_state=?, loop_history=?, hidden_at=? WHERE id=?`,
       )
       .run(
         next.title,
@@ -556,6 +556,7 @@ export class SqliteStorage implements Storage {
         next.loopIteration ?? 0,
         next.loopState ?? null,
         JSON.stringify(next.loopHistory ?? []),
+        next.hiddenAt ?? null,
         id,
       );
     return rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
@@ -570,6 +571,13 @@ export class SqliteStorage implements Storage {
 
   async bumpTaskAttempts(id: string): Promise<Task | null> {
     const r = this.db.prepare(`UPDATE tm_tasks SET attempts = attempts + 1 WHERE id = ? RETURNING *`).get(id);
+    return r ? rowToTask(r) : null;
+  }
+
+  async setTaskHidden(id: string, hidden: boolean): Promise<Task | null> {
+    const r = this.db
+      .prepare(`UPDATE tm_tasks SET hidden_at = ?, updated_at = ? WHERE id = ?${hidden ? ` AND status NOT IN ('running', 'waiting')` : ''} RETURNING *`)
+      .get(hidden ? now() : null, now(), id);
     return r ? rowToTask(r) : null;
   }
 
@@ -766,6 +774,9 @@ export class SqliteStorage implements Storage {
     } else {
       sets.push('queue_held_at = NULL');
     }
+    // Hiding (docs/design.md § Hidden tasks) is for a task at rest: any status
+    // change makes it visible again, so a hidden task can never be working.
+    sets.push('hidden_at = NULL');
     // A terminal status ends the task's custom-queue membership (docs/queue.md):
     // a mark must never outlive the work, or a later follow-up into `review`
     // would hold its repo's place in the queue again.

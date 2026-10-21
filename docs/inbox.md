@@ -171,7 +171,7 @@ on the second within 4 s, because it kills running agents and a browser
 
 ```
 POST /api/tasks/bulk
-{ "action": "enqueue" | "queue" | "cancel" | "complete" | "edit",
+{ "action": "enqueue" | "queue" | "cancel" | "complete" | "hide" | "unhide" | "edit",
   "ids": ["…"],                      // 1..100, de-duplicated, run in order
   "patch": { "model"?: string|null, "effort"?: EffortLevel|null } }   // edit only
 → 200 { action, results: [{ id, ok: true, task } | { id, ok: false, code, error }], ok, failed }
@@ -179,7 +179,8 @@ POST /api/tasks/bulk
 
 - **It loops over `task-actions.ts`**, one id at a time, calling the same
   function the single-task route calls: `enqueueTask(…, ENQUEUE_FROM)`,
-  `queueAddTask`, `cancelTask`, `completeTask`, `editTask`. Actor is `human`.
+  `queueAddTask`, `cancelTask`, `completeTask`, `setHiddenTask` (hide/unhide,
+  `docs/design.md` § Hidden tasks), `editTask`. Actor is `human`.
   There is no second copy of lifecycle logic, so every refusal, broadcast,
   audit row and `maybeSchedule` is the single route's own.
 - **A refusal is that id's result** (`{ ok: false, code, error }`), never the

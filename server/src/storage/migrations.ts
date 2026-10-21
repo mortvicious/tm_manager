@@ -644,6 +644,13 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `ALTER TABLE tm_tasks ADD COLUMN loop_history TEXT`,
     ],
   },
+  {
+    id: 38,
+    // Hidden tasks (docs/design.md § Hidden tasks): ISO time the human hid
+    // the task, null = visible. A board-only flag — no claim reads it — and
+    // every status transition clears it.
+    statements: [`ALTER TABLE tm_tasks ADD COLUMN hidden_at TEXT`],
+  },
 ];
 
 /** The migration whose rows each driver backfills in JS once it is applied. */

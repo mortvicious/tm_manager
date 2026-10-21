@@ -615,6 +615,12 @@ export function TaskSlideOver({
       },
     });
   }
+  // Hidden tasks (docs/design.md § Hidden tasks): a working task stays visible.
+  if (task.hiddenAt) {
+    actions.push({ id: 'unhide', label: 'Unhide', title: 'Back to its usual section on the board', onClick: () => action('unhide') });
+  } else if (task.status !== 'running' && task.status !== 'waiting') {
+    actions.push({ id: 'hide', label: 'Hide', title: 'Move into the dimmed Hidden section — out of Drafts and the rest of the board until you unhide it or its status changes', onClick: () => action('hide') });
+  }
   actions.push({ id: 'analyze', label: 'Analyze', icon: <IconAnalyze />, title: 'A read-only session reads the repo and proposes how to split or solve this task', onClick: analyze });
   actions.push({ id: 'delete', label: 'Delete', cls: 'danger', destructive: true, title: 'Delete the task (asks first)', onClick: del });
 

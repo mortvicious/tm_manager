@@ -121,6 +121,7 @@ export function rowToTask(r: any): Task {
     reviewRounds: safeParse(r.review_rounds, []),
     wakeAt: r.wake_at ?? null,
     queueHeldAt: r.queue_held_at ?? null,
+    hiddenAt: r.hidden_at ?? null,
     costUsd: Number(r.cost_usd ?? 0) || 0,
     attempts: Number(r.attempts ?? 0) || 0,
     acceptance: r.acceptance ?? null,

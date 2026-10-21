@@ -14,6 +14,8 @@ const ACTIONS: { id: Exclude<BulkAction, 'edit'>; label: string; title: string }
   { id: 'enqueue', label: 'Enqueue', title: 'Into the global queue (drafts, failed, cancelled, review)' },
   { id: 'queue', label: 'Add to queue', title: 'Into the one-at-a-time custom queue, in the order you ticked them' },
   { id: 'complete', label: 'Mark done', title: 'review → done' },
+  { id: 'hide', label: 'Hide', title: 'Move into the dimmed Hidden section (not a working task)' },
+  { id: 'unhide', label: 'Unhide', title: 'Back to its usual section' },
   { id: 'cancel', label: 'Cancel', title: 'Stop and cancel — a running agent is killed' },
 ];
 
@@ -168,6 +170,10 @@ function verb(a: BulkAction): string {
       return 'cancelled';
     case 'complete':
       return 'marked done';
+    case 'hide':
+      return 'hidden';
+    case 'unhide':
+      return 'unhidden';
     case 'edit':
       return 'updated';
   }

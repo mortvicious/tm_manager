@@ -26,6 +26,7 @@ import {
   RETRY_FROM,
   cancelTask,
   releaseTask,
+  setHiddenTask,
   undoTask,
   completeTask,
   createTask,
@@ -448,6 +449,16 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     return r.task;
   });
 
+  // Hidden tasks (docs/design.md § Hidden tasks): a board-only flag.
+  for (const [action, hidden] of [['hide', true], ['unhide', false]] as const) {
+    app.post(`/api/tasks/:id/${action}`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const r = await setHiddenTask(deps(), id, hidden, 'human');
+      if ('error' in r) return reply.code(r.code).send({ error: r.error });
+      return r.task;
+    });
+  }
+
   app.post('/api/tasks/:id/cancel', async (req, reply) => {
     const { id } = req.params as { id: string };
     const r = await cancelTask(deps(), id, 'human');
@@ -491,6 +502,9 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
           return cancelTask(deps(), id, 'human');
         case 'complete':
           return completeTask(deps(), id, 'human');
+        case 'hide':
+        case 'unhide':
+          return setHiddenTask(deps(), id, body.action === 'hide', 'human');
         case 'edit':
           return editTask(deps(), id, body.patch!, 'human');
       }

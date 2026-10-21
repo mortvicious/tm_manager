@@ -605,8 +605,10 @@ function viewTasks(snap: Snapshot, view: BoardView, search: string | null): Task
   switch (view) {
     case 'in':
       return [];
+    // a hidden task (docs/design.md § Hidden tasks) is out of every list but
+    // search, as on the web board; a working one is never hidden
     case 'op':
-      return snap.tasks.filter((t) => !TERMINAL_TASK_STATUSES.includes(t.status)).sort(newest);
+      return snap.tasks.filter((t) => !t.hiddenAt && !TERMINAL_TASK_STATUSES.includes(t.status)).sort(newest);
     case 's': {
       if (!search) return [];
       const q = search.toLowerCase();
@@ -616,7 +618,7 @@ function viewTasks(snap: Snapshot, view: BoardView, search: string | null): Task
       return snap.tasks.filter((t) => t.status === 'running' || t.status === 'waiting').sort(newest);
     default: {
       const status = TASK_STATUSES.find((s) => STATUS_VIEW[s] === view)!;
-      return snap.tasks.filter((t) => t.status === status).sort(newest);
+      return snap.tasks.filter((t) => t.status === status && !t.hiddenAt).sort(newest);
     }
   }
 }
