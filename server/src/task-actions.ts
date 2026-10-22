@@ -343,7 +343,7 @@ export async function enqueueTask(
 
 /**
  * Custom queue (docs/queue.md): "Add to queue" — independent of the global
- * orchestrator switch, strictly one task at a time, FIFO by this click. A task
+ * orchestrator switch, one task per repo at a time, FIFO by this click. A task
  * already `queued` for the global queue simply moves over; anything else takes
  * the same enqueue transition (and the same guards).
  */

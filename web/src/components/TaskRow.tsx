@@ -142,7 +142,7 @@ export function TaskRow({
           ? `Cannot add to the queue from '${task.status}'`
           : live
             ? LIVE_MSG
-            : 'Add to queue — runs one task at a time, independent of the global queue';
+            : 'Add to queue — runs one task per repo, independent of the global queue';
 
   const runLabel = !task.repoId
     ? 'Assign a repo before running this task'

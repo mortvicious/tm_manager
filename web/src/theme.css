@@ -1232,7 +1232,7 @@ button.badge.badge-link:hover {
 }
 
 /* custom queue sign (docs/queue.md): "queue #n" while a member waits its
-   turn, a pulsing "queue" while it holds the queue's single slot */
+   turn, a pulsing "queue" while it holds its repo's queue slot */
 .chip.queue-chip {
   gap: 6px;
   color: var(--tm-accent);

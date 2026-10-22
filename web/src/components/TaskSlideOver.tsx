@@ -487,7 +487,7 @@ export function TaskSlideOver({
       onClick: () => action('enqueue'),
     });
   }
-  // custom queue (docs/queue.md): runs even with the global queue stopped, one task at a time
+  // custom queue (docs/queue.md): runs even with the global queue stopped, one task per repo
   if (['draft', 'review', 'failed', 'cancelled'].includes(task.status) || (task.status === 'queued' && !task.customQueueAt)) {
     actions.push({
       id: 'queue',
@@ -495,7 +495,7 @@ export function TaskSlideOver({
       icon: <IconQueue />,
       cls: 'queue-btn',
       disabled: liveSession,
-      title: liveSession ? LIVE_MSG : 'Add to the queue — runs one task at a time, independent of the global queue',
+      title: liveSession ? LIVE_MSG : 'Add to the queue — runs one task per repo, independent of the global queue',
       onClick: () => action('queue'),
     });
   }

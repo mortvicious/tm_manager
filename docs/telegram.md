@@ -725,7 +725,7 @@ The 💬 **Proceed** button — on a `/task` card and on a review notification �
 
 `/task` and `/queue` derive their ordinal from `customQueueWaiting()` in `shared/src/types.ts` — the **same function** the board's `queue #n` chip uses, which is why it moved out of `web/src/components/QueueMark.tsx` and into `shared/`. Before that they were two filters and they disagreed: `transitionTask` clears `custom_queue_at` only on a terminal status, so a `running`, `review` or `blocked` member keeps its mark (by design — it still holds its repo's working tree, `docs/queue.md`), and counting those inflated every bot-side position by however many were in flight. With one member in review and two queued, the phone said `#3 of 3` where the board said `queue #2`.
 
-So the count is **waiting members only**, and a member that is not waiting is not given a number at all: `/task` says it holds the queue's single slot (`running`) or that it is holding its repo's place (`review`/`blocked`), and `/queue` lists it under a separate heading.
+So the count is **waiting members only**, and a member that is not waiting is not given a number at all: `/task` says it holds its repo's custom-queue slot (`running`) or that it is holding its repo's place (`review`/`blocked`), and `/queue` lists it under a separate heading.
 
 ### Free text
 

@@ -445,14 +445,16 @@ export interface Storage {
   claimNextQueuedTask(actor: string): Promise<Task | null>;
   /**
    * Custom queue (docs/queue.md). `peekCustomQueue` is the head the next
-   * claim WOULD take (FIFO by `customQueueAt`, feature gate applied) — the
-   * orchestrator checks the head's repo for foreign sessions before claiming.
-   * `claimNextCustomQueuedTask` claims that head in one statement, and only
-   * while NO custom-queue member is `running`: the queue is strictly serial.
+   * claim WOULD take (FIFO by `customQueueAt`, feature gate applied), skipping
+   * the repos in `skipRepoIds` — the orchestrator walks one head per repo and
+   * checks each head's repo for foreign sessions before claiming.
+   * `claimCustomQueuedTask` claims THAT task in one statement, only while it
+   * is still eligible — in particular while no other member of its repo holds
+   * it: the queue is serial per repo, parallel across repos.
    * Both drivers share the SQL verbatim (storage/queue-sql.ts).
    */
-  peekCustomQueue(): Promise<Task | null>;
-  claimNextCustomQueuedTask(actor: string): Promise<Task | null>;
+  peekCustomQueue(skipRepoIds?: string[]): Promise<Task | null>;
+  claimCustomQueuedTask(id: string, actor: string): Promise<Task | null>;
   /** Conditional transition: applies only when current status is in `from`; null otherwise. */
   transitionTask(
     id: string,

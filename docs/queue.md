@@ -8,18 +8,20 @@ into, and it has three properties the global queue does not:
 1. **Independent of the global switch.** It runs whether `orchestrator.enabled`
    is true or false. Stopping the global queue never stops it; the only ways to
    stop it are to remove/cancel its members or to hit the worker cap.
-2. **Strictly serial, and same-repo members wait for the predecessor's turn
-   and review.** One task at a time — so one repo works at a time. Beyond
-   that, a member whose repo has another member still *holding* it (`running`,
+2. **One task per repo, and same-repo members wait for the predecessor's turn
+   and review.** Serial within a repo, parallel across repos (2026-10-22,
+   `docs/decisions.md` "The custom queue is one task per repo"): a nest member
+   never waits for a next member. A member whose repo has another member still *holding* it (`running`,
    `waiting`, `blocked`, or `review` with its automatic review round still open
    — `review_state` `pending|reviewing|fixing`) is not eligible: its findings
    are about to go back into a session in that checkout. Once the
    predecessor's review has settled (or it was never going to be reviewed) it
    sits in `review` for the human and **no longer holds the queue** — see
    [When the next member starts](#when-the-next-member-starts). Members of
-   *other* repos may go ahead meanwhile. It still counts against
-   `orchestrator.concurrency`, so with the global queue on it takes one of the
-   two slots, never a third.
+   *other* repos go ahead meanwhile, each in its own slot. It still counts
+   against `orchestrator.concurrency`: two repos can each run a member, and
+   with the global queue on the custom and global claims share the two slots,
+   never a third.
 3. **FIFO by the click.** The order is the order tasks were added, not
    `priority`, not `created_at`. The board shows that order as `queue #n`.
 
@@ -173,7 +175,13 @@ again unless you add it to the queue again — which stamps a fresh position.
 ## Claiming (`orchestrator.pumpCustomQueue`)
 
 Runs at the top of every `maybeSchedule()` pass, **before** the
-`orchestrator.enabled` check. It claims at most one task per pass, and only when:
+`orchestrator.enabled` check. It walks the queue **one head per repo**: peek the
+oldest eligible member outside the repos already decided this pass
+(`peekCustomQueue(skipRepoIds)`), take that repo out of the pass whatever
+happens next, and claim the head by id (`claimCustomQueuedTask`). It repeats
+while a slot is free. A repo whose head cannot start is skipped for this pass
+and never jumps to a later member of its own. Other repos are unaffected. A
+head is claimed only when:
 
 - a worker slot is free (`activeWorkers() < concurrency`, PTY cap not hit);
 - the head is not **held** by an Undo start (`queue_held_at IS NULL`);
@@ -183,11 +191,15 @@ Runs at the top of every `maybeSchedule()` pass, **before** the
   such a member is skipped and the next eligible one, from another repo,
   becomes the head. A member whose review has settled sits in `review` without
   holding anything;
-- **no member is `running`** — enforced inside the claim statement
-  (`CUSTOM_QUEUE_IDLE` in `storage/queue-sql.ts`, shared verbatim by both
-  drivers), so a second member can never be claimed while the first is `running`
-  from any path, including a human **Run now** on a member;
-- no member is **held**: a member's turn ends with the Stop hook (`running` →
+- it is **still the head of its repo** at claim time: the claim statement
+  re-runs `CUSTOM_QUEUE_HEAD_WHERE` for the claimed row's repo
+  (`CUSTOM_QUEUE_SAME_REPO` + `CUSTOM_QUEUE_HEAD_ORDER` in `storage/queue-sql.ts`,
+  shared verbatim by both drivers). A second same-repo member can therefore
+  never be claimed while the first is `running` from any path, including a human
+  **Run now** on a member, and never ahead of an older one. Members of other repos
+  are not consulted. Until 2026-10-22 a `CUSTOM_QUEUE_IDLE` clause refused while
+  ANY member was running, which made one repo wait for another;
+- no member **of its repo** is **held**: a member's turn ends with the Stop hook (`running` →
   `review`), and its adversarial-review fix round or auto-publish turn may
   reopen it seconds later (`followUp` → `running`). In that gap `review` is not
   `running`, so the stop-hook route parks the task in `customQueueHold` before
@@ -196,7 +208,8 @@ Runs at the top of every `maybeSchedule()` pass, **before** the
   hold cannot leak: the route releases in a `finally` on every path that does
   not hand off to a follow-on, a hold only counts while its task is a member
   sitting in `review`, and one older than 30 minutes is dropped with a
-  `console.warn` (`CUSTOM_QUEUE_HOLD_TTL_MS`);
+  `console.warn` (`CUSTOM_QUEUE_HOLD_TTL_MS`). A hold takes only its own repo
+  out of the pass (`customQueueHeldRepos`);
 - the head's repo has **no other live non-idle session** (`repoBusy`): a run-now
   or dispatch turn in that repo makes the head *wait*, never skip. The order the
   human set is the order that runs.
@@ -307,6 +320,13 @@ wake-up continue an existing task and are not refused by it.
   a `waiting` park) → undo → `review` with its verdict; Enqueue on a held
   member → global and released; undo refused off `running`; any other
   transition clears the hold; `task.undo` audited. Postgres untested.
+- 2026-10-22 (one task per repo): a scratch-SQLite harness through the real
+  driver plus an `Orchestrator` with stubbed sessions and `startWorker`, 18
+  assertions. A member of repo B is claimed while repo A's member runs, and the
+  second member of each repo is refused while its predecessor runs or has a
+  `pending` review. A non-head id is refused. Cap 2 starts one per repo, and
+  cap 5 still starts no second member of either repo. A follow-on hold or a busy
+  repo stalls only that repo. Postgres untested.
 - Not verified live: the running server predates this change and the
   agents-working rule refuses a restart while this task's own session is up.
   The routes and the pump go live at the next API start; Postgres path is

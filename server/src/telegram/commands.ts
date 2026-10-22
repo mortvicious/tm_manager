@@ -481,7 +481,7 @@ export const COMMANDS: BotCommand[] = [
         const inFlight = all
           .filter((t) => t.customQueueAt && customQueueHoldsRepo(t))
           .sort((a, b) => (a.customQueueAt ?? '').localeCompare(b.customQueueAt ?? ''));
-        const out = [`<b>Custom queue</b> — serial, one task at a time, independent of /on /off`, ``];
+        const out = [`<b>Custom queue</b> — one task per repo, independent of /on /off`, ``];
         out.push(listOf(waiting.map((t, i) => `<b>#${i + 1}</b> ${t.queueHeldAt ? '⏸ held · ' : ''}${taskLine(t, name(t.repoId))}`), 'Nothing waiting.'));
         if (inFlight.length) {
           out.push(``, `<b>Holding a place</b> (not waiting — they own their repo's tree)`, ``);

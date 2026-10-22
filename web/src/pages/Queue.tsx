@@ -151,7 +151,7 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
           <div className="section-head">
             Queue <span className="count">{custom.length}</span>
             <span className="muted" style={{ marginLeft: 8, fontWeight: 400 }}>
-              one task at a time, runs even while the global queue is stopped
+              one task per repo, runs even while the global queue is stopped
             </span>
           </div>
           <div className="panel">

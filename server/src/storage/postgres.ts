@@ -25,7 +25,7 @@ import {
 import { planCards } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
-import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_IDLE, REPO_EXCLUSIVE_GATE } from './queue-sql.ts';
+import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, REPO_EXCLUSIVE_GATE, skipRepos } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
 import { LOOP_LEAVES_RUNNING_SQL, loopStepSets, stepLoopSql } from './loop-sql.ts';
 import {
@@ -690,24 +690,25 @@ export class PostgresStorage implements Storage {
     });
   }
 
-  async peekCustomQueue(): Promise<Task | null> {
+  async peekCustomQueue(skipRepoIds: string[] = []): Promise<Task | null> {
     const rows = await this.q(
-      `SELECT t.* FROM tm_tasks t WHERE ${CUSTOM_QUEUE_HEAD_WHERE} AND ${FEATURE_CLAIM_GATE} ${CUSTOM_QUEUE_HEAD_ORDER}`,
+      `SELECT t.* FROM tm_tasks t WHERE ${CUSTOM_QUEUE_HEAD_WHERE} AND ${FEATURE_CLAIM_GATE}${skipRepos(skipRepoIds.length)}
+       ${CUSTOM_QUEUE_HEAD_ORDER}`,
+      skipRepoIds,
     );
     return rows[0] ? rowToTask(rows[0]) : null;
   }
 
-  async claimNextCustomQueuedTask(actor: string): Promise<Task | null> {
-    // Twin of the sqlite driver: head selection + busy check in one statement.
+  async claimCustomQueuedTask(id: string, actor: string): Promise<Task | null> {
+    // Twin of the sqlite driver: claimed only while still the head of its repo.
     return this.tx(async (c, sink) => {
       const r = await c.query(
-        `UPDATE tm_tasks SET status = 'running', updated_at = $1
-         WHERE id = (SELECT t.id FROM tm_tasks t WHERE ${CUSTOM_QUEUE_HEAD_WHERE}
-                       AND ${FEATURE_CLAIM_GATE}
-                     ${CUSTOM_QUEUE_HEAD_ORDER})
-           AND ${CUSTOM_QUEUE_IDLE}
-         RETURNING *`,
-        [now()],
+        toPg(`UPDATE tm_tasks SET status = 'running', updated_at = ?
+         WHERE id = ? AND id = (SELECT t.id FROM tm_tasks t WHERE ${CUSTOM_QUEUE_HEAD_WHERE}
+                                  AND ${FEATURE_CLAIM_GATE} AND ${CUSTOM_QUEUE_SAME_REPO}
+                                ${CUSTOM_QUEUE_HEAD_ORDER})
+         RETURNING *`),
+        [now(), id, id],
       );
       if (!r.rows[0]) return null;
       const task = rowToTask(r.rows[0]);

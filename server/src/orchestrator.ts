@@ -314,9 +314,9 @@ export class Orchestrator implements OrchestratorApi {
    * Custom queue (docs/queue.md): tasks whose turn just ended and whose
    * follow-on (adversarial review round, auto-publish turn) has not decided yet
    * whether to resume them. While a MEMBER of the custom queue is held here
-   * the queue claims nothing — `review` is not `running`, so without this the
-   * next member would start in the gap before the fix round reopens the
-   * previous one. Non-members may be held too; the pump ignores them.
+   * the queue claims nothing in ITS repo (other repos run on) — `review` is
+   * not `running`, so without this the next same-repo member would start in
+   * the gap before the fix round reopens the previous one. Non-members may be held too; the pump ignores them.
    * Value = when the hold was taken: a hold only counts while its task is a
    * member sitting in `review` (the one status a follow-on reopens from) and
    * is younger than CUSTOM_QUEUE_HOLD_TTL_MS — a leaked hold (route threw,
@@ -1236,7 +1236,7 @@ export class Orchestrator implements OrchestratorApi {
           const day = await this.budgetAllows(null, 'claim', settings);
           if (!day.ok) await this.dayBudgetReached(day);
           // The custom queue (docs/queue.md) is independent of the global
-          // switch: it runs while the queue is stopped, one task at a time.
+          // switch: it runs while the queue is stopped, one task per repo.
           if (day.ok) await this.pumpCustomQueue(cap);
           // Loop iterations due (docs/loops.md): a task already running, so
           // the queue switch does not stop it; the day budget does.
@@ -1319,20 +1319,6 @@ export class Orchestrator implements OrchestratorApi {
     return n;
   }
 
-  /**
-   * Custom queue (docs/queue.md): strictly serial, FIFO by the moment the
-   * human added each task, and independent of `orchestrator.enabled`. Claims
-   * at most ONE task per pass, and only when (a) a worker slot is free,
-   * (b) no member is `running` (enforced inside the claim SQL), (c) no member
-   * is held between a finished turn and its review/publish follow-on, and
-   * (d) the head's repo has no other live session working in it — a run-now
-   * or dispatch turn in that repo makes the head WAIT, never skip: the order
-   * the human set is the order that runs. A member an agent filed (shared
-   * ledger) is additionally skipped inside the head SQL while its filer is
-   * unresolved or any task in the repo is working or mid-review — the filer
-   * idles in `review` with a dirty tree, which (d) alone does not see
-   * (storage/queue-sql.ts).
-   */
   /**
    * Stacked tasks (docs/queue.md § Stacked tasks): the queue is about to start
    * a task in this repo while the task that last worked here may still wait
@@ -1461,22 +1447,46 @@ export class Orchestrator implements OrchestratorApi {
     };
   }
 
+  /**
+   * Custom queue (docs/queue.md): serial PER REPO, parallel across repos
+   * (decisions.md 2026-10-22), FIFO by the moment the human added each task,
+   * and independent of `orchestrator.enabled`. Walks the queue one head per
+   * repo — oldest member first — while a worker slot is free, and claims a
+   * head only when (a) no other member of its repo holds it (enforced inside
+   * the claim SQL), (b) no member of its repo is held between a finished turn
+   * and its review/publish follow-on, and (c) its repo has no other live
+   * session working in it — a run-now or dispatch turn in that repo makes the
+   * head WAIT, never skip to a later member of the same repo: the order the
+   * human set is the order that runs. Any of these only takes THAT repo out
+   * of the pass; members of other repos go ahead. A member an agent filed
+   * (shared ledger) is additionally skipped inside the head SQL while its
+   * filer is unresolved or any task in the repo is working or mid-review —
+   * the filer idles in `review` with a dirty tree, which (c) alone does not
+   * see (storage/queue-sql.ts).
+   */
   private async pumpCustomQueue(cap: number): Promise<void> {
-    if (this.activeWorkers() >= cap) return;
-    if (this.sessions.totalLiveCount() >= MAX_LIVE_SESSIONS) return;
-    const head = await this.storage.peekCustomQueue();
-    if (!head) return;
-    if (await this.customQueueHeld()) return;
-    if (head.repoId && (await this.repoBusy(head.repoId))) return;
-    if (head.repoId && !(await this.handOffCheckout(head.repoId))) return;
-    const task = await this.storage.claimNextCustomQueuedTask('orchestrator');
-    if (!task) return; // a member is running (or the head changed underneath us)
-    await this.startWorker(task);
+    // Repos out of this pass: held across a follow-on gap, busy, or just
+    // claimed (its member is `running` now, so the SQL would skip it anyway).
+    const skip = await this.customQueueHeldRepos();
+    while (this.activeWorkers() < cap && this.sessions.totalLiveCount() < MAX_LIVE_SESSIONS) {
+      const head = await this.storage.peekCustomQueue([...skip]);
+      if (!head?.repoId) return;
+      skip.add(head.repoId);
+      if (await this.repoBusy(head.repoId)) continue;
+      if (!(await this.handOffCheckout(head.repoId))) continue;
+      const task = await this.storage.claimCustomQueuedTask(head.id, 'orchestrator');
+      if (!task) continue; // its repo got held (or the row changed) underneath us
+      await this.startWorker(task);
+    }
   }
 
-  /** Is any custom-queue MEMBER parked between a finished turn and its follow-on? */
-  private async customQueueHeld(): Promise<boolean> {
+  /**
+   * Repos whose custom-queue MEMBER is parked between a finished turn and its
+   * follow-on — only those repos wait; the rest of the queue runs on.
+   */
+  private async customQueueHeldRepos(): Promise<Set<string>> {
     const nowMs = Date.now();
+    const repos = new Set<string>();
     for (const [id, since] of this.customQueueHold) {
       const t = await this.storage.getTask(id);
       // Deleted, not a member, or already past the gap (running again, shipped,
@@ -1490,9 +1500,9 @@ export class Orchestrator implements OrchestratorApi {
         this.customQueueHold.delete(id);
         continue;
       }
-      return true;
+      if (t.repoId) repos.add(t.repoId);
     }
-    return false;
+    return repos;
   }
 
   /** Park a task whose turn just ended until its follow-on has resolved (see customQueueHold). */

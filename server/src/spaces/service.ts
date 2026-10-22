@@ -480,7 +480,7 @@ export async function listNotes(
  * File a task for a request in the repo it is addressed to. Single-winner:
  * the open → filed claim is a conditional write, so two agents triaging the
  * same request at once cannot both file it. `placement: 'queue'` puts the task
- * in the CUSTOM queue (docs/queue.md) — strictly serial, independent of the
+ * in the CUSTOM queue (docs/queue.md) — serial per repo, independent of the
  * global switch, and an agent-filed member never starts while its filer is
  * unresolved (running/waiting/review/blocked/failed) or while any task in the
  * repo is working or mid-review (storage/queue-sql.ts). That hold is the only

@@ -67,16 +67,30 @@ export const CUSTOM_QUEUE_HEAD_WHERE = `t.status = 'queued' AND t.repo_id IS NOT
 export const CUSTOM_QUEUE_HEAD_ORDER = `ORDER BY t.custom_queue_at, t.created_at LIMIT 1`;
 
 /**
- * "No custom-queue member is working right now." A member's status is
- * `running` from claim (or run-now) until its turn ends, including every
- * adversarial-review fix round and the publish turn, so this is the one
- * predicate that makes the queue strictly serial. The gap between a Stop hook
- * and the next resumed turn (status `review`) is covered in-process by the
- * orchestrator's hold set, not here.
+ * The claim's "same repo as the row being claimed" clause, over the candidate
+ * aliased `t`; binds ONE `?` (the claimed id). With CUSTOM_QUEUE_HEAD_ORDER it
+ * makes the by-id claim succeed only for the head of that repo, so it can
+ * never jump an older same-repo member.
  */
-export const CUSTOM_QUEUE_IDLE = `NOT EXISTS (
-  SELECT 1 FROM tm_tasks w WHERE w.status = 'running' AND w.custom_queue_at IS NOT NULL
-)`;
+export const CUSTOM_QUEUE_SAME_REPO = `t.repo_id = (SELECT c.repo_id FROM tm_tasks c WHERE c.id = ?)`;
+
+/**
+ * The custom queue is serial PER REPO, never across repos (decisions.md
+ * 2026-10-22, "The custom queue is one task per repo"): `heldBy('o')` in
+ * CUSTOM_QUEUE_HEAD_WHERE is the whole per-repo test — a same-repo member that
+ * is `running` (claimed, run-now'd, mid fix round or publish turn) holds the
+ * repo — and members of other repos go ahead in parallel, up to
+ * `orchestrator.concurrency`. There is deliberately no "no member is running
+ * anywhere" clause any more; that was the old strictly-serial queue, under
+ * which a nest member waited for a next member in another repo.
+ *
+ * `skipRepos(n)` excludes repos the orchestrator already knows are taken this
+ * pass (an in-process follow-on hold, a busy repo, a repo just claimed): `n`
+ * `?` placeholders, the caller binds the ids. Empty → no clause at all (`NOT
+ * IN ()` is invalid on Postgres).
+ */
+export const skipRepos = (n: number) =>
+  n > 0 ? ` AND t.repo_id NOT IN (${Array.from({ length: n }, () => '?').join(', ')})` : '';
 
 /**
  * Same-repo exclusivity for the GLOBAL claim and the overflow claim

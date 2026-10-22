@@ -167,7 +167,7 @@ into the agent's **own** repo without the same-repo draft rule:
 - The task is created as a draft with the request body plus provenance (the
   request id, the folder, the files, and how to resolve the request if it is
   already done). It is then moved into the **custom queue** (`queueAddTask`,
-  docs/queue.md). That queue is strictly serial and runs even while the global
+  docs/queue.md). That queue runs one task per repo and runs even while the global
   queue is stopped.
 - **An agent-filed member waits for its filer and for live work.** The head
   SQL (`CUSTOM_QUEUE_HEAD_WHERE`, `storage/queue-sql.ts`) skips a member with

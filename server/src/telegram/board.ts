@@ -98,7 +98,7 @@ export function checkStateLine(t: Task): string | null {
  */
 export async function queueLine(storage: Storage, t: Task): Promise<string> {
   const added = ` · added ${escapeHtml(formatClock(t.customQueueAt!))}`;
-  if (t.status === 'running') return `➕ holding the custom queue's single slot${added}`;
+  if (t.status === 'running') return `➕ holding its repo's custom-queue slot${added}`;
   if (customQueueHoldsRepo(t)) {
     const why = t.status === 'review' ? 'its automatic review is open' : `it is ${escapeHtml(t.status)}`;
     return `➕ in the custom queue — holding its repo's place while ${why}${added}`;
