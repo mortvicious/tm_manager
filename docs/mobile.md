@@ -350,6 +350,9 @@ to close; × animates out the same way.
   `publish, complete, release, unblock, run-now, enqueue, terminal`. With a live
   session the terminal moves ahead of run-now/enqueue, which the server would
   refuse anyway. Disabled actions never go in the bar.
+- **Files show image thumbnails.** Tapping one opens a full-screen lightbox
+  where you swipe between the task's images, pinch to zoom, pull down to close
+  and download with ⤓. There is nothing to download first (handbook.md § Follow-ups & files).
 - **The `⋯` sheet** lists the rest: available first, then the refused ones with
   their reason. Destructive actions (Cancel, Remove from the global queue, which
   is a cancel, Stop agent, Delete) sit apart at the bottom, in red.

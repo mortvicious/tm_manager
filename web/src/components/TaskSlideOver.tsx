@@ -9,6 +9,7 @@ import {
   groupAncestors,
   groupColorSlot,
   groupLabel,
+  imagePreviewType,
   isExternalTask,
   type EffortLevel,
   type LandingTier,
@@ -20,6 +21,7 @@ import { useApp } from '../state.tsx';
 import { DispatchStrip } from './DispatchStrip.tsx';
 import { GroupPicker, type GroupChoicePlace } from './GroupPicker.tsx';
 import { IconAnalyze, IconChevron, IconMore, IconPlay, IconPublish, IconQueue, IconTerminal, IconX } from './Icons.tsx';
+import { ImageLightbox, type LightboxImage } from './ImageLightbox.tsx';
 import { useIsMobile } from './Layout.tsx';
 import { Markdown } from './Markdown.tsx';
 import { PresetPicker, reviewChoiceOf, reviewValueOf, type ReviewChoice } from './PresetPicker.tsx';
@@ -223,6 +225,8 @@ export function TaskSlideOver({
   const [files, setFiles] = useState<{ name: string; size: number; mtime: string }[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
+  // index into `images` shown in the lightbox, -1 = closed
+  const [preview, setPreview] = useState(-1);
   const mobile = useIsMobile();
   const [moreOpen, setMoreOpen] = useState(false);
   // Phones fold the settings grid away. A draft is still being written, so it
@@ -276,6 +280,19 @@ export function TaskSlideOver({
     if (!task) return;
     api.taskFiles(task.id).then(setFiles).catch(() => setFiles([]));
   }, [task?.id, task?.status]);
+  useEffect(() => setPreview(-1), [task?.id]);
+
+  // The files the lightbox can show, in list order. `v` is the mtime, so a
+  // file replaced under the same name is a new URL past the browser cache.
+  const images = useMemo<(LightboxImage & { file: string })[]>(() => {
+    if (!task) return [];
+    return files
+      .filter((f) => imagePreviewType(f.name))
+      .map((f) => {
+        const url = `/api/tasks/${task.id}/files/${encodeURIComponent(f.name)}`;
+        return { file: f.name, name: f.name, src: `${url}?inline=1&v=${encodeURIComponent(f.mtime)}`, download: url };
+      });
+  }, [task?.id, files]);
 
   // Can "Proceed" reopen an earlier agent session? Only the server knows —
   // it also checks the transcript is still on disk. Re-checked when a run
@@ -1103,29 +1120,44 @@ export function TaskSlideOver({
       </div>
       {files.length > 0 && (
         <div className="panel">
-          {files.map((f) => (
-            <div key={f.name} className="task-row" style={{ cursor: 'default' }}>
-              <a
-                className="title mono"
-                style={{ textDecoration: 'none', color: 'inherit', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
-                href={`/api/tasks/${task.id}/files/${encodeURIComponent(f.name)}`}
-                download={f.name}
-              >
-                {f.name}
-              </a>
-              <span className="mono muted">
-                {f.size < 1024 ? `${f.size} B` : f.size < 1048576 ? `${(f.size / 1024).toFixed(1)} KB` : `${(f.size / 1048576).toFixed(1)} MB`}
-              </span>
-              <button
-                className="btn ghost"
-                title="remove"
-                onClick={() => delFile(f.name)}
-                style={{ padding: '2px 8px' }}
-              >
-                ✕
-              </button>
-            </div>
-          ))}
+          {files.map((f) => {
+            // an image opens the lightbox; anything else stays a download
+            const img = images.findIndex((im) => im.file === f.name);
+            return (
+              <div key={f.name} className="task-row" style={{ cursor: 'default' }}>
+                {img >= 0 ? (
+                  <>
+                    <button className="file-thumb" title={`Preview ${f.name}`} aria-label={`Preview ${f.name}`} onClick={() => setPreview(img)}>
+                      <img src={images[img].src} alt="" loading="lazy" decoding="async" />
+                    </button>
+                    <button className="title mono file-name" title={`Preview ${f.name}`} onClick={() => setPreview(img)}>
+                      {f.name}
+                    </button>
+                  </>
+                ) : (
+                  <a
+                    className="title mono"
+                    style={{ textDecoration: 'none', color: 'inherit', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+                    href={`/api/tasks/${task.id}/files/${encodeURIComponent(f.name)}`}
+                    download={f.name}
+                  >
+                    {f.name}
+                  </a>
+                )}
+                <span className="mono muted">
+                  {f.size < 1024 ? `${f.size} B` : f.size < 1048576 ? `${(f.size / 1024).toFixed(1)} KB` : `${(f.size / 1048576).toFixed(1)} MB`}
+                </span>
+                <button
+                  className="btn ghost"
+                  title="remove"
+                  onClick={() => delFile(f.name)}
+                  style={{ padding: '2px 8px' }}
+                >
+                  ✕
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -1148,6 +1180,11 @@ export function TaskSlideOver({
       )}
     </>
   );
+
+  // Beside the panel, never inside it: React bubbles the lightbox's portal
+  // events up the component tree, so inside the sheet a swipe through the
+  // photos would also drag the sheet.
+  const lightbox = <ImageLightbox images={images} index={preview} onIndex={setPreview} onClose={() => setPreview(-1)} />;
 
   // a phone: a full-height sheet that drags down to close (docs/mobile.md § Task panel)
   if (mobile)
@@ -1182,6 +1219,7 @@ export function TaskSlideOver({
             )}
           </Sheet>
         )}
+        {lightbox}
       </>
     );
 
@@ -1192,6 +1230,7 @@ export function TaskSlideOver({
         {head(onClose)}
         <div className="slideover-body">{body}</div>
       </div>
+      {lightbox}
     </>
   );
 }

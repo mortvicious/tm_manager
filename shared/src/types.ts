@@ -2016,6 +2016,31 @@ export interface SpaceFile {
   mtime: string;
 }
 
+/**
+ * Task files the panel previews (thumbnail + lightbox), by lower-case extension
+ * → the Content-Type `GET /api/tasks/:id/files/:name?inline=1` serves them as.
+ * Everything else is a download only (docs/handbook.md § Follow-ups & files).
+ * HEIC is left out: only Safari decodes it, so Chrome would show a broken tile.
+ */
+export const IMAGE_PREVIEW_TYPES: Readonly<Record<string, string>> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
+};
+
+/** The preview Content-Type for a file name, or null when it is not an image we preview. */
+export function imagePreviewType(name: string): string | null {
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0) return null;
+  const ext = name.slice(dot + 1).toLowerCase();
+  return Object.prototype.hasOwnProperty.call(IMAGE_PREVIEW_TYPES, ext) ? IMAGE_PREVIEW_TYPES[ext] : null;
+}
+
 export type ServerEvent =
   | { type: 'task.updated'; task: Task }
   | { type: 'task.deleted'; taskId: string }

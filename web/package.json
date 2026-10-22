@@ -16,7 +16,8 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-modal-sheet": "5.6.0",
-    "react-router-dom": "^7.1.0"
+    "react-router-dom": "^7.1.0",
+    "yet-another-react-lightbox": "^3.32.2"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",

@@ -5,6 +5,7 @@ import {
   BULK_ACTIONS,
   BULK_MAX,
   GROUP_COLOR_COUNT,
+  imagePreviewType,
   LANDING_TIERS,
   type BulkAction,
   type BulkResponse,
@@ -358,6 +359,18 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     const entry = safeEntries(id).find((f) => f.name === name);
     if (!entry) return reply.code(404).send({ error: 'file not found' });
     const full = path.join(taskDir(id), entry.name);
+    // `?inline=1` is the panel's image preview: an image we preview is served
+    // as itself, rendered in place. The CSP sandbox is for SVG, which can carry
+    // script if the URL is opened as a page. Everything else stays a download.
+    const inlineType = (req.query as { inline?: string }).inline === '1' ? imagePreviewType(entry.name) : null;
+    reply.header('x-content-type-options', 'nosniff');
+    if (inlineType) {
+      reply.header('content-disposition', `inline; filename="${encodeURIComponent(entry.name)}"`);
+      reply.header('content-security-policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox");
+      // the panel's URL carries the file's mtime, so a replaced file is a new URL
+      reply.header('cache-control', 'private, max-age=86400');
+      return reply.type(inlineType).send(fs.createReadStream(full));
+    }
     reply.header('content-disposition', `attachment; filename="${encodeURIComponent(entry.name)}"`);
     return reply.type('application/octet-stream').send(fs.createReadStream(full));
   });
