@@ -148,6 +148,53 @@ outcome (44 bytes with a uuid). `/questions` lists everything pending with the k
 ping is neither coalesced nor gated by the notify flags: an agent is blocked
 on it, and it is not the chatter `/mute` exists for.
 
+## Images
+
+An agent asking the human to choose between drawn variants (a mockup, a
+screenshot of two layouts) used to send them off to the task's files to find
+out what it meant. The images now sit INSIDE the question.
+
+**There is no image field.** The CLI's `AskUserQuestion` input has
+`question`/`header`/`options[{label, description, preview?}]`/`multiSelect`
+and nothing that carries a picture, and the 64 KB cap on the stored array
+(`MAX_JSON`) rules out base64 anyway. So the convention is files by NAME:
+the agent saves each image at the TOP level of `$TM_ARTIFACTS_DIR` (the task
+files route lists and serves only top-level files) and names the file in the
+option it illustrates (label, `description` or `preview`) or in the question
+text. Nothing on the server changed: the questions array was already stored
+and handed back verbatim, `preview` included.
+
+**Resolution is in the SPA** (`QuestionForm`, so the modal, the phone sheet,
+the task panel and the inbox all get it). Once per question the form reads the
+task's file list (`GET /api/tasks/:id/files`), keeps the previewable images
+(`imagePreviewType`) and finds the ones each text mentions with
+`referencedFileNames` (shared): the EXACT name standing on its own — bare, in
+backticks, in `![](…)`, or at the end of a path — so `a.png` is not found in
+`data.png`, `a.png.bak` or `xa.png`, and a short name found only inside a
+longer one (`a.png` in `mock a.png`) is dropped. Images named by an option are
+shown under THAT option; images named only by the question text are shown
+under the question. Thumbnails (`.qthumb`, 96 px tall) open the task panel's
+`ImageLightbox` over every image the form shows, in reading order. A file
+deleted since the list was read drops its tile (`onError`) instead of
+showing a broken one, and a name with no matching file shows nothing.
+
+**`preview` is shown too.** The CLI's own per-option mockup text (markdown or
+ASCII, which its terminal UI draws side by side) was dropped by the SPA. It is
+now a monospace box under its option, unless it holds nothing beyond the
+image references already shown as thumbnails.
+
+**The lightbox inside a form.** The form can sit in a `<Sheet>` (phone
+modal, task panel), and portal events bubble through the React tree, so the
+lightbox is wrapped in an element that stops pointer/touch/click bubbling;
+otherwise a pinch in the viewer would drag the sheet. The modal's capture
+Escape handler steps aside while a `.yarl__root` exists. If it called
+`stopPropagation` at the window, the viewer would never see the key, and one
+Escape would dismiss the question instead of closing the picture.
+
+**Telegram and push stay text.** The option text names the file, and the
+image is one tap away in the app. Sending photos would need a second message
+type per question, and is left for when it is asked for.
+
 ## Prompts
 
 The standing rules and the resume reminder (`worker.ts`, `docs/worker-prompt.md`)
@@ -157,7 +204,7 @@ ambiguous or conflicting requirement, destructive or irreversible step, scope
 that could go two ways — and decide small things yourself, never asking about
 those. The served instruction sheet (`docs/agent-instructions.md`) says the
 same in one line, because a decision is not something to file a task or a
-dispatch for.
+dispatch for. All three also say how to show an image with a question (§ Images).
 
 ## Deliberately not
 

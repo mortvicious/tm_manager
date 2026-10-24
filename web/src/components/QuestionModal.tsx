@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { Question, QuestionItem } from '@tm/shared';
+import { useEffect, useMemo, useState, type SyntheticEvent } from 'react';
+import { imagePreviewType, referencedFileNames, type Question, type QuestionItem, type QuestionOption } from '@tm/shared';
 import { api } from '../api.ts';
 import { exitGhost } from '../motion.ts';
 import { useApp } from '../state.tsx';
 import { IconX } from './Icons.tsx';
+import { ImageLightbox, type LightboxImage } from './ImageLightbox.tsx';
 import { useIsMobile } from './Layout.tsx';
 import { Sheet } from './Sheet.tsx';
 
@@ -13,19 +14,75 @@ import { Sheet } from './Sheet.tsx';
 // back to the waiting agent. Closing the modal only dismisses it for this
 // question; the header chip reopens it, and the task panel shows the same
 // form inline.
+//
+// Images (docs/questions.md § Images): AskUserQuestion has no image field, so
+// an agent that wants a mockup seen saves it in $TM_ARTIFACTS_DIR and NAMES
+// the file in the question, an option's label/description or its `preview`.
+// The form resolves those names against the task's files and shows them as
+// thumbnails — on the option that named them, else under the question — with
+// the task panel's lightbox one click away.
 
 /** index of the synthetic "Other" card; options are picked by INDEX so two
  *  options with the same label stay distinct */
 const OTHER = -1;
 
+/** an option's own text — every place an agent may name an image */
+const optionText = (o: QuestionOption) => [o.label, o.description, typeof o.preview === 'string' ? o.preview : ''].join('\n');
+
+/** The CLI's preview text, unless it is nothing but the image references
+ *  already shown as thumbnails (then the box would only repeat a file name). */
+function previewText(o: QuestionOption, shown: readonly string[]): string | null {
+  if (typeof o.preview !== 'string' || !o.preview.trim()) return null;
+  let rest = o.preview.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
+  for (const n of shown) rest = rest.split(n).join('');
+  return /[\p{L}\p{N}]/u.test(rest.replace(/\$TM_ARTIFACTS_DIR/g, '')) ? o.preview : null;
+}
+
+type Media = {
+  /** per question: images named in the question text but by none of its options */
+  question: string[][];
+  /** per question, per option: images that option names */
+  options: string[][][];
+};
+
+/** what a thumbnail needs from the form: its URL, the lightbox, and a way to
+ *  report a file deleted since the list was read (its tile is dropped) */
+type Gallery = { srcOf: (name: string) => string; open: (name: string) => void; broken: (name: string) => void };
+
+function Thumbs({ names, gallery, label }: { names: string[]; gallery: Gallery; label: string }) {
+  if (names.length === 0) return null;
+  return (
+    <div className="qthumbs">
+      {names.map((n) => (
+        <button
+          type="button"
+          key={n}
+          className="qthumb"
+          onClick={() => gallery.open(n)}
+          title={`Preview ${n}`}
+          aria-label={`Preview ${n} (${label})`}
+        >
+          <img src={gallery.srcOf(n)} alt={n} decoding="async" onError={() => gallery.broken(n)} />
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function Item({
   item,
   value,
   onChange,
+  images,
+  optionImages,
+  gallery,
 }: {
   item: QuestionItem;
   value: { picked: number[]; other: string };
   onChange: (v: { picked: number[]; other: string }) => void;
+  images: string[];
+  optionImages: string[][];
+  gallery: Gallery;
 }) {
   const toggle = (i: number) => {
     if (item.multiSelect) {
@@ -55,8 +112,22 @@ function Item({
         <span className="qitem-q">{item.question}</span>
         {item.multiSelect && <span className="muted qitem-hint">pick every option that applies</span>}
       </div>
+      <Thumbs names={images} gallery={gallery} label={item.header || 'question'} />
       <div className="qopts">
-        {item.options.map((o, i) => card(i, o.label, o.description))}
+        {item.options.map((o, i) => {
+          const named = optionImages[i] ?? [];
+          const preview = previewText(o, named);
+          if (named.length === 0 && !preview) return card(i, o.label, o.description);
+          return (
+            <div key={i} className="qopt-group">
+              {card(i, o.label, o.description)}
+              <div className="qopt-media">
+                <Thumbs names={named} gallery={gallery} label={o.label} />
+                {preview && <pre className="qopt-preview">{preview}</pre>}
+              </div>
+            </div>
+          );
+        })}
         {card(OTHER, 'Other', 'type your own answer')}
         {otherOn && (
           <textarea
@@ -74,6 +145,14 @@ function Item({
 }
 
 type Draft = Record<number, { picked: number[]; other: string }>;
+
+type ImageFile = { name: string; mtime: string };
+
+const fileUrl = (taskId: string, name: string) => `/api/tasks/${taskId}/files/${encodeURIComponent(name)}`;
+
+/** Portal events bubble through the React tree: keep a pinch or drag inside the
+ *  lightbox from reaching a <Sheet> the form sits in (it would drag the sheet). */
+const stop = (e: SyntheticEvent) => e.stopPropagation();
 
 /** What one part answers with, or null while it is incomplete. */
 function answerOf(item: QuestionItem, v: { picked: number[]; other: string } | undefined): string | null {
@@ -96,6 +175,57 @@ export function QuestionForm({ question, onDone }: { question: Question; onDone?
     setDraft({});
     setErr(null);
   }, [question.id]);
+
+  // the task's images, read once per question: the agent saved them before it asked
+  const [files, setFiles] = useState<ImageFile[]>([]);
+  const [broken, setBroken] = useState<ReadonlySet<string>>(() => new Set());
+  const [preview, setPreview] = useState(-1);
+  useEffect(() => {
+    let live = true;
+    setFiles([]);
+    setBroken(new Set());
+    setPreview(-1);
+    api
+      .taskFiles(question.taskId)
+      .then((fs) => live && setFiles(fs.filter((f) => imagePreviewType(f.name)).map((f) => ({ name: f.name, mtime: f.mtime }))))
+      .catch(() => {}); // no files, no thumbnails — the question still works
+    return () => {
+      live = false;
+    };
+  }, [question.id, question.taskId]);
+
+  const media = useMemo<Media>(() => {
+    const names = files.map((f) => f.name).filter((n) => !broken.has(n));
+    const options = question.questions.map((item) => item.options.map((o) => referencedFileNames(optionText(o), names)));
+    const question_ = question.questions.map((item, qi) => {
+      const onOptions = new Set(options[qi].flat());
+      return referencedFileNames(item.question, names).filter((n) => !onOptions.has(n));
+    });
+    return { question: question_, options };
+  }, [files, broken, question]);
+
+  // one lightbox over every image the form shows, in reading order
+  const shown = useMemo(() => {
+    const out: string[] = [];
+    media.question.forEach((q, qi) => {
+      for (const n of [...q, ...media.options[qi].flat()]) if (!out.includes(n)) out.push(n);
+    });
+    return out;
+  }, [media]);
+  const images = useMemo<LightboxImage[]>(
+    () =>
+      shown.map((name) => {
+        const url = fileUrl(question.taskId, name);
+        const f = files.find((x) => x.name === name);
+        return { name, src: `${url}?inline=1&v=${encodeURIComponent(f?.mtime ?? '')}`, download: url };
+      }),
+    [shown, files, question.taskId],
+  );
+  const gallery: Gallery = {
+    srcOf: (name) => images.find((im) => im.name === name)?.src ?? '',
+    open: (name) => setPreview(shown.indexOf(name)),
+    broken: (name) => setBroken((b) => (b.has(name) ? b : new Set(b).add(name))),
+  };
 
   const answers = useMemo(() => {
     const out: Record<string, string> = {};
@@ -129,6 +259,9 @@ export function QuestionForm({ question, onDone }: { question: Question; onDone?
           item={item}
           value={draft[i] ?? { picked: [], other: '' }}
           onChange={(v) => setDraft((d) => ({ ...d, [i]: v }))}
+          images={media.question[i] ?? []}
+          optionImages={media.options[i] ?? []}
+          gallery={gallery}
         />
       ))}
       {err && <div className="warn-text">{err}</div>}
@@ -137,6 +270,21 @@ export function QuestionForm({ question, onDone }: { question: Question; onDone?
         <button className="btn primary" disabled={!answers || busy} onClick={submit}>
           {busy ? 'Sending…' : 'Answer'}
         </button>
+      </div>
+      <div
+        hidden
+        onPointerDown={stop}
+        onPointerMove={stop}
+        onPointerUp={stop}
+        onPointerCancel={stop}
+        onMouseDown={stop}
+        onTouchStart={stop}
+        onTouchMove={stop}
+        onTouchEnd={stop}
+        onWheel={stop}
+        onClick={stop}
+      >
+        <ImageLightbox images={images} index={preview} onIndex={setPreview} onClose={() => setPreview(-1)} />
       </div>
     </div>
   );
@@ -164,6 +312,9 @@ export function QuestionModal() {
       if (e.key !== 'Escape') return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT')) return;
+      // an image lightbox (opened from this form) is above the modal: the key is
+      // its own, and stopping it here would keep it from ever reaching the viewer
+      if (e.defaultPrevented || document.querySelector('.yarl__root')) return;
       e.stopPropagation();
       setDismissed((d) => new Set(d).add(current.id));
     };

@@ -5626,6 +5626,73 @@ pre.check-tail {
   font-size: var(--tm-text-sm);
 }
 
+/* images an agent named in its question (docs/questions.md § Images):
+   thumbnails under the question or under the option that named them, the
+   option's own `preview` mockup text below; a thumbnail opens the lightbox */
+.qopt-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+}
+
+.qopt-media {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  /* under the label, past the radio mark */
+  padding-left: calc(var(--tm-space-3) * 2 + var(--tm-text-sm));
+  min-width: 0;
+}
+
+.qthumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+}
+
+.qitem-head + .qthumbs {
+  margin-bottom: var(--tm-space-3);
+}
+
+.qthumb {
+  flex: none;
+  height: var(--tm-space-9);
+  max-width: calc(var(--tm-space-9) * 2);
+  min-width: var(--tm-tap);
+  padding: 0;
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-bg-inset);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.qthumb img {
+  display: block;
+  height: 100%;
+  width: auto;
+  max-width: calc(var(--tm-space-9) * 2);
+  object-fit: cover;
+}
+
+.qthumb:hover {
+  border-color: var(--tm-accent);
+}
+
+.qopt-preview {
+  margin: 0;
+  max-height: calc(var(--tm-space-9) * 3);
+  overflow: auto;
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-bg-inset);
+  color: var(--tm-text);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  white-space: pre;
+}
+
 .qform-foot {
   display: flex;
   align-items: center;

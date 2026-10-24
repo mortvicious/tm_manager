@@ -1121,6 +1121,11 @@ export type QuestionStatus = 'pending' | 'answered' | 'expired';
 export interface QuestionOption {
   label: string;
   description: string;
+  /** the CLI's own per-option mockup text (markdown/ASCII, single-select
+   *  only); shown under the option. Images the agent wants seen are task
+   *  files NAMED in this, the label/description or the question text —
+   *  resolved by `referencedFileNames` (docs/questions.md § Images) */
+  preview?: string;
 }
 
 /** One question of an AskUserQuestion call — the CLI's own shape, kept verbatim
@@ -2039,6 +2044,44 @@ export function imagePreviewType(name: string): string | null {
   if (dot <= 0) return null;
   const ext = name.slice(dot + 1).toLowerCase();
   return Object.prototype.hasOwnProperty.call(IMAGE_PREVIEW_TYPES, ext) ? IMAGE_PREVIEW_TYPES[ext] : null;
+}
+
+/** a file-name character: a name preceded or followed by one is part of a longer name */
+const NAME_CHAR = /[\p{L}\p{N}_-]/u;
+
+/**
+ * The file names out of `names` that `text` mentions, in order of first
+ * mention (docs/questions.md § Images). A mention is the exact name standing
+ * on its own — bare, in backticks, in a markdown `![](…)`, or at the end of a
+ * path (`$TM_ARTIFACTS_DIR/a.png`) — so `a.png` is not found inside
+ * `data.png`, `a.png.bak` or `a.png2`. A name only found inside a longer
+ * mentioned name (`a.png` within `mock a.png`) is dropped.
+ */
+export function referencedFileNames(text: string, names: readonly string[]): string[] {
+  if (!text) return [];
+  const standsAlone = (at: number, end: number) => {
+    const before = at > 0 ? text[at - 1] : '';
+    const after = text[end] ?? '';
+    return (
+      !(before && (NAME_CHAR.test(before) || before === '.')) &&
+      !(after && (NAME_CHAR.test(after) || (after === '.' && NAME_CHAR.test(text[end + 1] ?? ''))))
+    );
+  };
+  // longest first, so every mention of a longer name is covered before a
+  // shorter name inside it is looked at
+  const covered: [number, number][] = [];
+  const first = new Map<string, number>();
+  for (const name of [...new Set(names)].filter(Boolean).sort((x, y) => y.length - x.length)) {
+    const mine: [number, number][] = [];
+    for (let at = text.indexOf(name); at >= 0; at = text.indexOf(name, at + 1)) {
+      const end = at + name.length;
+      if (!standsAlone(at, end) || covered.some(([s, e]) => s <= at && end <= e)) continue;
+      mine.push([at, end]);
+      if (!first.has(name)) first.set(name, at);
+    }
+    covered.push(...mine);
+  }
+  return [...first].sort((x, y) => x[1] - y[1]).map(([name]) => name);
 }
 
 export type ServerEvent =

@@ -29,6 +29,11 @@ Through them you can file follow-up tasks and coordinate work in OTHER repos.
   requirement, a destructive step, scope that could go two ways), ask with the
   `AskUserQuestion` tool: it reaches the user in the dashboard and on their
   phone, and your session waits for the answer. Decide small things yourself.
+  A choice between visual variants: save each mockup/screenshot at the TOP
+  level of `$TM_ARTIFACTS_DIR` (`variant-a.png`, `variant-b.png`) and name the
+  file in the option it illustrates (its `description` or `preview`), or in
+  the question text for an image about the whole question. The user sees
+  those as thumbnails inside the question and opens them full-screen there.
 
 - You need a dev server, watcher or the repo's API up to verify your change:
   **use the repo's saved commands** (see Dev servers), never a background shell

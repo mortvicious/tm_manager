@@ -63,7 +63,9 @@ const STANDING_RULES = [
   'Decisions: when a choice would materially change the outcome — an architecture or library',
   'choice, an ambiguous or conflicting requirement, a destructive or irreversible step, scope that',
   'could go two ways — stop and ask with the AskUserQuestion tool. It reaches the user in the',
-  'dashboard and on their phone, and your session waits for the answer. Decide small things',
+  'dashboard and on their phone, and your session waits for the answer. To show a mockup or',
+  'screenshot with it, save the image at the top level of $TM_ARTIFACTS_DIR and name the file in the',
+  "question or in the option it illustrates — it appears there as a thumbnail. Decide small things",
   'yourself; never ask about those.',
   'Finish with a short summary of what you changed and how you verified it. Your change is then',
   'adversarially reviewed before the user sees it, so make it correct and self-consistent: verify it',
@@ -207,7 +209,8 @@ const RESUME_REMINDER = [
   "dispatching to a related task's session rather than creating a new task; run dev servers as the",
   "repo's saved commands through that API, reusing a running one; ask the user with",
   'AskUserQuestion when a decision would materially change the outcome (it reaches their dashboard',
-  'and phone and waits), decide small things yourself; finish with a short summary of what you',
+  'and phone and waits; images saved in $TM_ARTIFACTS_DIR and named in a question or option show',
+  'there as thumbnails), decide small things yourself; finish with a short summary of what you',
   'changed and how you verified it.',
 ].join(' ');
 
