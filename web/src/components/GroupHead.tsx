@@ -2,8 +2,9 @@ import { useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { GROUP_COLOR_COUNT, type Task, type TaskStatus } from '@tm/shared';
 import { IconCheck, IconChevron, IconPencil, IconX } from './Icons.tsx';
 
-// The header of one task group on the board (docs/grouping.md § Board). It is
-// three controls and a drop target:
+// The caption of one task group on the board (docs/grouping.md § Board) — a
+// slim line over the block's coloured rail, not a band. It is three controls
+// and a drop target:
 //   caret        folds the group down to this one line (and back)
 //   name         filters the board to the group; double-click renames it
 //   pencil       rename + colour, inline — Enter saves, Escape abandons
@@ -169,8 +170,10 @@ export function GroupHead({
           >
             {label}
           </button>
-          <span className="count">{shown}</span>
-          {shown < size && <span className="part">of {size}</span>}
+          <span className="count" title={shown < size ? `${shown} of ${size} tasks in this section` : `${size} tasks`}>
+            {shown}
+            {shown < size && <span className="part">/{size}</span>}
+          </span>
           {collapsed && summary && <span className="summary">{summary}</span>}
           <span className="grow" />
           <button className="group-icon" title="Rename or recolour group" aria-label="Rename group" onClick={start}>

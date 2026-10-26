@@ -793,15 +793,12 @@
 }
 
 :where([data-design='glass']) .task-group {
-  border-left: 3px solid var(--tm-group, transparent);
   border-bottom: 0.5px solid var(--tm-border);
 }
 
-[data-design='glass'] .task-group-head {
-  border-bottom: 0.5px solid var(--tm-border);
-  font-family: var(--tm-font-body);
-  font-weight: 600;
-  letter-spacing: 0.03em;
+/* the rail stays a hue only: with group colours off a neutral line would just be noise */
+[data-design='glass'] .task-group::before {
+  background: var(--tm-group, transparent);
 }
 
 /* The board's search is a glass capsule like the header's controls; open it

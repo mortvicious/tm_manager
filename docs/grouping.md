@@ -137,15 +137,21 @@ look as though the feature were missing.
   the deepest ancestor *present in that same list*, indented per level
   (`--tm-depth`) — and keeps all roots of one group adjacent, which is what lets
   a group render as one block. A corrupt parent chain cannot hang it (`seen` set).
-- **Group blocks.** Any group with more than one task draws as a bordered block
-  with a header (`components/GroupHead.tsx`): a fold caret, the group name (or
-  the root's title), how many of its tasks are in *this* section, `of N` when
-  the section shows only part of it, and a pencil.
-  - **Fold.** The caret shrinks the block to its header line, which then reads a
+- **Group blocks.** Any group with more than one task draws as a block with a
+  rounded **rail** in the group's colour down its left edge (`.task-group::before`,
+  inset clear of a fresh row's accent edge) and a slim **caption** on top
+  (`components/GroupHead.tsx`) — no header band, no rule under it, sentence-case
+  body type, the first row tucked right under it: a fold caret, the group name
+  (or the root's title) in the group's colour, the count as plain figures —
+  `3`, or `1/15` when the section shows only part of the group — and a pencil
+  that appears on hover. (Until 2026-10-26 this was a full-width tinted
+  uppercase band with its own borders and a count pill, which on a one-row
+  block doubled its height.)
+  - **Fold.** The caret shrinks the block to its caption, which then reads a
     status summary of the hidden rows (`2 running · 1 review`). The fold state is
     `grp:<groupId>` in the board's saved `collapsed` list, so it survives a
     reload and applies to that group in every section it appears in.
-  - **Rename.** The pencil (or a double-click on the name) turns the header into
+  - **Rename.** The pencil (or a double-click on the name) turns the caption into
     an inline name field with the seven colour swatches and `auto` beside it:
     Enter saves, Escape abandons, an empty name clears it back to the root's
     title, and a swatch saves at once. Both write the ROOT row (`PATCH
@@ -154,7 +160,7 @@ look as though the feature were missing.
   - **Filter.** A single click on the name still filters the board to the group
     (a `group` chip in the Board search, `docs/search.md`, replacing any other
     group chip).
-  - **Drop target.** A task dropped on the header is appended to the group.
+  - **Drop target.** A task dropped on the caption is appended to the group.
 - **Inside a group the order is always the manual one** (§ Order), whatever the
   sort control says; the sort decides where each group and each lone task sits.
   **`sort: queue order`** sorts those by position too, which is the order the

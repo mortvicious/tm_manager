@@ -1329,11 +1329,13 @@ button.badge.badge-link:hover {
 }
 
 /* ---------- task groups (docs/grouping.md) ----------
-   A group is one task tree. --tm-group is set inline per block from the
-   group's colour slot; with group colours off it is simply absent and every
-   fallback below resolves to the neutral border/faint tokens. */
+   A group is one task tree, drawn as a coloured RAIL down the block's left
+   edge with a slim caption on top — no header band: the rail says "these
+   belong together", the caption names them. --tm-group is set inline per
+   block from the group's colour slot; with group colours off it is simply
+   absent and every fallback below resolves to the neutral border/faint tokens. */
 .task-group {
-  border-left: 2px solid var(--tm-group, var(--tm-border-strong));
+  position: relative;
   border-bottom: 1px solid var(--tm-border);
 }
 
@@ -1341,27 +1343,41 @@ button.badge.badge-link:hover {
   border-bottom: none;
 }
 
+.task-group::before {
+  content: '';
+  position: absolute;
+  top: var(--tm-space-2);
+  bottom: var(--tm-space-2);
+  /* clear of a fresh row's flush accent edge (.task-row.fresh) */
+  left: 5px;
+  width: 3px;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-group, var(--tm-border-strong));
+  pointer-events: none;
+}
+
+/* the caption: one quiet line, sized to its words, the first row right under it */
 .task-group-head {
   display: flex;
   align-items: center;
-  gap: var(--tm-space-2);
+  gap: var(--tm-space-1);
   width: 100%;
-  min-height: 30px;
-  padding: 2px var(--tm-space-2) 2px var(--tm-space-1);
-  border-bottom: 1px solid var(--tm-border);
-  background: color-mix(in srgb, var(--tm-group, var(--tm-border)) var(--tm-group-tint), transparent);
-  color: var(--tm-group, var(--tm-text-faint));
-  font-family: var(--tm-font-mono);
+  min-height: 24px;
+  padding: var(--tm-space-1) var(--tm-space-2) 0 var(--tm-space-2);
+  color: var(--tm-group, var(--tm-text-muted));
+  font-family: var(--tm-font-body);
   font-size: var(--tm-text-xs);
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-weight: 600;
   transition: background var(--tm-dur-fast) var(--tm-ease-out), box-shadow var(--tm-dur-fast) var(--tm-ease-out);
 }
 
-/* a folded group is just its header line */
+.task-group-rows > .task-row:first-child {
+  padding-top: var(--tm-space-1);
+}
+
+/* a folded group is just its caption, so it gets the row's breathing room */
 .task-group.folded .task-group-head {
-  border-bottom: none;
+  padding-bottom: var(--tm-space-1);
 }
 
 .task-group-head button {
@@ -1372,8 +1388,6 @@ button.badge.badge-link:hover {
   background: transparent;
   color: inherit;
   font: inherit;
-  letter-spacing: inherit;
-  text-transform: inherit;
   cursor: pointer;
 }
 
@@ -1381,10 +1395,15 @@ button.badge.badge-link:hover {
 .task-group-head .group-icon {
   flex: none;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
   border-radius: var(--tm-radius-sm);
   color: var(--tm-text-faint);
+}
+
+.task-group-head :is(.group-fold, .group-icon) svg {
+  width: 13px;
+  height: 13px;
 }
 
 .task-group-head .group-fold:hover,
@@ -1402,7 +1421,7 @@ button.badge.badge-link:hover {
   transform: rotate(-90deg);
 }
 
-/* the pencil stays out of the way until the header is hovered or focused */
+/* the pencil stays out of the way until the caption is hovered or focused */
 .task-group-head .group-icon {
   opacity: 0;
 }
@@ -1431,26 +1450,21 @@ button.badge.badge-link:hover {
   text-underline-offset: 3px;
 }
 
+/* "3" or "1/15": plain figures beside the name, not a pill */
 .task-group-head .count {
   flex: none;
-  padding: 0 7px;
-  border-radius: var(--tm-radius-pill);
-  background: var(--tm-bg-overlay);
-  color: var(--tm-text-muted);
-}
-
-.task-group-head .part,
-.task-group-head .summary {
-  flex: none;
   color: var(--tm-text-faint);
-  letter-spacing: 0;
-  text-transform: none;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 .task-group-head .summary {
   flex: 0 1 auto;
   min-width: 0;
+  margin-left: var(--tm-space-1);
   overflow: hidden;
+  color: var(--tm-text-faint);
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1462,12 +1476,9 @@ button.badge.badge-link:hover {
 .task-group-head .group-rename {
   flex: 1 1 12ch;
   min-width: 8ch;
-  height: 24px;
+  height: 22px;
   padding: 0 var(--tm-space-2);
-  font-family: var(--tm-font-mono);
   font-size: var(--tm-text-xs);
-  text-transform: none;
-  letter-spacing: 0;
 }
 
 .task-group-head .group-swatches {
@@ -5698,11 +5709,13 @@ button.explain-tap:active {
   background: var(--tm-bg);
 }
 
-/* ---- group heads: one line; the name gives way, the counts do not ---- */
+/* ---- group captions: one line; the name gives way, the counts do not ---- */
 
 .app.mobile .task-group-head {
   flex-wrap: nowrap;
-  min-height: var(--tm-tap-dense);
+  min-height: 30px;
+  padding-left: var(--tm-space-1);
+  padding-right: var(--tm-space-1);
 }
 
 .app.mobile .task-group-head:has(.group-rename) {
@@ -5712,8 +5725,13 @@ button.explain-tap:active {
 
 .app.mobile .task-group-head .group-fold,
 .app.mobile .task-group-head .group-icon {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
+}
+
+/* the first row hugs the caption, as on a desktop */
+.app.mobile .task-group-rows > .task-row:first-child {
+  padding-top: var(--tm-space-1);
 }
 
 /* block, not the head's inline-flex button face: an ellipsis needs a block box */
