@@ -66,6 +66,9 @@ const taskBody = z
     // landing tier override (docs/design.md § Landing tiers); null = the
     // repo's. Replaces the old `autoPublish` flag ('auto-publish').
     landing: z.enum(LANDING_TIERS as [LandingTier, ...LandingTier[]]).nullish(),
+    // DEPRECATED alias, read only by `legacyLanding`: a page loaded before the
+    // landing tiers still sends it, and .strict() 400'd every create from it.
+    autoPublish: z.boolean().optional(),
     // definition of done (docs/checks.md): injected into the worker prompt and
     // handed to the reviewer; `checks` picks repo checks by name (null = all,
     // [] = none)
@@ -93,6 +96,22 @@ function loopNeedsBrowser(body: { kind?: TaskKind; loopBudgetUsd?: number | null
   return !origin && (body.kind === 'loop' || body.loopBudgetUsd != null || body.loopMaxIterations != null);
 }
 const LOOP_FROM_BROWSER = 'loop tasks and their budgets are set from the dashboard';
+
+/**
+ * The pre-landing-tier `autoPublish` flag, translated and stripped: true is the
+ * `auto-publish` override, false clears that override (and only that one). An
+ * explicit `landing` wins. Only a stale SPA bundle sends it (docs/design.md
+ * § Landing tiers).
+ */
+function legacyLanding<T extends { autoPublish?: boolean; landing?: LandingTier | null }>(
+  body: T,
+  current: LandingTier | null = null,
+): Omit<T, 'autoPublish'> {
+  const { autoPublish, ...rest } = body;
+  if (autoPublish === undefined || rest.landing !== undefined) return rest;
+  if (autoPublish) return { ...rest, landing: 'auto-publish' };
+  return current === 'auto-publish' ? { ...rest, landing: null } : rest;
+}
 
 export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
   // The shared action layer (server/src/task-actions.ts) — the same functions
@@ -123,7 +142,7 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
   });
 
   app.post('/api/tasks', async (req, reply) => {
-    const body = taskBody.parse(req.body);
+    const body = legacyLanding(taskBody.parse(req.body));
     if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
     const refused = landingRefusal({ source: body.source ?? 'manual', createdByRun: null }, body.landing);
     if (refused) return reply.code(409).send({ error: refused });
@@ -135,7 +154,8 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
 
   app.patch('/api/tasks/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = taskPatch.parse(req.body);
+    const raw = taskPatch.parse(req.body);
+    const body = legacyLanding(raw, raw.autoPublish === false ? ((await storage.getTask(id))?.landing ?? null) : null);
     if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
     if (loopNeedsBrowser(body, req.headers.origin)) return reply.code(403).send({ error: LOOP_FROM_BROWSER });
     const r = await editTask(deps(), id, body, 'human');
