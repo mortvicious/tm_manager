@@ -48,12 +48,16 @@ import {
   buildDispatchNote,
   buildDispatchTurn,
   buildWorkerInvocation,
+  commitTrailerRule,
+  postCompactRules,
+  shipRuleFor,
 } from './claude/worker.ts';
 import {
   abortAllCompactions,
   abortCompaction,
   changedFiles,
   compactFocus,
+  compactPreserve,
   compactSession,
   freshHandoff,
 } from './claude/compact.ts';
@@ -374,6 +378,13 @@ export class Orchestrator implements OrchestratorApi {
   /** runs whose turn is a PUBLISH turn (docs/publish.md): their Stop must land
    *  the task in `published`, not in the human review queue. */
   private publishRuns = new Set<string>();
+  /**
+   * The instruction a live worker run was started to act on (a follow-up), so
+   * a mid-run auto-compaction's focus can name it (`compactFocusFor`). Memory
+   * only: a restart ends every run anyway. Dropped at exit and when a human
+   * types the next turn into the idle session.
+   */
+  private turnInstructions = new Map<string, string>();
   /**
    * Tasks whose publish was started by the auto-publish landing tier
    * (`landIfClean`), so `settlePublish` stamps `autoLandedAt` on success. Set
@@ -2563,6 +2574,80 @@ export class Orchestrator implements OrchestratorApi {
    * failed compaction there falls back to the plain resume and pays the old
    * price rather than handing the commit to a stranger.
    */
+  /**
+   * The rules a compaction must keep (docs/token-budget.md § The fifth): what
+   * the first prompt said about the trailer, pushing, done and the artifacts
+   * folder — for the resume gate's `/compact` and the CLI's own mid-run one.
+   */
+  private async compactionRules(task: Task, repo: Repo, settings: AppSettings, purpose: 'work' | 'publish') {
+    const publishTurn = purpose === 'publish';
+    const checks = selectChecks(await this.storage.listCommands(repo.id), task);
+    const done = publishTurn ? null : definitionOfDone(task.acceptance, checks);
+    return {
+      trailer: commitTrailerRule(task.id),
+      ship: shipRuleFor(task, settings, effectiveLanding(task, repo), effectivePushPolicy(task, repo), publishTurn),
+      done,
+      artifactsDir: path.join(artifactsRoot, task.id),
+      // An iteration's session must still end with the json block the loop
+      // judge reads; a summary that dropped it ends the loop as `error`.
+      loopResult: !publishTurn && task.kind === 'loop' && task.loopState === 'iterating' ? loopResultBlock() : null,
+    };
+  }
+
+  private async compactPreserveFor(task: Task, repo: Repo, settings: AppSettings, purpose: 'work' | 'publish') {
+    const r = await this.compactionRules(task, repo, settings, purpose);
+    return compactPreserve({ ...r, done: r.done?.replace(/^## Definition of done\n/, '') ?? null });
+  }
+
+  /** A worker run's task, repo and turn kind — null for anything else. */
+  private async compactionSubject(runId: string) {
+    const run = await this.storage.getRun(runId);
+    if (!run || run.mode !== 'worker' || !run.taskId) return null;
+    const task = await this.storage.getTask(run.taskId);
+    const repo = task?.repoId ? await this.storage.getRepo(task.repoId) : null;
+    if (!task || !repo) return null;
+    const purpose: 'work' | 'publish' = run.label === PUBLISH_RUN_LABEL ? 'publish' : 'work';
+    return { run, task, repo, purpose, settings: await this.storage.getSettings() };
+  }
+
+  /**
+   * The PreCompact hook's answer for a worker run (`/compact-focus`): the
+   * resume gate's own focus, naming the instruction this run was started on
+   * when it had one. null → the hook prints nothing and the CLI's default
+   * summary instructions apply.
+   */
+  async compactFocusFor(runId: string, trigger: unknown): Promise<string | null> {
+    const s = await this.compactionSubject(runId);
+    if (!s) return null;
+    // One row per in-run compaction, so the window's effect can be measured
+    // (docs/token-budget.md § The fifth); the size is in the transcript's
+    // compact_boundary, read by stats.ts.
+    await this.storage
+      .appendEvent({
+        kind: 'run.auto-compact',
+        actor: 'system',
+        taskId: s.task.id,
+        runId,
+        repoId: s.repo.id,
+        data: { trigger: typeof trigger === 'string' ? trigger : null, contextTokens: s.run.stats?.contextTokens ?? null },
+      })
+      .catch(() => {});
+    return compactFocus(
+      s.task.title,
+      this.turnInstructions.get(runId),
+      s.purpose,
+      await this.compactPreserveFor(s.task, s.repo, s.settings, s.purpose),
+    );
+  }
+
+  /** The SessionStart(`compact`) hook's additionalContext for a worker run (`/compact-context`). */
+  async compactContextFor(runId: string): Promise<string | null> {
+    const s = await this.compactionSubject(runId);
+    if (!s) return null;
+    const r = await this.compactionRules(s.task, s.repo, s.settings, s.purpose);
+    return postCompactRules({ taskId: s.task.id, ship: r.ship, done: r.done, loopResult: r.loopResult });
+  }
+
   private async resumeHandoff(
     task: Task,
     repo: Repo,
@@ -2590,7 +2675,7 @@ export class Orchestrator implements OrchestratorApi {
       sessionId: resumeFrom.sessionId,
       transcriptPath: resumeFrom.transcriptPath,
       model,
-      focus: compactFocus(task.title, followUp, purpose),
+      focus: compactFocus(task.title, followUp, purpose, await this.compactPreserveFor(task, repo, settings, purpose)),
       label: `compact: ${task.title.slice(0, 60)}`,
       // Keyed by the task so `cancel()` can stop a compaction it is about to
       // make pointless, instead of paying for another two minutes of it.
@@ -2891,6 +2976,7 @@ export class Orchestrator implements OrchestratorApi {
       statsBaseline: handoff.kind === 'fresh' ? null : prev?.stats ?? null,
     });
     if (purpose === 'publish') this.publishRuns.add(run.id);
+    else if (followUp) this.turnInstructions.set(run.id, followUp);
     try {
       const artifactsDir = path.join(artifactsRoot, task.id);
       fs.mkdirSync(artifactsDir, { recursive: true });
@@ -2907,8 +2993,13 @@ export class Orchestrator implements OrchestratorApi {
       // checks the Stop will run — a fresh prompt only, never the publish turn.
       const checksForPrompt = selectChecks(await this.storage.listCommands(repo.id), task);
       // A loop iteration's block carries the acceptance text and the checks itself.
+      // Also the first resume after the gate compacted the session: the
+      // summary may have dropped the fresh prompt's block (token-budget.md §
+      // The fifth).
       const doneNote =
-        resumeSessionId || purpose === 'publish' || loopTurn ? null : definitionOfDone(task.acceptance, checksForPrompt);
+        (resumeSessionId && handoff.kind !== 'compact') || purpose === 'publish' || loopTurn
+          ? null
+          : definitionOfDone(task.acceptance, checksForPrompt);
       const loop =
         loopTurn && !resumeSessionId
           ? {
@@ -3842,6 +3933,7 @@ export class Orchestrator implements OrchestratorApi {
   private async handleExit(runId: string, exitCode: number, tail = ''): Promise<void> {
     // Consumed here whatever happens next: this run is over either way.
     const wasPublish = this.publishRuns.delete(runId);
+    this.turnInstructions.delete(runId);
     this.stallSkipsAudited.delete(runId);
     this.stallSettled.delete(runId);
     const rateLimit = this.rateLimitStops.get(runId);
@@ -5363,6 +5455,9 @@ export class Orchestrator implements OrchestratorApi {
     const cli = isCliAutoContinuePrompt(prompt);
     if (cli) await this.cliContinued(runId, 'prompt');
     if (!this.sessions.isIdle(runId) || this.sessions.get(runId)?.exit !== null) return false;
+    // A prompt into the idle session is the session's next instruction, so
+    // the one it was spawned with no longer is.
+    if (!cli) this.turnInstructions.delete(runId);
     const run = await this.storage.getRun(runId);
     if (!run?.taskId || run.mode !== 'worker' || run.status !== 'running') return false;
     const latest = (await this.storage.listRuns({ taskId: run.taskId }))[0];

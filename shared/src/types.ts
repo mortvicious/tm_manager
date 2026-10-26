@@ -304,6 +304,24 @@ export function contextWindowFor(model: string | null | undefined): number {
 }
 
 /**
+ * The value a worker turn passes as `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, or null
+ * for none (the CLI's default): the setting raised to the resume cap (a lower
+ * window would compact a session the gate just chose to resume as-is),
+ * clamped to the CLI's accepted 100k..1M, and dropped when it would not be
+ * below the model's own window — the CLI takes the minimum anyway.
+ */
+export function autoCompactWindowFor(
+  settings: Pick<AppSettings, 'agent.autoCompactWindow' | 'agent.resumeContextCap'>,
+  model: string | null | undefined,
+): number | null {
+  const w = settings['agent.autoCompactWindow'];
+  if (!(w > 0)) return null;
+  const cap = settings['agent.resumeContextCap'];
+  const v = Math.min(1_000_000, Math.max(100_000, w, cap > 0 ? cap : 0));
+  return v < contextWindowFor(model) ? v : null;
+}
+
+/**
  * The run's context share, 0..100, for display and the `context-high`
  * anomaly: recomputed from `contextTokens` against the model's window
  * whenever the row has the raw figure (rows before it carry only the old
@@ -1610,6 +1628,16 @@ export interface AppSettings {
    */
   'agent.resumeContextCap': number;
   /**
+   * The CLI's autocompact window for worker WORK turns, passed as
+   * `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (docs/token-budget.md § The fifth).
+   * Opus' 1M window puts the CLI's own threshold near 967k, so a long fresh
+   * session never compacts and every later turn re-reads all of it. 0 = the
+   * CLI's default. Never on the publish turn; raised to at least
+   * `agent.resumeContextCap` at spawn (`autoCompactWindowFor`) so the focused
+   * resume gate still owns every resume.
+   */
+  'agent.autoCompactWindow': number;
+  /**
    * How long a background SHELL (`run_in_background` Bash) may hold its task
    * in `waiting` (docs/design.md § Waiting), counted from the first Stop that
    * saw it running. A shell the agent ended its turn to wait for (a test
@@ -1745,6 +1773,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // ~300k session, so the cap sits where quality is not yet in question and
   // only the re-write cost is.
   'agent.resumeContextCap': 300_000,
+  // 300k, the same line as the resume cap: ~300k is where good work is known
+  // to come out of a session (token-budget.md § The fourth), so the ceiling
+  // sits AT the known-good size rather than below it (the old 150k draft) —
+  // one context ceiling for a session, in-run and at resume.
+  'agent.autoCompactWindow': 300_000,
   // 30: long enough for a full test suite or a 20-run Lighthouse pass (the
   // incident that added it took 10), short enough that a dev server left
   // running holds a worker slot for half an hour at most.
@@ -1886,6 +1919,8 @@ export type AuditKind =
   | 'run.stop-failure'
   /** one automatic resume of a worker turn that a transient API error cut short (typed `continue`, or `--resume`) */
   | 'run.transient-retry'
+  /** a worker session compacted itself mid-run (agent.autoCompactWindow; docs/token-budget.md § The fifth) */
+  | 'run.auto-compact'
   /** a failed/cancelled task was started again (Retry / Run now): the error the previous attempt ended on, which the fresh prompt carries */
   | 'task.retry'
   | 'proposal.created'

@@ -209,7 +209,8 @@ between their `created_at` and `delivered_at`.
 ## The fourth: paying for the whole conversation to resume it
 
 The resume itself is the single biggest line in the audit. Workers run on a 1M
-window so the CLI never compacts on its own; the 2026-08-31..09-01 sessions
+window so the CLI never compacted on its own (until § The fifth gave work turns
+a window of their own); the 2026-08-31..09-01 sessions
 reached 400–500k tokens per call, and the top session had **267 of its 367 calls
 above 150k**. Every `--resume` — a review fix round, a dispatch delivery, a
 Proceed, the publish turn — re-writes that entire conversation to cache **twice**
@@ -266,9 +267,19 @@ Under the cap, nothing changes. Over it, in order of preference:
   price rather than handing the commit to a stranger.
 
 `--autocompact <100k..1M>` does the same compaction with `trigger:'auto'` and
-was measured working too (175,101 → 6,682). It is **not** what we use: it takes
-no focus string, and it would then apply for the whole resumed run, which is
-exactly the mid-run interference the cap is defined to avoid.
+was measured working too (175,101 → 6,682). It is **not** what the GATE uses:
+it would apply for the whole resumed run, which is exactly the mid-run
+interference the cap is defined to avoid, and (at the time) it took no focus
+string. The second reason is obsolete — a `PreCompact` hook's stdout is the
+focus — and an in-run ceiling for every work turn now exists on purpose, in
+§ The fifth (decisions.md 2026-10-26). The gate is unchanged by it: it still
+decides every resume, and the window is never set below the cap.
+
+The gate's `/compact` is also the last thing a resumed session hears about its
+first prompt, so since § The fifth the focus carries a "preserve word for word"
+clause (`compactPreserve`: the trailer rule, the push rule, the definition of
+done, `$TM_ARTIFACTS_DIR`, a loop's result block), and the first resume after a
+gate compaction re-sends the definition of done, which a resume never carried.
 
 Two consequences worth knowing. A compaction is a paid turn on the resumed
 transcript, and the resume baseline is snapshotted **before** the gate runs, so
@@ -337,6 +348,103 @@ with several resumes and compare `costUsd` of runs whose `run.started` carries
 `handoff: 'resume'` against the ones carrying `'compact'`, on the same task and
 the same model. The re-write is the floor of a resumed run's cost, so the
 difference should be most of it.
+
+## The fifth: context growth INSIDE a fresh session (2026-10-26)
+
+The resume gate only acts between turns. A fresh session that grows in one long
+run never meets it: **138 of 441 worker runs** in the 30 days to 2026-10-26
+ended at ≥300k context and carried **62.9% of the $16,688** worker spend (max
+585k), all on opus-5-5, whose 1M window puts the CLI's own autocompact at
+≈967k — it never fired. Every turn past ~300k re-reads all of it.
+
+### What a work turn gets
+
+- **`CLAUDE_CODE_AUTO_COMPACT_WINDOW`** in the worker env, from
+  `agent.autoCompactWindow` via `autoCompactWindowFor` (shared). The env var
+  outranks `--autocompact`, `/autocompact` and `autoCompactWindow` in the
+  user's settings, so one rule holds whatever `~/.claude` says. Resolution:
+  0 = none (the CLI default); otherwise raised to at least
+  `agent.resumeContextCap` (a lower window would compact a session the gate
+  just chose to resume as-is — the gate owns resumes), clamped to the CLI's
+  100k..1M, and dropped when it is not below the model's own window (the CLI
+  takes the minimum anyway — a haiku session is left alone). Never on the
+  **publish turn** (it only commits and pushes, and the gate already compacted
+  a big one), never on codex.
+- **`PreCompact` (matcher `auto`)** → `POST /api/internal/runs/:id/compact-focus`.
+  The hook's plain stdout becomes the compaction's custom instructions (main
+  session only), so it prints `compactFocus(title, turn instruction, purpose,
+  compactPreserve(…))` — the gate's own focus, naming the follow-up this run
+  was started on (`turnInstructions`, memory only) and the rules to keep word
+  for word. Like the AskUserQuestion carrier its stdout matters, so it is not
+  `hookCurl`: `curl -sf … || true` — an HTTP error or a dead server prints
+  NOTHING (the CLI's default instructions) and never exits 2 (which would block
+  the compaction). Each one writes a `run.auto-compact` audit row (trigger,
+  last measured context) to count them by.
+- **`SessionStart` (matcher `compact`)** → `/compact-context`, answering the
+  CLI's `hookSpecificOutput.additionalContext` JSON: `postCompactRules` — the
+  resume reminder (the standing rules, condensed), the trailer rule, the push
+  rule (`shipRuleFor`), the definition of done, a loop iteration's result block.
+  A summary keeps what it is told matters, and the first prompt's rules are
+  exactly what a "what has been done" recap drops; restated after the
+  boundary they are in context whatever it kept. Fires on a human's `/compact`
+  in the terminal too. The plain SessionStart hook keeps firing beside it.
+
+Both routes answer 204 (→ the hook prints nothing) for anything but a worker
+run, and both sit under the per-run token guard.
+
+### The window: 300k
+
+`agent.autoCompactWindow` defaults to **300 000**, the resume cap's number. The
+quality constraint above — good work has come out of ~300k sessions — is the
+ONE thing measured about where quality starts to be in question, so the
+ceiling sits AT the known-good size, not below it (the superseded draft
+ea3bad8b's 150k contradicted it). One number then bounds a session in-run and
+at resume. The CLI keeps ≈33k of headroom under the window (measured: a
+100k window compacted at preTokens 67,548 and 68,680, matching ≈967k on 1M),
+so 300k compacts at ≈267k, to ≈13–30k.
+
+One overlap is deliberate: a session the gate resumes as-is because it is
+under the cap but above that threshold (≈267–300k) compacts early in the
+resumed turn (not measured on a resume: in-run, the CLI compacted between
+calls, as soon as the last reading crossed the threshold), focused on the
+follow-up (`turnInstructions`). Setting the window to cap + 33k would avoid it at the
+price of a ceiling above the known-good size.
+
+Simulated over 392 last-30-day worker transcripts (compaction to 30k, each
+costing a full read, 15k output and a cache rewrite — upper bounds, rework and
+quality loss not modelled; autonomy-round analysis 663c5006):
+
+| Window | Saved / 30 days | Compactions |
+|---|---|---|
+| 200k | ~$4.9k | 320 |
+| 300k | ~$2.8k (~17% of worker $) | 139 |
+| 400k | ~$1.0k | 42 |
+| 500k | ~$0.1k | 9 |
+
+Re-measure before moving it: compare per-task `costUsd` and rework (fix rounds,
+`run.auto-compact` rows per task) before vs after. Lowering it toward 200k needs
+evidence that compacted sessions still do good work; raising it gives most of
+the saving back.
+
+### What did not change
+
+- **The resume gate.** Its boundary reader (`readBoundary`) skips
+  `trigger: 'auto'` boundaries: a worker that compacted itself in its last
+  seconds would sit inside the gate's minute of slack and pass for the gate's
+  own `/compact` (`trigger: 'manual'`, measured). A boundary with no trigger
+  (older CLI) still counts.
+- **The session.** An auto-compaction keeps the session id and the transcript
+  file (measured: resumed after two of them, same id, the summary's facts
+  intact), so `--resume`, Proceed, publish and `statsBaseline` are untouched —
+  the transcript is append-only, so the cumulative baseline deltas stay right,
+  and run cost is charged by time window anyway.
+- **`contextTokens`** follows a main-chain `compact_boundary`'s `postTokens`
+  (`stats.ts`): a compaction writes no usage line, so a run cut right after
+  one used to read its pre-compaction size and would have sent the gate
+  compacting it again.
+- **Not counted:** the compaction call itself writes no `usage` line, so its
+  cost (one read of the ~267k context plus the summary) is invisible to
+  `costUsd`, as the gate's own compaction always was.
 
 ## Aux sessions: interactive terminals instead of `claude -p` (2026-09-24)
 
@@ -588,9 +696,10 @@ the Telegram board, the Dashboard's average/max context and the
 **`context-high` anomaly** (>80%). The anomaly fired on 334 of 453 worker runs
 in 30 days against the 200k divisor; against the model's window it would have
 fired on none, because the largest sessions reach about 500k. The `window`
-argument is for an autocompact window, once one is configured (the separate
-"cap context growth" task): divide by that, as the CLI's own status line does.
-No such setting exists yet. A `<synthetic>` message (the CLI's own error or
+argument is for an autocompact window, as the CLI's own status line divides.
+`agent.autoCompactWindow` now exists (§ The fifth), but no reader passes it, on
+purpose: against a 300k window every session about to compact would read
+>80% and `context-high` would fire on the mechanism working. A `<synthetic>` message (the CLI's own error or
 limit notice, with all-zero usage) no longer counts as the last turn. Before,
 a session that ended on one read as `contextTokens: 0`, which let the resume
 gate wave a 400k resume through.

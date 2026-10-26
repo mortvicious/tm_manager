@@ -115,7 +115,10 @@ Prompt text alone cannot fix these; they are structural:
 - ~~No context ceiling / forced compaction on long runs.~~ — done 2026-09-05,
   as a RESUME-time gate rather than a ceiling: `agent.resumeContextCap`
   compacts an over-cap session before reopening it, and never interferes
-  mid-run. See `docs/token-budget.md` § The fourth.
+  mid-run. See `docs/token-budget.md` § The fourth. Since 2026-10-26 work
+  turns ALSO get an in-run ceiling (`agent.autoCompactWindow`, a focused CLI
+  autocompact at 300k) — see § Rules after a compaction below and
+  `docs/token-budget.md` § The fifth.
 - ~~`CONTEXT_WINDOW = 200_000` (`server/src/claude/stats.ts`) pins `contextPct`
   at 100 while real contexts reach 476k–910k.~~ — `contextPct` still does, and
   still means "≥100% of a 200k window"; the raw last-turn total it is computed
@@ -126,6 +129,29 @@ Prompt text alone cannot fix these; they are structural:
 - ~~The fixed ~52k preamble~~ — done 2026-08-27, see `docs/token-budget.md`.
   (Not via `agent.allowedTools`: that flag is a permission gate and moves no
   context. The schemas come off with `--tools`.)
+
+## Rules after a compaction (2026-10-26)
+
+This block is sent ONCE, in the fresh prompt, and a compaction summarises it
+like everything else — the trailer rule, the push rule and the definition of
+done are exactly what a "what has been done" recap tends to drop. Three things
+put them back (`docs/token-budget.md` § The fifth):
+
+- **Before** a compaction, its focus says to keep them word for word
+  (`compactPreserve`, `server/src/claude/compact.ts`). Both the resume gate's
+  `/compact` and the CLI's own mid-run one (the `PreCompact` hook's
+  `/compact-focus`) carry it.
+- **After** one, the `SessionStart` (matcher `compact`) hook injects
+  `postCompactRules` (`worker.ts`) as `additionalContext`: `RESUME_REMINDER`,
+  the trailer rule, the turn's push rule (`shipRuleFor`), the definition of
+  done and a loop iteration's result block. So `RESUME_REMINDER` now has a
+  second reader beside the resume prompt, and keeping it in lockstep with
+  `STANDING_RULES` (its code comment) matters twice over.
+- The first **resume** after a gate compaction re-sends the definition of done
+  (`doneNote`), which a resume otherwise never carries.
+
+The publish turn is unchanged: no window, and no ship rule in the restated
+block (the publish instruction is the rule there).
 
 ## The shared-space block (2026-09-28)
 

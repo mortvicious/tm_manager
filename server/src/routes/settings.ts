@@ -109,6 +109,8 @@ const settingsSchema = z
     // ("always compact first") is a legitimate choice, and the number field in
     // the UI would have no way to express a hole in the range.
     'agent.resumeContextCap': z.number().int().min(0).max(1_000_000),
+    // 0 = the CLI's default; otherwise the CLI's own accepted band.
+    'agent.autoCompactWindow': z.union([z.literal(0), z.number().int().min(100_000).max(1_000_000)]),
     // 0 = shells never hold a task. Four hours is past any build or test run
     // worth waiting on; beyond it the knob could only mean "forever", which
     // is the dev-server trap the bound exists to prevent.

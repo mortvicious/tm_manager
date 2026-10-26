@@ -297,6 +297,27 @@ export function ConfigPage() {
         </div>
         <div className="cfg-row">
           <div>
+            <div>Auto-compact a working session above (tokens)</div>
+            <div className="hint">
+              the CLI compacts a worker's session mid-run near this size instead of letting it grow to the
+              model's 1M window, focused on the task and keeping the trailer, ship and done rules (re-stated
+              right after). Raised to at least the resume cap above; never on the publish turn. 0 = the CLI's
+              default (≈967k on Opus), otherwise 100000–1000000
+            </div>
+          </div>
+          <input
+            className="field"
+            style={{ width: 110 }}
+            type="number"
+            min={0}
+            max={1000000}
+            step={50000}
+            value={cfg['agent.autoCompactWindow'] ?? DEFAULT_SETTINGS['agent.autoCompactWindow']}
+            onChange={(e) => set('agent.autoCompactWindow', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
             <div>Wait on background commands (minutes)</div>
             <div className="hint">
               a worker that ends its turn to wait for a command it started in the background (a test run, a

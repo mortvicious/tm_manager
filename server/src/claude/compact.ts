@@ -109,7 +109,18 @@ export function abortAllCompactions(): number {
  * summary from being a neutral recap that drops the half the follow-up is
  * about.
  */
-export function compactFocus(taskTitle: string, followUp: string | undefined, purpose: 'work' | 'publish'): string {
+export function compactFocus(
+  taskTitle: string,
+  followUp: string | undefined,
+  purpose: 'work' | 'publish',
+  /**
+   * The session's standing rules to keep word for word (`compactPreserve`):
+   * a summary otherwise paraphrases the first prompt's trailer, ship and done
+   * rules away, and a resumed or auto-compacted session never sees that
+   * prompt again (docs/token-budget.md § The fifth).
+   */
+  preserve?: string,
+): string {
   const next =
     purpose === 'publish'
       ? 'commit and push the work of this task'
@@ -121,8 +132,31 @@ export function compactFocus(taskTitle: string, followUp: string | undefined, pu
     'Preserve in full: every file this session already changed and why, the decisions and constraints it agreed to,',
     'what it verified, and what is still unfinished or known-broken.',
     'Drop verbatim tool output that has been superseded — old file dumps, long command output, search results.',
+    ...(preserve ? [preserve] : []),
     `The very next thing this session must do is ${next}`,
   ].join(' ');
+}
+
+/**
+ * The "keep these rules verbatim" clause of a compaction focus. Single-line on
+ * purpose: the resume gate types it after `/compact`, and the PreCompact hook's
+ * stdout is read as one instruction string.
+ */
+export function compactPreserve(rules: {
+  trailer: string;
+  ship: string | null;
+  done: string | null;
+  artifactsDir: string;
+  loopResult: string | null;
+}): string {
+  const parts = [
+    `the commit rule (${rules.trailer})`,
+    ...(rules.ship ? [`the push rule (${rules.ship})`] : []),
+    ...(rules.done ? [`the definition of done (${rules.done})`] : []),
+    `that deliverables go in $TM_ARTIFACTS_DIR (${rules.artifactsDir})`,
+    ...(rules.loopResult ? [`the required loop result block (${rules.loopResult})`] : []),
+  ];
+  return `Preserve word for word these standing rules of the session: ${parts.join('; ')}.`.replace(/\s*\n\s*/g, ' ');
 }
 
 /**
@@ -161,6 +195,12 @@ function readBoundary(transcriptPath: string, since: number): { pre: number; pos
       continue;
     }
     if (j?.subtype !== 'compact_boundary') continue;
+    // The gate's `/compact` writes `trigger: 'manual'`. A worker session now
+    // also compacts ITSELF mid-run (`agent.autoCompactWindow`, `trigger:
+    // 'auto'`), and one that did so in its last seconds would sit inside the
+    // minute of slack below — never the gate's proof. A boundary without a
+    // trigger (an older CLI) still counts, as before.
+    if (j.compactMetadata?.trigger === 'auto') continue;
     const at = Date.parse(j.timestamp ?? '');
     // A minute of slack: the boundary's timestamp is stamped by the CLI, whose
     // clock is this machine's, but the record is written after the summarising

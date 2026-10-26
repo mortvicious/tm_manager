@@ -165,6 +165,15 @@ async function parseFile(file: string, sidechainFile: boolean): Promise<ParsedFi
       }
       const m = j.message;
       const side = sidechainFile || j.isSidechain === true;
+      // A compaction writes no usage line of its own, so without this the
+      // context would read the PRE-compaction size until the next assistant
+      // message — and a run cut right after one (an auto-compaction, then a
+      // kill) would send the resume gate compacting it a second time.
+      if (!side && j.subtype === 'compact_boundary') {
+        const post = Number(j.compactMetadata?.postTokens);
+        if (Number.isFinite(post) && post > 0) lastTurnTotal = post;
+        continue;
+      }
       const u = m?.usage;
       if (u) {
         const cc = u.cache_creation;

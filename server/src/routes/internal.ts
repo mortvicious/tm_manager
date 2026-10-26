@@ -502,6 +502,26 @@ export function registerInternalRoutes(
     return { ok: true };
   });
 
+  // The two compaction hooks (docs/token-budget.md § The fifth) — the hook
+  // PRINTS these bodies, so anything but a worker run answers 204 (an empty
+  // body = the CLI's own default). Workers only: aux runs never install them.
+  // PreCompact (matcher `auto`): plain text, the compaction's instructions.
+  app.post('/api/internal/runs/:id/compact-focus', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const trigger = (req.body as { trigger?: unknown } | null)?.trigger;
+    const focus = await orchestrator.compactFocusFor(id, trigger);
+    if (!focus) return reply.code(204).send();
+    return reply.type('text/plain; charset=utf-8').send(focus);
+  });
+
+  // SessionStart (matcher `compact`): the CLI's JSON shape for extra context.
+  app.post('/api/internal/runs/:id/compact-context', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const context = await orchestrator.compactContextFor(id);
+    if (!context) return reply.code(204).send();
+    return { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } };
+  });
+
   // Session ended (process exiting) — final stats snapshot; PTY exit handling
   // in the orchestrator covers status transitions.
   app.post('/api/internal/runs/:id/session-end', async (req) => {

@@ -1,4 +1,4 @@
-import { isCodexModel, type AppSettings, type EffortLevel, type LandingTier, type PushPolicy, type Task } from '@tm/shared';
+import { autoCompactWindowFor, isCodexModel, type AppSettings, type EffortLevel, type LandingTier, type PushPolicy, type Task } from '@tm/shared';
 import { needsFallbackModel } from './usage.ts';
 
 export interface WorkerInvocation {
@@ -263,6 +263,41 @@ export function isPublishInstruction(text: string | undefined): boolean {
   return text === PUBLISH_INSTRUCTION || (!!text && text.startsWith(PUBLISH_UP_TO_HEAD));
 }
 
+/** The push rule a worker turn of this task carries, or null (see shipRule). */
+export function shipRuleFor(
+  task: Task,
+  settings: AppSettings,
+  landing: LandingTier,
+  pushPolicy: PushPolicy,
+  publishTurn: boolean,
+): string | null {
+  return shipRule({ taskId: task.id, shipGate: shipHeldForReview(task, settings, landing), pushPolicy, publishTurn });
+}
+
+/**
+ * The `additionalContext` a worker session gets right after it compacted
+ * (SessionStart, source `compact` — docs/token-budget.md § The fifth). A
+ * summary keeps what it is told matters, and the first prompt's standing
+ * rules, trailer, ship rule and definition of done are exactly what a
+ * "what has been done so far" recap drops; restated here, they are back in
+ * context whatever the summary kept.
+ */
+export function postCompactRules(opts: {
+  taskId: string;
+  ship: string | null;
+  done: string | null;
+  loopResult: string | null;
+}): string {
+  return [
+    'This session was just compacted. The rules from its first prompt still hold:',
+    RESUME_REMINDER,
+    commitTrailerRule(opts.taskId),
+    ...(opts.ship ? [opts.ship] : []),
+    ...(opts.done ? [opts.done] : []),
+    ...(opts.loopResult ? [opts.loopResult] : []),
+  ].join('\n\n');
+}
+
 // A resumed session keeps its original prompt, so this only re-anchors the caps
 // in case the conversation was compacted along the way. Keep it in lockstep with
 // STANDING_RULES — a resumed turn that restates an older wording silently
@@ -296,7 +331,11 @@ function buildWorkerPrompt(opts: {
   dispatchNote?: string;
   /** The shared-space block (docs/shared-spaces.md); a context note like `dispatchNote`. */
   sharedNote?: string;
-  /** The definition-of-done block (docs/checks.md): acceptance + the checks the server will run. Fresh prompts only. */
+  /**
+   * The definition-of-done block (docs/checks.md): acceptance + the checks the
+   * server will run. Fresh prompts, plus the first resume after the resume
+   * gate compacted the session (the summary may have dropped it).
+   */
   doneNote?: string;
   /** With `followUp`: the `Previous run summary`. Without: the `Previous attempt` block of a retry. */
   previousSummary?: string;
@@ -337,6 +376,7 @@ function buildWorkerPrompt(opts: {
         `# Continuing task: ${task.title}`,
         '',
         ...note,
+        ...(opts.doneNote && !isPublishTurn ? [opts.doneNote, ''] : []),
         ...(isPublishTurn ? [RESUME_REMINDER, '', resumeBody] : [resumeBody, '', RESUME_REMINDER]),
         '',
         commitTrailerRule(task.id),
@@ -546,11 +586,28 @@ export function buildWorkerInvocation(opts: {
 
   const effort: EffortLevel = task.effort ?? settings['agent.effort'];
   const permissionMode = settings['agent.permissionMode'];
+  // An in-run context ceiling for WORK turns (docs/token-budget.md § The
+  // fifth). Never the publish turn: it only has to commit and push, the gate
+  // already compacted it if it was big, and a summary mid-publish would be
+  // all risk. The env var outranks --autocompact, /autocompact and the
+  // user's autoCompactWindow setting, which is the point: one rule for every
+  // worker whatever ~/.claude says.
+  const compactWindow = isPublishInstruction(opts.followUp) ? null : autoCompactWindowFor(settings, model);
+  const claudeEnv = compactWindow ? { ...env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(compactWindow) } : env;
 
   // curl hardening (review m4): --max-time so a wedged server can't hang the
   // agent's turn, `|| true` so hook exit codes never block stopping.
   const hookCurl = (path: string) =>
     `curl -s --max-time 5 -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" --data-binary @- "$TM_CALLBACK_URL${path}" >/dev/null 2>&1 || true`;
+
+  // The two compaction hooks (docs/token-budget.md § The fifth) are the other
+  // hooks whose stdout matters, so neither can use hookCurl's >/dev/null.
+  // `-f`: an HTTP error prints nothing instead of its body, and a failed or
+  // timed-out curl prints nothing too — the CLI's own default summary
+  // instructions / no extra context. `|| true`: a PreCompact exit 2 would
+  // BLOCK the compaction.
+  const printCurl = (path: string) =>
+    `curl -sf --max-time 5 -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" --data-binary @- "$TM_CALLBACK_URL${path}" 2>/dev/null || true`;
 
   // Also the cheapest place to shrink the fixed preamble: bundled skills are
   // ~40 skill descriptions a worker never invokes (/design, /schedule,
@@ -592,6 +649,16 @@ export function buildWorkerInvocation(opts: {
       // stats can stream mid-run instead of waiting for the first Stop.
       SessionStart: [
         { hooks: [{ type: 'command', command: hookCurl('/api/internal/runs/$TM_RUN_ID/session-start') }] },
+        // Right after a compaction (auto, or a human's /compact in the
+        // terminal): re-state the first prompt's rules as additionalContext.
+        { matcher: 'compact', hooks: [{ type: 'command', command: printCurl('/api/internal/runs/$TM_RUN_ID/compact-context') }] },
+      ],
+      // The CLI's mid-run compaction (agent.autoCompactWindow): plain stdout
+      // becomes its custom instructions, so the summary is focused on the task
+      // the way the resume gate's own /compact is. `auto` only — a human's
+      // /compact in the terminal brings its own instructions.
+      PreCompact: [
+        { matcher: 'auto', hooks: [{ type: 'command', command: printCurl('/api/internal/runs/$TM_RUN_ID/compact-focus') }] },
       ],
       // A turn starts. The server starts its own turns through followUp, which
       // moves the task itself; this is how it learns a human typed into the
@@ -713,5 +780,5 @@ export function buildWorkerInvocation(opts: {
   });
   args.push(prompt);
 
-  return { cmd: 'claude', args, env };
+  return { cmd: 'claude', args, env: claudeEnv };
 }
