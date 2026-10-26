@@ -14,13 +14,21 @@ Current defenses:
 
 Do not bind the server to `0.0.0.0` outside LAN mode, put it behind a public reverse proxy, or expose it to the internet by any means: never publicly. The tailnet via `tailscale serve` plus the identity gate is the only supported remote path. Never use `tailscale funnel`, which is public; the gate refuses Funnel traffic because it carries no identity headers. Do not remove or relax the checks above.
 
+### Secrets
+
+`GET /api/config` needs no `Origin`, so every worker can read it: a worker knows `$TM_CALLBACK_URL`, and an admitted tailnet client or, in LAN mode, any LAN device can read it too. No secret may live in `tm_config`:
+
+- The Telegram bot token, the VAPID private key and the **Sentry auth token** live in `server/data/config.json` (written `0600` by the server). The Sentry token moved there on 2026-10-26: boot copies a legacy `tm_config` row into the file and deletes the row, on both drivers. `/api/config` strips the key from both `GET` and `PUT` responses in any case. The Config page sees only `GET /api/sentry/token` → `{ set, last4 }` and writes through `PUT /api/sentry/token`, which needs `Origin` and is audited by key only. **A token that was ever stored in `tm_config` must be rotated.**
+- Answers to agents' questions are redacted when they look like credentials (`docs/questions.md` § Secrets): the audit row right away, the question row once the run's turn is over, and anything older at boot. Telegram never echoes free text.
+- Checks (`docs/checks.md` § Who may define a check) and landing tiers can only be raised, defined or removed with a browser's `Origin`, so a worker cannot loosen the gates that judge it.
+
 A local process can send forged `Tailscale-*` headers to `127.0.0.1`. That is not a threat this app defends against: such a process already has full loopback access to everything the gate protects.
 
 ## Out of scope
 
 - Agents behave as instructed. A task description is executed by a model with write access to the target repo, and `bypassPermissions` mode disables prompting entirely. Reviewing what you queue is your responsibility.
 - Local files that the app reads by design, such as `~/.claude` transcripts used for usage estimates.
-- Sentry or database credentials you paste into `server/data/config.json` or the settings UI. They are stored unencrypted on your machine.
+- Credentials stored in `server/data/config.json` (Sentry and Telegram tokens, the VAPID key, a Postgres connection string). They are kept unencrypted on your machine.
 
 ## Reporting a vulnerability
 

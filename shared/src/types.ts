@@ -1443,7 +1443,8 @@ export interface AppSettings {
    *  account's `resets_at` is the boundary, not a promise of capacity at it */
   'agent.autoWakeGraceSec': number;
   'sentry.dsn': string;
-  'sentry.authToken': string;
+  // sentry.authToken is NOT a setting: it lives in server/data/config.json
+  // (a secret — /api/config is readable by every worker). See SentryTokenStatus.
   'sentry.org': string;
   'sentry.project': string;
   /** EU-residency orgs use https://de.sentry.io */
@@ -1569,7 +1570,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // resume that arrives a second early buys nothing but a second stall.
   'agent.autoWakeGraceSec': 60,
   'sentry.dsn': '',
-  'sentry.authToken': '',
   'sentry.org': '',
   'sentry.project': '',
   'sentry.apiBase': 'https://sentry.io',
@@ -1768,6 +1768,16 @@ export type AuditKind =
   | 'anomaly.notified';
 
 /** actor: human | hook | orchestrator | system | analyze | telegram | remote | agent:<runId8> */
+/**
+ * `GET|PUT /api/sentry/token`: whether the Sentry auth token is set, and its
+ * last 4 characters to recognise it by — never the value (it lives in
+ * server/data/config.json, SECURITY.md § Secrets).
+ */
+export interface SentryTokenStatus {
+  set: boolean;
+  last4: string | null;
+}
+
 export interface AuditEvent {
   id: string; // time-sortable (ms hex prefix + random)
   at: string;

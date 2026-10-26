@@ -34,6 +34,10 @@ Through them you can file follow-up tasks and coordinate work in OTHER repos.
   file in the option it illustrates (its `description` or `preview`), or in
   the question text for an image about the whole question. The user sees
   those as thumbnails inside the question and opens them full-screen there.
+  Never ask for a secret's VALUE (token, key, password, connection string)
+  through `AskUserQuestion`: answers are stored and shown on other surfaces.
+  Ask the user to put it in the repo's `.env` or a file you name, and to
+  confirm when it is there.
 
 - You need a dev server, watcher or the repo's API up to verify your change:
   **use the repo's saved commands** (see Dev servers), never a background shell

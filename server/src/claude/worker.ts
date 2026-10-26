@@ -70,7 +70,9 @@ const STANDING_RULES = [
   'dashboard and on their phone, and your session waits for the answer. To show a mockup or',
   'screenshot with it, save the image at the top level of $TM_ARTIFACTS_DIR and name the file in the',
   "question or in the option it illustrates — it appears there as a thumbnail. Decide small things",
-  'yourself; never ask about those.',
+  'yourself; never ask about those. Never ask for a secret\'s VALUE (a token, key, password or',
+  "connection string) through AskUserQuestion — answers are stored and shown on other surfaces; ask",
+  "the user to put it in the repo's .env or a file you name, and to confirm when it is there.",
   'Finish with a short summary of what you changed and how you verified it. Your change is then',
   'adversarially reviewed before the user sees it, so make it correct and self-consistent: verify it',
   'compiles/passes and handle the edge cases a reviewer would probe.',
@@ -216,7 +218,8 @@ const RESUME_REMINDER = [
   'ask the user with',
   'AskUserQuestion when a decision would materially change the outcome (it reaches their dashboard',
   'and phone and waits; images saved in $TM_ARTIFACTS_DIR and named in a question or option show',
-  'there as thumbnails), decide small things yourself; finish with a short summary of what you',
+  "there as thumbnails), but never for a secret's value (ask for it in .env or a named file instead);",
+  'decide small things yourself; finish with a short summary of what you',
   'changed and how you verified it.',
 ].join(' ');
 

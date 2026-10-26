@@ -123,10 +123,24 @@ export function questionMessages(q: Question, task: Task | null, drafts?: Questi
   }));
 }
 
+/**
+ * What a chat message may say about an answer: an option pick by its label
+ * (multi-select joined with ", " — every part a label), free text only by its
+ * length. Free text is where a human pastes a credential, and this message
+ * lands on Telegram's servers (docs/questions.md § Secrets).
+ */
+export function answerShown(item: QuestionItem, answer: string | undefined): string {
+  if (answer === undefined) return '—';
+  const labels = new Set((item.options ?? []).map((o) => o.label));
+  if (labels.has(answer)) return answer;
+  if (item.multiSelect && answer.split(', ').every((p) => labels.has(p))) return answer;
+  return `answered (${answer.length} chars)`;
+}
+
 function summaryHtml(q: Question, task: Task | null): string {
   const title = task ? escapeHtml(task.title) : `task ${short(q.taskId)}`;
   const rows = q.questions.map((item) => {
-    const a = q.answers?.[item.question] ?? '—';
+    const a = answerShown(item, q.answers?.[item.question]);
     return `• ${escapeHtml(item.header || clip(item.question, 60))}: <b>${escapeHtml(a)}</b>`;
   });
   return [`<b>${title}</b>`, ...rows].join('\n');
@@ -229,7 +243,7 @@ export async function handleQuestionText(deps: QuestionDeps, questionId: string,
   const body = text.trim().slice(0, 4000);
   deps.drafts.get(q.id).text.set(qi, body);
   const label = item.header || clip(item.question, 60);
-  return tryComplete(deps, q, task, `Noted <b>${escapeHtml(label)}</b>: ${escapeHtml(body)}`);
+  return tryComplete(deps, q, task, `Noted <b>${escapeHtml(label)}</b>: ${escapeHtml(answerShown(item, body))}`);
 }
 
 /** `/questions` — everything the agents are waiting on right now, keyboards included. */

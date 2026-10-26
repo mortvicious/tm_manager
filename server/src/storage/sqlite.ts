@@ -239,6 +239,10 @@ export class SqliteStorage implements Storage {
     return (this.db.prepare(sql).all(...params, Math.min(f?.limit ?? 100, 2000)) as any[]).map(rowToEvent);
   }
 
+  async setEventData(id: string, data: Record<string, unknown>): Promise<void> {
+    this.db.prepare(`UPDATE tm_events SET data = ? WHERE id = ?`).run(JSON.stringify(data), id);
+  }
+
   // ---- repos ----
 
   async listRepos(): Promise<Repo[]> {
@@ -1180,6 +1184,10 @@ export class SqliteStorage implements Storage {
     return r ? rowToQuestion(r) : null;
   }
 
+  async setQuestionAnswers(id: string, answers: Record<string, string>): Promise<void> {
+    this.db.prepare(`UPDATE tm_questions SET answers = ? WHERE id = ?`).run(JSON.stringify(answers), id);
+  }
+
   async expireQuestions(f: { runId?: string; taskId?: string }, note: string): Promise<Question[]> {
     const where: string[] = [`status = 'pending'`];
     const params: unknown[] = [note, now()];
@@ -1889,5 +1897,9 @@ export class SqliteStorage implements Storage {
         `INSERT INTO tm_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       )
       .run(key, JSON.stringify(value));
+  }
+
+  async deleteSetting(key: string): Promise<void> {
+    this.db.prepare(`DELETE FROM tm_config WHERE key = ?`).run(key);
   }
 }

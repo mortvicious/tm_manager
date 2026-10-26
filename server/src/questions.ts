@@ -1,5 +1,6 @@
 import type { Question, QuestionItem, QuestionStatus, Run } from '@tm/shared';
 import { broadcast, onEvent } from './events.ts';
+import { redactAnswers } from './secrets.ts';
 import type { Storage } from './storage/types.ts';
 
 // docs/questions.md — a worker's AskUserQuestion, carried to the human.
@@ -205,7 +206,9 @@ export class QuestionService {
       actor,
       runId: updated.runId,
       taskId: updated.taskId,
-      data: { questionId: id, answers },
+      // Redacted NOW: the audit row is never what the hook reads, and tm_events
+      // has no retention (docs/questions.md § Secrets).
+      data: { questionId: id, answers: redactAnswers(answers).answers },
     });
     broadcast({ type: 'question.updated', question: updated });
     return { ok: true, question: updated };
@@ -216,7 +219,16 @@ export class QuestionService {
    * answer, so the human must stop being asked. Audited once per row.
    */
   async expireForRun(runId: string, note: string): Promise<Question[]> {
-    return this.settleExpired(await this.storage.expireQuestions({ runId }, note), 'system');
+    const expired = await this.settleExpired(await this.storage.expireQuestions({ runId }, note), 'system');
+    // The turn is over, so every answer of this run has been collected by its
+    // hook (the decision is built from this row and the hook re-polls by
+    // tool_use_id) — only now may the row lose a credential the human typed.
+    // Never fatal: this sits on the Stop route and the exit path.
+    await this.storage
+      .listQuestions({ runId, status: 'answered' })
+      .then((rows) => this.redactRows(rows))
+      .catch((e) => console.warn('questions: redact on run end failed:', e instanceof Error ? e.message : e));
+    return expired;
   }
 
   async expireForTask(taskId: string, note: string, actor = 'system'): Promise<Question[]> {
@@ -226,6 +238,43 @@ export class QuestionService {
   /** Boot: no hook survives a restart, so no pending row can be collected. */
   async expireAll(note: string): Promise<Question[]> {
     return this.settleExpired(await this.storage.expireQuestions({}, note), 'system');
+  }
+
+  /**
+   * Boot: every answered row and every `question.answered` audit row through
+   * `redactAnswers`. No hook survives a restart, so nothing can still need the
+   * value. Idempotent (a marker never matches again), so it doubles as the
+   * one-off scrub of what was stored before redaction existed.
+   */
+  async scrubSecrets(): Promise<{ rows: number; events: number }> {
+    const rows = await this.redactRows(await this.storage.listQuestions({ status: 'answered' }));
+    let events = 0;
+    for (const e of await this.storage.listEvents({ kind: 'question.answered', limit: 2000 })) {
+      const answers = e.data?.answers;
+      if (!answers || typeof answers !== 'object') continue;
+      const r = redactAnswers(answers as Record<string, string>);
+      if (!r.changed) continue;
+      await this.storage.setEventData(e.id, { ...e.data, answers: r.answers });
+      events++;
+    }
+    return { rows, events };
+  }
+
+  /**
+   * Not broadcast: a `question.updated` for a settled row would re-send the
+   * Telegram "answered" notice and re-run push. An open SPA keeps the value it
+   * already showed until reload.
+   */
+  private async redactRows(rows: Question[]): Promise<number> {
+    let n = 0;
+    for (const q of rows) {
+      if (!q.answers) continue;
+      const r = redactAnswers(q.answers);
+      if (!r.changed) continue;
+      await this.storage.setQuestionAnswers(q.id, r.answers);
+      n++;
+    }
+    return n;
   }
 
   private async settleExpired(rows: Question[], actor: string): Promise<Question[]> {

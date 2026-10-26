@@ -101,6 +101,48 @@ Every step is a `tm_events` row: `question.asked` (actor `hook`),
 `question.answered` (actor `human` / `telegram`, with the answers),
 `question.expired` (with the note).
 
+## Secrets
+
+A human sometimes pastes a credential as a free-text answer (the 2026-10-26
+audit found three: JWTs and a Sentry `sntrys_` token). The answer has to reach
+the agent verbatim, so it is redacted only where nothing still needs it:
+
+- **Ask for a file, not a value.** The standing rules, the resume reminder and
+  the served instruction sheet tell the worker never to ask for a secret's
+  VALUE through `AskUserQuestion`: ask the user to put it in the repo's `.env`
+  or a named file, and to confirm.
+- **`looksSecret()` / `redactSecrets()`** (`server/src/secrets.ts`): vendor
+  prefixes (`sntrys_`/`sntryu_`, `sk-`, Stripe `sk_live_`, `ghp_`…,
+  `github_pat_`, `glpat-`, `xox?-`, `AKIA…`, `AIza…`, `npm_`, `hf_`), the JWT
+  shape, PEM private keys, and a long opaque token (≥ 32 chars with an unbroken
+  ≥ 24-char run that is letters+digits, or random mixed-case letters, at
+  entropy ≥ 3.5/4 bits). Each hit becomes `[redacted secret, N chars]`; the
+  rest of the answer is kept. It is greedy on purpose: a false positive (a
+  commit sha) costs a redacted audit line, because the agent already has it. A
+  UUID, a path, a CamelCase name and `ENV_NAME=true` do not match.
+- **The audit row** (`question.answered` `data.answers`) is redacted at answer
+  time: nothing reads it back for the hook.
+- **The `tm_questions` row** keeps the real value until the run's turn is over,
+  because `hookDecision` builds the CLI's `updatedInput` from it and a hook
+  whose request failed re-polls by `tool_use_id`. `expireForRun` (Stop route,
+  `handleExit`) then redacts every answered row of the run. Redaction is not
+  broadcast: a `question.updated` for a settled row would re-send the Telegram
+  notice. An open SPA keeps the value it already showed until reload.
+- **Boot** runs `scrubSecrets()` over every answered row and every
+  `question.answered` audit row. No hook survives a restart, and the marker
+  never matches again, so the scrub is idempotent. That makes it the one-off
+  scrub of what was stored before redaction existed (3 rows + 3 audit rows on
+  2026-10-26; a fourth candidate from the analysis was `ENV_NAME=true` pairs).
+  The log prints counts only.
+- **Telegram never shows free text.** `answerShown` renders an option pick by
+  its label (multi-select: every `, `-part a label) and anything else as
+  `answered (n chars)`. It is used by the "Answered in the browser" notice, the
+  "already answered" reply, the submit confirmation and the "Noted" line.
+
+The value still lives in the worker's transcript under `~/.claude/projects/`,
+which is unavoidable because the agent has to receive it. Until the run ends it
+is also readable through `GET /api/questions[/:id]`.
+
 ## Expiry — nobody is left answering into the void
 
 A pending question is only worth anything while the hook that asked it is
@@ -221,7 +263,9 @@ ambiguous or conflicting requirement, destructive or irreversible step, scope
 that could go two ways — and decide small things yourself, never asking about
 those. The served instruction sheet (`docs/agent-instructions.md`) says the
 same in one line, because a decision is not something to file a task or a
-dispatch for. All three also say how to show an image with a question (§ Images).
+dispatch for. All three also say how to show an image with a question (§ Images),
+and that a secret's value is never asked for: ask for it in `.env` or a named
+file (§ Secrets).
 
 ## Deliberately not
 

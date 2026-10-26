@@ -244,7 +244,7 @@ Some decisions are yours: which of two designs, what an ambiguous requirement me
 | Group colours | tint each task group with its own colour on the Board (default on); off leaves the neutral blocks, grouping itself is unaffected |
 | Chat model / effort | defaults for a new chat (`docs/chat.md`); each chat can be switched afterwards. Separate from the worker model on purpose — the cheap model for questions, the heavy one for work |
 | Chat concurrent turns | chat turns running at once across all chats (default 2). A chat is serial on its own; this is the fence against opening several and sending to all of them |
-| Sentry | org/project/token + target repo; **Sync issues now** pulls unresolved issues (14d) as tasks — idempotent, never duplicates. Token needs `event:read` + `project:read` scopes (a sourcemap-upload token 403s). EU orgs: API base `https://de.sentry.io` |
+| Sentry | org/project/token + target repo (the token is kept in `server/data/config.json`; the page shows only *set · ends …abcd* and replaces it when you type a new one); **Sync issues now** pulls unresolved issues (14d) as tasks — idempotent, never duplicates. Token needs `event:read` + `project:read` scopes (a sourcemap-upload token 403s). EU orgs: API base `https://de.sentry.io` |
 
 ## Troubleshooting
 

@@ -49,6 +49,19 @@ export interface BootConfig {
    * Both keys are generated on first boot and written back by `savePushVapid`.
    */
   push: PushConfig;
+  /**
+   * Sentry issue sync (server/src/sentry.ts). The auth token is a secret, so it
+   * lives here and never in `tm_config` (decisions.md 2026-10-26: it was there,
+   * and /api/config handed it to every worker). Read FRESH per sync through
+   * `readSentryAuthToken` and written by `saveSentryAuthToken` (the Config
+   * page's `PUT /api/sentry/token`), so neither a boot nor a restart is needed.
+   */
+  sentry: SentryFileConfig;
+}
+
+export interface SentryFileConfig {
+  /** Sentry auth token (project:read + event:read). Empty = not set. */
+  authToken: string;
 }
 
 export interface PushConfig {
@@ -208,6 +221,7 @@ const DEFAULT_CONFIG: BootConfig = {
     chat: { ...DEFAULT_TELEGRAM_CHAT },
   },
   push: { enabled: true, subject: 'mailto:task-manager@example.com', vapidPublicKey: '', vapidPrivateKey: '' },
+  sentry: { authToken: '' },
 };
 
 export const serverRoot = path.resolve(fileURLToPath(import.meta.url), '../..');
@@ -353,7 +367,50 @@ export function loadBootConfig(): BootConfig {
       chat: { ...DEFAULT_CONFIG.telegram.chat, ...(tg.chat ?? {}) },
     },
     push: parsePush(raw.push),
+    sentry: parseSentry(raw.sentry),
   };
+}
+
+function parseSentry(r: unknown): SentryFileConfig {
+  if (r === undefined) return structuredClone(DEFAULT_CONFIG.sentry);
+  if (typeof r !== 'object' || r === null || Array.isArray(r)) {
+    throw new Error(`data/config.json: sentry must be an object`);
+  }
+  const t = (r as Record<string, unknown>).authToken;
+  if (t !== undefined && typeof t !== 'string') {
+    throw new Error(`data/config.json: sentry.authToken must be a string`);
+  }
+  return { authToken: ((t as string | undefined) ?? '').trim() };
+}
+
+/**
+ * The Sentry token as the file holds it NOW — re-read per call, so a token
+ * saved from the Config page (or hand-edited) applies to the next sync. A
+ * missing or unreadable file reads as "not set", never as a crash of the sync.
+ */
+export function readSentryAuthToken(): string {
+  try {
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const t = raw?.sentry?.authToken;
+    return typeof t === 'string' ? t.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Persist the Sentry token ('' clears it). Rewrites ONLY sentry.authToken on
+ * a re-read of the file, like saveTelegramNotify, and tightens the file to
+ * 0600: it holds credentials (this one, the bot token, the VAPID key).
+ */
+export function saveSentryAuthToken(token: string): void {
+  const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new Error('data/config.json is not an object');
+  }
+  raw.sentry = { ...(raw.sentry ?? {}), authToken: token.trim() };
+  fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n', { mode: 0o600 });
+  fs.chmodSync(configPath, 0o600);
 }
 
 function parsePush(r: unknown): PushConfig {

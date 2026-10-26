@@ -1,4 +1,5 @@
 import type {
+  SentryTokenStatus,
   BackgroundShell,
   BackgroundShellKillResult,
   BackgroundShellOutput,
@@ -387,6 +388,8 @@ export const api = {
 
   orchestrator: () => req<OrchestratorStatus>('GET', '/api/orchestrator'),
   usage: () => req<UsageSnapshot>('GET', '/api/usage'),
+  sentryToken: () => req<SentryTokenStatus>('GET', '/api/sentry/token'),
+  putSentryToken: (token: string) => req<SentryTokenStatus>('PUT', '/api/sentry/token', { token }),
   sentrySync: () => req<{ created: number; skipped: number; fetched: number }>('POST', '/api/sentry/sync'),
   statsOverview: (days: number) => req<StatsOverview>('GET', `/api/stats/overview?days=${days}`),
   anomalies: () => req<Anomaly[]>('GET', '/api/stats/anomalies'),

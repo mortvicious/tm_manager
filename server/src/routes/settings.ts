@@ -16,8 +16,8 @@ import {
   taskTemplateProblem,
   type AppSettings,
 } from '@tm/shared';
-import { serverRoot } from '../config.ts';
-import { syncSentryIssues } from '../sentry.ts';
+import { saveSentryAuthToken, serverRoot } from '../config.ts';
+import { LEGACY_TOKEN_KEY, sentryTokenStatus, syncSentryIssues } from '../sentry.ts';
 import type { Storage } from '../storage/types.ts';
 
 // Shape per entry here; the list-level rules (unique ids/names, no repeated
@@ -125,7 +125,6 @@ const settingsSchema = z
       .min(64 * 1024)
       .max(16 * 1024 * 1024),
     'sentry.dsn': z.string(),
-    'sentry.authToken': z.string(),
     'sentry.org': z.string(),
     'sentry.project': z.string(),
     'sentry.apiBase': z.string(),
@@ -135,8 +134,35 @@ const settingsSchema = z
   .partial()
   .strict();
 
+/**
+ * The settings as /api/config may show them. The Sentry token moved to
+ * data/config.json at boot (migrateSentryToken); this strip is the belt to
+ * that: a row the migration could not delete must still never be served.
+ */
+async function publicSettings(storage: Storage): Promise<AppSettings> {
+  const s = (await storage.getSettings()) as unknown as Record<string, unknown>;
+  delete s[LEGACY_TOKEN_KEY];
+  return s as unknown as AppSettings;
+}
+
+const tokenBody = z.object({ token: z.string().max(500) }).strict();
+
 export function registerSettingsRoutes(app: FastifyInstance, storage: Storage) {
-  app.get('/api/config', async () => storage.getSettings());
+  app.get('/api/config', async () => publicSettings(storage));
+
+  // Set / not set + last 4 — the value never leaves the server (SECURITY.md § Secrets).
+  app.get('/api/sentry/token', async () => sentryTokenStatus());
+
+  // Written only when the page sends a new value; '' clears. A browser's write
+  // only (Origin), like a landing tier: a worker must not swap the token the
+  // issue sync authenticates with.
+  app.put('/api/sentry/token', async (req, reply) => {
+    if (!req.headers.origin) return reply.code(403).send({ error: 'the Sentry token is set from the dashboard' });
+    const { token } = tokenBody.parse(req.body);
+    saveSentryAuthToken(token);
+    await storage.appendEvent({ kind: 'config.changed', actor: 'human', data: { keys: [LEGACY_TOKEN_KEY], file: 'data/config.json' } });
+    return sentryTokenStatus();
+  });
 
   app.put('/api/config', async (req, reply) => {
     // Whole body validated before any write — no half-applied configs.
@@ -151,10 +177,10 @@ export function registerSettingsRoutes(app: FastifyInstance, storage: Storage) {
     }
     const keys = Object.keys(body);
     if (keys.length) {
-      // keys only — never values (sentry.authToken must not enter the log)
+      // keys only — never values
       await storage.appendEvent({ kind: 'config.changed', actor: 'human', data: { keys } });
     }
-    return storage.getSettings();
+    return publicSettings(storage);
   });
 
   app.post('/api/sentry/sync', async (req, reply) => {

@@ -40,6 +40,7 @@ import { registerOrchestratorRoutes } from './routes/orchestrator.ts';
 import { registerRepoRoutes } from './routes/repos.ts';
 import { registerRunRoutes } from './routes/runs.ts';
 import { registerSettingsRoutes } from './routes/settings.ts';
+import { migrateSentryToken } from './sentry.ts';
 import { registerStatsRoutes } from './routes/stats.ts';
 import { registerTaskRoutes } from './routes/tasks.ts';
 import { TelegramBot } from './telegram/bot.ts';
@@ -51,6 +52,13 @@ const cfg = loadBootConfig();
 // decision in net.ts reads it.
 setLanEnabled(cfg.lan.enabled);
 const storage = await createStorage(cfg);
+// The Sentry token used to live in tm_config, which /api/config serves to any
+// local process (SECURITY.md § Secrets). Move it to data/config.json once.
+await migrateSentryToken(storage)
+  .then((r) => {
+    if (r === 'moved') console.log('sentry: auth token moved from tm_config to data/config.json — rotate it (it was readable via /api/config)');
+  })
+  .catch((e) => console.warn('sentry: token migration failed:', e instanceof Error ? e.message : e));
 
 // PTY knobs are read live so a config change takes effect without a restart
 // (the session TTL in particular — 0 means "keep terminals forever").

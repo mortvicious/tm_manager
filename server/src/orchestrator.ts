@@ -1111,6 +1111,14 @@ export class Orchestrator implements OrchestratorApi {
     // into the void (docs/questions.md).
     const staleQuestions = await this.questions.expireAll('the server restarted').catch(() => []);
     if (staleQuestions.length) console.log(`questions: expired ${staleQuestions.length} left pending by the last process`);
+    const scrubbed = await this.questions.scrubSecrets().catch((e) => {
+      console.warn('questions: secret scrub failed:', e instanceof Error ? e.message : e);
+      return { rows: 0, events: 0 };
+    });
+    if (scrubbed.rows || scrubbed.events) {
+      // counts only — never which values (docs/questions.md § Secrets)
+      console.log(`questions: redacted credential-shaped answers in ${scrubbed.rows} row(s) and ${scrubbed.events} audit row(s)`);
+    }
     const recentCutoff = Date.now() - 2 * 60_000;
     // Sweep only deaths we never OBSERVED (exitCode null): killed rows and
     // prior-boot recoveries. Normally-exited pids are long free and may be

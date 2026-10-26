@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { DEFAULT_SETTINGS, EFFORT_LEVELS, MODEL_OPTIONS, taskPresets, type AppSettings } from '@tm/shared';
+import { DEFAULT_SETTINGS, EFFORT_LEVELS, MODEL_OPTIONS, taskPresets, type AppSettings, type SentryTokenStatus } from '@tm/shared';
 import { api } from '../api.ts';
 import { AppearanceSettings } from '../components/AppearanceSettings.tsx';
 import { PresetEditor } from '../components/PresetEditor.tsx';
@@ -25,6 +25,14 @@ export function ConfigPage() {
   const { repos, refresh } = useApp();
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // The Sentry token is never read back (it lives in data/config.json): the
+  // page knows set/not set + last 4, and writes only a value typed here.
+  const [tokenStatus, setTokenStatus] = useState<SentryTokenStatus | null>(null);
+  const [tokenDraft, setTokenDraft] = useState('');
+
+  useEffect(() => {
+    api.sentryToken().then(setTokenStatus).catch(() => {});
+  }, []);
 
   useEffect(() => {
     api
@@ -64,6 +72,10 @@ export function ConfigPage() {
       const next = await api.putConfig(diff);
       setCfg(next);
       snapshot.current = next;
+      if (tokenDraft.trim()) {
+        setTokenStatus(await api.putSentryToken(tokenDraft.trim()));
+        setTokenDraft('');
+      }
       // the app state carries settings the UI reacts to (board.groupColors)
       await refresh();
       setSaved(true);
@@ -872,14 +884,42 @@ export function ConfigPage() {
           </span>
         </div>
         <div className="cfg-row">
-          <div>Auth token</div>
-          <input
-            className="field mono"
-            style={{ width: 260 }}
-            type="password"
-            value={cfg['sentry.authToken']}
-            onChange={(e) => set('sentry.authToken', e.target.value)}
-          />
+          <div>
+            <div>Auth token</div>
+            <div className="hint">
+              {tokenStatus?.set
+                ? `set${tokenStatus.last4 ? ` · ends …${tokenStatus.last4}` : ''} — type a new one to replace it`
+                : 'not set'}
+              {' · kept in server/data/config.json, never shown again'}
+            </div>
+          </div>
+          <span style={{ display: 'flex', gap: 8 }}>
+            <input
+              className="field mono"
+              style={{ width: tokenStatus?.set ? 190 : 260 }}
+              type="password"
+              autoComplete="off"
+              placeholder={tokenStatus?.set ? 'replace…' : 'paste token'}
+              value={tokenDraft}
+              onChange={(e) => setTokenDraft(e.target.value)}
+            />
+            {tokenStatus?.set && (
+              <button
+                className="btn"
+                onClick={async () => {
+                  setErr(null);
+                  try {
+                    setTokenStatus(await api.putSentryToken(''));
+                    setTokenDraft('');
+                  } catch (e) {
+                    setErr((e as Error).message);
+                  }
+                }}
+              >
+                Clear
+              </button>
+            )}
+          </span>
         </div>
         <div className="cfg-row">
           <div>

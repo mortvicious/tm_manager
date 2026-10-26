@@ -37,6 +37,24 @@ default). The API takes `isCheck` and `timeoutSec` on `POST/PATCH
 /api/commands`. Agents cannot define checks: `/api/agent/commands` does not
 take the flag, so a worker cannot redefine its own definition of done.
 
+### Who may define a check
+
+The human routes need a browser's `Origin` (403 `checks are defined, edited and
+deleted from the dashboard` otherwise; `CHECK_FROM_BROWSER` in
+`routes/commands.ts`). This is the `landingNeedsBrowser` rule: browsers always
+send `Origin` on a write, and a worker's curl does not unless it is told to.
+Before this rule, a worker that knew `$TM_CALLBACK_URL` could unflag or rewrite
+the check that judges it, and the change was audited as `human`. Without
+`Origin`:
+
+- `POST` with `isCheck: true` or a `timeoutSec` → 403;
+- `PATCH` that changes `isCheck` or `timeoutSec` on any command → 403. So does
+  any `PATCH` of an existing check other than `sortOrder`: rewriting its
+  command to `true` or renaming it unflags it just as well;
+- `DELETE` of a check → 403.
+
+Plain (non-check) commands are unaffected.
+
 ## Per task: acceptance and which checks
 
 | field | column | meaning |

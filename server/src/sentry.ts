@@ -1,6 +1,34 @@
-import type { Task } from '@tm/shared';
+import type { SentryTokenStatus, Task } from '@tm/shared';
+import { readSentryAuthToken, saveSentryAuthToken } from './config.ts';
 import { broadcast } from './events.ts';
 import type { Storage } from './storage/types.ts';
+
+export function sentryTokenStatus(token = readSentryAuthToken()): SentryTokenStatus {
+  return token ? { set: true, last4: token.length > 8 ? token.slice(-4) : null } : { set: false, last4: null };
+}
+
+/** The tm_config key the token used to live under (before 2026-10-26). */
+export const LEGACY_TOKEN_KEY = 'sentry.authToken';
+
+/**
+ * One-time boot move of the token out of `tm_config` into data/config.json
+ * (SECURITY.md § Secrets). File first, row second: a crash in between leaves
+ * both, and the next boot repeats it. A file that already holds a token wins
+ * (it is the newer home). The file write failing keeps the row — the
+ * /api/config responses strip the key either way.
+ */
+export async function migrateSentryToken(
+  storage: Storage,
+  io: { read: () => string; save: (t: string) => void } = { read: readSentryAuthToken, save: saveSentryAuthToken },
+): Promise<'moved' | 'dropped' | 'none'> {
+  const legacy = (await storage.getSettings()) as unknown as Record<string, unknown>;
+  if (!(LEGACY_TOKEN_KEY in legacy)) return 'none';
+  const value = typeof legacy[LEGACY_TOKEN_KEY] === 'string' ? (legacy[LEGACY_TOKEN_KEY] as string).trim() : '';
+  const moved = value !== '' && io.read() === '';
+  if (moved) io.save(value);
+  await storage.deleteSetting(LEGACY_TOKEN_KEY);
+  return moved ? 'moved' : 'dropped';
+}
 
 interface SentryIssue {
   id: string;
@@ -30,9 +58,9 @@ export async function syncSentryIssues(storage: Storage): Promise<SyncResult> {
   const s = await storage.getSettings();
   const org = s['sentry.org'];
   const project = s['sentry.project'];
-  const token = s['sentry.authToken'];
+  const token = readSentryAuthToken();
   if (!org || !project || !token) {
-    throw new Error('configure sentry.org, sentry.project and sentry.authToken first');
+    throw new Error('configure the Sentry org, project and auth token first');
   }
   const base = (s['sentry.apiBase'] || 'https://sentry.io').replace(/\/$/, '');
   const url = `${base}/api/0/projects/${encodeURIComponent(org)}/${encodeURIComponent(project)}/issues/?query=is:unresolved&statsPeriod=14d&limit=25`;

@@ -533,6 +533,12 @@ export interface Storage {
    */
   answerQuestion(id: string, answers: Record<string, string>, actor: string): Promise<Question | null>;
   /**
+   * Overwrite an answered row's answers with their redacted form (docs/questions.md
+   * § Secrets). Unconditional on purpose: only ever called once nothing can
+   * collect the answer any more (the run's Stop/exit, boot).
+   */
+  setQuestionAnswers(id: string, answers: Record<string, string>): Promise<void>;
+  /**
    * Every pending question matching the filter → `expired` with `note`, in one
    * statement; returns the rows it expired (possibly none). An empty filter
    * expires ALL pending questions — the boot sweep.
@@ -648,6 +654,8 @@ export interface Storage {
    *  same transaction as the mutation). */
   appendEvent(e: NewAuditEvent): Promise<AuditEvent>;
   listEvents(f?: EventFilter): Promise<AuditEvent[]>;
+  /** Rewrite ONE audit row's data — only the secret scrub (questions.ts `scrubSecrets`) does; the log is otherwise append-only. */
+  setEventData(id: string, data: Record<string, unknown>): Promise<void>;
 
   /**
    * Reports (docs/reports.md). Plain CRUD: unlike a task there is no state
@@ -683,4 +691,6 @@ export interface Storage {
   /** Total `cost_usd` of every run (any mode) STARTED at or after this ISO time — the `budget.dayUsd` measure. */
   spendSince(sinceIso: string): Promise<number>;
   setSetting<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void>;
+  /** Drop a `tm_config` row — a key that moved out of the DB (sentry.authToken → data/config.json). */
+  deleteSetting(key: string): Promise<void>;
 }

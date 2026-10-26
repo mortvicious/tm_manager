@@ -231,6 +231,10 @@ export class PostgresStorage implements Storage {
     return (await this.q(sql, params)).map(rowToEvent);
   }
 
+  async setEventData(id: string, data: Record<string, unknown>): Promise<void> {
+    await this.q(`UPDATE tm_events SET data = ? WHERE id = ?`, [JSON.stringify(data), id]);
+  }
+
   // ---- repos ----
 
   async listRepos(): Promise<Repo[]> {
@@ -1147,6 +1151,10 @@ export class PostgresStorage implements Storage {
     return r[0] ? rowToQuestion(r[0]) : null;
   }
 
+  async setQuestionAnswers(id: string, answers: Record<string, string>): Promise<void> {
+    await this.q(`UPDATE tm_questions SET answers = ? WHERE id = ?`, [JSON.stringify(answers), id]);
+  }
+
   async expireQuestions(f: { runId?: string; taskId?: string }, note: string): Promise<Question[]> {
     const where: string[] = [`status = 'pending'`];
     const params: unknown[] = [note, now()];
@@ -1854,6 +1862,10 @@ export class PostgresStorage implements Storage {
       `INSERT INTO tm_config (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
       [key, JSON.stringify(value)],
     );
+  }
+
+  async deleteSetting(key: string): Promise<void> {
+    await this.q(`DELETE FROM tm_config WHERE key = ?`, [key]);
   }
 
   /** BEGIN/COMMIT on one client; a null-returning fn still commits (no-op
