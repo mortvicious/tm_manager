@@ -106,12 +106,16 @@ display:none pair.
   by link.
 - **More sheet** (`.more-sheet`, drawn by the shared `<Sheet>` — § Sheets) — the
   **whole** nav (so the four slots are a shortcut, never the only route) plus the
-  header controls the compact top bar could not hold: usage pill, server
-  uptime/restart, repo commands, theme, and the address the page was served
-  from. Escape and the overlay close it; it also closes on navigation and on
+  header controls the compact top bar could not hold: the **queue switch**,
+  usage pill, server uptime/restart, repo commands, theme, and the address the
+  page was served from. Escape and the overlay close it; it also closes on navigation and on
   crossing the breakpoint.
-- **Top bar** — brand (hidden under 430px), queue switch, `running n/m`, and the
-  `⋯` that toggles the sheet.
+- **Top bar** — brand (hidden under 430px), `running n/m` led by the queue's
+  state dot (accent = running, faint = stopped; not a control), the Inbox chip,
+  and the `⋯` that toggles the sheet. The queue switch itself is NOT in the
+  phone's bar: top-left is where iOS puts Back, and a reflexive tap there used
+  to start (or stop) the queue. It lives in the More sheet (§ Confirming
+  destructive actions).
 - **The emulator is not mounted on mobile.** A phone framing a phone is noise,
   and it was the one control that could not usefully shrink.
 
@@ -214,6 +218,38 @@ line at the top of a panel you scrolled away from.
   right beside the message.
 - Glass gives the toasts thick glass with a spring rise and a `tm-exit` fade
   (`docs/glass.md`); Reduce Motion drops the rise.
+- **Undo toasts.** `toastUndo(key, text, run)` is the store's one non-error
+  kind: neutral rim and accent dot (`.toast.info`, `role="status"`), an
+  **Undo** button, 8s. A new one with the same `key` replaces the old, so only
+  the latest is undoable. Today it carries the board's "Undo move" (`docs/grouping.md`
+  § Drag and drop).
+
+## Confirming destructive actions
+
+What kills a run or discards something takes **two presses** (`useArm()` in
+`src/arm.ts`, the arm BulkBar's Cancel always had): the first only swaps the
+label for the question ("Cancel? tap again" / "click again" on a desktop) and
+paints it red; a second press on the same button within 4 s runs it. Never a
+browser `confirm()`, which on a phone is a modal over the whole app. One hook
+holds one armed key, so arming a second button disarms the first.
+
+- **Task panel:** Undo start, Cancel, Cancel task (both queues), Stop agent,
+  and a file's ✕. On a phone the arming tap keeps the `⋯` sheet open, so the
+  second tap lands on the same row; the sheet closes when it fires.
+- **One label, one result.** Taking a WAITING task out of either queue cancels
+  it (`docs/queue.md`), so both are labelled **Cancel task** — "Remove from
+  queue" used to name the global one's cancel and the custom one's, which
+  is a cancel too. The board row's × on a waiting custom-queue member arms the
+  same way (`Cancel?`), and its sheet row reads **Cancel task** in red.
+- **Board bulk bar:** Cancel and **Mark done** (`Mark n done?`).
+- **The queue switch** (`OrchestratorSwitch`, a `<button role="switch">`, so
+  a keyboard can work it): **starting** claims queued tasks and spends money, so
+  start arms ("Start queue? tap again"); stopping is the safe direction
+  and never asks. A refused start/stop is a toast ("Start queue failed: …"),
+  no longer swallowed. Desktop keeps it in the header; a phone has it in the
+  More sheet.
+- Delete (task, feature, repo, command, chat) still asks with `confirm()`, as
+  before.
 
 ## When it does not load
 
@@ -418,8 +454,9 @@ to close; × animates out the same way.
   where you swipe between the task's images, pinch to zoom, pull down to close
   and download with ⤓. There is nothing to download first (handbook.md § Follow-ups & files).
 - **The `⋯` sheet** lists the rest: available first, then the refused ones with
-  their reason. Destructive actions (Cancel, Remove from the global queue, which
-  is a cancel, Stop agent, Delete) sit apart at the bottom, in red.
+  their reason. Destructive actions (Cancel, Cancel task, Stop agent, Delete)
+  sit apart at the bottom, in red, and arm before they fire (§ Confirming
+  destructive actions).
 - **The live-session guard is mirrored.** Enqueue, Add to queue, Release and Run
   now are disabled while the task's PTY is up, with the same words as the board
   row, because the server's `hasLiveSession()` would 409 them. This applies to

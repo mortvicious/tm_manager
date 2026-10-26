@@ -143,9 +143,10 @@ Glass), and the `::view-transition` duration.
   - The question modal is an alert that pops in from slightly too big.
     Popovers grow out of their button.
   - The terminal drawer rises like a sheet.
-- **Header fit.** A phone bar holds four capsules at most. While the question
-  chip is up, the orchestrator switch keeps its knob and moves its label off
-  screen. The label stays its accessible name.
+- **Header fit.** A phone bar holds four capsules at most. The queue switch
+  is not one of them: it lives in the More sheet (`docs/mobile.md` § Confirming
+  destructive actions), and `running n/m` carries its state dot. Its old
+  label-off-screen trick is gone with it.
 
 **Hidden in Glass, on the phone**: Features and Chat leave the tab bar and
 the More sheet (`GLASS_HIDDEN` in `Layout.tsx`, applied by `useNav()` only when

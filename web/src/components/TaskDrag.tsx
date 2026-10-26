@@ -1,10 +1,21 @@
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { groupAncestors, groupLabel, type Task } from '@tm/shared';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
+import { groupAncestors, groupLabel, type Task, type TaskMovePlace } from '@tm/shared';
 
 // Board drag and drop (docs/grouping.md § Drag and drop). Pointer events, not
 // the HTML5 drag API: that one never fires for touch on iOS, and the board is
 // used from a phone. A drag starts on a row's grip only, so scrolling, clicking
-// a row and selecting text all behave exactly as before.
+// a row and selecting text all behave exactly as before. On TOUCH the grip
+// must also be held still for `HOLD_MS` first (docs/grouping.md § Drag and
+// drop): the board is mostly scrolled, and a flick that starts on the grip is
+// a scroll — it moves past `TOUCH_SLOP` before the hold and is left to the
+// browser (the grip is `touch-action: manipulation` on touch screens).
 //
 // Targets are found by hit-testing (`elementFromPoint`) against two data
 // attributes, so nothing but the grip needs a handler:
@@ -27,12 +38,17 @@ export interface DragState {
   x: number;
   y: number;
   over: DropOver | null;
+  /** armed by a touch hold: the ghost plays its lift */
+  touch: boolean;
 }
 
 /** Fraction of a row's height that reads as "beside" rather than "into". */
 const EDGE = 0.3;
 /** Pixels the pointer must travel before a press on the grip becomes a drag. */
 const SLOP = 4;
+/** Touch: how long the grip must be held before it arms, and how far the finger may wander meanwhile. */
+const HOLD_MS = 350;
+const TOUCH_SLOP = 8;
 /** Distance from the scroll container's edge that auto-scrolls, and the speed. */
 const SCROLL_EDGE = 48;
 const SCROLL_STEP = 14;
@@ -62,6 +78,27 @@ export function moveRefusal(tasks: Task[], moving: Task, parentId: string | null
     return 'its parent is blocked waiting on its split children';
   }
   return null;
+}
+
+/**
+ * The move that puts `moving` back where it is NOW — read before a drop is
+ * sent, replayed by the board's "Undo move" toast. Beside its previous
+ * sibling (or the next one), else as its old parent's only child, else a
+ * root again; the subtree comes along as with any move. The order among
+ * siblings is restored exactly; the key itself is a fresh midpoint.
+ */
+export function undoMove(tasks: Task[], moving: Task): { place: TaskMovePlace; targetId?: string } {
+  const sibs = tasks
+    .filter((t) => t.parentId === moving.parentId && t.id !== moving.id)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt));
+  const earlier = (t: Task) =>
+    t.sortOrder < moving.sortOrder || (t.sortOrder === moving.sortOrder && t.createdAt < moving.createdAt);
+  const prev = sibs.filter(earlier).at(-1);
+  if (prev) return { place: 'after', targetId: prev.id };
+  const next = sibs.find((t) => !earlier(t));
+  if (next) return { place: 'before', targetId: next.id };
+  if (moving.parentId) return { place: 'child', targetId: moving.parentId };
+  return { place: 'ungroup' };
 }
 
 /** One line under the ghost, saying what letting go will do. */
@@ -110,6 +147,9 @@ export function useTaskDrag(tasks: Task[], onDrop: (moving: Task, zone: DropZone
     y: number;
     active: boolean;
     scroller: HTMLElement;
+    touch: boolean;
+    /** the touch hold's timer, until it arms */
+    hold: ReturnType<typeof setTimeout> | null;
   } | null>(null);
   // read by the pointer handlers and the scroll loop, which outlive a render
   const latest = useRef({ tasks, onDrop });
@@ -150,9 +190,17 @@ export function useTaskDrag(tasks: Task[], onDrop: (moving: Task, zone: DropZone
   };
 
   const cancel = () => {
+    if (press.current?.hold) clearTimeout(press.current.hold);
     press.current = null;
     setDrag(null);
   };
+  // a press still pending when the board unmounts must not arm afterwards
+  useEffect(
+    () => () => {
+      if (press.current?.hold) clearTimeout(press.current.hold);
+    },
+    [],
+  );
 
   // Escape abandons the drag; the grip keeps pointer capture, but with no
   // press recorded its move/up handlers do nothing.
@@ -176,7 +224,7 @@ export function useTaskDrag(tasks: Task[], onDrop: (moving: Task, zone: DropZone
           const before = p.scroller.scrollTop;
           p.scroller.scrollTop += dy;
           if (p.scroller.scrollTop !== before) {
-            setDrag({ task: p.task, x: p.x, y: p.y, over: locate(p.x, p.y, p.task) });
+            setDrag({ task: p.task, x: p.x, y: p.y, over: locate(p.x, p.y, p.task), touch: p.touch });
           }
         }
       }
@@ -189,13 +237,29 @@ export function useTaskDrag(tasks: Task[], onDrop: (moving: Task, zone: DropZone
     // locate/cancel read refs only, so the drag's start is the only dependency
   }, [dragging]);
 
+  // Once a touch drag is armed the page must not scroll under it. Pointer
+  // events cannot prevent that and React's touch listeners are passive, so a
+  // native non-passive touchmove sits on each grip — on the grip only, so the
+  // rest of the board keeps its fast, passive scrolling.
+  const gripRef = useCallback((el: HTMLElement | null) => {
+    if (!el) return;
+    const onMove = (ev: TouchEvent) => {
+      if (press.current?.active && ev.cancelable) ev.preventDefault();
+    };
+    el.addEventListener('touchmove', onMove, { passive: false });
+    return () => el.removeEventListener('touchmove', onMove);
+  }, []);
+
   const gripProps = (task: Task) => ({
+    ref: gripRef,
     onPointerDown: (e: ReactPointerEvent<HTMLElement>) => {
       if (e.button !== 0) return;
       e.stopPropagation();
       e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
-      press.current = {
+      if (press.current?.hold) clearTimeout(press.current.hold);
+      const touch = e.pointerType === 'touch';
+      const p: NonNullable<typeof press.current> = {
         task,
         x0: e.clientX,
         y0: e.clientY,
@@ -203,7 +267,20 @@ export function useTaskDrag(tasks: Task[], onDrop: (moving: Task, zone: DropZone
         y: e.clientY,
         active: false,
         scroller: scrollParent(e.currentTarget),
+        touch,
+        hold: null,
       };
+      if (touch) {
+        // held still long enough: arm and lift, before the finger moves at all
+        p.hold = setTimeout(() => {
+          if (press.current !== p) return;
+          p.hold = null;
+          p.active = true;
+          navigator.vibrate?.(10);
+          setDrag({ task: p.task, x: p.x, y: p.y, over: null, touch: true });
+        }, HOLD_MS);
+      }
+      press.current = p;
     },
     onPointerMove: (e: ReactPointerEvent<HTMLElement>) => {
       const p = press.current;
@@ -211,13 +288,20 @@ export function useTaskDrag(tasks: Task[], onDrop: (moving: Task, zone: DropZone
       p.x = e.clientX;
       p.y = e.clientY;
       if (!p.active) {
-        if (Math.hypot(p.x - p.x0, p.y - p.y0) < SLOP) return;
+        const moved = Math.hypot(p.x - p.x0, p.y - p.y0);
+        if (p.touch) {
+          // moved before the hold armed: a scroll, the browser's to take
+          if (moved >= TOUCH_SLOP) cancel();
+          return;
+        }
+        if (moved < SLOP) return;
         p.active = true;
       }
-      setDrag({ task: p.task, x: p.x, y: p.y, over: locate(p.x, p.y, p.task) });
+      setDrag({ task: p.task, x: p.x, y: p.y, over: locate(p.x, p.y, p.task), touch: p.touch });
     },
     onPointerUp: (e: ReactPointerEvent<HTMLElement>) => {
       const p = press.current;
+      if (p?.hold) clearTimeout(p.hold);
       press.current = null;
       setDrag(null);
       if (!p?.active) return;
@@ -249,7 +333,7 @@ export function DragGhost({ drag, tasks }: { drag: DragState | null; tasks: Task
   if (!drag) return null;
   return (
     <div
-      className={`drag-ghost ${drag.over?.refusal ? 'refused' : ''}`}
+      className={`drag-ghost${drag.over?.refusal ? ' refused' : ''}${drag.touch ? ' lifted' : ''}`}
       style={{ left: drag.x, top: drag.y }}
       aria-hidden="true"
     >

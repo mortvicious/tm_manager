@@ -17,7 +17,7 @@ import {
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
-import { toastError } from '../toast.ts';
+import { toastError, toastUndo } from '../toast.ts';
 import {
   absorbTyped,
   buildHaystacks,
@@ -51,7 +51,7 @@ import { liveReviewRun } from '../components/RunKind.tsx';
 import { TaskAttemptsChip, TaskCostChip } from '../components/RunMeta.tsx';
 import { FullSheet } from '../components/Sheet.tsx';
 import { StatusBadge } from '../components/StatusBadge.tsx';
-import { DragGhost, useTaskDrag, type DropZone } from '../components/TaskDrag.tsx';
+import { DragGhost, undoMove, useTaskDrag, type DropZone } from '../components/TaskDrag.tsx';
 import { TaskRow } from '../components/TaskRow.tsx';
 import { TimeAgo, isNew, useNow } from '../components/TimeAgo.tsx';
 
@@ -781,6 +781,8 @@ export function BoardPage({
   // Hidden tasks (docs/design.md § Hidden tasks) leave every other section —
   // Active, Drafts, the groupings and Recent — for a dimmed one of their own.
   const visible = useMemo(() => filtered.filter((t) => !t.hiddenAt), [filtered]);
+  // a ticked row a later search or filter hides stays selected, and the bar says so
+  const filteredIds = useMemo(() => new Set(filtered.map((t) => t.id)), [filtered]);
   // Manual position (docs/grouping.md § Order): the keys from a task's group
   // root down to it. Compared element-wise that is depth-first tree order —
   // how a group's members ALWAYS read, whatever the sort, and how the groups
@@ -918,9 +920,19 @@ export function BoardPage({
     if ((zone === 'before' || zone === 'after') && target && !target.parentId && sort !== 'manual') {
       setPrefs((p) => ({ ...p, sort: 'manual' }));
     }
+    // where it is now, read before the move: a drop is one gesture, so it gets an Undo
+    const back = undoMove(tasks, moving);
     api
       .moveTask(moving.id, { place: zone, targetId })
-      .then(() => refresh())
+      .then(() => {
+        toastUndo('move', `Moved “${moving.title}”`, () => {
+          api
+            .moveTask(moving.id, back)
+            .then(() => refresh())
+            .catch((e) => toastError(e, 'Undo move'));
+        });
+        return refresh();
+      })
       .catch((e) => toastError(e, 'Move'));
   };
   const { drag, gripProps, dropClass } = useTaskDrag(tasks, onDrop);
@@ -1300,7 +1312,13 @@ export function BoardPage({
         </>
       )}
       {selecting && (
-        <BulkBar ids={selected} tasks={tasks} onSettled={setSelected} onExit={exitSelect} />
+        <BulkBar
+          ids={selected}
+          hidden={selected.filter((id) => !filteredIds.has(id)).length}
+          tasks={tasks}
+          onSettled={setSelected}
+          onExit={exitSelect}
+        />
       )}
       {searchOpen && (
         <SearchPanel

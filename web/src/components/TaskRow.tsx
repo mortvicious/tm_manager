@@ -1,9 +1,10 @@
-import { useState, type CSSProperties, type HTMLAttributes, type MouseEvent, type ReactNode } from 'react';
+import { useState, type CSSProperties, type HTMLAttributes, type MouseEvent, type ReactNode, type Ref } from 'react';
 import { publishCaution, publishGateReason, type Task, type TaskStatus } from '@tm/shared';
 import { api } from '../api.ts';
 import { confirmPublish, publishIsPrimary } from '../publish.ts';
 import { useApp } from '../state.tsx';
 import { toastError } from '../toast.ts';
+import { useArm } from '../arm.ts';
 import { IconCheck, IconEye, IconGrip, IconMore, IconPlay, IconPublish, IconQueue, IconTerminal, IconX } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
 import { QueueMark } from './QueueMark.tsx';
@@ -77,7 +78,7 @@ export function TaskRow({
   depth?: number;
   /** props for the drag grip (components/TaskDrag.tsx); absent = the row is
    *  neither draggable nor a drop target (the flat `recent` list) */
-  grip?: HTMLAttributes<HTMLElement>;
+  grip?: HTMLAttributes<HTMLElement> & { ref?: Ref<HTMLElement> };
   /** drop indicator while a drag hovers this row (`drop-before`, `dragging`…) */
   dropClass?: string;
   /** board multi-select (docs/inbox.md § Bulk actions): a click toggles the
@@ -89,6 +90,9 @@ export function TaskRow({
   const mobile = useIsMobile();
   const [busy, setBusy] = useState(false);
   const [sheet, setSheet] = useState(false);
+  // taking a WAITING member out of the custom queue cancels it (docs/queue.md),
+  // so the × arms first and a second press cancels (src/arm.ts)
+  const arm = useArm();
 
   const taskRuns = runs.filter((r) => r.taskId === task.id);
   // Prefer the live session (its PTY is certain to still be attachable);
@@ -127,8 +131,11 @@ export function TaskRow({
   // hiding is for a task at rest (docs/design.md § Hidden tasks)
   const working = task.status === 'running' || task.status === 'waiting';
   const canQueue = inQueue || (!!task.repoId && CAN_QUEUE.includes(task.status) && !live);
+  const unqueueArmed = inQueue && arm.armed === 'unqueue';
   const queueLabel = inQueue
-    ? 'Remove from queue'
+    ? unqueueArmed
+      ? `Cancel task? ${mobile ? 'tap' : 'click'} again`
+      : 'Cancel task — it leaves the queue and is cancelled (asks for a second press)'
     : !task.repoId
       ? 'Assign a repo before queueing this task'
       : task.status === 'running' || task.status === 'waiting'
@@ -219,7 +226,7 @@ export function TaskRow({
       >
         {select && <SelectBox on={select.on} />}
         {grip && (
-          <span className="drag-grip" title="Drag: onto a task to group with it, above or below it to reorder" {...grip}>
+          <span className="drag-grip" title="Press and hold, then drag: onto a task to group with it, above or below it to reorder" {...grip}>
             <IconGrip />
           </span>
         )}
@@ -309,10 +316,15 @@ export function TaskRow({
               />
               <SheetAction
                 icon={inQueue ? <IconX /> : <IconQueue />}
-                label={inQueue ? 'Remove from queue' : 'Add to queue'}
-                hint={inQueue ? 'Take it out of the one-at-a-time queue' : queueLabel}
+                label={inQueue ? (unqueueArmed ? 'Cancel task? tap again' : 'Cancel task') : 'Add to queue'}
+                hint={inQueue ? 'Takes it out of the one-at-a-time queue and cancels it' : queueLabel}
+                tone={inQueue ? 'danger' : undefined}
                 disabled={busy || !canQueue}
-                onClick={fromSheet(() => void act(null, () => api.taskAction(task.id, inQueue ? 'unqueue' : 'queue')))}
+                onClick={() => {
+                  // the arming tap keeps the sheet open for the second one
+                  if (inQueue && !arm.press('unqueue')) return;
+                  fromSheet(() => void act(null, () => api.taskAction(task.id, inQueue ? 'unqueue' : 'queue')))();
+                }}
               />
               <SheetAction
                 icon={<IconEye off={!task.hiddenAt} />}
@@ -377,11 +389,17 @@ export function TaskRow({
       <span className="row-actions">
         <QuickBtn
           label={queueLabel}
-          className={inQueue ? 'queued' : undefined}
+          className={unqueueArmed ? 'armed' : inQueue ? 'queued' : undefined}
           disabled={busy || !canQueue}
-          onClick={(e) => act(e, () => api.taskAction(task.id, inQueue ? 'unqueue' : 'queue'))}
+          onClick={(e) => {
+            if (inQueue && !arm.press('unqueue')) {
+              e.stopPropagation();
+              return;
+            }
+            void act(e, () => api.taskAction(task.id, inQueue ? 'unqueue' : 'queue'));
+          }}
         >
-          {inQueue ? <IconX /> : <IconQueue />}
+          {unqueueArmed ? 'Cancel?' : inQueue ? <IconX /> : <IconQueue />}
         </QuickBtn>
         {markDone && (
           <QuickBtn

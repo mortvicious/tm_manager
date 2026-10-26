@@ -1480,6 +1480,17 @@ button.badge.badge-link:hover {
   }
 }
 
+/* Touch arms only after a hold (TaskDrag.tsx HOLD_MS), so the grip lets a
+   scroll that starts on it be a scroll; the hold must not select or call out. */
+@media (pointer: coarse) {
+  .task-row .drag-grip {
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+}
+
 .task-row.dragging {
   opacity: 0.4;
 }
@@ -1521,6 +1532,25 @@ button.badge.badge-link:hover {
 
 .drag-ghost.refused {
   border-color: var(--tm-status-failed);
+}
+
+/* a touch hold armed the drag: the ghost lifts off the row under the finger */
+.drag-ghost.lifted {
+  box-shadow: var(--tm-shadow-lg);
+  animation: tm-drag-lift var(--tm-dur-base) var(--tm-ease-out);
+}
+
+@keyframes tm-drag-lift {
+  from {
+    scale: 0.94;
+    opacity: 0.6;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drag-ghost.lifted {
+    animation: none;
+  }
 }
 
 .drag-ghost .title {
@@ -1597,6 +1627,24 @@ button.badge.badge-link:hover {
 }
 
 .toast-text b {
+  font-weight: 600;
+}
+
+.toast.info {
+  border-color: var(--tm-border-strong);
+  background: var(--tm-bg-raised);
+}
+
+.toast.info .toast-dot {
+  background: var(--tm-accent);
+}
+
+/* .btn.ghost recolours in Glass: the undo stays an accent action in both */
+.toast .btn.toast-act {
+  flex: none;
+  margin: calc(-1 * var(--tm-space-1)) 0;
+  padding: var(--tm-space-1) var(--tm-space-2);
+  color: var(--tm-accent);
   font-weight: 600;
 }
 
@@ -1932,6 +1980,16 @@ button.badge.badge-link:hover {
 
 .task-row .quick.queued:hover {
   color: var(--tm-status-failed);
+}
+
+/* the two-press arm (src/arm.ts): the × armed reads its question in red */
+.task-row .quick.armed,
+.task-row .quick.armed:hover {
+  padding: var(--tm-space-1) var(--tm-space-2);
+  color: var(--tm-status-failed);
+  background: color-mix(in srgb, var(--tm-status-failed) var(--tm-group-tint), transparent);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
 }
 
 .task-row .row-actions {
@@ -2535,6 +2593,13 @@ button.badge.badge-link:hover {
 /* ---------- header start/stop switch ---------- */
 
 .switch {
+  /* a <button role="switch">: drop the UA button chrome first */
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
   display: inline-flex;
   align-items: center;
   gap: var(--tm-space-2);
@@ -2542,6 +2607,44 @@ button.badge.badge-link:hover {
   user-select: none;
   font-weight: 600;
   font-size: var(--tm-text-sm);
+}
+
+.switch:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.switch > span:last-child {
+  white-space: nowrap;
+}
+
+/* the first press on a stopped switch only arms it (src/arm.ts): the label asks */
+.switch.armed > span:last-child {
+  color: var(--tm-status-review);
+}
+
+/* the phone header's queue state (Layout.tsx RunCount): a dot, not a control */
+.queue-dot {
+  display: inline-block;
+  width: var(--tm-space-2);
+  height: var(--tm-space-2);
+  margin-right: var(--tm-space-1);
+  border-radius: 50%;
+  background: var(--tm-text-faint);
+  vertical-align: middle;
+}
+
+.queue-dot.on {
+  background: var(--tm-accent);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .switch .track {

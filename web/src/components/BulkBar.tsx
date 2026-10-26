@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   EFFORT_LEVELS,
   MODEL_OPTIONS,
@@ -8,16 +8,23 @@ import {
   type Task,
 } from '@tm/shared';
 import { api } from '../api.ts';
+import { useArm } from '../arm.ts';
 import { useApp } from '../state.tsx';
 
 const ACTIONS: { id: Exclude<BulkAction, 'edit'>; label: string; title: string }[] = [
   { id: 'enqueue', label: 'Enqueue', title: 'Into the global queue (drafts, failed, cancelled, review)' },
   { id: 'queue', label: 'Add to queue', title: 'Into the one-at-a-time custom queue, in the order you ticked them' },
-  { id: 'complete', label: 'Mark done', title: 'review → done' },
+  { id: 'complete', label: 'Mark done', title: 'review → done, without publishing (asks for a second press)' },
   { id: 'hide', label: 'Hide', title: 'Move into the dimmed Hidden section (not a working task)' },
   { id: 'unhide', label: 'Unhide', title: 'Back to its usual section' },
-  { id: 'cancel', label: 'Cancel', title: 'Stop and cancel — a running agent is killed' },
+  { id: 'cancel', label: 'Cancel', title: 'Stop and cancel — a running agent is killed (asks for a second press)' },
 ];
+
+/** What a second press confirms (src/arm.ts): Cancel kills agents, Mark done closes reviews nobody read. */
+const ARMED: Partial<Record<BulkAction, (n: number) => string>> = {
+  cancel: (n) => `Cancel ${n}?`,
+  complete: (n) => `Mark ${n} done?`,
+};
 
 /**
  * The board's multi-select bar (docs/inbox.md § Bulk actions). One call to
@@ -27,12 +34,15 @@ const ACTIONS: { id: Exclude<BulkAction, 'edit'>; label: string; title: string }
  */
 export function BulkBar({
   ids,
+  hidden,
   tasks,
   onSettled,
   onExit,
 }: {
   /** selected ids, in the order they were ticked (Add to queue keeps it) */
   ids: string[];
+  /** how many of `ids` the board's search/filter currently hides — they are still acted on */
+  hidden: number;
   tasks: Task[];
   /** after a call: the refused ids, which stay selected (the rest drop out) */
   onSettled: (refused: string[]) => void;
@@ -41,13 +51,8 @@ export function BulkBar({
   const { refresh } = useApp();
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<{ text: string; refused: { title: string; error: string }[] } | null>(null);
-  // Cancel kills running agents: a second press confirms, never a browser dialog
-  const [armed, setArmed] = useState(false);
-  useEffect(() => {
-    if (!armed) return;
-    const t = setTimeout(() => setArmed(false), 4000);
-    return () => clearTimeout(t);
-  }, [armed]);
+  // Cancel and Mark done: a second press confirms, never a browser dialog
+  const arm = useArm();
 
   const n = ids.length;
   const send = async (b: BulkRequest) => {
@@ -68,24 +73,26 @@ export function BulkBar({
       setReport({ text: (e as Error).message, refused: [] });
     } finally {
       setBusy(false);
-      setArmed(false);
+      arm.disarm();
     }
   };
 
   return (
     <div className="bulk-bar" role="toolbar" aria-label="Bulk actions">
-      <span className="bulk-count">{n ? `${n} selected` : 'Select tasks'}</span>
+      <span className="bulk-count" title={hidden ? 'Bulk actions apply to these too' : undefined}>
+        {n ? `${n} selected${hidden ? ` (${hidden} hidden by filter)` : ''}` : 'Select tasks'}
+      </span>
       {ACTIONS.map((a) =>
-        a.id === 'cancel' ? (
+        ARMED[a.id] ? (
           <button
             key={a.id}
             type="button"
-            className={`btn${armed ? ' danger' : ''}`}
+            className={`btn${arm.armed === a.id ? ' danger' : ''}`}
             disabled={busy || !n}
             title={a.title}
-            onClick={() => (armed ? send({ action: 'cancel', ids }) : setArmed(true))}
+            onClick={() => arm.press(a.id) && send({ action: a.id, ids })}
           >
-            {armed ? `Cancel ${n}?` : a.label}
+            {arm.armed === a.id ? ARMED[a.id]!(n) : a.label}
           </button>
         ) : (
           <button

@@ -5,6 +5,8 @@ import { api } from '../api.ts';
 import { toggleScheme, useLook } from '../appearance.ts';
 import type { InboxReturn, ReturnTo } from '../returnTo.ts';
 import { useApp } from '../state.tsx';
+import { useArm } from '../arm.ts';
+import { toastError } from '../toast.ts';
 import { CommandsLauncher } from './Commands.tsx';
 import { EmulatorLauncher } from './Emulator.tsx';
 import { Sheet } from './Sheet.tsx';
@@ -62,29 +64,54 @@ function ThemeToggle() {
   );
 }
 
+/**
+ * The global queue switch (docs/mobile.md § Confirming destructive actions). STARTING it
+ * claims queued tasks, which spends money, so start takes a second press
+ * (src/arm.ts); stopping is the safe direction and never asks. On a phone it
+ * lives in the More sheet — the header's top-left is where iOS puts Back — and
+ * the header keeps only the non-interactive state dot on the run count.
+ */
 function OrchestratorSwitch() {
   const { orch, setOrch } = useApp();
+  const mobile = useIsMobile();
   const [busy, setBusy] = useState(false);
+  const arm = useArm();
+  const armed = arm.armed === 'start';
   const toggle = async () => {
     if (busy) return;
+    const verb = orch.enabled ? 'stop' : 'start';
+    if (verb === 'start' && !arm.press('start')) return;
     setBusy(true);
     try {
-      await api.orchestratorAction(orch.enabled ? 'stop' : 'start');
-      const s = await api.orchestrator();
-      setOrch(s);
-    } catch {
-      // orchestrator lands in Phase 5; ignore until then
+      await api.orchestratorAction(verb);
+      setOrch(await api.orchestrator());
+    } catch (e) {
+      toastError(e, verb === 'start' ? 'Start queue' : 'Stop queue');
     } finally {
       setBusy(false);
     }
   };
   return (
-    <div className={`switch ${orch.enabled ? 'on' : ''}`} onClick={toggle} role="switch" aria-checked={orch.enabled}>
-      <span className="track">
+    <button
+      type="button"
+      role="switch"
+      aria-checked={orch.enabled}
+      className={`switch${orch.enabled ? ' on' : ''}${armed ? ' armed' : ''}`}
+      disabled={busy}
+      title={
+        orch.enabled
+          ? 'Stop the global queue — running agents finish, nothing new is claimed'
+          : 'Start the global queue — it claims queued tasks (asks for a second press)'
+      }
+      onClick={toggle}
+    >
+      <span className="track" aria-hidden="true">
         <span className="knob" />
       </span>
-      <span>{orch.enabled ? 'Queue running' : 'Queue stopped'}</span>
-    </div>
+      <span>
+        {armed ? `Start queue? ${mobile ? 'tap' : 'click'} again` : orch.enabled ? 'Queue running' : 'Queue stopped'}
+      </span>
+    </button>
   );
 }
 
@@ -436,17 +463,22 @@ function servedFrom() {
   return window.location.host;
 }
 
-function RunCount() {
+/** `state`: the phone's header, where the queue switch is a dot here and the switch is in More. */
+function RunCount({ state = false }: { state?: boolean }) {
   const { orch } = useApp();
+  const slots =
+    (orch.aux ?? 0) > 0
+      ? `${orch.running} of ${orch.concurrency} worker slots in use · ${orch.aux} aux session(s) (review / plan / analysis / chat / report …) — those run outside the worker budget`
+      : `${orch.running} of ${orch.concurrency} worker slots in use`;
+  const queue = orch.enabled ? 'Queue running' : 'Queue stopped';
   return (
-    <span
-      className="runcount"
-      title={
-        (orch.aux ?? 0) > 0
-          ? `${orch.running} of ${orch.concurrency} worker slots in use · ${orch.aux} aux session(s) (review / plan / analysis / chat / report …) — those run outside the worker budget`
-          : `${orch.running} of ${orch.concurrency} worker slots in use`
-      }
-    >
+    <span className="runcount" title={state ? `${queue} (switch it in the ⋯ menu) · ${slots}` : slots}>
+      {state && (
+        <>
+          <span className={`queue-dot${orch.enabled ? ' on' : ''}`} aria-hidden="true" />
+          <span className="sr-only">{queue}, </span>
+        </>
+      )}
       running {orch.running}/{orch.concurrency}
       {(orch.aux ?? 0) > 0 ? ` · +${orch.aux}` : ''}
     </span>
@@ -488,6 +520,7 @@ function MoreSheet({ onClose, onOpenTerminal }: { onClose: () => void; onOpenTer
         ))}
       </div>
       <div className="sheet-tools">
+        <OrchestratorSwitch />
         <UsagePill />
         <ServerControl />
         <div className="sheet-tool-row">
@@ -604,8 +637,8 @@ export function Layout({
             <span className="tm">tm_</span>manager
           </span>
         )}
-        <OrchestratorSwitch />
-        <RunCount />
+        {!mobile && <OrchestratorSwitch />}
+        <RunCount state={mobile} />
         {/* A phone's bar holds four capsules: there the Inbox chip stands in
             for the question chip (questions head the Inbox). */}
         {!mobile && <QuestionChip />}

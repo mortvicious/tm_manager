@@ -198,7 +198,12 @@ On the Board, **Select** (next to search) switches the rows to multi-select:
 Selection order is tick order, and **Add to queue** joins the custom queue in
 that order (FIFO). **Cancel** arms on the first press (`Cancel n?`) and fires
 on the second within 4 s, because it kills running agents and a browser
-`confirm()` would block the page.
+`confirm()` would block the page; **Mark done** arms the same way (`Mark n
+done?`), since it closes reviews without publishing (`src/arm.ts`, `docs/mobile.md`
+§ Confirming destructive actions).
+
+A ticked row that a later search or filter hides **stays selected** and is
+still acted on, so the count says so: `3 selected (1 hidden by filter)`.
 
 ### The route
 

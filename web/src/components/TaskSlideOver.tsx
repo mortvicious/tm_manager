@@ -40,6 +40,7 @@ import { LandingPicker } from './LandingPicker.tsx';
 import { QuestionForm } from './QuestionModal.tsx';
 import { Sheet, SheetAction } from './Sheet.tsx';
 import { toastError } from '../toast.ts';
+import { useArm } from '../arm.ts';
 import { exitGhost } from '../motion.ts';
 
 /**
@@ -61,6 +62,11 @@ interface PanelAction {
   disabled?: boolean;
   /** kills or discards something: bottom of the phone sheet, in red */
   destructive?: boolean;
+  /**
+   * Two-press arm (src/arm.ts): the first press only swaps the label for this
+   * question, a second press within 4 s runs `onClick`. For what kills a run.
+   */
+  confirm?: string;
   onClick: () => void;
 }
 
@@ -298,6 +304,8 @@ export function TaskSlideOver({
   const [preview, setPreview] = useState(-1);
   const mobile = useIsMobile();
   const [moreOpen, setMoreOpen] = useState(false);
+  // one armed button at a time across the panel: run-killing actions and file ✕
+  const arm = useArm();
   // Phones fold the settings grid away. A draft is still being written, so it
   // opens with the grid out; anything later is mostly read, not edited.
   const [settingsOpen, setSettingsOpen] = useState(task?.status === 'draft');
@@ -553,6 +561,8 @@ export function TaskSlideOver({
   };
   const delFile = async (name: string) => {
     if (!task) return;
+    // an agent's deliverable is gone for good: the ✕ arms, a second press deletes
+    if (!arm.press(`${task.id}:file:${name}`)) return;
     try {
       await api.deleteTaskFile(task.id, name);
       loadFiles();
@@ -592,6 +602,7 @@ export function TaskSlideOver({
     (task.status === 'review' && task.checkState !== null && CHECK_BUSY_STATES.includes(task.checkState));
   const publishGate = publishGateReason(task);
   const actions: PanelAction[] = [];
+  const again = mobile ? 'tap again' : 'click again';
   const running = task.status === 'running' || task.status === 'waiting';
   // the client mirror of the server's hasLiveSession() guard (see TaskRow):
   // enqueue, add-to-queue, release and run-now are refused while the PTY is up
@@ -626,7 +637,16 @@ export function TaskSlideOver({
     });
   }
   if (task.status === 'queued' && task.customQueueAt) {
-    actions.push({ id: 'unqueue', label: 'Remove from queue', cls: 'danger', title: 'Take it out of the one-at-a-time queue', onClick: () => action('unqueue') });
+    // a WAITING member leaves the custom queue cancelled (docs/queue.md), so it is named for that
+    actions.push({
+      id: 'unqueue',
+      label: 'Cancel task',
+      cls: 'danger',
+      destructive: true,
+      title: 'Take it out of the one-at-a-time queue and cancel it (asks for a second press)',
+      confirm: `Cancel task? ${again}`,
+      onClick: () => action('unqueue'),
+    });
   }
   if (['draft', 'queued', 'review', 'failed', 'cancelled'].includes(task.status)) {
     actions.push({
@@ -658,18 +678,29 @@ export function TaskSlideOver({
       id: 'undo',
       label: 'Undo start',
       title:
-        'Stop this run and put the task back where it was before it started (a queued task keeps its place, held until you Release it). Nothing in the working tree is reverted.',
+        'Stop this run and put the task back where it was before it started (a queued task keeps its place, held until you Release it). Nothing in the working tree is reverted. Asks for a second press.',
+      confirm: `Undo start? ${again}`,
       onClick: () => action('undo'),
     });
-    actions.push({ id: 'cancel', label: 'Cancel', cls: 'danger', destructive: true, title: 'Kill the run and cancel the task', onClick: () => action('cancel') });
+    actions.push({
+      id: 'cancel',
+      label: 'Cancel',
+      cls: 'danger',
+      destructive: true,
+      title: 'Kill the run and cancel the task (asks for a second press)',
+      confirm: `Cancel? ${again}`,
+      onClick: () => action('cancel'),
+    });
   }
+  // out of the GLOBAL queue the server move is a plain cancel, and it says so
   if (task.status === 'queued' && !task.customQueueAt) {
     actions.push({
       id: 'dequeue',
-      label: 'Remove from queue',
+      label: 'Cancel task',
       cls: 'danger',
       destructive: true,
-      title: 'Cancel the task — it leaves the global queue',
+      title: 'Cancel the task — it leaves the global queue (asks for a second press)',
+      confirm: `Cancel task? ${again}`,
       onClick: () => action('cancel'),
     });
   }
@@ -757,7 +788,8 @@ export function TaskSlideOver({
       label: 'Stop agent',
       cls: 'danger',
       destructive: true,
-      title: "Close the agent's terminal session (task status is unchanged)",
+      title: "Close the agent's terminal session (task status is unchanged; asks for a second press)",
+      confirm: `Stop agent? ${again}`,
       onClick: async () => {
         try {
           await api.stopAgent(task.id);
@@ -777,6 +809,12 @@ export function TaskSlideOver({
   actions.push({ id: 'analyze', label: 'Analyze', icon: <IconAnalyze />, title: 'A read-only session reads the repo and proposes how to split or solve this task', onClick: analyze });
   actions.push({ id: 'delete', label: 'Delete', cls: 'danger', destructive: true, title: 'Delete the task (asks first)', onClick: del });
 
+  const armKey = (a: PanelAction) => `${task.id}:${a.id}`;
+  const isArmed = (a: PanelAction) => !!a.confirm && arm.armed === armKey(a);
+  const labelOf = (a: PanelAction) => (isArmed(a) ? a.confirm! : a.label);
+  /** true when this press runs the action; a `confirm` action's first press only arms it */
+  const fires = (a: PanelAction) => !a.confirm || arm.press(armKey(a));
+
   // Phones: the bar takes the best few non-destructive actions, the sheet the rest.
   // disabled actions stay in the sheet, where their reason is printed
   const publishHeld = task.status === 'review' && !publishIsPrimary(task);
@@ -789,11 +827,13 @@ export function TaskSlideOver({
     <SheetAction
       key={a.id}
       icon={a.icon}
-      label={a.label}
+      label={labelOf(a)}
       hint={a.title}
-      tone={a.destructive ? 'danger' : undefined}
+      tone={a.destructive || isArmed(a) ? 'danger' : undefined}
       disabled={a.disabled}
       onClick={() => {
+        // the arming press keeps the sheet open, so the second lands on the same row
+        if (!fires(a)) return;
         setMoreOpen(false);
         a.onClick();
       }}
@@ -876,11 +916,11 @@ export function TaskSlideOver({
           key={a.id}
           className={`btn${i === 0 && !(publishHeld && a.id === 'complete') ? ' primary' : ''}`}
           disabled={a.disabled}
-          onClick={a.onClick}
+          onClick={() => fires(a) && a.onClick()}
         >
           {a.icon}
           {a.icon ? ' ' : ''}
-          {a.short ?? a.label}
+          {isArmed(a) ? a.confirm : (a.short ?? a.label)}
         </button>
       ))}
       <button className="btn so-more" aria-expanded={moreOpen} aria-label="More actions" onClick={() => setMoreOpen(true)}>
@@ -1162,14 +1202,15 @@ export function TaskSlideOver({
             {a.id === 'analyze' && <TaskAttemptsChip attempts={task.attempts} />}
             {a.id === 'analyze' && latestRun && <RunStatsChips run={latestRun} />}
             <button
-              className={`btn${a.cls ? ` ${a.cls}` : ''}`}
+              className={`btn${isArmed(a) ? ' danger armed' : a.cls ? ` ${a.cls}` : ''}`}
               title={a.title}
               disabled={a.disabled}
-              onClick={a.onClick}
+              aria-live={a.confirm ? 'polite' : undefined}
+              onClick={() => fires(a) && a.onClick()}
             >
               {a.icon}
               {a.icon ? ' ' : ''}
-              {a.label}
+              {labelOf(a)}
             </button>
           </Fragment>
         ))}
@@ -1294,12 +1335,13 @@ export function TaskSlideOver({
                   {f.size < 1024 ? `${f.size} B` : f.size < 1048576 ? `${(f.size / 1024).toFixed(1)} KB` : `${(f.size / 1048576).toFixed(1)} MB`}
                 </span>
                 <button
-                  className="btn ghost"
-                  title="remove"
+                  className={`btn ghost${arm.armed === `${task.id}:file:${f.name}` ? ' danger' : ''}`}
+                  title="Delete this file (asks for a second press)"
+                  aria-label={`Delete ${f.name}`}
                   onClick={() => delFile(f.name)}
                   style={{ padding: '2px 8px' }}
                 >
-                  ✕
+                  {arm.armed === `${task.id}:file:${f.name}` ? `Delete? ${again}` : '✕'}
                 </button>
               </div>
             );

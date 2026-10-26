@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { exitGhost } from '../motion.ts';
-import { dismissToast, TOAST_MS, useToasts, type Toast } from '../toast.ts';
+import { dismissToast, TOAST_MS, UNDO_MS, useToasts, type Toast } from '../toast.ts';
 import { IconX } from './Icons.tsx';
 
 /**
@@ -35,14 +35,14 @@ function ToastItem({ toast }: { toast: Toast }) {
   const [held, setHeld] = useState(false);
   useEffect(() => {
     if (held) return;
-    const t = setTimeout(() => dismissToast(toast.id), TOAST_MS);
+    const t = setTimeout(() => dismissToast(toast.id), toast.tone === 'info' ? UNDO_MS : TOAST_MS);
     return () => clearTimeout(t);
   }, [toast.id, toast.seq, held]);
   return (
     <div
-      className="toast"
+      className={`toast${toast.tone === 'info' ? ' info' : ''}`}
       ref={exitGhost}
-      role="alert"
+      role={toast.tone === 'info' ? 'status' : 'alert'}
       onPointerEnter={() => setHeld(true)}
       onPointerLeave={() => setHeld(false)}
     >
@@ -51,6 +51,18 @@ function ToastItem({ toast }: { toast: Toast }) {
         {toast.title && <b>{toast.title} failed: </b>}
         {toast.text}
       </span>
+      {toast.action && (
+        <button
+          type="button"
+          className="btn ghost toast-act"
+          onClick={() => {
+            dismissToast(toast.id);
+            toast.action!.run();
+          }}
+        >
+          {toast.action.label}
+        </button>
+      )}
       <button type="button" className="btn ghost toast-x" aria-label="Dismiss" onClick={() => dismissToast(toast.id)}>
         <IconX />
       </button>

@@ -18,10 +18,17 @@ export interface Toast {
   title: string | null;
   /** bumped when the same text is reported again, restarting its timer */
   seq: number;
+  /** `info`: something that went through and can be taken back (an "Undo move") */
+  tone: 'error' | 'info';
+  action?: { label: string; run: () => void };
+  /** an info toast replaces the one with the same key: only the latest move is undoable */
+  key?: string;
 }
 
 /** errors are read, not glanced at: long enough for a two-line 409 reason */
 export const TOAST_MS = 9000;
+/** long enough to notice a drop went wrong and reach for Undo */
+export const UNDO_MS = 8000;
 const MAX = 3;
 
 let toasts: Toast[] = [];
@@ -50,8 +57,21 @@ export function toastError(e: unknown, title: string | null = null): void {
   if (same) {
     toasts = toasts.map((t) => (t === same ? { ...t, seq: t.seq + 1 } : t));
   } else {
-    toasts = [...toasts, { id: nextId++, text, title, seq: 0 }].slice(-MAX);
+    toasts = [...toasts, { id: nextId++, text, title, seq: 0, tone: 'error' as const }].slice(-MAX);
   }
+  emit();
+}
+
+/**
+ * Report something that went through and can be undone. `key` names the kind
+ * ("move"): a new one replaces the old, whose undo would now restore a
+ * position that is no longer the last one.
+ */
+export function toastUndo(key: string, text: string, run: () => void): void {
+  toasts = [
+    ...toasts.filter((t) => t.key !== key),
+    { id: nextId++, text, title: null, seq: 0, tone: 'info' as const, key, action: { label: 'Undo', run } },
+  ].slice(-MAX);
   emit();
 }
 

@@ -271,8 +271,10 @@ wake-up continue an existing task and are not refused by it.
   already `queued` for the global queue moves over. The mark is written
   **before** the status transition so the global loop can never claim the row
   in between; a refused transition rolls the mark back. 409 if already a member.
-- `POST /api/tasks/:id/unqueue` — Remove from queue. A waiting member is
-  cancelled (the same thing the global "Remove from queue" does); a member that
+- `POST /api/tasks/:id/unqueue` — out of the queue. A waiting member is
+  cancelled (the same thing cancelling a global-queue task does, so the SPA
+  labels both **Cancel task** and arms them — `docs/mobile.md` § Confirming
+  destructive actions); a member that
   already ran just drops its mark. 409 if not a member.
 - `enqueue`/`retry` clear the mark (they mean the global queue) — only after the
   status guard has passed, so a refused call leaves a waiting member exactly
@@ -284,7 +286,8 @@ wake-up continue an existing task and are not refused by it.
 ## UI
 
 - Board row / every `TaskRow`: a queue quick action (list icon) — "Add to
-  queue" or, on a waiting member, "Remove from queue" (×). The **queue sign**
+  queue" or, on a waiting member, **Cancel task** (×, armed: the first press
+  reads `Cancel?`, the second cancels). The **queue sign**
   sits right after the title: `queue #n` while waiting (`· waiting for <task>`
   when a same-repo task still holds the repo), `queue #n · held` after an Undo
   start (a global-queue task shows `held`), a pulsing `queue` chip while the
@@ -293,7 +296,7 @@ wake-up continue an existing task and are not refused by it.
   for you in review (`components/QueueMark.tsx`, `.chip.queue-chip` on
   accent/status tokens; the predicate is `customQueueHoldsRepo` in shared, twin
   of the SQL `heldBy`).
-- Task panel: **Add to queue** / **Remove from queue** buttons beside Enqueue;
+- Task panel: **Add to queue** / **Cancel task** (a waiting member, armed) beside Enqueue;
   **Undo start** beside Cancel on a running task; **Release** on a held one.
 - Queue page: a **Queue** section listing members in run order above the
   global queue.

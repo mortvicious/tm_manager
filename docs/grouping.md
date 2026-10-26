@@ -243,6 +243,23 @@ drop the server would refuse, and a ghost under the pointer saying it in words
 (`move above "Bravo"`, `join group "Payments"`, `start a group with "Alpha"`).
 Escape abandons the drag; the pane auto-scrolls near its top and bottom edges.
 
+**On touch a drag needs a hold.** The board is mostly scrolled, and a flick that
+started on the 22px grip used to become a regroup. Now a touch (`pointerType
+'touch'`) arms only after the grip is held still for 350 ms (`HOLD_MS`); a
+finger that moves 8px first (`TOUCH_SLOP`) is a scroll, left to the browser,
+since on a coarse pointer the grip is `touch-action: manipulation` instead of
+`none`. Arming lifts the ghost under the finger (`.drag-ghost.lifted`, plus a
+10 ms vibration where the browser has one) and from then on a non-passive
+`touchmove` on the grip — only there, so the board's scrolling stays passive —
+stops the page from scrolling under the drag. A mouse still starts after 4px.
+
+**Every drop can be undone.** Before a drop is sent the board reads where the
+task is now (`undoMove`: after its previous sibling, else before the next one,
+else its old parent's only child, else a root) and, once the move goes
+through, shows an **Undo move** toast (`toastUndo`, `docs/mobile.md` § Action
+errors) that replays that place through the same route. Order and parent come
+back exactly; the key is a fresh midpoint, and the subtree moves back with it.
+
 | Drop | `place` | Result |
 |---|---|---|
 | top 30% of a row | `before` | a sibling of the target, just above it — the target's parent becomes the task's parent, so dropping beside a group member joins that group, and beside a root makes (or keeps) the task a root |
