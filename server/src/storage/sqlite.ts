@@ -257,8 +257,8 @@ export class SqliteStorage implements Storage {
   async createRepo(r: NewRepo): Promise<Repo> {
     const id = randomUUID();
     this.db
-      .prepare(`INSERT INTO tm_repos (id, name, path, role, preview_url, landing, push_policy, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, r.name, r.path, r.role ?? null, r.previewUrl ?? null, r.landing ?? 'supervised', r.pushPolicy ?? 'repo-rules', now());
+      .prepare(`INSERT INTO tm_repos (id, name, path, role, preview_url, landing, push_policy, question_autopilot_minutes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, r.name, r.path, r.role ?? null, r.previewUrl ?? null, r.landing ?? 'supervised', r.pushPolicy ?? 'repo-rules', r.questionAutopilotMinutes ?? null, now());
     return (await this.getRepo(id))!;
   }
 
@@ -266,7 +266,7 @@ export class SqliteStorage implements Storage {
     const cur = await this.getRepo(id);
     if (!cur) return null;
     this.db
-      .prepare(`UPDATE tm_repos SET name = ?, path = ?, role = ?, preview_url = ?, landing = ?, push_policy = ? WHERE id = ?`)
+      .prepare(`UPDATE tm_repos SET name = ?, path = ?, role = ?, preview_url = ?, landing = ?, push_policy = ?, question_autopilot_minutes = ? WHERE id = ?`)
       .run(
         patch.name ?? cur.name,
         patch.path ?? cur.path,
@@ -274,6 +274,7 @@ export class SqliteStorage implements Storage {
         patch.previewUrl === undefined ? cur.previewUrl : patch.previewUrl,
         patch.landing ?? cur.landing,
         patch.pushPolicy ?? cur.pushPolicy,
+        patch.questionAutopilotMinutes === undefined ? cur.questionAutopilotMinutes : patch.questionAutopilotMinutes,
         id,
       );
     return this.getRepo(id);

@@ -100,13 +100,15 @@ export interface NewRepo {
   landing?: Repo['landing'];
   /** push policy (docs/publish.md § Push policy); default repo-rules */
   pushPolicy?: Repo['pushPolicy'];
+  /** question autopilot minutes (docs/questions.md § Autopilot); default null = off */
+  questionAutopilotMinutes?: number | null;
 }
 
 /** What `stepLoop` may write. */
 export type LoopStep = Partial<Pick<Task, 'loopState' | 'loopIteration' | 'loopHistory' | 'checkResults' | 'checkDiffHash'>>;
 
 /** undefined = leave as-is; null clears the column. */
-export type RepoPatch = Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy'>>;
+export type RepoPatch = Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes'>>;
 
 export interface NewCommand {
   repoId: string;

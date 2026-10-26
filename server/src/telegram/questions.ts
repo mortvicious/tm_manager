@@ -1,4 +1,4 @@
-import type { Question, QuestionItem, Task } from '@tm/shared';
+import { AUTOPILOT_ACTOR, questionWaitedMinutes, type Question, type QuestionItem, type Task } from '@tm/shared';
 import type { QuestionService } from '../questions.ts';
 import type { Storage } from '../storage/types.ts';
 import { escapeHtml, type Reply } from './api.ts';
@@ -148,6 +148,9 @@ function summaryHtml(q: Question, task: Task | null): string {
 
 function settledReply(q: Question, task: Task | null): Reply {
   if (q.status === 'answered') {
+    if (q.answeredBy === AUTOPILOT_ACTOR) {
+      return { html: `🤖 Already auto-picked — nobody answered in time. Correct it with a follow-up:\n${summaryHtml(q, task)}`, ok: false };
+    }
     return { html: `✅ Already answered${q.answeredBy ? ` (${escapeHtml(q.answeredBy)})` : ''}:\n${summaryHtml(q, task)}`, ok: false };
   }
   return { html: `⌛ That question has expired${q.note ? ` — ${escapeHtml(q.note)}` : ''}. The agent moved on without it.`, ok: false };
@@ -262,6 +265,11 @@ export async function listQuestionsReplies(deps: QuestionDeps): Promise<Reply[]>
 export function settledNotice(q: Question, task: Task | null): string | null {
   if (q.status === 'answered') {
     if (q.answeredBy === 'telegram') return null; // the press already replied
+    if (q.answeredBy === AUTOPILOT_ACTOR) {
+      // the ping with the pick (docs/questions.md § Autopilot): nobody answered
+      const min = questionWaitedMinutes(q);
+      return `🤖 Auto-picked the Recommended option after ${min ?? '?'} min — nobody answered. Correct it with a follow-up if it is wrong:\n${summaryHtml(q, task)}`;
+    }
     return `✅ Answered in the browser:\n${summaryHtml(q, task)}`;
   }
   if (q.status === 'expired') {

@@ -241,6 +241,26 @@ export function effectivePushPolicy(
   return policy === 'agent-pushes' && isExternalTask(t) ? 'repo-rules' : policy;
 }
 
+/**
+ * Question autopilot (docs/questions.md § Autopilot): a repo opts in with a
+ * number of minutes (`Repo.questionAutopilotMinutes`, null = off, the
+ * default). A worker's question that has waited that long on a live run gets
+ * its one "(Recommended)" option picked by the server, if the question passes
+ * every eligibility rule. Never below this floor.
+ */
+export const QUESTION_AUTOPILOT_MIN_MINUTES = 10;
+/** the ceiling: a week, the hook's own timeout */
+export const QUESTION_AUTOPILOT_MAX_MINUTES = 10_080;
+/** the `answeredBy` / audit actor of an autopilot pick */
+export const AUTOPILOT_ACTOR = 'autopilot';
+
+/** Whole minutes an answered question waited (`answeredAt − createdAt`), or null — the "N" of every "auto-picked after N min". */
+export function questionWaitedMinutes(q: Pick<Question, 'createdAt' | 'answeredAt'>): number | null {
+  if (!q.answeredAt) return null;
+  const ms = Date.parse(q.answeredAt) - Date.parse(q.createdAt);
+  return Number.isFinite(ms) && ms >= 0 ? Math.floor(ms / 60_000) : null;
+}
+
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
@@ -496,6 +516,8 @@ export interface Repo {
   landing: LandingTier;
   /** what worker turns are told about `git push` when no review holds the ship (docs/publish.md § Push policy) */
   pushPolicy: PushPolicy;
+  /** question autopilot: minutes a worker's question waits before its Recommended option is picked; null = off (docs/questions.md § Autopilot) */
+  questionAutopilotMinutes: number | null;
   createdAt: string;
 }
 
@@ -1366,7 +1388,7 @@ export interface Question {
   questions: QuestionItem[];
   /** keyed by the question TEXT, as the CLI expects; multi-select joins labels with ", " */
   answers: Record<string, string> | null;
-  /** actor vocabulary of tm_events: human | telegram */
+  /** actor vocabulary of tm_events: human | telegram | autopilot (the server picked the Recommended option) */
   answeredBy: string | null;
   /** why an `expired` row expired (run ended, cancelled, restart) */
   note: string | null;
@@ -1920,16 +1942,17 @@ export type AuditKind =
   | 'task.paused'
   /** a turn ended with the agent's own background children still running, or that wait ended (docs/design.md § Waiting) */
   | 'task.waiting'
-  /** a worker's AskUserQuestion reached the human / was answered / expired (docs/questions.md) */
+  /** a worker's AskUserQuestion reached the human / was answered / skipped by the autopilot / expired (docs/questions.md) */
   | 'question.asked'
   | 'question.answered'
+  | 'question.autopilot'
   | 'question.expired'
   /** an automatic turn was refused, or claiming stopped for the day, by a budget fuse (docs/token-budget.md § Fuses) */
   | 'task.budget'
   /** an anomaly notification went out — also the coalescing memory, so a restart does not re-ping (docs/push.md § What pings) */
   | 'anomaly.notified';
 
-/** actor: human | hook | orchestrator | system | analyze | telegram | remote | agent:<runId8> */
+/** actor: human | hook | orchestrator | system | analyze | telegram | remote | autopilot | agent:<runId8> */
 /**
  * `GET|PUT /api/sentry/token`: whether the Sentry auth token is set, and its
  * last 4 characters to recognise it by — never the value (it lives in

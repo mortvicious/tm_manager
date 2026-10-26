@@ -1,6 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
-import { LANDING_TIERS, PUSH_POLICIES, type LandingTier, type PushPolicy } from '@tm/shared';
+import {
+  LANDING_TIERS,
+  PUSH_POLICIES,
+  QUESTION_AUTOPILOT_MAX_MINUTES,
+  QUESTION_AUTOPILOT_MIN_MINUTES,
+  type LandingTier,
+  type PushPolicy,
+} from '@tm/shared';
 import { z } from 'zod';
 import { expandHome } from '../config.ts';
 import { commitRepo, gitStatus, pushRepo } from '../git.ts';
@@ -18,6 +25,12 @@ const repoBody = z
     landing: z.enum(LANDING_TIERS as [LandingTier, ...LandingTier[]]).optional(),
     // what worker turns are told about `git push` (docs/publish.md § Push policy)
     pushPolicy: z.enum(PUSH_POLICIES as [PushPolicy, ...PushPolicy[]]).optional(),
+    // question autopilot minutes (docs/questions.md § Autopilot); null or 0 = off
+    questionAutopilotMinutes: z
+      .union([z.literal(0), z.number().int().min(QUESTION_AUTOPILOT_MIN_MINUTES).max(QUESTION_AUTOPILOT_MAX_MINUTES)])
+      .nullable()
+      .optional()
+      .transform((v) => (v === 0 ? null : v)),
   })
   .strict();
 
@@ -42,6 +55,17 @@ export function pushPolicyNeedsBrowser(policy: PushPolicy | null | undefined, or
   return policy === 'agent-pushes' && !origin;
 }
 export const PUSH_POLICY_FROM_BROWSER = 'push policies are set from the dashboard';
+
+/**
+ * And for the question autopilot (docs/questions.md § Autopilot): any value
+ * that turns it on (or shortens the wait) lets the server answer a worker's
+ * question with nobody asked, so it needs the dashboard. Off is allowed from
+ * anywhere.
+ */
+export function autopilotNeedsBrowser(minutes: number | null | undefined, origin: string | undefined): boolean {
+  return typeof minutes === 'number' && !origin;
+}
+export const AUTOPILOT_FROM_BROWSER = 'the question autopilot is set from the dashboard';
 
 /** The emulator puts this string straight into an iframe `src`, so the scheme
  *  is pinned to http/https here — the one place every write passes through. */
@@ -76,6 +100,9 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
     const body = repoBody.parse(req.body);
     if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
     if (pushPolicyNeedsBrowser(body.pushPolicy, req.headers.origin)) return reply.code(403).send({ error: PUSH_POLICY_FROM_BROWSER });
+    if (autopilotNeedsBrowser(body.questionAutopilotMinutes, req.headers.origin)) {
+      return reply.code(403).send({ error: AUTOPILOT_FROM_BROWSER });
+    }
     let abs: string;
     try {
       abs = expandHome(body.path);
@@ -94,12 +121,26 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
-    const repo = await storage.createRepo({ name, path: abs, role: body.role ?? null, previewUrl, landing: body.landing, pushPolicy: body.pushPolicy });
+    const repo = await storage.createRepo({
+      name,
+      path: abs,
+      role: body.role ?? null,
+      previewUrl,
+      landing: body.landing,
+      pushPolicy: body.pushPolicy,
+      questionAutopilotMinutes: body.questionAutopilotMinutes,
+    });
     await storage.appendEvent({
       kind: 'repo.changed',
       actor: 'human',
       repoId: repo.id,
-      data: { action: 'created', name, landing: repo.landing, pushPolicy: repo.pushPolicy },
+      data: {
+        action: 'created',
+        name,
+        landing: repo.landing,
+        pushPolicy: repo.pushPolicy,
+        questionAutopilotMinutes: repo.questionAutopilotMinutes,
+      },
     });
     return repo;
   });
@@ -109,6 +150,9 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
     const body = repoBody.partial().parse(req.body);
     if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
     if (pushPolicyNeedsBrowser(body.pushPolicy, req.headers.origin)) return reply.code(403).send({ error: PUSH_POLICY_FROM_BROWSER });
+    if (autopilotNeedsBrowser(body.questionAutopilotMinutes, req.headers.origin)) {
+      return reply.code(403).send({ error: AUTOPILOT_FROM_BROWSER });
+    }
     let abs: string | undefined;
     if (body.path) {
       try {
@@ -130,7 +174,8 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
         return reply.code(400).send({ error: (e as Error).message });
       }
     }
-    const before = body.landing || body.pushPolicy ? await storage.getRepo(id) : null;
+    const before =
+      body.landing || body.pushPolicy || body.questionAutopilotMinutes !== undefined ? await storage.getRepo(id) : null;
     const repo = await storage.updateRepo(id, {
       name: body.name,
       path: abs,
@@ -138,6 +183,7 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
       previewUrl,
       landing: body.landing,
       pushPolicy: body.pushPolicy,
+      questionAutopilotMinutes: body.questionAutopilotMinutes,
     });
     if (!repo) return reply.code(404).send({ error: 'repo not found' });
     await storage.appendEvent({
@@ -148,6 +194,9 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
         action: 'updated',
         ...(before && before.landing !== repo.landing ? { landing: { from: before.landing, to: repo.landing } } : {}),
         ...(before && before.pushPolicy !== repo.pushPolicy ? { pushPolicy: { from: before.pushPolicy, to: repo.pushPolicy } } : {}),
+        ...(before && before.questionAutopilotMinutes !== repo.questionAutopilotMinutes
+          ? { questionAutopilotMinutes: { from: before.questionAutopilotMinutes, to: repo.questionAutopilotMinutes } }
+          : {}),
       },
     });
     return repo;

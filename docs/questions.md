@@ -158,6 +158,117 @@ tells the hook — a waiting hook gets a deny with the note:
 
 Answering an expired question is refused (409) — the agent already moved on.
 
+## Autopilot — an opt-in pick of the Recommended option
+
+The exception to "no timeout on the human" (decisions.md 2026-10-26). 67% of
+the worker question calls had every part answered with the option the agent
+had labelled "(Recommended)", and the long waits are the ones nobody saw
+(autonomy-round analysis 663c5006, feasibility § 4). A repo can say: if nobody
+answers within N minutes, take the agent's own recommendation.
+
+**Setting.** `tm_repos.question_autopilot_minutes` (migration 42, `Repo.questionAutopilotMinutes`):
+`null` = off (the default, and what a pre-42 row reads as); otherwise 10 …
+10080 minutes (`QUESTION_AUTOPILOT_MIN_MINUTES`/`_MAX_`, shared). An
+out-of-range stored value reads as OFF, never as a shorter wait. Set from the
+Repos page's **Autopilot** column (off · 10 · 15 · 30 · 60 · 120 · 240 min).
+`PATCH /api/repos/:id {questionAutopilotMinutes}`: `0` or `null` turns it off
+from anywhere; any number turns it on (or shortens the wait) and needs
+`Origin` (403 `the question autopilot is set from the dashboard` otherwise —
+the landing-tier/push-policy rule, so a worker's curl cannot opt its own repo
+in). Every change is a `repo.changed` row with `questionAutopilotMinutes: {from, to}`.
+Telegram has no repo-settings surface and gets none.
+
+**The sweep** (`server/src/questions-autopilot.ts`, `QuestionAutopilot`, every
+30 s from the orchestrator's constructor). For each pending row, all of:
+
+- the server is not paused (`orchestrator.paused`) — Pause all stops every
+  automatic action, and the turns it cuts expire their questions anyway;
+- the task is `running` and NOT external (`isExternalTask`: a Sentry or
+  agent-filed task never resolves above supervised, and never gets this);
+- its repo has the autopilot on and the row's `created_at` is at least that
+  many minutes old (the clock is the row: nothing to persist or recover — a
+  restart expires every pending row before the sweep could see it);
+- its run is `running`, not idle, belongs to the task, and its PTY is live and
+  not idle (`SessionManager` entry, `exit === null`, `!idle`);
+- the question is **eligible** (`autopilotPick`, below).
+
+Then it calls the ordinary `QuestionService.answer(id, answers, 'autopilot',
+{policy: 'autopilot', waitedMs, minutes})`: the same conditional
+pending→answered write, so a human who answered a millisecond earlier wins and
+the autopilot gets the 409. The `question.updated` broadcast wakes the
+long-polling hook, which gets its decision within milliseconds.
+
+**Eligibility fails CLOSED** — any doubt leaves the question for the human:
+
+- every part single-select (`multiSelect` absent or `false`; the CLI's
+  default), with EXACTLY one option whose label contains "(Recommended)";
+- no option carries a `preview` field (visual mockups are picked by looking);
+- the question texts are distinct (answers are keyed by text);
+- no text of the call — question, header, every option label and description —
+  matches an excluded topic (word starts, case-insensitive, so "pushed",
+  "deployment", "migrations" match too):
+  - **ship**: push, deploy, publish, release, merge, ship, rollout, go live,
+    upload. The Recommended push is often "push all of main", which ships
+    OTHER tasks' commits (102 of 259 calls);
+  - **secret**: secret, credential, token, key, password, passphrase, api key,
+    auth, login, ssh, cert, `.env`, env;
+  - **destructive**: delete, drop, force, reset, migrate, irreversible,
+    destroy, wipe, purge, truncate, overwrite, `rm -`, kill, restart, rollback,
+    downgrade, uninstall, prod, production;
+  - **outward**: email, sms, notify users/customers, billing, payment,
+    invoice, refund, charge, pay, purchase, subscribe;
+  - **visual**: mockup, variant, visual, layout, design, look, style, colour,
+    theme, screenshot, font, icon, animation, and any image filename
+    (`.png/.jpg/.gif/.webp/.svg/.avif/.heic/.bmp/.pdf`).
+
+Over-matching only leaves a question for the human, which is the safe
+direction. An ineligible row past its deadline is audited ONCE as
+`question.autopilot {action: 'skipped', reason, waitedMs}` (in-memory set of
+noted ids), so a pick that did not happen is a decision in the log and the
+take-rate can be measured later.
+
+**The answer** is the Recommended label VERBATIM, keyed by question text —
+exactly what the dialog would have written. Audit: `question.answered`, actor
+`autopilot`, data `{policy: 'autopilot', waitedMs, minutes, questionId, answers}`.
+
+**What each side is told.**
+
+- **The agent** (`hookDecision` → `autopilotReason`): an `allow` whose reason is
+  `No one answered within N min; the server picked your recommended option
+  '<label>'. State this assumption in your summary.` (N = whole minutes the
+  row waited; several parts list every label.)
+- **Telegram** (`settledNotice`): `🤖 Auto-picked the Recommended option after
+  N min — nobody answered. Correct it with a follow-up if it is wrong:` plus the
+  per-part summary. Not gated by mute or notify flags, like every question
+  message. A button pressed on the stale question card replies `🤖 Already
+  auto-picked …`.
+- **Web Push** (`push/notifier.ts`): the one settled question that IS pushed —
+  `🤖 Auto-picked · <task>` with the picks, kind `question`, tag
+  `autopick-<id>` (not `question-*`, so the SPA's stale-question sweep leaves
+  it up).
+- **SPA**: the question leaves the modal and chip as any answered one does,
+  and a sticky toast says `Auto-picked after N min — nobody answered
+  "<task>": "<label>"` with an **Open** button (the task panel, via
+  `nav.ts` → `PushBridge`).
+- **A human answering later** (browser or phone) gets the 409 `already
+  auto-picked (nobody answered in time, so the server took the Recommended
+  option) — correct it with a follow-up`. The correction IS a follow-up into
+  the task; nothing undoes the pick.
+
+**Interactions.** `autopilot` is not in `HUMAN_ACTORS`, so nothing it does
+counts as a human click. A loop iteration that asked a question still pauses
+(`loopNeededHuman` reads any question row of the run): the human should read
+the assumption before the loop goes on. There is deliberately no quiet-hours
+mode (the human declined a scheduler) and no per-task override.
+
+**Measured on the 391 stored question calls (2026-10-26, DB copy):** 27 would
+have been eligible under these rules. That is fewer than the feasibility estimate
+of 91-125, which excluded only push/deploy, preview and multiSelect. The pick
+matched the human's answer on 17 of the 23 that were answered, and on 10 of 10
+of those the human took over 10 minutes to answer. The exclusions mostly hit real topics (push 110, deploy
+62, prod/production 89, migration 42, env 31, key 29, token 20); `no
+recommended` (75) is the next largest.
+
 ## Surfaces
 
 **SPA.** `QuestionModal` is mounted once in `App.tsx`, so it pops on any page.
@@ -276,9 +387,12 @@ file (§ Secrets).
   hidden terminal" and clears when the transcript moves on; a question has no
   transcript activity until it is answered, so it would never clear. It has
   its own lifecycle instead.
-- **No timeout on the human.** The agent waits until someone answers or the run
-  ends. A question the human never sees is the run they will find waiting,
-  with a pulsing chip, not a silently self-answered one.
+- **No timeout on the human — unless the repo opted in.** By default the agent
+  waits until someone answers or the run ends: a question the human never sees
+  is the run they will find waiting, with a pulsing chip. Amended 2026-10-26
+  (decisions.md): a repo may turn on the § Autopilot, which picks the
+  Recommended option of a narrow class of questions after N minutes, and says
+  so loudly to the agent and to the human. Off by default.
 - **Not a PTY write.** Typing the answer into the terminal would depend on the
   dialog's exact key handling and would be invisible to the phone. The hook
   contract is what the CLI documents for tool input.

@@ -18,7 +18,7 @@ import type {
   LandingTier,
   Task,
 } from '@tm/shared';
-import { LANDING_TIERS, PUSH_POLICIES } from '@tm/shared';
+import { LANDING_TIERS, PUSH_POLICIES, QUESTION_AUTOPILOT_MAX_MINUTES, QUESTION_AUTOPILOT_MIN_MINUTES } from '@tm/shared';
 
 const CHECK_STATES: (CheckState | null)[] = ['pending', 'running', 'green', 'red', 'error'];
 const LOOP_STATES = new Set<string>([
@@ -45,6 +45,13 @@ export function safeParse<T>(raw: unknown, fallback: T): T {
 // camelCase in the API types. Postgres returns lowercase column names too,
 // so these work unchanged for both.
 
+function autopilotMinutes(v: unknown): number | null {
+  const n = typeof v === 'string' ? Number(v) : v;
+  return typeof n === 'number' && Number.isInteger(n) && n >= QUESTION_AUTOPILOT_MIN_MINUTES && n <= QUESTION_AUTOPILOT_MAX_MINUTES
+    ? n
+    : null;
+}
+
 function landingTier(v: unknown): LandingTier | null {
   return LANDING_TIERS.includes(v as LandingTier) ? (v as LandingTier) : null;
 }
@@ -60,6 +67,8 @@ export function rowToRepo(r: any): Repo {
     landing: landingTier(r.landing) ?? 'supervised',
     // likewise: an unknown value reads as the default (no rule)
     pushPolicy: PUSH_POLICIES.includes(r.push_policy) ? r.push_policy : 'repo-rules',
+    // and an out-of-range autopilot value reads as OFF, never as a shorter wait
+    questionAutopilotMinutes: autopilotMinutes(r.question_autopilot_minutes),
     createdAt: r.created_at,
   };
 }

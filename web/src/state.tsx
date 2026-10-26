@@ -31,7 +31,10 @@ import type {
   Space,
   Task,
 } from '@tm/shared';
+import { AUTOPILOT_ACTOR, questionWaitedMinutes } from '@tm/shared';
 import { api, normalizeTask } from './api.ts';
+import { openTaskFromAnywhere } from './nav.ts';
+import { toastSticky } from './toast.ts';
 
 interface AppState {
   repos: Repo[];
@@ -112,6 +115,9 @@ export function useApp(): AppState {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  // read by the event handler, which is bound once
+  const tasksRef = useRef(tasks);
+  tasksRef.current = tasks;
   const [runs, setRuns] = useState<Run[]>([]);
   const [activity, setActivity] = useState<Record<string, RunActivity>>({});
   const [proposals, setProposals] = useState<Proposal[]>([]);
@@ -359,6 +365,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
               const rest = cur.filter((q) => q.id !== e.question.id);
               return e.question.status === 'pending' ? [e.question, ...rest] : rest;
             });
+            // Nobody answered and the server picked the Recommended option
+            // (docs/questions.md § Autopilot): say so until dismissed — the
+            // question just vanished from the modal and the chip.
+            if (e.question.status === 'answered' && e.question.answeredBy === AUTOPILOT_ACTOR) {
+              const q = e.question;
+              const title = tasksRef.current.find((t) => t.id === q.taskId)?.title ?? `task ${q.taskId.slice(0, 8)}`;
+              const picks = q.questions.map((item) => `"${q.answers?.[item.question] ?? '—'}"`).join(', ');
+              toastSticky(
+                `autopick-${q.id}`,
+                `Auto-picked after ${questionWaitedMinutes(q) ?? '?'} min — nobody answered "${title}": ${picks}`,
+                { label: 'Open', run: () => openTaskFromAnywhere(q.taskId) },
+              );
+            }
             break;
           case 'report.updated':
             // Newest first, matching the server's ORDER BY: a re-run keeps its

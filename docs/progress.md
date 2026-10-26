@@ -750,3 +750,11 @@ concise markdown, grouped by completion date, Russian or English.
 - **Web**: the Repos page **Push** column (`PushPolicyCell`).
 - **Verified**: typecheck; 288-case prompt matrix over `buildWorkerInvocation`; migration + routes via `app.inject` on a DB copy (decisions.md 2026-10-26).
 - **Not exercised**: a live worker under `agent-pushes`; a browser pass of the new column.
+
+## Question autopilot (2026-10-26, `docs/questions.md` § Autopilot)
+
+- **Shared**: `Repo.questionAutopilotMinutes`, `QUESTION_AUTOPILOT_MIN_MINUTES`/`_MAX_` (10 / 10080), `AUTOPILOT_ACTOR`, `questionWaitedMinutes`; audit kind `question.autopilot`.
+- **Server**: migration 42 (`tm_repos.question_autopilot_minutes`, null = off), both drivers' `createRepo`/`updateRepo`; `POST`/`PATCH /api/repos` take `questionAutopilotMinutes` (0/null off, on needs `Origin` — `autopilotNeedsBrowser`), `repo.changed { questionAutopilotMinutes: { from, to } }`. `questions-autopilot.ts`: `autopilotPick` (fail-closed eligibility), `autopilotReason`, `QuestionAutopilot.sweep` on a 30 s orchestrator interval. `QuestionService.answer` takes audit extras; `hookDecision` autopilot branch; 409 wording. Telegram `settledNotice`/`settledReply` 🤖 auto-picked; push banner `autopick-<id>`.
+- **Web**: the Repos page **Autopilot** column (`AutopilotCell`); a sticky "Auto-picked" toast with Open (`nav.ts` → `PushBridge`).
+- **Verified**: typecheck; `app.inject` on a DB copy, 34 checks (decisions.md 2026-10-26); the filter replayed over the 391 stored calls.
+- **Not exercised**: a live CLI session receiving the autopilot decision; a browser pass of the column and toast; a real push.

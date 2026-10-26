@@ -35,7 +35,7 @@ state a review verdict the same way.
 
 | kind | when | tap opens |
 |---|---|---|
-| `question` | an agent's `AskUserQuestion` is pending (immediately, `Urgency: high`) | `/?task=<id>`, where the question modal pops |
+| `question` | an agent's `AskUserQuestion` is pending (immediately, `Urgency: high`), or the question autopilot picked its Recommended option (normal urgency) | `/?task=<id>`, where the question modal pops |
 | `attention` | the run is still flagged at the 5s flush (running, not idle) | `/?task=<id>` |
 | `review` | the task is in `review` AND the review settled — and its repo checks too (`docs/checks.md`; the body opens with the check clause): one verdict per change. Also a "Review now" verdict on a non-review task | `/?task=<id>` |
 | `done` | a task that reached `done` without a human: an on-green landing (`autoLandedAt`, `docs/design.md` § Landing tiers — "✅ Auto-landed · <title>", body "auto-landed: <reason>" + the reviewer's summary), or `running`/`waiting` → `done`. A human's Mark done is silent | `/?task=<id>` |
@@ -74,6 +74,13 @@ banners (`PushBridge`): on open and on every return to the foreground against
 `GET /api/questions?status=pending`, and while it is open as questions leave the
 pending set. For the same reason `sw.js` draws a notification even for an
 unreadable payload.
+
+**The one settled question that is pushed: an autopilot pick**
+([`questions.md`](questions.md) § Autopilot). Nobody answered, so what the
+server chose for them is news, not a "never mind": `🤖 Auto-picked · <task>`
+with the picked labels, kind `question` (the device's question toggle governs
+it), tag `autopick-<id>` — deliberately not `question-<id>`, so the stale
+question sweep above closes the original question banner and leaves this one.
 
 ## Opening a notification
 

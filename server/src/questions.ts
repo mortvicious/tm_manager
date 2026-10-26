@@ -1,5 +1,6 @@
-import type { Question, QuestionItem, QuestionStatus, Run } from '@tm/shared';
+import { AUTOPILOT_ACTOR, type Question, type QuestionItem, type QuestionStatus, type Run } from '@tm/shared';
 import { broadcast, onEvent } from './events.ts';
+import { autopilotReason } from './questions-autopilot.ts';
 import { redactAnswers } from './secrets.ts';
 import type { Storage } from './storage/types.ts';
 
@@ -83,7 +84,9 @@ export function parseAnswers(q: Question, input: unknown): Record<string, string
  * questions with `answers` filled in is exactly what the tool's own dialog
  * would have produced, so the tool runs as if the human had answered in the
  * terminal. An expired question is a `deny` with the reason — the agent must
- * hear that nobody answered rather than get an empty allow.
+ * hear that nobody answered rather than get an empty allow. An autopilot
+ * pick (docs/questions.md § Autopilot) is an allow too, but its reason says
+ * that NOBODY answered and the agent must state the assumption.
  */
 export function hookDecision(q: Question): Record<string, unknown> {
   if (q.status === 'answered' && q.answers) {
@@ -91,7 +94,10 @@ export function hookDecision(q: Question): Record<string, unknown> {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'allow',
-        permissionDecisionReason: `Answered by the user via Task Manager (${q.answeredBy ?? 'human'})`,
+        permissionDecisionReason:
+          q.answeredBy === AUTOPILOT_ACTOR
+            ? autopilotReason(q)
+            : `Answered by the user via Task Manager (${q.answeredBy ?? 'human'})`,
         updatedInput: { questions: q.questions, answers: q.answers },
       },
     };
@@ -183,8 +189,12 @@ export class QuestionService {
     });
   }
 
-  /** A human's answer, from either surface. Conditional: second answers are refused, not merged. */
-  async answer(id: string, input: unknown, actor: string): Promise<AnswerResult> {
+  /**
+   * An answer from either surface, or the autopilot's pick (`audit` carries
+   * its `policy`/`waitedMs` into the `question.answered` row). Conditional:
+   * second answers are refused, not merged.
+   */
+  async answer(id: string, input: unknown, actor: string, audit?: Record<string, unknown>): Promise<AnswerResult> {
     const q = await this.storage.getQuestion(id);
     if (!q) return { ok: false, code: 404, error: 'no such question' };
     if (q.status !== 'pending') {
@@ -193,7 +203,9 @@ export class QuestionService {
         code: 409,
         error:
           q.status === 'answered'
-            ? `already answered${q.answeredBy ? ` (${q.answeredBy})` : ''}`
+            ? q.answeredBy === AUTOPILOT_ACTOR
+              ? 'already auto-picked (nobody answered in time, so the server took the Recommended option) — correct it with a follow-up'
+              : `already answered${q.answeredBy ? ` (${q.answeredBy})` : ''}`
             : `expired${q.note ? `: ${q.note}` : ''}`,
       };
     }
@@ -208,7 +220,7 @@ export class QuestionService {
       taskId: updated.taskId,
       // Redacted NOW: the audit row is never what the hook reads, and tm_events
       // has no retention (docs/questions.md § Secrets).
-      data: { questionId: id, answers: redactAnswers(answers).answers },
+      data: { ...audit, questionId: id, answers: redactAnswers(answers).answers },
     });
     broadcast({ type: 'question.updated', question: updated });
     return { ok: true, question: updated };

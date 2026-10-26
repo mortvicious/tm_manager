@@ -173,6 +173,59 @@ function PushPolicyCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<
   );
 }
 
+/** Offered waits; a stored value outside the list (set over the API) is shown as well. */
+const AUTOPILOT_CHOICES = [10, 15, 30, 60, 120, 240];
+
+/**
+ * The repo's question autopilot (docs/questions.md § Autopilot), saved on
+ * change: after this many minutes a worker's question nobody answered gets
+ * its one "(Recommended)" option picked by the server — never a push, deploy,
+ * secret, destructive, visual or multi-select question. Off by default.
+ */
+function AutopilotCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const current = repo.questionAutopilotMinutes ?? null;
+  const choices = current !== null && !AUTOPILOT_CHOICES.includes(current) ? [...AUTOPILOT_CHOICES, current].sort((a, b) => a - b) : AUTOPILOT_CHOICES;
+  const save = async (raw: string) => {
+    const next = raw === 'off' ? null : Number(raw);
+    if (next === current) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.updateRepo(repo.id, { questionAutopilotMinutes: next });
+      await onSaved();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="repo-landing">
+      <select
+        className="field"
+        value={current === null ? 'off' : String(current)}
+        disabled={busy}
+        title={
+          current === null
+            ? 'Off: a question waits for you, however long it takes.'
+            : `After ${current} min with no answer, the server picks the question's Recommended option and tells the agent so. Never for push/deploy, secrets, destructive, visual or multi-select questions, or external tasks.`
+        }
+        onChange={(e) => void save(e.target.value)}
+      >
+        <option value="off">off</option>
+        {choices.map((m) => (
+          <option key={m} value={String(m)}>
+            {m} min
+          </option>
+        ))}
+      </select>
+      {err && <span className="warn-text">{err}</span>}
+    </span>
+  );
+}
+
 function PreviewCell({ repoId, value, onSaved }: { repoId: string; value: string | null; onSaved: () => Promise<void> }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value ?? '');
@@ -370,6 +423,7 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                 <th>Role</th>
                 <th title="How far this repo's tasks land on their own — a task may override">Landing</th>
                 <th title="What agents are told about git push when no review holds the ship">Push</th>
+                <th title="Minutes a worker's question waits before its Recommended option is picked for you">Autopilot</th>
                 <th>Tasks</th>
                 <th>Git</th>
                 <th title="Commands, analysis and repo removal">Actions</th>
@@ -402,6 +456,9 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                       <td data-label="Push">
                         <PushPolicyCell repo={r} onSaved={refresh} />
                       </td>
+                      <td data-label="Autopilot">
+                        <AutopilotCell repo={r} onSaved={refresh} />
+                      </td>
                       <td className="mono" data-label="Tasks">
                         {count(r.id)}
                       </td>
@@ -428,7 +485,7 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                     </tr>
                     {expanded && (
                       <tr className="repo-open">
-                        <td colSpan={7} className="repo-cmd-cell">
+                        <td colSpan={8} className="repo-cmd-cell">
                           <RepoCommandsPanel repoId={r.id} onOpenTerminal={onOpenTerminal} />
                         </td>
                       </tr>

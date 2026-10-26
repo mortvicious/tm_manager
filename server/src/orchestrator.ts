@@ -119,6 +119,7 @@ import {
 import { MAX_LIVE_SESSIONS, pidLooksLikeOurs, type SessionManager } from './pty/session-manager.ts';
 import { artifactsRoot } from './config.ts';
 import type { Storage } from './storage/types.ts';
+import { QuestionAutopilot } from './questions-autopilot.ts';
 import { QuestionService } from './questions.ts';
 
 /** Upper bound on how long a custom-queue hold may outlive its follow-on (docs/queue.md). */
@@ -524,6 +525,8 @@ export class Orchestrator implements OrchestratorApi {
   readonly questions: QuestionService;
   /** Agents' background shells, listed/watched/killed from /terminals (docs/terminals.md § Background shells). */
   readonly backgroundShells: BackgroundShells;
+  /** Per-repo opt-in pick of a waiting question's Recommended option (docs/questions.md § Autopilot). */
+  readonly questionAutopilot: QuestionAutopilot;
 
   constructor(
     private storage: Storage,
@@ -532,6 +535,14 @@ export class Orchestrator implements OrchestratorApi {
     questions?: QuestionService,
   ) {
     this.questions = questions ?? new QuestionService(storage);
+    this.questionAutopilot = new QuestionAutopilot({
+      storage,
+      questions: this.questions,
+      sessionWorking: (runId) => {
+        const s = this.sessions.get(runId);
+        return s !== undefined && s.exit === null && !s.idle;
+      },
+    });
     this.backgroundShells = new BackgroundShells(storage, sessions, {
       holdsWait: (runId, shellId, now, shellWaitMs) => this.shellHoldsWait(runId, shellId, now, shellWaitMs),
       afterKill: (runId, shellIds, actor) => this.shellsKilled(runId, shellIds, actor),
@@ -565,6 +576,11 @@ export class Orchestrator implements OrchestratorApi {
     setInterval(() => {
       void this.anomalySweep();
     }, 60_000).unref();
+    // Question autopilot (docs/questions.md § Autopilot): off unless a repo
+    // opted in; minutes are its unit, so a 30s pass is late by at most that.
+    setInterval(() => {
+      void this.questionAutopilot.sweep();
+    }, 30_000).unref();
   }
 
   // ---- budget fuses (docs/token-budget.md § Fuses) -------------------------

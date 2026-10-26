@@ -1,5 +1,7 @@
 import {
   ANOMALY_ALERT_LABELS,
+  AUTOPILOT_ACTOR,
+  questionWaitedMinutes,
   type AnomalyAlert,
   type Chat,
   type ChatMessage,
@@ -330,6 +332,20 @@ export class PushNotifier {
     // Only the ask is news. Answered/expired are not pushed: iOS must show a
     // notification for every push it receives, so a "never mind" would be a
     // second banner; the SPA closes the stale one when it next opens instead.
+    // The one exception is an AUTOPILOT pick (docs/questions.md § Autopilot):
+    // nobody answered, so what the server chose for them is news. Its own tag,
+    // so the SPA's stale-question sweep (`question-*`) leaves it up.
+    if (q.status === 'answered' && q.answeredBy === AUTOPILOT_ACTOR) {
+      const task = await this.deps.storage.getTask(q.taskId);
+      const picks = q.questions.map((item) => `• ${q.answers?.[item.question] ?? '—'}`).join('\n');
+      await this.deps.push.deliver('question', {
+        title: `🤖 Auto-picked · ${task?.title ?? `Task ${q.taskId.slice(0, 8)}`}`,
+        body: clip(`Nobody answered in ${questionWaitedMinutes(q) ?? '?'} min, so the Recommended option was taken:\n${picks}`, SUMMARY_CLIP),
+        tag: `autopick-${q.id}`,
+        url: taskUrl(q.taskId),
+      });
+      return;
+    }
     if (q.status !== 'pending') return;
     const task = await this.deps.storage.getTask(q.taskId);
     const first = q.questions[0];

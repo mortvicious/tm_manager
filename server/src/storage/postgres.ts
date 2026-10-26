@@ -248,7 +248,7 @@ export class PostgresStorage implements Storage {
 
   async createRepo(r: NewRepo): Promise<Repo> {
     const id = randomUUID();
-    await this.q(`INSERT INTO tm_repos (id, name, path, role, preview_url, landing, push_policy, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
+    await this.q(`INSERT INTO tm_repos (id, name, path, role, preview_url, landing, push_policy, question_autopilot_minutes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
       id,
       r.name,
       r.path,
@@ -256,6 +256,7 @@ export class PostgresStorage implements Storage {
       r.previewUrl ?? null,
       r.landing ?? 'supervised',
       r.pushPolicy ?? 'repo-rules',
+      r.questionAutopilotMinutes ?? null,
       now(),
     ]);
     return (await this.getRepo(id))!;
@@ -264,13 +265,14 @@ export class PostgresStorage implements Storage {
   async updateRepo(id: string, patch: RepoPatch): Promise<Repo | null> {
     const cur = await this.getRepo(id);
     if (!cur) return null;
-    await this.q(`UPDATE tm_repos SET name = ?, path = ?, role = ?, preview_url = ?, landing = ?, push_policy = ? WHERE id = ?`, [
+    await this.q(`UPDATE tm_repos SET name = ?, path = ?, role = ?, preview_url = ?, landing = ?, push_policy = ?, question_autopilot_minutes = ? WHERE id = ?`, [
       patch.name ?? cur.name,
       patch.path ?? cur.path,
       patch.role === undefined ? cur.role : patch.role,
       patch.previewUrl === undefined ? cur.previewUrl : patch.previewUrl,
       patch.landing ?? cur.landing,
       patch.pushPolicy ?? cur.pushPolicy,
+      patch.questionAutopilotMinutes === undefined ? cur.questionAutopilotMinutes : patch.questionAutopilotMinutes,
       id,
     ]);
     return this.getRepo(id);

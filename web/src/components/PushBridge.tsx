@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api.ts';
+import { NAVIGATE_EVENT } from '../nav.ts';
 import { registerServiceWorker } from '../push.ts';
 import { useApp } from '../state.tsx';
 import { findTaskById } from '../taskId.ts';
@@ -53,6 +54,16 @@ export function PushBridge() {
     };
     navigator.serviceWorker.addEventListener('message', onMessage);
     return () => navigator.serviceWorker.removeEventListener('message', onMessage);
+  }, [navigate]);
+
+  // The in-page twin (nav.ts): code outside the router asks for a URL.
+  useEffect(() => {
+    const onNavigate = (e: Event) => {
+      const url = (e as CustomEvent<unknown>).detail;
+      if (typeof url === 'string' && url.startsWith('/')) navigate(url);
+    };
+    window.addEventListener(NAVIGATE_EVENT, onNavigate);
+    return () => window.removeEventListener(NAVIGATE_EVENT, onNavigate);
   }, [navigate]);
 
   // On open and on every return to the app: the server's pending list is the

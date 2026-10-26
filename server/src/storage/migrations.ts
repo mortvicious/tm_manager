@@ -672,6 +672,13 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
     // behaviour before the column existed: no rule, the repo's CLAUDE.md decides.
     statements: [`ALTER TABLE tm_repos ADD COLUMN push_policy TEXT NOT NULL DEFAULT 'repo-rules'`],
   },
+  {
+    id: 42,
+    // Question autopilot (docs/questions.md § Autopilot): minutes a worker's
+    // question waits before the server picks its Recommended option. NULL is
+    // off, the default — the behaviour before the column existed.
+    statements: [`ALTER TABLE tm_repos ADD COLUMN question_autopilot_minutes INTEGER`],
+  },
 ];
 
 /** The migration whose rows each driver backfills in JS once it is applied. */
