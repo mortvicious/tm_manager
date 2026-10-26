@@ -11,6 +11,7 @@ import './app-types.ts';
 import { sessionToken } from './auth.ts';
 import { ActivityWatcher } from './claude/activity.ts';
 import { CommandRunner } from './commands/runner.ts';
+import { AgentCommandCleanup } from './commands/cleanup.ts';
 import { ShellRunner } from './shells/runner.ts';
 import { AuxRunner, aux, initAux } from './claude/aux.ts';
 import { loadBootConfig, serverRoot } from './config.ts';
@@ -139,6 +140,10 @@ if (strandedChats.cleared) {
   const killed = strandedChats.killed ? `, killed ${strandedChats.killed} orphaned claude process(es)` : '';
   console.log(`chat: cleared ${strandedChats.cleared} turn(s) stranded by the last restart${killed}`);
 }
+// Agent-owned saved commands are archived once their task lands or they go
+// unused (docs/commands.md § Agent-owned commands): at boot, every 10 min,
+// and a few seconds after a task reaches done/published/cancelled.
+new AgentCommandCleanup(storage, commandRunner).start();
 
 // A report's own row is not a run row, so a crash mid-write leaves it
 // `running` with nothing in existence to settle it (docs/reports.md).

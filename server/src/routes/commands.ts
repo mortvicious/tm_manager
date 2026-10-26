@@ -172,6 +172,7 @@ export function registerCommandRoutes(app: FastifyInstance, storage: Storage, ru
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
+    if (body.isCheck && cur.archivedAt) return reply.code(409).send({ error: 'restore the command before making it a check' });
     if ((body.isCheck ?? cur.isCheck) && (body.kind ?? cur.kind) === 'service') {
       return reply.code(400).send({ error: SERVICE_CHECK });
     }
@@ -179,6 +180,11 @@ export function registerCommandRoutes(app: FastifyInstance, storage: Storage, ru
       const clash = await checkNameClash(storage, cur.repoId, body.name?.trim() ?? cur.name, cur.id);
       if (clash) return reply.code(409).send({ error: clash });
     }
+    // A human editing an agent's command (anything but its place in the list)
+    // ADOPTS it: from now on it is theirs, and the agent-command cleanup never
+    // archives it (docs/commands.md § Agent-owned commands).
+    const { sortOrder: _sort, ...edits } = body;
+    const adopt = cur.ownerTaskId !== null && Object.values(edits).some((v) => v !== undefined);
     const command = await storage.updateCommand(id, {
       name: body.name?.trim(),
       command: body.command?.trim(),
@@ -187,6 +193,7 @@ export function registerCommandRoutes(app: FastifyInstance, storage: Storage, ru
       sortOrder: body.sortOrder,
       isCheck: body.isCheck,
       timeoutSec: body.timeoutSec,
+      ...(adopt ? { ownerTaskId: null } : {}),
     });
     if (!command) return reply.code(404).send({ error: 'command not found' });
     await storage.appendEvent({
@@ -200,7 +207,47 @@ export function registerCommandRoutes(app: FastifyInstance, storage: Storage, ru
         ...(body.isCheck !== undefined || body.timeoutSec !== undefined
           ? { isCheck: command.isCheck, timeoutSec: command.timeoutSec }
           : {}),
+        ...(adopt ? { adopted: true, ownerTaskId: cur.ownerTaskId } : {}),
       },
+    });
+    broadcast({ type: 'command.updated', command });
+    return command;
+  });
+
+  // Archive / restore (docs/commands.md § Agent-owned commands). Archived =
+  // hidden from the launcher and the agent list, never deleted. Restoring
+  // ADOPTS the command: the human wanted it back, so it is theirs and the
+  // cleanup leaves it alone from now on. A live run is not touched either way.
+  app.post('/api/commands/:id/archive', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const cur = await storage.getCommand(id);
+    if (!cur) return reply.code(404).send({ error: 'command not found' });
+    if (cur.isCheck) return reply.code(409).send({ error: 'a check is part of the definition of done — unflag it before archiving' });
+    if (cur.archivedAt) return cur;
+    const command = await storage.updateCommand(id, { archivedAt: new Date().toISOString() });
+    if (!command) return reply.code(404).send({ error: 'command not found' });
+    await storage.appendEvent({
+      kind: 'command.changed',
+      actor: 'human',
+      repoId: command.repoId,
+      data: { action: 'archived', commandId: id, name: command.name, reason: 'human' },
+    });
+    broadcast({ type: 'command.updated', command });
+    return command;
+  });
+
+  app.post('/api/commands/:id/restore', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const cur = await storage.getCommand(id);
+    if (!cur) return reply.code(404).send({ error: 'command not found' });
+    if (!cur.archivedAt && cur.ownerTaskId === null) return cur;
+    const command = await storage.updateCommand(id, { archivedAt: null, ownerTaskId: null });
+    if (!command) return reply.code(404).send({ error: 'command not found' });
+    await storage.appendEvent({
+      kind: 'command.changed',
+      actor: 'human',
+      repoId: command.repoId,
+      data: { action: 'restored', commandId: id, name: command.name, ownerTaskId: cur.ownerTaskId },
     });
     broadcast({ type: 'command.updated', command });
     return command;

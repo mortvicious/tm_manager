@@ -40,7 +40,7 @@ import {
   siblingsQuery,
   type MoveAnchor,
 } from './group.ts';
-import { COST_MIGRATION_ID, MIGRATIONS } from './migrations.ts';
+import { COMMAND_OWNER_MIGRATION_ID, COST_MIGRATION_ID, MIGRATIONS, commandOwnerBackfill } from './migrations.ts';
 import { PUSH_RESULT_FAIL_SQL, PUSH_RESULT_OK_SQL, PUSH_UPSERT_SQL, rowToPushDevice } from './push-sql.ts';
 import type { LoopStep, NewPushDevice, PushDeviceRecord } from './types.ts';
 import type { LoopState } from '@tm/shared';
@@ -155,6 +155,18 @@ export class PostgresStorage implements Storage {
               await client.query(`UPDATE tm_runs SET cost_usd = $1 WHERE id = $2`, [runCost(safeParse(r.stats, null)), r.id]);
             }
             await client.query(`UPDATE tm_tasks SET cost_usd = ${taskCostSql('tm_tasks.id')}`);
+          }
+          // Migration 45: agent owners of saved commands, same transaction.
+          if (m.id === COMMAND_OWNER_MIGRATION_ID) {
+            const commands = (await client.query(`SELECT id, repo_id, name, command, created_at FROM tm_commands`)).rows;
+            const events = (
+              await client.query(
+                `SELECT at, actor, task_id, repo_id, data FROM tm_events WHERE kind = 'command.changed' AND task_id IS NOT NULL`,
+              )
+            ).rows;
+            for (const o of commandOwnerBackfill(commands, events)) {
+              await client.query(`UPDATE tm_commands SET owner_task_id = $1 WHERE id = $2`, [o.ownerTaskId, o.id]);
+            }
           }
           await client.query('COMMIT');
         } catch (e) {
@@ -311,9 +323,9 @@ export class PostgresStorage implements Storage {
           .next,
       );
     await this.q(
-      `INSERT INTO tm_commands (id, repo_id, name, command, kind, cwd, sort_order, is_check, timeout_sec, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, c.repoId, c.name, c.command, c.kind ?? 'task', c.cwd ?? null, sortOrder, c.isCheck ? 1 : 0, c.timeoutSec ?? null, at, at],
+      `INSERT INTO tm_commands (id, repo_id, name, command, kind, cwd, sort_order, is_check, timeout_sec, owner_task_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, c.repoId, c.name, c.command, c.kind ?? 'task', c.cwd ?? null, sortOrder, c.isCheck ? 1 : 0, c.timeoutSec ?? null, c.ownerTaskId ?? null, at, at],
     );
     return (await this.getCommand(id))!;
   }
@@ -322,7 +334,7 @@ export class PostgresStorage implements Storage {
     const cur = await this.getCommand(id);
     if (!cur) return null;
     await this.q(
-      `UPDATE tm_commands SET name = ?, command = ?, kind = ?, cwd = ?, sort_order = ?, is_check = ?, timeout_sec = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE tm_commands SET name = ?, command = ?, kind = ?, cwd = ?, sort_order = ?, is_check = ?, timeout_sec = ?, owner_task_id = ?, archived_at = ?, updated_at = ? WHERE id = ?`,
       [
         patch.name ?? cur.name,
         patch.command ?? cur.command,
@@ -331,6 +343,8 @@ export class PostgresStorage implements Storage {
         patch.sortOrder ?? cur.sortOrder,
         (patch.isCheck ?? cur.isCheck) ? 1 : 0,
         patch.timeoutSec === undefined ? cur.timeoutSec : patch.timeoutSec,
+        patch.ownerTaskId === undefined ? cur.ownerTaskId : patch.ownerTaskId,
+        patch.archivedAt === undefined ? cur.archivedAt : patch.archivedAt,
         now(),
         id,
       ],
@@ -340,6 +354,10 @@ export class PostgresStorage implements Storage {
 
   async deleteCommand(id: string): Promise<void> {
     await this.q(`DELETE FROM tm_commands WHERE id = ?`, [id]);
+  }
+
+  async touchCommandRun(id: string, at: string): Promise<void> {
+    await this.q(`UPDATE tm_commands SET last_run_at = ? WHERE id = ?`, [at, id]);
   }
 
   // ---- tasks ----

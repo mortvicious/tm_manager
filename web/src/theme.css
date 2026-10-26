@@ -3989,6 +3989,27 @@ table.tbl a:hover { text-decoration: underline; }
   font-size: var(--tm-text-sm);
 }
 
+/* agent-saved commands, folded under the human ones (docs/commands.md § Agent-owned commands) */
+.cmd-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+  width: 100%;
+  margin-top: var(--tm-space-2);
+  padding: var(--tm-space-1) var(--tm-space-2);
+  justify-content: flex-start;
+}
+
+.cmd-chev {
+  display: inline-flex;
+  transform: rotate(-90deg);
+  transition: transform var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.cmd-chev.open {
+  transform: none;
+}
+
 .cmd-err {
   margin: var(--tm-space-2) var(--tm-space-2) 0;
   font-size: var(--tm-text-xs);

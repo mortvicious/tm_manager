@@ -598,9 +598,21 @@ export interface RepoCommand {
   isCheck: boolean;
   /** a check's wall-clock limit in seconds; null = CHECK_DEFAULT_TIMEOUT_SEC. Past it the check is `error`, not red */
   timeoutSec: number | null;
+  /**
+   * The task whose AGENT saved it (docs/commands.md § Agent-owned commands);
+   * null = a human's (or adopted by one), never touched by the cleanup.
+   */
+  ownerTaskId: string | null;
+  /** ISO time the cleanup (or a human) archived it: hidden from the launcher, restorable. null = live */
+  archivedAt: string | null;
+  /** ISO time it was last started, by anyone; null = never since migration 45 */
+  lastRunAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
+
+/** Agent-owned saved commands one repo may hold (archived ones not counted). */
+export const AGENT_COMMANDS_PER_REPO_CAP = 20;
 
 /** A check with no timeout of its own gets this many seconds. */
 export const CHECK_DEFAULT_TIMEOUT_SEC = 600;
@@ -642,6 +654,9 @@ export interface CommandRun {
   /** true when it ran as a check's BASELINE — once on the current tree before
    *  the check is saved (docs/checks.md § Baseline); owned by no task */
   checkBaseline?: boolean;
+  /** true for an agent's ONE-SHOT run (POST /api/agent/commands/run): an
+   *  unsaved command line, so `commandId` is null from the start */
+  oneShot?: boolean;
 }
 
 /**
@@ -1623,6 +1638,12 @@ export interface AppSettings {
    */
   'inbox.staleDraftDays': number;
   /**
+   * An agent-saved repo command not started for this many days is archived
+   * (hidden from the launcher, restorable), like one whose owner task landed
+   * (docs/commands.md § Agent-owned commands). 0 = only the owner rule.
+   */
+  'commands.agentTtlDays': number;
+  /**
    * Budget fuses (docs/token-budget.md § Fuses). 0 = off, the default for all three.
    * `budget.taskUsd`: no AUTOMATIC turn (review fix round, dispatch wake, auto
    * wake-up, later check/transient rounds) starts once the task's `costUsd`
@@ -1784,6 +1805,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'anomaly.taskCostUsd': 0,
   'anomaly.staleReviewHours': 72,
   'inbox.staleDraftDays': 14,
+  'commands.agentTtlDays': 7,
   'budget.taskUsd': 0,
   'budget.dayUsd': 0,
   'budget.runMinutes': 0,

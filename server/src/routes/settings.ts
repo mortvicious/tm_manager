@@ -85,6 +85,7 @@ const settingsSchema = z
     'anomaly.taskCostUsd': z.number().max(100_000).refine((v) => v === 0 || v >= 0.5, 'must be 0 (adaptive) or at least 0.5'),
     'anomaly.staleReviewHours': z.number().int().min(1),
     'inbox.staleDraftDays': z.number().int().min(1).max(365),
+    'commands.agentTtlDays': z.number().int().min(0).max(365),
     // Budget fuses (docs/token-budget.md § Fuses): 0 — or null — is off.
     'budget.taskUsd': z.number().min(0).max(10_000).nullable().transform((v) => v ?? 0),
     'budget.dayUsd': z.number().min(0).max(100_000).nullable().transform((v) => v ?? 0),

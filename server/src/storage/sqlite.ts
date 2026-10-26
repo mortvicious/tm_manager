@@ -42,7 +42,7 @@ import {
   siblingsQuery,
   type MoveAnchor,
 } from './group.ts';
-import { COST_MIGRATION_ID, MIGRATIONS } from './migrations.ts';
+import { COMMAND_OWNER_MIGRATION_ID, COST_MIGRATION_ID, MIGRATIONS, commandOwnerBackfill } from './migrations.ts';
 import { PUSH_RESULT_FAIL_SQL, PUSH_RESULT_OK_SQL, PUSH_UPSERT_SQL, rowToPushDevice } from './push-sql.ts';
 import type { LoopStep, NewPushDevice, PushDeviceRecord } from './types.ts';
 import type { LoopState } from '@tm/shared';
@@ -132,6 +132,7 @@ export class SqliteStorage implements Storage {
         // Same transaction (a savepoint inside it): a crash cannot leave the
         // migration marked applied with no costs.
         if (m.id === COST_MIGRATION_ID) this.backfillCosts();
+        if (m.id === COMMAND_OWNER_MIGRATION_ID) this.backfillCommandOwners();
       });
       run();
     }
@@ -148,6 +149,17 @@ export class SqliteStorage implements Storage {
       for (const r of rows) set.run(runCost(safeParse(r.stats, null)), r.id);
       this.db.exec(`UPDATE tm_tasks SET cost_usd = ${taskCostSql('tm_tasks.id')}`);
     })();
+  }
+
+  /** Migration 45: owners of agent-saved commands from their `command.changed` audit rows. */
+  private backfillCommandOwners(): void {
+    const commands = this.db.prepare(`SELECT id, repo_id, name, command, created_at FROM tm_commands`).all() as any[];
+    if (commands.length === 0) return;
+    const events = this.db
+      .prepare(`SELECT at, actor, task_id, repo_id, data FROM tm_events WHERE kind = 'command.changed' AND task_id IS NOT NULL`)
+      .all() as any[];
+    const set = this.db.prepare(`UPDATE tm_commands SET owner_task_id = ? WHERE id = ?`);
+    for (const o of commandOwnerBackfill(commands, events)) set.run(o.ownerTaskId, o.id);
   }
 
   async spendSince(sinceIso: string): Promise<number> {
@@ -319,10 +331,10 @@ export class SqliteStorage implements Storage {
       );
     this.db
       .prepare(
-        `INSERT INTO tm_commands (id, repo_id, name, command, kind, cwd, sort_order, is_check, timeout_sec, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tm_commands (id, repo_id, name, command, kind, cwd, sort_order, is_check, timeout_sec, owner_task_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, c.repoId, c.name, c.command, c.kind ?? 'task', c.cwd ?? null, sortOrder, c.isCheck ? 1 : 0, c.timeoutSec ?? null, at, at);
+      .run(id, c.repoId, c.name, c.command, c.kind ?? 'task', c.cwd ?? null, sortOrder, c.isCheck ? 1 : 0, c.timeoutSec ?? null, c.ownerTaskId ?? null, at, at);
     return (await this.getCommand(id))!;
   }
 
@@ -331,7 +343,7 @@ export class SqliteStorage implements Storage {
     if (!cur) return null;
     this.db
       .prepare(
-        `UPDATE tm_commands SET name = ?, command = ?, kind = ?, cwd = ?, sort_order = ?, is_check = ?, timeout_sec = ?, updated_at = ? WHERE id = ?`,
+        `UPDATE tm_commands SET name = ?, command = ?, kind = ?, cwd = ?, sort_order = ?, is_check = ?, timeout_sec = ?, owner_task_id = ?, archived_at = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
         patch.name ?? cur.name,
@@ -341,6 +353,8 @@ export class SqliteStorage implements Storage {
         patch.sortOrder ?? cur.sortOrder,
         (patch.isCheck ?? cur.isCheck) ? 1 : 0,
         patch.timeoutSec === undefined ? cur.timeoutSec : patch.timeoutSec,
+        patch.ownerTaskId === undefined ? cur.ownerTaskId : patch.ownerTaskId,
+        patch.archivedAt === undefined ? cur.archivedAt : patch.archivedAt,
         now(),
         id,
       );
@@ -349,6 +363,10 @@ export class SqliteStorage implements Storage {
 
   async deleteCommand(id: string): Promise<void> {
     this.db.prepare(`DELETE FROM tm_commands WHERE id = ?`).run(id);
+  }
+
+  async touchCommandRun(id: string, at: string): Promise<void> {
+    this.db.prepare(`UPDATE tm_commands SET last_run_at = ? WHERE id = ?`).run(at, id);
   }
 
   // ---- tasks ----

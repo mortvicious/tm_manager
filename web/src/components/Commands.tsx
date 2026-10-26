@@ -30,6 +30,10 @@ const writeRepoPref = (id: string) => {
 const byOrder = (a: RepoCommand, b: RepoCommand) =>
   a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt);
 
+/** Human commands first, then the ones agents saved for their tasks (docs/commands.md § Agent-owned commands). */
+const humanFirst = (a: RepoCommand, b: RepoCommand) =>
+  Number(a.ownerTaskId !== null) - Number(b.ownerTaskId !== null) || byOrder(a, b);
+
 /** Run/stop plumbing shared by the header launcher and the Repos editor.
  *  Every state change arrives back over `/ws/events`, so nothing refetches. */
 function useCommandActions(onOpenTerminal?: (runId: string) => void) {
@@ -90,7 +94,7 @@ function RunRow({
             : run.checkBaseline
               ? ' · check baseline'
               : run.startedBy && run.startedBy !== 'human'
-              ? ` · by ${run.startedBy}`
+              ? ` · ${run.oneShot ? 'one-shot ' : ''}by ${run.startedBy}`
               : ''}
         </span>
       </span>
@@ -118,6 +122,7 @@ export function CommandsLauncher({ onOpenTerminal }: { onOpenTerminal: (runId: s
   const { repos, commands, commandRuns } = useApp();
   const mobile = useIsMobile();
   const [open, setOpen] = useState(false);
+  const [showAgent, setShowAgent] = useState(false);
   const [repoId, setRepoId] = useState<string | null>(() => readRepoPref());
   const wrapRef = useRef<HTMLSpanElement>(null);
   const { busy, err, setErr, run, stop } = useCommandActions((runId) => {
@@ -153,10 +158,43 @@ export function CommandsLauncher({ onOpenTerminal }: { onOpenTerminal: (runId: s
     return repos.find((r) => commands.some((c) => c.repoId === r.id))?.id ?? repos[0]?.id ?? null;
   }, [repoId, repos, commands]);
 
+  // Human commands on top; the ones agents saved for their own tasks below,
+  // folded (docs/commands.md § Agent-owned commands). Archived ones are only
+  // in the repo's command panel, where they can be restored.
   const repoCommands = useMemo(
-    () => commands.filter((c) => c.repoId === effectiveRepoId).sort(byOrder),
+    () => commands.filter((c) => c.repoId === effectiveRepoId && !c.archivedAt).sort(byOrder),
     [commands, effectiveRepoId],
   );
+  const humanCommands = repoCommands.filter((c) => !c.ownerTaskId);
+  const agentCommands = repoCommands.filter((c) => c.ownerTaskId);
+  const agentLive = agentCommands.filter((c) => running.some((r) => r.commandId === c.id)).length;
+
+  const commandRow = (c: RepoCommand) => {
+    const live = running.find((r) => r.commandId === c.id);
+    return (
+      <div className="cmd-run" key={c.id}>
+        <span className={`cmd-dot ${live ? 'live' : ''}`} aria-hidden="true" />
+        <span className="cmd-run-main">
+          <span className="cmd-run-name">{c.name}</span>
+          <span className="mono muted cmd-run-sub" title={c.cwd ? `${c.command}\nin ${c.cwd}` : c.command}>
+            {c.command}
+            {c.cwd ? ` · ${c.cwd}` : ''}
+            {c.ownerTaskId ? ` · task ${c.ownerTaskId.slice(0, 8)}` : ''}
+          </span>
+        </span>
+        {c.kind === 'service' && <span className="chip">dev</span>}
+        {live ? (
+          <button className="btn ghost" title="Stop it" disabled={busy === live.id} onClick={() => stop(live.id)}>
+            <IconStop />
+          </button>
+        ) : (
+          <button className="btn ghost" title="Run it" disabled={busy === c.id} onClick={() => run(c)}>
+            <IconPlay />
+          </button>
+        )}
+      </div>
+    );
+  };
 
   const title = running.length
     ? `${running.length} command(s) running: ${running.map((r) => `${r.repoName} · ${r.name}`).join(', ')}`
@@ -229,31 +267,27 @@ export function CommandsLauncher({ onOpenTerminal }: { onOpenTerminal: (runId: s
           <span className="mono">package.json</span> script).
         </div>
       ) : (
-        repoCommands.map((c) => {
-          const live = running.find((r) => r.commandId === c.id);
-          return (
-            <div className="cmd-run" key={c.id}>
-              <span className={`cmd-dot ${live ? 'live' : ''}`} aria-hidden="true" />
-              <span className="cmd-run-main">
-                <span className="cmd-run-name">{c.name}</span>
-                <span className="mono muted cmd-run-sub" title={c.cwd ? `${c.command}\nin ${c.cwd}` : c.command}>
-                  {c.command}
-                  {c.cwd ? ` · ${c.cwd}` : ''}
-                </span>
-              </span>
-              {c.kind === 'service' && <span className="chip">dev</span>}
-              {live ? (
-                <button className="btn ghost" title="Stop it" disabled={busy === live.id} onClick={() => stop(live.id)}>
-                  <IconStop />
-                </button>
-              ) : (
-                <button className="btn ghost" title="Run it" disabled={busy === c.id} onClick={() => run(c)}>
-                  <IconPlay />
-                </button>
-              )}
-            </div>
-          );
-        })
+        humanCommands.map(commandRow)
+      )}
+
+      {agentCommands.length > 0 && (
+        <>
+          <button
+            className="btn ghost cmd-group-toggle"
+            aria-expanded={showAgent}
+            title="Commands agents saved for their own tasks — archived once the task lands or they go unused"
+            onClick={() => setShowAgent((v) => !v)}
+          >
+            <span className={`cmd-chev ${showAgent ? 'open' : ''}`} aria-hidden="true">
+              <IconChevron />
+            </span>
+            <span className="label" style={{ margin: 0 }}>
+              agent-saved · {agentCommands.length}
+              {agentLive > 0 ? ` · ${agentLive} running` : ''}
+            </span>
+          </button>
+          {showAgent && agentCommands.map(commandRow)}
+        </>
       )}
 
       {finished.length > 0 && (
@@ -389,7 +423,10 @@ export function RepoCommandsMenu({
   const popRef = useRef<HTMLDivElement>(null);
   const { busy, err, run, stop } = useCommandActions(onOpenTerminal);
 
-  const mine = useMemo(() => commands.filter((c) => c.repoId === repoId).sort(byOrder), [commands, repoId]);
+  const mine = useMemo(
+    () => commands.filter((c) => c.repoId === repoId && !c.archivedAt).sort(humanFirst),
+    [commands, repoId],
+  );
   const running = commandRuns.filter((r) => r.status === 'running' && r.repoId === repoId);
 
   const place = () => {
@@ -530,8 +567,14 @@ export function RepoCommandsPanel({
   const [scanNote, setScanNote] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [picked, setPicked] = useState<string>('');
+  const [showArchived, setShowArchived] = useState(false);
 
-  const mine = useMemo(() => commands.filter((c) => c.repoId === repoId).sort(byOrder), [commands, repoId]);
+  const all = useMemo(() => commands.filter((c) => c.repoId === repoId), [commands, repoId]);
+  const mine = useMemo(() => all.filter((c) => !c.archivedAt).sort(humanFirst), [all]);
+  const archived = useMemo(
+    () => all.filter((c) => c.archivedAt).sort((a, b) => (b.archivedAt ?? '').localeCompare(a.archivedAt ?? '')),
+    [all],
+  );
   const running = commandRuns.filter((r) => r.status === 'running');
 
   const scan = async () => {
@@ -607,6 +650,24 @@ export function RepoCommandsPanel({
     }
   };
 
+  const archive = async (c: RepoCommand) => {
+    setErr(null);
+    try {
+      await api.archiveCommand(c.id);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+
+  const restore = async (c: RepoCommand) => {
+    setErr(null);
+    try {
+      await api.restoreCommand(c.id);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+
   const setKindOf = async (c: RepoCommand, next: KindPick) => {
     setErr(null);
     try {
@@ -633,6 +694,14 @@ export function RepoCommandsPanel({
                   {c.cwd ? ` · ${c.cwd}` : ''}
                 </span>
               </span>
+              {c.ownerTaskId && (
+                <span
+                  className="chip"
+                  title={`Saved by the agent of task ${c.ownerTaskId} — archived once that task lands or it goes unused. Editing it makes it yours.`}
+                >
+                  agent · {c.ownerTaskId.slice(0, 8)}
+                </span>
+              )}
               {c.isCheck && <CheckTimeout c={c} onError={setErr} />}
               <select
                 className="field cmd-select"
@@ -661,12 +730,55 @@ export function RepoCommandsPanel({
               >
                 <IconTerminal />
               </button>
+              {!c.isCheck && (
+                <button className="btn ghost" title="Archive: hide it from the launcher (restorable below)" onClick={() => archive(c)}>
+                  <IconX />
+                </button>
+              )}
               <button className="btn ghost" title="Delete this command" onClick={() => del(c)}>
                 <IconTrash />
               </button>
             </div>
           );
         })
+      )}
+
+      {archived.length > 0 && (
+        <>
+          <button
+            className="btn ghost cmd-group-toggle"
+            aria-expanded={showArchived}
+            title="Commands hidden from the launcher — by the agent-command cleanup or by hand"
+            onClick={() => setShowArchived((v) => !v)}
+          >
+            <span className={`cmd-chev ${showArchived ? 'open' : ''}`} aria-hidden="true">
+              <IconChevron />
+            </span>
+            <span className="label" style={{ margin: 0 }}>
+              archived · {archived.length}
+            </span>
+          </button>
+          {showArchived &&
+            archived.map((c) => (
+              <div className="cmd-row" key={c.id}>
+                <span className="cmd-dot" aria-hidden="true" />
+                <span className="cmd-run-main">
+                  <span className="cmd-run-name">{c.name}</span>
+                  <span className="mono muted cmd-run-sub">
+                    {c.command}
+                    {c.cwd ? ` · ${c.cwd}` : ''}
+                    {c.ownerTaskId ? ` · task ${c.ownerTaskId.slice(0, 8)}` : ''}
+                  </span>
+                </span>
+                <button className="btn" title="Bring it back to the launcher — it becomes yours" onClick={() => restore(c)}>
+                  <IconRefresh /> Restore
+                </button>
+                <button className="btn ghost" title="Delete this command" onClick={() => del(c)}>
+                  <IconTrash />
+                </button>
+              </div>
+            ))}
+        </>
       )}
 
       <div className="cmd-add">

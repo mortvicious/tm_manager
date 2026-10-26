@@ -42,7 +42,8 @@ Through them you can file follow-up tasks and coordinate work in OTHER repos.
 - You need a dev server, watcher or the repo's API up to verify your change:
   **use the repo's saved commands** (see Dev servers), never a background shell
   of your own. A server another agent or the human already runs is shared —
-  reuse it.
+  reuse it. Something only your task needs is a one-shot run
+  (`POST /api/agent/commands/run`), not a new saved command.
 
 ## API
 
@@ -295,6 +296,23 @@ curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
 curl -s -X POST -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/commands/<id>/stop"
 ```
 
+**Throwaway server or script? Run it ONCE — do not save it.** This is the
+default for anything only your task needs: a server on your own port, a
+scratchpad script, a one-off build. Same pool, same `waitFor`, the human can
+watch it, and nothing is left in the launcher after it ends.
+
+```bash
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
+  "$TM_CALLBACK_URL/api/agent/commands/run" \
+  -d '{"command": "pnpm exec next start -p 3107", "cwd": "web", "waitFor": "ready"}'
+# → { "started": true, "ready", "run": { "id", "oneShot": true, ... }, "tail", "note" }
+
+curl -s -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/commands/runs/<run.id>/logs"
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/commands/runs/<run.id>/stop"
+```
+
+- Max {{oneShotCap}} one-shot runs live per task — stop yours when you are done.
+
 - `started: false` means it was already running: **reuse it**. Read its port
   from `tail`/logs; do not start a copy on another port.
 - `ready: false` with `run.status` not `running` means it crashed — `tail` is
@@ -303,10 +321,21 @@ curl -s -X POST -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/commands/
   anything else is shared, and stopping it is refused. Leave a server running
   at the end of your turn unless you know nobody needs it. **Restart** works
   on your own repo's commands and on runs your task started.
-- No command for what you need? Save one in your repo (max
-  {{commandDefineCap}} per session), then start it. The command line runs as
-  argv, never through a shell: no `&&`, `|`, `;` or redirects. A command line
-  that is already saved answers 409 with the existing one.
+- **Commands run in their own repo only.** The command line runs as argv,
+  never through a shell: no `&&`, `|`, `;` or redirects, no `bash -c`, no
+  `cd`, and no option that moves it outside the repo (`env -C <elsewhere>`,
+  `--prefix ../x`, `git -C /`, `--cwd`, `--dir`) — set `"cwd"` to a folder
+  inside the repo instead. Work in another checkout belongs to a task in that
+  repo.
+- Save a command only when OTHER tasks and the human will want it too (the
+  repo's real dev server, a standard script). Max {{commandDefineCap}} per
+  session and {{commandRepoCap}} agent-saved per repo; a path in a temp folder
+  cannot be saved (run it once instead). A command line that is already saved
+  answers 409 with the existing one.
+- A command you save belongs to your task: it is archived (hidden, restorable
+  by the human) once your task is done, published or cancelled, or after
+  {{commandTtlDays}} days nobody started it. Saving an archived line again
+  brings it back for your task.
 
 ```bash
 curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \

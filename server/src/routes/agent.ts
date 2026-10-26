@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import type { Run } from '@tm/shared';
-import { AGENT_BRIEF_MAX, AGENT_TITLE_MAX } from '@tm/shared';
+import { AGENT_BRIEF_MAX, AGENT_COMMANDS_PER_REPO_CAP, AGENT_TITLE_MAX } from '@tm/shared';
 import { serverRoot } from '../config.ts';
 import { broadcast } from '../events.ts';
 import { onEvent } from '../events.ts';
@@ -12,7 +12,7 @@ import type { Orchestrator } from '../orchestrator.ts';
 import { spaceForRepo } from '../spaces/service.ts';
 import type { CommandRunner } from '../commands/runner.ts';
 import { agentBrief, agentTitle, maxSpawnDepth, perRunCap, QUEUED_AGENT_CEILING } from './agent-caps.ts';
-import { AGENT_COMMAND_DEFINE_CAP, registerAgentCommandRoutes } from './agent-commands.ts';
+import { AGENT_COMMAND_DEFINE_CAP, AGENT_ONE_SHOT_TASK_CAP, registerAgentCommandRoutes } from './agent-commands.ts';
 import { registerAgentSharedRoutes, SHARED_NOTE_RUN_CAP } from './agent-shared.ts';
 import { AGENT_CLOSE_RUN_CAP, registerAgentTaskRoutes } from './agent-tasks.ts';
 
@@ -96,7 +96,8 @@ export function registerAgentRoutes(
     const dispatched = await storage.countDispatchesByRun(run.id);
     // the task whose session filed THIS task — the natural dispatch-back address
     const creatorRun = task?.createdByRun ? await storage.getRun(task.createdByRun) : null;
-    const commands = run.repoId ? await storage.listCommands(run.repoId) : [];
+    // archived ones (docs/commands.md § Agent-owned commands) are out of the agent's view
+    const commands = run.repoId ? (await storage.listCommands(run.repoId)).filter((c) => !c.archivedAt) : [];
     return {
       taskId: run.taskId,
       repoId: run.repoId,
@@ -139,6 +140,9 @@ export function registerAgentRoutes(
       .replaceAll('{{dispatchPairCap}}', String(DISPATCH_PAIR_CAP))
       .replaceAll('{{closeRunCap}}', String(AGENT_CLOSE_RUN_CAP))
       .replaceAll('{{commandDefineCap}}', String(AGENT_COMMAND_DEFINE_CAP))
+      .replaceAll('{{commandRepoCap}}', String(AGENT_COMMANDS_PER_REPO_CAP))
+      .replaceAll('{{oneShotCap}}', String(AGENT_ONE_SHOT_TASK_CAP))
+      .replaceAll('{{commandTtlDays}}', String(settings['commands.agentTtlDays']))
       .replaceAll('{{titleMax}}', String(AGENT_TITLE_MAX))
       .replaceAll('{{briefMax}}', String(AGENT_BRIEF_MAX));
     return reply.type('text/markdown').send(md);

@@ -119,10 +119,14 @@ export interface NewCommand {
   sortOrder?: number;
   isCheck?: boolean;
   timeoutSec?: number | null;
+  /** the task whose agent saves it (docs/commands.md § Agent-owned commands) */
+  ownerTaskId?: string | null;
 }
 
 /** undefined = leave as-is; `cwd: null` clears it back to the repo root. */
-export type CommandPatch = Partial<Pick<RepoCommand, 'name' | 'command' | 'kind' | 'cwd' | 'sortOrder' | 'isCheck' | 'timeoutSec'>>;
+export type CommandPatch = Partial<
+  Pick<RepoCommand, 'name' | 'command' | 'kind' | 'cwd' | 'sortOrder' | 'isCheck' | 'timeoutSec' | 'ownerTaskId' | 'archivedAt'>
+>;
 
 export interface NewTask {
   title: string;
@@ -402,6 +406,8 @@ export interface Storage {
   createCommand(c: NewCommand): Promise<RepoCommand>;
   updateCommand(id: string, patch: CommandPatch): Promise<RepoCommand | null>;
   deleteCommand(id: string): Promise<void>;
+  /** Stamps `last_run_at` only — no `updated_at`, no broadcast (a start is not an edit). */
+  touchCommandRun(id: string, at: string): Promise<void>;
 
   listTasks(f?: TaskFilter): Promise<Task[]>;
   /**

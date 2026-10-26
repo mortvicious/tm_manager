@@ -272,6 +272,9 @@ export const api = {
   updateCommand: (id: string, b: Partial<Pick<RepoCommand, 'name' | 'command' | 'kind' | 'cwd' | 'sortOrder' | 'isCheck' | 'timeoutSec'>>) =>
     req<RepoCommand>('PATCH', `/api/commands/${id}`, b),
   deleteCommand: (id: string) => req<{ ok: true }>('DELETE', `/api/commands/${id}`),
+  /** docs/commands.md § Agent-owned commands: hide from the launcher / bring back (restoring adopts it) */
+  archiveCommand: (id: string) => req<RepoCommand>('POST', `/api/commands/${id}/archive`),
+  restoreCommand: (id: string) => req<RepoCommand>('POST', `/api/commands/${id}/restore`),
   repoScripts: (repoId: string) => req<RepoScripts>('GET', `/api/repos/${repoId}/scripts`),
   runCommand: (id: string) => req<CommandRun>('POST', `/api/commands/${id}/run`),
   listCommandRuns: () => req<CommandRun[]>('GET', '/api/command-runs'),

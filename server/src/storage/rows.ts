@@ -86,6 +86,9 @@ export function rowToCommand(r: any): RepoCommand {
     sortOrder: Number(r.sort_order ?? 0),
     isCheck: !!Number(r.is_check ?? 0),
     timeoutSec: r.timeout_sec == null ? null : Number(r.timeout_sec),
+    ownerTaskId: r.owner_task_id ?? null,
+    archivedAt: r.archived_at ?? null,
+    lastRunAt: r.last_run_at ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };

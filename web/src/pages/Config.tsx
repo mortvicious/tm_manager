@@ -850,6 +850,26 @@ export function ConfigPage() {
             onChange={(e) => set('inbox.staleDraftDays', Number(e.target.value))}
           />
         </div>
+        <div className="cfg-row">
+          <div>
+            <div>Agent commands: archive unused after (days)</div>
+            <div className="hint">
+              a command an agent saved for its task is archived (hidden from the launcher, restorable on the Repos page)
+              once that task lands, or when nobody started it for this long; 0 = only when the task lands
+              (docs/commands.md § Agent-owned commands)
+            </div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={0}
+            max={365}
+            step={1}
+            style={{ width: 90 }}
+            value={cfg['commands.agentTtlDays'] ?? DEFAULT_SETTINGS['commands.agentTtlDays']}
+            onChange={(e) => set('commands.agentTtlDays', Number(e.target.value))}
+          />
+        </div>
       </div>
 
       <div className="panel cfg-group">

@@ -1,8 +1,9 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { CommandRun, Repo, RepoCommand, Run } from '@tm/shared';
+import { AGENT_COMMANDS_PER_REPO_CAP } from '@tm/shared';
 import { broadcast } from '../events.ts';
-import { parseCommandLine, resolveCommandCwd } from '../commands/parse.ts';
+import { directoryEscape, parseCommandLine, resolveCommandCwd, tempPathIn } from '../commands/parse.ts';
 import type { CommandRunner } from '../commands/runner.ts';
 import type { Storage } from '../storage/types.ts';
 
@@ -17,9 +18,17 @@ import type { Storage } from '../storage/types.ts';
 // own repo or a run its task started; stop needs a run its task started —
 // a server someone else started is shared, and stopping it under them is
 // exactly the surprise this API exists to prevent.
+//
+// Ownership of DEFINITIONS (docs/commands.md § Agent-owned commands): a
+// command an agent saves belongs to its task (`owner_task_id`), at most
+// AGENT_COMMANDS_PER_REPO_CAP live ones per repo, and is archived by
+// commands/cleanup.ts once that task lands or it goes unused. A throwaway line
+// is not saved at all: POST /api/agent/commands/run is the one-shot form.
 
 /** Command definitions one worker session may add — a spam guard, not a budget. */
 export const AGENT_COMMAND_DEFINE_CAP = 3;
+/** Live one-shot runs one TASK may hold at once (the pool's own cap is 10 for everything). */
+export const AGENT_ONE_SHOT_TASK_CAP = 3;
 /** Longest a start/restart may hold the request waiting for a ready line. */
 const WAIT_MAX_MS = 60_000;
 /** Output returned with a start/restart, and the default for /logs. */
@@ -47,6 +56,33 @@ const startBody = z
   })
   .strict();
 
+const runBody = z
+  .object({
+    command: z.string().min(1).max(500),
+    cwd: z.string().max(200).nullish(),
+    name: z.string().min(1).max(80).optional(),
+    kind: z.enum(['task', 'service']).optional(),
+    waitFor: startBody.shape.waitFor,
+    waitMs: startBody.shape.waitMs,
+  })
+  .strict();
+
+/**
+ * Parses an agent's command line and proves it runs inside `repo`: the `cwd`
+ * field (resolveCommandCwd) AND the argv (directoryEscape — `env -C`,
+ * `--prefix`, `bash -c`). Returns the error message, or the parsed parts.
+ */
+function vetAgentLine(repo: Repo, text: string, cwdRaw: string): { error: string } | { argv: string[] } {
+  try {
+    const cwdAbs = resolveCommandCwd(repo.path, cwdRaw);
+    const argv = parseCommandLine(text);
+    const escape = directoryEscape(argv, cwdAbs, repo.path);
+    return escape ? { error: escape } : { argv };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export function registerAgentCommandRoutes(
@@ -70,6 +106,7 @@ export function registerAgentCommandRoutes(
           endedAt: r.endedAt,
           startedBy: r.startedBy,
           ownerTaskId: r.ownerTaskId,
+          ...(r.oneShot ? { oneShot: true } : {}),
         }
       : null;
 
@@ -83,6 +120,8 @@ export function registerAgentCommandRoutes(
       command: c.command,
       kind: c.kind,
       cwd: c.cwd,
+      /** the task whose agent saved it; null = a human's */
+      ownerTaskId: c.ownerTaskId,
       run: runBrief(latest),
       /** stop rights: only a run THIS task's agent started */
       yours: !!latest && latest.ownerTaskId !== null && latest.ownerTaskId === run.taskId,
@@ -99,6 +138,19 @@ export function registerAgentCommandRoutes(
     const repo = await storage.getRepo(command.repoId);
     if (!repo) return { ok: false as const, code: 404, error: 'repo not found' };
     return { ok: true as const, run, command, repo };
+  };
+
+  const archivedRefusal = (c: RepoCommand) =>
+    `"${c.name}" is archived — save the same command line again (POST /api/agent/commands) to take it over, or run it once with POST /api/agent/commands/run`;
+
+  /** A run of the commands pool by id, for the one-shot logs/stop routes. */
+  const targetRun = async (req: FastifyRequest) => {
+    const run = await authRun(req);
+    if (!run) return { ok: false as const, code: 403, error: 'forbidden' };
+    const { runId } = req.params as { runId: string };
+    const cmdRun = runner.get(runId);
+    if (!cmdRun) return { ok: false as const, code: 404, error: 'run not found (finished runs are kept for a while, then dropped)' };
+    return { ok: true as const, run, cmdRun };
   };
 
   /**
@@ -147,7 +199,8 @@ export function registerAgentCommandRoutes(
       repoId = hit.id;
     }
     if (!repoId) return reply.code(400).send({ error: 'your run has no repo — pass ?repo=<id|name>' });
-    const commands = await storage.listCommands(repoId);
+    // archived (docs/commands.md § Agent-owned commands) = out of the agent's view
+    const commands = (await storage.listCommands(repoId)).filter((c) => !c.archivedAt);
     const repo = repos.find((r) => r.id === repoId);
     return { repoId, commands: commands.map((c) => commandBrief(c, repo, run)) };
   });
@@ -167,35 +220,138 @@ export function registerAgentCommandRoutes(
     const cwdRaw = (body.cwd ?? '').trim();
     const cwd = cwdRaw === '' || cwdRaw === '.' ? null : cwdRaw;
     const text = body.command.trim();
-    try {
-      resolveCommandCwd(repo.path, cwdRaw);
-      parseCommandLine(text);
-    } catch (e) {
-      return reply.code(400).send({ error: (e as Error).message });
+    const vet = vetAgentLine(repo, text, cwdRaw);
+    if ('error' in vet) return reply.code(400).send({ error: vet.error });
+    // A scratchpad script dies with its session: saving a shortcut to it
+    // leaves a broken button behind. That is a one-shot run, not a definition.
+    const temp = tempPathIn(vet.argv);
+    if (temp) {
+      return reply.code(400).send({
+        error: `"${temp}" is in a temp folder, so a saved command would outlive it — run it once with POST /api/agent/commands/run instead`,
+      });
     }
+    const all = await storage.listCommands(repo.id);
     // One definition per command line: a second agent asking for the same
     // server gets the existing one, never a twin that would fight for its port.
-    const twin = (await storage.listCommands(repo.id)).find((c) => c.command === text && c.cwd === cwd);
-    if (twin) {
+    const same = all.filter((c) => c.command === text && c.cwd === cwd);
+    const twin = same.find((c) => !c.archivedAt) ?? same.find((c) => c.ownerTaskId) ?? same[0];
+    if (twin && !twin.archivedAt) {
       return reply.code(409).send({ error: `already saved as "${twin.name}" — start that one`, command: commandBrief(twin, repo, run) });
     }
-    const command = await storage.createCommand({
-      repoId: repo.id,
-      name: body.name.trim(),
-      command: text,
-      kind: body.kind ?? 'service',
-      cwd,
-    });
+    if (twin && !twin.ownerTaskId) {
+      // a human archived their own command: not the agent's to bring back
+      return reply.code(409).send({
+        error: `"${twin.name}" was archived by a human — run it once with POST /api/agent/commands/run instead`,
+      });
+    }
+    const owned = all.filter((c) => c.ownerTaskId && !c.archivedAt).length;
+    if (owned >= AGENT_COMMANDS_PER_REPO_CAP) {
+      return reply.code(403).send({
+        error: `this repo already holds ${owned} agent-saved commands (cap ${AGENT_COMMANDS_PER_REPO_CAP}) — start one that exists, or run yours once with POST /api/agent/commands/run`,
+      });
+    }
+    let command: RepoCommand;
+    if (twin) {
+      // An archived agent command of the same line: revived for THIS task
+      // rather than duplicated, so its id, order and history carry on.
+      const revived = await storage.updateCommand(twin.id, { archivedAt: null, ownerTaskId: run.taskId, name: body.name.trim() });
+      if (!revived) return reply.code(409).send({ error: 'that command was deleted meanwhile — try again' });
+      command = revived;
+    } else {
+      command = await storage.createCommand({
+        repoId: repo.id,
+        name: body.name.trim(),
+        command: text,
+        kind: body.kind ?? 'service',
+        cwd,
+        ownerTaskId: run.taskId,
+      });
+    }
     defined.set(run.id, used + 1);
     await storage.appendEvent({
       kind: 'command.changed',
       actor: actorOf(run),
       repoId: repo.id,
       taskId: run.taskId,
-      data: { action: 'created', name: command.name, command: command.command },
+      data: { action: twin ? 'revived' : 'created', commandId: command.id, name: command.name, command: command.command },
     });
     broadcast({ type: 'command.updated', command });
-    return { command: commandBrief(command, repo, run) };
+    return { command: commandBrief(command, repo, run), ...(twin ? { note: 'an archived copy of this command was revived for your task' } : {}) };
+  });
+
+  // One-shot (docs/commands.md § One-shot runs): an unsaved command line in the
+  // shared pool — the default for a throwaway server or script. Same argv and
+  // directory rules as a definition, nothing written to tm_commands; the run
+  // is in memory like every command run and is owned by the caller's task.
+  app.post('/api/agent/commands/run', async (req, reply) => {
+    const run = await authRun(req);
+    if (!run) return reply.code(403).send({ error: 'forbidden' });
+    const body = runBody.parse(req.body ?? {});
+    const repo = run.repoId ? await storage.getRepo(run.repoId) : null;
+    if (!repo) return reply.code(400).send({ error: 'your run has no repo to run a command in' });
+    const cwdRaw = (body.cwd ?? '').trim();
+    const text = body.command.trim();
+    const vet = vetAgentLine(repo, text, cwdRaw);
+    if ('error' in vet) return reply.code(400).send({ error: vet.error });
+    const mine = runner.running().filter((r) => r.oneShot && r.ownerTaskId !== null && r.ownerTaskId === run.taskId);
+    if (mine.length >= AGENT_ONE_SHOT_TASK_CAP) {
+      return reply.code(409).send({
+        error: `your task already has ${mine.length} one-shot runs live (cap ${AGENT_ONE_SHOT_TASK_CAP}) — stop one with POST /api/agent/commands/runs/<id>/stop`,
+        runs: mine.map((r) => runBrief(r)),
+      });
+    }
+    let live: CommandRun;
+    try {
+      live = await runner.startOneShot(
+        {
+          name: body.name?.trim() || text.slice(0, 80),
+          command: text,
+          kind: body.kind ?? 'service',
+          cwd: cwdRaw === '' || cwdRaw === '.' ? null : cwdRaw,
+        },
+        repo,
+        actorOf(run),
+        run.taskId,
+      );
+    } catch (e) {
+      const { code, error } = startError(e);
+      return reply.code(code).send({ error });
+    }
+    const out = await settle(live.id, { waitFor: body.waitFor, waitMs: body.waitMs });
+    return {
+      started: true,
+      ...out,
+      note: 'one-shot: not saved, nothing left in the launcher once it ends — stop it with POST /api/agent/commands/runs/<run.id>/stop when you are done',
+    };
+  });
+
+  app.get('/api/agent/commands/runs/:runId/logs', async (req, reply) => {
+    const t = await targetRun(req);
+    if (!t.ok) return reply.code(t.code).send({ error: t.error });
+    const { bytes } = req.query as { bytes?: string };
+    const n = Math.min(LOGS_MAX_BYTES, Math.max(1, Number.parseInt(bytes ?? '', 10) || TAIL_BYTES * 2));
+    const tail = runner.tail(t.cmdRun.id, n);
+    return { run: runBrief(t.cmdRun), tail: tail ?? '', note: tail === null ? 'the terminal of this run is gone' : undefined };
+  });
+
+  app.post('/api/agent/commands/runs/:runId/stop', async (req, reply) => {
+    const t = await targetRun(req);
+    if (!t.ok) return reply.code(t.code).send({ error: t.error });
+    const live = t.cmdRun;
+    if (live.status !== 'running') return reply.code(409).send({ error: `"${live.name}" is not running` });
+    if (!t.run.taskId || live.ownerTaskId !== t.run.taskId) {
+      return reply.code(403).send({ error: `"${live.name}" was started by ${live.startedBy}, not by your task — leave it running` });
+    }
+    if (!runner.stop(live.id)) return reply.code(409).send({ error: `"${live.name}" is not running` });
+    await storage.appendEvent({
+      kind: 'command.run',
+      actor: actorOf(t.run),
+      repoId: live.repoId,
+      taskId: t.run.taskId,
+      data: { action: 'stop-requested', name: live.name, ...(live.oneShot ? { oneShot: true } : {}) },
+    });
+    const exited = await runner.waitForExit(live.id, RESTART_EXIT_MS);
+    return { ok: true, exited, run: runBrief(runner.get(live.id)) };
   });
 
   // Start-or-reuse. A command that is already running is NOT an error here:
@@ -206,6 +362,7 @@ export function registerAgentCommandRoutes(
     const opts = startBody.parse(req.body ?? {});
     let live = runner.runningFor(t.command.id);
     let started = false;
+    if (!live && t.command.archivedAt) return reply.code(409).send({ error: archivedRefusal(t.command) });
     if (!live) {
       try {
         live = await runner.start(t.command, t.repo, actorOf(t.run), t.run.taskId);
@@ -259,6 +416,7 @@ export function registerAgentCommandRoutes(
     if (!t.ok) return reply.code(t.code).send({ error: t.error });
     const opts = startBody.parse(req.body ?? {});
     const live = runner.runningFor(t.command.id);
+    if (t.command.archivedAt) return reply.code(409).send({ error: archivedRefusal(t.command) });
     const owned = !!live && !!t.run.taskId && live.ownerTaskId === t.run.taskId;
     if (t.command.repoId !== t.run.repoId && !owned) {
       return reply.code(403).send({ error: `"${t.command.name}" belongs to another repo — you may start it, not restart it` });

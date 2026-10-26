@@ -98,6 +98,9 @@ export class CheckBaselines {
       sortOrder: 0,
       isCheck: true,
       timeoutSec: spec.timeoutSec,
+      ownerTaskId: null,
+      archivedAt: null,
+      lastRunAt: null,
       createdAt: now,
       updatedAt: now,
     };

@@ -25,6 +25,9 @@ persisted.
 | `sort_order` | launcher order (`sort` alone reads as a keyword in too many dialects) |
 | `is_check` | a CHECK (migration 34): run by the server after every worker turn, before the review, as part of the task's definition of done — `docs/checks.md` |
 | `timeout_sec` | a check's wall-clock limit (NULL = 600 s, 10–3600); past it the check is stopped and counts as "no verdict", never red |
+| `owner_task_id` | the task whose AGENT saved it (migration 45; backfilled from the `command.changed` audit rows); NULL = a human's, or adopted by one — never touched by the cleanup (§ Agent-owned commands) |
+| `archived_at` | hidden from the launcher and the agent list, restorable from the repo's command panel; NULL = live |
+| `last_run_at` | last start by anyone (`CommandRunner.start`, `touchCommandRun` — no `updated_at`, no broadcast); what "unused for N days" reads |
 
 **Runs live in memory only** (`CommandRun`, `server/src/commands/runner.ts`). A
 PTY dies with the server, so a persisted "running" row could only ever be a lie
@@ -146,7 +149,10 @@ definition, shared by everyone, in the commands pool, outliving the turn.
 | route | |
 |---|---|
 | `GET /api/agent/commands[?repo=<id\|name>]` | definitions + latest run each (`yours` = this task may stop it); default = caller's repo |
-| `POST /api/agent/commands` | save one in the caller's repo (kind defaults to `service`); same validation as the human route; same command line + cwd already saved → 409 with it; cap `AGENT_COMMAND_DEFINE_CAP` (3) per run |
+| `POST /api/agent/commands` | save one in the caller's repo, owned by the caller's task (kind defaults to `service`); same validation as the human route PLUS the argv directory rule and no temp-folder paths; same command line + cwd already saved → 409 with it (an ARCHIVED agent twin is revived for the caller instead); caps `AGENT_COMMAND_DEFINE_CAP` (3) per run and `AGENT_COMMANDS_PER_REPO_CAP` (20) live agent-owned per repo |
+| `POST /api/agent/commands/run` | **one-shot**: an unsaved command line in the same pool (§ One-shot runs); `{command, cwd?, name?, kind?, waitFor?, waitMs?}` |
+| `GET /api/agent/commands/runs/:runId/logs[?bytes=]` | tail of any run in the pool by run id (how a one-shot is read) |
+| `POST /api/agent/commands/runs/:runId/stop` | stop a run by id — only one the caller's TASK started |
 | `POST /api/agent/commands/:id/start` | **start or reuse**: already running → `started: false` and that run, not 409 |
 | `POST /api/agent/commands/:id/restart` | stop, wait for the exit (≤ 8s), start; caller's own repo or a run its task started |
 | `POST /api/agent/commands/:id/stop` | only a run the caller's TASK started (`ownerTaskId`), else 403 |
@@ -172,6 +178,7 @@ definition, shared by everyone, in the commands pool, outliving the turn.
 - **Lifetime**: an agent's server is NOT stopped when its task ends — it is
   shared, and the next agent will want it. The commands pool's own cap
   (`MAX_LIVE_SESSIONS`, 10) bounds the pile; the human sees it in the header.
+  Its DEFINITION is another matter: see § Agent-owned commands.
 - **Races**: `start()` checks and claims synchronously, so of two agents
   starting one command in the same tick one gets the run and the other reuses
   it; the route turns the loser's "already running" into that reuse.
@@ -179,6 +186,70 @@ definition, shared by everyone, in the commands pool, outliving the turn.
   `restart-requested`) and `command.changed` rows carry `agent:<run8>` and the
   task id. `GET /api/agent/context` lists the caller's repo's commands with a
   `running` flag.
+
+## Agent-owned commands
+
+Measured before this existed (autonomy-round analysis 663c5006, feasibility
+§ 10): 98 agent-saved commands in one repo from 59 tasks, 86 of them naming a
+task-specific path (a session scratchpad script, or `env -C "<repo>-<task
+worktree>"`), so the exact-text dedupe never matched and the launcher listed 99
+services. The per-run cap resets on every resume, retry and boot. So a
+definition an agent saves now has an owner and a life span
+(`server/src/commands/cleanup.ts`, decisions.md 2026-10-26):
+
+- **Owner** = `tm_commands.owner_task_id`, the task of the run that saved it.
+  Pre-45 rows were backfilled once, in the migration's transaction
+  (`commandOwnerBackfill`, both drivers): the agent `created` audit row of the
+  same repo, name and command line nearest the row's `created_at` (≤ 60 s). No
+  match stays unowned — the safe side.
+- **Archived, never deleted**, when the owner is `done`/`published`/
+  `cancelled` or gone, or when nobody started it for `commands.agentTtlDays`
+  (default 7; 0 = owner rule only; measured from `last_run_at`, else
+  `created_at`). `failed` is not an end (it gets retried). Never a check, never
+  a human's, never while a run of it is live (the next pass gets it). Each
+  archive is a `command.changed {action: 'archived', commandId, reason:
+  owner-done|owner-published|owner-cancelled|owner-gone|unused}` row by
+  `system`. The sweep runs at boot, every 10 min, and 5 s after any
+  `task.transition` into done/published/cancelled (coalesced, single-flight).
+- **Archived** = out of the launcher, the agent list and `/api/agent/context`;
+  start/restart by id answer 409 (logs still read). Saving the same line again
+  REVIVES the archived row for the new task (`action: 'revived'`) instead of
+  minting a twin. A human-archived unowned command is not the agent's to revive.
+- **Humans adopt**: `POST /api/commands/:id/restore` clears both `archived_at`
+  and the owner; any human PATCH other than `sortOrder` clears the owner
+  (`adopted: true` on its audit row). `POST /api/commands/:id/archive` hides any
+  non-check command by hand (`reason: 'human'`).
+- **Directory rule** (`directoryEscape`, `commands/parse.ts`), on define AND
+  one-shot: the `cwd` field was already kept inside the repo, but the argv could
+  leave it. Refused: a directory option (`-C`, `--chdir`, `--cwd`, `--dir`,
+  `--directory`, `--prefix`, `--work-tree`, `--git-dir`, `=` and attached forms,
+  whatever the tool) whose value resolves OUTSIDE the repo; `cd`/`pushd`; a
+  shell with `-c`; `env -S`. Every token is scanned, so a wrapper's nested
+  command is covered; `grep -C 3` or `pnpm --dir web` pass. Fails closed: a
+  tool's own `--dir` pointing at an outside output folder is refused too.
+- **Temp paths** (`tempPathIn`) are refused on SAVE only — `/tmp`,
+  `/private/tmp`, `/var/folders`, `os.tmpdir()`: a scratchpad script dies with
+  its session and the saved button would not. That line is a one-shot.
+- Human commands are untouched by all of this, including the directory rule.
+
+**UI**: the header launcher lists the repo's human commands first and folds
+the agent-saved ones under an `agent-saved · n` toggle (with a running count).
+The Repos command panel sorts human first, chips agent rows `agent · <task8>`,
+offers Archive on every non-check row, and lists archived rows under a fold
+with Restore. Config → Board has the TTL.
+
+## One-shot runs
+
+`POST /api/agent/commands/run` is the default for a throwaway server or
+script: same tokenizer, `cwd` check and directory rule, same pool (so the
+human can attach it and the pool cap holds), NOTHING written to `tm_commands`
+(`CommandRunner.startOneShot`: a synthetic definition, `commandId: null`,
+`CommandRun.oneShot`). Owned by the caller's task (stop rights), at most
+`AGENT_ONE_SHOT_TASK_CAP` (3) live per task, readiness via the same
+`waitFor`/`waitMs`. In memory like every run: once it ends and is trimmed from
+the last 25, nothing is left. Its audit row is `command.run {action: 'started',
+oneShot: true}`. The launcher shows it in `running` as `one-shot by
+agent:<run8>`.
 
 ## Restart is refused while agents are working
 

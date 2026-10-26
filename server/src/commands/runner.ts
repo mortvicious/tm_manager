@@ -124,6 +124,46 @@ export class CommandRunner {
       err.conflict = true;
       throw err;
     }
+    return this.launch(command, repo, actor, ownerTaskId, check, false);
+  }
+
+  /**
+   * An agent's ONE-SHOT run (docs/commands.md § One-shot runs): an unsaved
+   * command line in this same pool, so it is attachable, listed and capped
+   * like any run, but no definition exists — `commandId` is null from the
+   * start and nothing is left behind once the finished run is trimmed.
+   */
+  async startOneShot(
+    spec: Pick<RepoCommand, 'name' | 'command' | 'kind' | 'cwd'>,
+    repo: Repo,
+    actor: string,
+    ownerTaskId: string | null,
+  ): Promise<CommandRun> {
+    const at = new Date().toISOString();
+    const command: RepoCommand = {
+      id: `oneshot-${randomUUID()}`,
+      repoId: repo.id,
+      ...spec,
+      sortOrder: 0,
+      isCheck: false,
+      timeoutSec: null,
+      ownerTaskId,
+      archivedAt: null,
+      lastRunAt: null,
+      createdAt: at,
+      updatedAt: at,
+    };
+    return this.launch(command, repo, actor, ownerTaskId, null, true);
+  }
+
+  private async launch(
+    command: RepoCommand,
+    repo: Repo,
+    actor: string,
+    ownerTaskId: string | null,
+    check: CheckFor | null,
+    oneShot: boolean,
+  ): Promise<CommandRun> {
     // Every failure below is a 400 with a readable reason: unparseable command,
     // escaping cwd, missing binary. Nothing is recorded for an attempt that
     // never produced a process.
@@ -145,7 +185,7 @@ export class CommandRunner {
     });
     const run: CommandRun = {
       id,
-      commandId: command.id,
+      commandId: oneShot ? null : command.id,
       repoId: repo.id,
       repoName: repo.name,
       name: command.name,
@@ -161,8 +201,12 @@ export class CommandRunner {
       ownerTaskId,
       checkTaskId: check && 'taskId' in check ? check.taskId : null,
       ...(check && 'baseline' in check ? { checkBaseline: true } : {}),
+      ...(oneShot ? { oneShot: true } : {}),
     };
     this.runs.set(id, run);
+    // what the agent-command cleanup's "unused for N days" reads; a synthetic
+    // baseline id matches no row, so the write is a no-op there
+    if (!oneShot) void this.storage.touchCommandRun(command.id, run.startedAt).catch(() => {});
     broadcast({ type: 'command.run', run: { ...run } });
     await this.storage.appendEvent({
       kind: 'command.run',
@@ -177,6 +221,7 @@ export class CommandRunner {
         ownerTaskId,
         ...(check && 'taskId' in check ? { checkTaskId: check.taskId } : {}),
         ...(check && 'baseline' in check ? { checkBaseline: true } : {}),
+        ...(oneShot ? { oneShot: true } : { commandId: command.id }),
       },
     });
     this.trim();

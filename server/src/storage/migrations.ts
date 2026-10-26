@@ -695,7 +695,67 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
     // every status transition.
     statements: [`ALTER TABLE tm_tasks ADD COLUMN inbox_kept_until TEXT`],
   },
+  {
+    id: 45,
+    // Agent-owned commands (docs/commands.md § Agent-owned commands): the task
+    // whose agent saved the command (null = a human's, never cleaned up), the
+    // time the cleanup archived it (hidden from the launcher, restorable), and
+    // the last start, which the "unused for N days" rule reads. Owners of rows
+    // saved before this migration are backfilled in JS (`commandOwnerBackfill`)
+    // from the `command.changed` audit rows — JSON extraction is not
+    // dialect-neutral.
+    statements: [
+      `ALTER TABLE tm_commands ADD COLUMN owner_task_id TEXT`,
+      `ALTER TABLE tm_commands ADD COLUMN archived_at TEXT`,
+      `ALTER TABLE tm_commands ADD COLUMN last_run_at TEXT`,
+    ],
+  },
 ];
+
+/** The migration whose command owners each driver backfills in JS once it is applied. */
+export const COMMAND_OWNER_MIGRATION_ID = 45;
+
+/** How far an audit row's time may sit from the command's `created_at` and still be its creation. */
+const OWNER_MATCH_MS = 60_000;
+
+/**
+ * Migration 45's owner backfill, shared by both drivers. A pre-45 audit row
+ * carries no command id, so a command is matched to the AGENT `created` row
+ * of the same repo, name and command line written closest to its
+ * `created_at` (the route writes the two within milliseconds). No match — a
+ * human's command, or one whose audit row is gone — stays unowned, which is
+ * the safe side: an unowned command is never cleaned up.
+ */
+export function commandOwnerBackfill(
+  commands: { id: string; repo_id: string; name: string; command: string; created_at: string }[],
+  events: { at: string; actor: string; task_id: string | null; repo_id: string | null; data: unknown }[],
+): { id: string; ownerTaskId: string }[] {
+  const created = events.flatMap((e) => {
+    if (!e.task_id || !e.actor.startsWith('agent:')) return [];
+    let d: any = e.data;
+    if (typeof d === 'string') {
+      try {
+        d = JSON.parse(d);
+      } catch {
+        return [];
+      }
+    }
+    if (!d || d.action !== 'created') return [];
+    return [{ at: Date.parse(e.at), taskId: e.task_id, repoId: e.repo_id, name: d.name, command: d.command }];
+  });
+  const out: { id: string; ownerTaskId: string }[] = [];
+  for (const c of commands) {
+    const t = Date.parse(c.created_at);
+    let best: { taskId: string; gap: number } | null = null;
+    for (const e of created) {
+      if (e.repoId !== c.repo_id || e.name !== c.name || e.command !== c.command) continue;
+      const gap = Math.abs(e.at - t);
+      if (gap <= OWNER_MATCH_MS && (!best || gap < best.gap)) best = { taskId: e.taskId, gap };
+    }
+    if (best) out.push({ id: c.id, ownerTaskId: best.taskId });
+  }
+  return out;
+}
 
 /** The migration whose rows each driver backfills in JS once it is applied. */
 export const COST_MIGRATION_ID = 33;
