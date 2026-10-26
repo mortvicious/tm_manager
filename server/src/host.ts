@@ -26,11 +26,12 @@ import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
-import type { HostStatus, RebuildJob } from '@tm/shared';
+import type { HostStatus, RebuildJob, RebuildWaitingFor } from '@tm/shared';
 import { loadBootConfig, serverRoot } from './config.ts';
 import { isAllowedHost, isAllowedOriginHost, lanAddresses, setLanEnabled } from './net.ts';
 import { buildSpa, hostFingerprint, readBuildId, swapDist, typecheck, webDist } from './rebuild.ts';
 import { checkRemote, looksProxied, mintHostToken, stripTailscaleHeaders } from './remote.ts';
+import { clearStopIntent, writeStopIntent, type StopCause } from './stop-cause.ts';
 
 const cfg = loadBootConfig();
 setLanEnabled(cfg.lan.enabled);
@@ -159,7 +160,9 @@ function spawnApi(): void {
     // TM_SUPERVISED tells the API that POST /api/server/restart should EXIT
     // rather than detach a replacement of its own: two supervisors racing for
     // one port is the failure this flag exists to prevent.
-    env: { ...process.env, TM_SUPERVISED: '1' },
+    // TM_WATCH tells the API that an unannounced SIGTERM is most likely
+    // `tsx watch` reloading on a file change (docs/host.md § Restart causes).
+    env: { ...process.env, TM_SUPERVISED: '1', ...(useWatch ? { TM_WATCH: '1' } : {}) },
   });
   api.child = child;
   api.managed = true;
@@ -195,8 +198,13 @@ function spawnApi(): void {
   });
 }
 
-/** SIGTERM the tree, escalate to SIGKILL, resolve when the process is gone. */
-async function stopApi(): Promise<void> {
+/**
+ * SIGTERM the tree, escalate to SIGKILL, resolve when the process is gone.
+ * `why` is left for the API first (`writeStopIntent`): a signal carries no
+ * sender, and the API's next boot reports the cause (docs/host.md § Restart
+ * causes).
+ */
+async function stopApi(why: { action: NonNullable<StopCause['action']>; actor?: string; force?: boolean }): Promise<void> {
   api.desired = 'down';
   if (respawnTimer) {
     clearTimeout(respawnTimer);
@@ -204,11 +212,15 @@ async function stopApi(): Promise<void> {
   }
   const child = api.child;
   if (!child) return;
+  writeStopIntent(why);
   const gone = new Promise<void>((resolve) => child.once('exit', () => resolve()));
   killTree(child, 'SIGTERM');
   const escalate = setTimeout(() => killTree(child, 'SIGKILL'), 8000);
   await gone;
   clearTimeout(escalate);
+  // Consumed by the API's signal handler; one it never read (it died first)
+  // must not be taken for the reason of some later, unrelated signal.
+  clearStopIntent();
 }
 
 /** Poll rather than trust the child handle: an ADOPTED API has no handle, and a
@@ -466,6 +478,11 @@ const idleJob = (): RebuildJob => ({
   dev,
   bootedBefore: null,
   bootedAfter: null,
+  drain: false,
+  drainDeadline: null,
+  waitingFor: null,
+  pausedByJob: false,
+  continued: null,
 });
 
 let job: RebuildJob = idleJob();
@@ -475,8 +492,20 @@ let jobClaimed = false;
 let jobChild: ChildProcess | null = null;
 const setJobChild = (c: ChildProcess | null) => (jobChild = c);
 const REBOOT_TIMEOUT_MS = 60_000;
+/** Drain mode's default patience (docs/host.md § Drain), and its bounds. */
+const DRAIN_DEFAULT_MIN = 30;
+const DRAIN_MAX_MIN = 240;
+/** How often a draining job re-reads the restart check. */
+const DRAIN_POLL_MS = 2_000;
+/** Set by POST /host/rebuild-restart/cancel; read by the drain loop. */
+let cancelRequested = false;
 
-const jobRunning = () => job.state === 'building' || job.state === 'typechecking' || job.state === 'restarting';
+const jobRunning = () =>
+  job.state === 'draining' ||
+  job.state === 'building' ||
+  job.state === 'typechecking' ||
+  job.state === 'restarting' ||
+  job.state === 'continuing';
 
 function jobStep(state: RebuildJob['state'], step: string): void {
   job = { ...job, state, step };
@@ -500,24 +529,178 @@ async function waitNewBoot(before: string | null, timeoutMs: number): Promise<st
   return null;
 }
 
-function startRebuild(force: boolean, check: boolean): void {
-  job = {
-    ...idleJob(),
-    state: !dev ? 'building' : check ? 'typechecking' : 'restarting',
-    startedAt: new Date().toISOString(),
-  };
-  void runRebuild(force, check).catch((e) => jobEnd('failed', { error: (e as Error).message, reason: 'error' }));
+interface RebuildOptions {
+  force: boolean;
+  check: boolean;
+  /** drain mode: pause without suspending, wait for quiet (docs/host.md § Drain) */
+  drain: boolean;
+  drainMinutes: number;
 }
 
-async function runRebuild(force: boolean, check: boolean): Promise<void> {
+function startRebuild(opts: RebuildOptions): void {
+  cancelRequested = false;
+  job = {
+    ...idleJob(),
+    state: opts.drain ? 'draining' : !dev ? 'building' : opts.check ? 'typechecking' : 'restarting',
+    startedAt: new Date().toISOString(),
+    drain: opts.drain,
+  };
+  void runRebuild(opts).catch(async (e) => {
+    // Never leave the machine paused by a job that died: the hold is ours.
+    const released = await releasePause();
+    jobEnd('failed', { error: `${(e as Error).message}${released}`, reason: 'error' });
+  });
+}
+
+/**
+ * The orchestrator's pause, from the front door: the API's own routes with
+ * this process's loopback Origin (they refuse a request without one — a
+ * worker's curl must not pause the machine). `by: 'rebuild'` labels the audit
+ * row; the API decides everything else.
+ */
+async function orchestratorCall(
+  which: 'pause' | 'continue',
+  body: Record<string, unknown>,
+): Promise<{ status: number; json: any }> {
+  // 60 s: a suspending pause waits up to 15 s for compaction gates between
+  // its two sweeps, and a timeout here would read as a failure of a pause
+  // that in fact happened.
+  const r = await apiRequest('POST', `/api/orchestrator/${which}`, { ...body, by: 'rebuild' }, LOOPBACK_ORIGIN, 60_000);
+  let json: any = null;
+  try {
+    json = JSON.parse(r.body);
+  } catch {
+    /* keep null */
+  }
+  return { status: r.status, json };
+}
+
+/**
+ * Undo the hold this job set (and ONLY that one — a pause the human pressed
+ * before the job is theirs to lift). Returns a sentence for the job's error
+ * line, empty when there was nothing to release.
+ */
+async function releasePause(): Promise<string> {
+  if (!job.pausedByJob) return '';
+  const r = await orchestratorCall('continue', {});
+  if (r.status === 200) {
+    job = { ...job, pausedByJob: false, continued: true };
+    return ' The pause the job set was released (Continue); no work was lost.';
+  }
+  job = { ...job, continued: false };
+  return ` The pause the job set could NOT be released (${r.status}: ${r.json?.error ?? 'no answer'}) — press Continue.`;
+}
+
+function waitingFrom(guard: any): RebuildWaitingFor {
+  return {
+    running: Number(guard?.running ?? 0),
+    aux: Array.isArray(guard?.auxLabels) ? guard.auxLabels.map(String) : [],
+    notPauseAware: Array.isArray(guard?.notPauseAware) ? guard.notPauseAware.map(String) : [],
+  };
+}
+
+function drainStep(w: RebuildWaitingFor, deadline: number): string {
+  const parts: string[] = [];
+  if (w.running) parts.push(`${w.running} agent turn(s) finishing`);
+  const held = w.aux.length - w.notPauseAware.length;
+  if (held > 0) parts.push(`${held} review/compaction session(s)`);
+  if (w.notPauseAware.length) parts.push(`${w.notPauseAware.length} session(s) the pause does not stop (${w.notPauseAware.join(', ')})`);
+  const left = Math.max(0, Math.ceil((deadline - Date.now()) / 60_000));
+  return `Draining — waiting for ${parts.join(', ') || 'the restart check'} (gives up in ${left} min)…`;
+}
+
+/**
+ * Drain (docs/host.md § Drain): re-read the restart check until it is quiet.
+ * On the deadline: without force, release the job's own pause and fail
+ * `drain_timeout` (nothing was cut); with force, suspend the live turns with
+ * a normal Pause all (each resumes in its own session on Continue) and let the
+ * forced restart end whatever the pause does not. Cancel releases like a
+ * timeout. true = go on and restart.
+ */
+async function drainUntilQuiet(force: boolean): Promise<boolean> {
+  const deadline = Date.parse(job.drainDeadline!);
+  for (;;) {
+    if (cancelRequested) {
+      const released = await releasePause();
+      jobEnd('failed', { error: `Cancelled while draining — the API was NOT restarted.${released}`, reason: 'cancelled', waitingFor: null });
+      return false;
+    }
+    const guard = await readRestartCheck();
+    // An unreachable API cannot be killing anything: nothing to drain.
+    if (!guard || !guard.blocked) {
+      job = { ...job, waitingFor: null };
+      return true;
+    }
+    const w = waitingFrom(guard);
+    job = { ...job, waitingFor: w, step: drainStep(w, deadline) };
+    if (Date.now() >= deadline) {
+      if (force) {
+        jobStep('draining', 'Drain timed out — forced: suspending the remaining turns (Pause all)…');
+        const p = await orchestratorCall('pause', { suspend: true });
+        if (p.status !== 200 && api.up) {
+          const released = await releasePause();
+          jobEnd('failed', {
+            error: `the suspending pause failed (${p.status}: ${p.json?.error ?? 'no answer'}) — the API was NOT restarted.${released}`,
+            reason: 'pause',
+          });
+          return false;
+        }
+        return true;
+      }
+      const released = await releasePause();
+      jobEnd('failed', {
+        error: `Drain timed out: ${String(guard.error ?? 'work is still running')} The API was NOT restarted.${released}`,
+        reason: 'drain_timeout',
+      });
+      return false;
+    }
+    await sleep(DRAIN_POLL_MS);
+  }
+}
+
+async function runRebuild(opts: RebuildOptions): Promise<void> {
+  const { force, check, drain } = opts;
+  /** the machine was already paused when the job started: that pause is the human's */
+  let humanPause = false;
+  // 0. Drain: the pause FIRST, without suspending anything, so nothing new
+  //    starts while the build runs; live turns keep working.
+  if (drain) {
+    job = { ...job, drainDeadline: new Date(Date.now() + opts.drainMinutes * 60_000).toISOString() };
+    jobStep('draining', 'Pausing new work (live turns keep running)…');
+    await pollHealth();
+    if (api.up) {
+      // An API that predates drain mode ignores `suspend: false` and would
+      // SUSPEND every live turn — the opposite of a drain. Its restart check
+      // lacks `notPauseAware`; refuse rather than cut work.
+      const guard = await readRestartCheck();
+      if (guard && !Array.isArray(guard.notPauseAware)) {
+        return jobEnd('failed', {
+          error:
+            'the running API predates drain mode (it would suspend live turns instead of letting them finish) — nothing was paused, built or restarted. Restart it once without drain, or Pause all yourself.',
+          reason: 'pause',
+        });
+      }
+      const p = await orchestratorCall('pause', { suspend: false });
+      if (p.status !== 200) {
+        return jobEnd('failed', {
+          error: `could not pause the orchestrator (${p.status}: ${p.json?.error ?? 'no answer'}) — nothing was built or restarted`,
+          reason: 'pause',
+        });
+      }
+      humanPause = p.json?.wasPaused === true;
+      job = { ...job, pausedByJob: !humanPause };
+    }
+  }
+
   // 1. Build into dist.next and swap. Dev has nothing to build: Vite serves
   //    source, and the reload picks it up.
   if (!dev) {
     jobStep('building', 'Building the web app…');
     const b = await buildSpa(setJobChild);
     if (!b.ok) {
+      const released = await releasePause();
       return jobEnd('failed', {
-        error: `${b.error} — nothing was restarted; the current page is still served`,
+        error: `${b.error} — nothing was restarted; the current page is still served${released}`,
         reason: 'build',
         logTail: b.tail,
       });
@@ -533,8 +716,9 @@ async function runRebuild(force: boolean, check: boolean): Promise<void> {
     jobStep('typechecking', 'Typechecking…');
     const t = await typecheck(setJobChild);
     if (!t.ok) {
+      const released = await releasePause();
       return jobEnd('failed', {
-        error: `${t.error} — the API was NOT restarted${dev ? '' : ' (the new web build is already served)'}`,
+        error: `${t.error} — the API was NOT restarted${dev ? '' : ' (the new web build is already served)'}${released}`,
         reason: 'typecheck',
         logTail: t.tail,
       });
@@ -542,51 +726,88 @@ async function runRebuild(force: boolean, check: boolean): Promise<void> {
   }
 
   // 3. The build took a while; an agent may have started since the press.
-  const blocked = await restartBlocked(force);
-  if (blocked) {
-    return jobEnd('failed', {
-      error: `${String(blocked.error ?? 'agents are working')} The API was NOT restarted.`,
-      reason: 'not_quiet',
-      logTail: '',
-    });
+  //    Drain mode waits for it instead of refusing.
+  let forceRestart = force;
+  for (;;) {
+    if (drain) {
+      jobStep('draining', 'Draining…');
+      if (!(await drainUntilQuiet(force))) return;
+      // past the deadline under force: whatever the suspending pause left
+      // (non-pause-aware sessions) goes with the restart
+      forceRestart = force && Date.now() >= Date.parse(job.drainDeadline!);
+    } else {
+      const blocked = await restartBlocked(force);
+      if (blocked) {
+        return jobEnd('failed', {
+          error: `${String(blocked.error ?? 'agents are working')} The API was NOT restarted.`,
+          reason: 'not_quiet',
+          logTail: '',
+        });
+      }
+    }
+
+    // 4. Restart and wait for a NEW bootedAt — up is not enough, the old one was up.
+    jobStep('restarting', 'Restarting the API…');
+    await pollHealth();
+    const before = api.up ? api.bootedAt : null;
+    job = { ...job, bootedBefore: before };
+    if (api.up && !api.managed) {
+      // Adopted, not ours to respawn: it detaches its own replacement.
+      const r = await askApiToRestart(forceRestart);
+      // A human click started a turn between the drain's last read and this
+      // request (the pause holds everything automatic): drain again.
+      if (r.status === 409 && drain && Date.now() < Date.parse(job.drainDeadline!)) continue;
+      if (r.status !== 200) {
+        let msg = `the API refused the restart (${r.status})`;
+        try {
+          msg = JSON.parse(r.body)?.error ?? msg;
+        } catch {
+          /* keep the status */
+        }
+        const released = await releasePause();
+        return jobEnd('failed', { error: `${msg}${released}`, reason: 'restart', logTail: '' });
+      }
+    } else {
+      await stopApi({ action: 'rebuild-restart', actor: 'rebuild', force: forceRestart });
+      api.desired = 'up';
+      backoffMs = 500;
+      await waitPortFree(5000);
+      spawnApi();
+    }
+    const after = await waitNewBoot(before, REBOOT_TIMEOUT_MS);
+    if (!after) {
+      return jobEnd('failed', {
+        error:
+          'the API did not come back within 60 s — the front door keeps respawning it with backoff; check its terminal output (a broken server file is the usual cause)' +
+          (job.pausedByJob ? '. The orchestrator is still paused by this job — press Continue once it is up.' : ''),
+        reason: 'timeout',
+        // the build's log says nothing about this; the API's own output is in
+        // this process's terminal (stdio is inherited)
+        logTail: '',
+      });
+    }
+    job = { ...job, bootedAfter: after };
+    break;
   }
 
-  // 4. Restart and wait for a NEW bootedAt — up is not enough, the old one was up.
-  jobStep('restarting', 'Restarting the API…');
-  await pollHealth();
-  const before = api.up ? api.bootedAt : null;
-  job = { ...job, bootedBefore: before };
-  if (api.up && !api.managed) {
-    // Adopted, not ours to respawn: it detaches its own replacement.
-    const r = await askApiToRestart(force);
-    if (r.status !== 200) {
-      let msg = `the API refused the restart (${r.status})`;
-      try {
-        msg = JSON.parse(r.body)?.error ?? msg;
-      } catch {
-        /* keep the status */
-      }
-      return jobEnd('failed', { error: msg, reason: 'restart', logTail: '' });
+  // 5. Drain mode: Continue — but ONLY a pause this job set. A pause the human
+  //    pressed before the press stays theirs (docs/decisions.md 2026-10-26).
+  if (drain && job.pausedByJob) {
+    jobStep('continuing', 'Continuing (the pause this job set)…');
+    const c = await orchestratorCall('continue', {});
+    if (c.status !== 200) {
+      return jobEnd('done', {
+        step: 'Done — but Continue failed',
+        continued: false,
+        error: `restarted, but Continue failed (${c.status}: ${c.json?.error ?? 'no answer'}) — the orchestrator is still paused; press Continue`,
+      });
     }
-  } else {
-    await stopApi();
-    api.desired = 'up';
-    backoffMs = 500;
-    await waitPortFree(5000);
-    spawnApi();
+    return jobEnd('done', { step: 'Done', continued: true, pausedByJob: false });
   }
-  const after = await waitNewBoot(before, REBOOT_TIMEOUT_MS);
-  if (!after) {
-    return jobEnd('failed', {
-      error:
-        'the API did not come back within 60 s — the front door keeps respawning it with backoff; check its terminal output (a broken server file is the usual cause)',
-      reason: 'timeout',
-      // the build's log says nothing about this; the API's own output is in
-      // this process's terminal (stdio is inherited)
-      logTail: '',
-    });
-  }
-  jobEnd('done', { step: 'Done', bootedAfter: after });
+  jobEnd('done', {
+    step: humanPause ? 'Done — left paused (the pause was not the job’s)' : 'Done',
+    continued: drain ? false : null,
+  });
 }
 
 // ------------------------------------------------------------- control API
@@ -642,57 +863,58 @@ function status(): HostStatus {
   };
 }
 
+/** One request to the API (Host rewritten like the proxy does). `origin`
+ *  only for the browser-action routes the job calls (pause / continue). */
+function apiRequest(
+  method: 'GET' | 'POST',
+  route: string,
+  body: unknown,
+  origin: string | null,
+  timeoutMs: number,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve) => {
+    const payload = body === undefined ? '' : JSON.stringify(body);
+    const headers: Record<string, string | number> = { host: API_ORIGIN };
+    if (origin) headers.origin = origin;
+    if (payload) {
+      headers['content-type'] = 'application/json';
+      headers['content-length'] = Buffer.byteLength(payload);
+    }
+    const req = http.request({ host: '127.0.0.1', port: API_PORT, path: route, method, headers }, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => (text += c));
+      res.on('end', () => resolve({ status: res.statusCode ?? 502, body: text }));
+    });
+    req.setTimeout(timeoutMs, () => req.destroy());
+    req.on('error', (e) => resolve({ status: 502, body: JSON.stringify({ error: (e as Error).message }) }));
+    req.end(payload || undefined);
+  });
+}
+
+/** The API's restart check as it answers it; null when the API is unreachable. */
+async function readRestartCheck(): Promise<Record<string, any> | null> {
+  const r = await apiRequest('GET', '/api/server/restart-check', undefined, null, 1500);
+  if (r.status !== 200) return null;
+  try {
+    return JSON.parse(r.body);
+  } catch {
+    return null;
+  }
+}
+
 /** The API owns the "are agents working?" rule; ask it rather than restate it.
  *  An unreachable API cannot be killing anything, so a down server is free. */
 async function restartBlocked(force: boolean): Promise<null | Record<string, unknown>> {
   if (force) return null;
-  const guard = await new Promise<any>((resolve) => {
-    const req = http.request(
-      { host: '127.0.0.1', port: API_PORT, path: '/api/server/restart-check', method: 'GET', headers: { host: API_ORIGIN } },
-      (res) => {
-        let body = '';
-        res.setEncoding('utf8');
-        res.on('data', (c) => (body += c));
-        res.on('end', () => {
-          try {
-            resolve(res.statusCode === 200 ? JSON.parse(body) : null);
-          } catch {
-            resolve(null);
-          }
-        });
-      },
-    );
-    req.setTimeout(1500, () => req.destroy());
-    req.on('error', () => resolve(null));
-    req.end();
-  });
+  const guard = await readRestartCheck();
   return guard?.blocked ? guard : null;
 }
 
 /** POST the API's own restart route — the path for an API we did not spawn,
  *  which detaches its own replacement and stays outside our supervision. */
 function askApiToRestart(force: boolean): Promise<{ status: number; body: string }> {
-  return new Promise((resolve) => {
-    const payload = JSON.stringify({ force });
-    const req = http.request(
-      {
-        host: '127.0.0.1',
-        port: API_PORT,
-        path: '/api/server/restart',
-        method: 'POST',
-        headers: { host: API_ORIGIN, 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) },
-      },
-      (res) => {
-        let body = '';
-        res.setEncoding('utf8');
-        res.on('data', (c) => (body += c));
-        res.on('end', () => resolve({ status: res.statusCode ?? 502, body }));
-      },
-    );
-    req.setTimeout(5000, () => req.destroy());
-    req.on('error', (e) => resolve({ status: 502, body: JSON.stringify({ error: (e as Error).message }) }));
-    req.end(payload);
-  });
+  return apiRequest('POST', '/api/server/restart', { force }, null, 5000);
 }
 
 /** Bring a managed child up and wait for it to actually answer. */
@@ -734,18 +956,36 @@ async function control(req: http.IncomingMessage, res: http.ServerResponse, rout
     return json(res, 409, { error: 'a rebuild & restart is running — wait for it', reason: 'in_progress', ...status() });
   }
 
+  if (route === '/host/rebuild-restart/cancel') {
+    // Only a drain can be cancelled: a build or a restart in flight is
+    // minutes or seconds from its own end, and stopping it half-way is worse.
+    if (job.state !== 'draining') {
+      return json(res, 409, { error: 'only a draining rebuild can be cancelled', reason: 'not_draining', ...status() });
+    }
+    cancelRequested = true;
+    return json(res, 202, { ok: true, ...status() });
+  }
+
   if (route === '/host/rebuild-restart') {
     // Checked and taken synchronously: two presses must not both pass the
     // guard's await below and start two builds into one dist.next.
     if (jobRunning() || jobClaimed) {
       return json(res, 409, { error: 'a rebuild & restart is already running', reason: 'in_progress', ...status() });
     }
+    const drain = body?.drain === true;
+    const minutes = Number(body?.drainMinutes ?? DRAIN_DEFAULT_MIN);
+    if (drain && (!Number.isFinite(minutes) || minutes < 1 || minutes > DRAIN_MAX_MIN)) {
+      return json(res, 400, { error: `drainMinutes must be 1…${DRAIN_MAX_MIN}` });
+    }
     jobClaimed = true;
     try {
       await pollHealth();
-      const blocked = await restartBlocked(force);
-      if (blocked) return json(res, 409, { ...blocked, reason: 'not_quiet', ...status() });
-      startRebuild(force, body?.typecheck !== false);
+      // Drain mode waits for quiet instead of refusing (docs/host.md § Drain).
+      if (!drain) {
+        const blocked = await restartBlocked(force);
+        if (blocked) return json(res, 409, { ...blocked, reason: 'not_quiet', ...status() });
+      }
+      startRebuild({ force, check: body?.typecheck !== false, drain, drainMinutes: minutes });
     } finally {
       jobClaimed = false;
     }
@@ -773,7 +1013,7 @@ async function control(req: http.IncomingMessage, res: http.ServerResponse, rout
     }
     const blocked = await restartBlocked(force);
     if (blocked) return json(res, 409, { ...blocked, ...status() });
-    await stopApi();
+    await stopApi({ action: 'stop', force });
     await pollHealth();
     return json(res, 200, { ok: true, ...status() });
   }
@@ -788,7 +1028,7 @@ async function control(req: http.IncomingMessage, res: http.ServerResponse, rout
       res.writeHead(r.status, { 'content-type': 'application/json; charset=utf-8' });
       return void res.end(r.body);
     }
-    await stopApi();
+    await stopApi({ action: 'restart', force });
     const ok = await startAndWait();
     return json(res, ok ? 200 : 500, {
       ok,
@@ -893,7 +1133,12 @@ const shutdown = async () => {
   // this terminal has to mean "stop the whole thing", or the next boot meets an
   // orphan already holding the API port.
   if (jobChild) jobChild.kill('SIGKILL');
-  await stopApi();
+  // A drain's pause is a row: it outlives this process, and the API's next
+  // boot comes up paused. Said here so the terminal shows it.
+  if (job.state === 'draining' && job.pausedByJob) {
+    console.log('[host] shutting down mid-drain — the orchestrator stays paused; press Continue after the next start');
+  }
+  await stopApi({ action: 'shutdown' });
   server.close();
   remoteServer?.close();
   process.exit(0);

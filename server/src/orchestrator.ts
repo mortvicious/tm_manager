@@ -121,6 +121,7 @@ import { artifactsRoot } from './config.ts';
 import type { Storage } from './storage/types.ts';
 import { QuestionAutopilot } from './questions-autopilot.ts';
 import { QuestionService } from './questions.ts';
+import { describeStopCause, type StopCause } from './stop-cause.ts';
 
 /** Upper bound on how long a custom-queue hold may outlive its follow-on (docs/queue.md). */
 const CUSTOM_QUEUE_HOLD_TTL_MS = 30 * 60_000;
@@ -1447,7 +1448,7 @@ export class Orchestrator implements OrchestratorApi {
    * command line still looks like ours) and fail their tasks — never leave
    * unsupervised agents editing repos, never retry into a half-edited repo.
    */
-  async recoverOnBoot(): Promise<void> {
+  async recoverOnBoot(opts: { lastStop?: StopCause } = {}): Promise<void> {
     // Also sweep recently-ended rows: cancel() marks a run killed up to ~5s
     // before its process actually dies; a crash in that window leaves a live
     // claude pid under a non-running row (review M8).
@@ -1615,7 +1616,13 @@ export class Orchestrator implements OrchestratorApi {
       await this.storage.appendEvent({
         kind: 'boot.recovery',
         actor: 'system',
-        data: { swept: orphans.length, strandedTasks: stranded.length },
+        data: {
+          swept: orphans.length,
+          strandedTasks: stranded.length,
+          // Why the previous process went (docs/host.md § Restart causes):
+          // `unknown` is a crash, a SIGKILL or a machine reboot.
+          ...(opts.lastStop ? { cause: opts.lastStop.kind, lastStop: opts.lastStop, summary: describeStopCause(opts.lastStop) } : {}),
+        },
       });
       console.log(
         `boot recovery: swept ${orphans.length} run(s)` +
@@ -1673,12 +1680,31 @@ export class Orchestrator implements OrchestratorApi {
    * keep what Continue needs. Two sweeps: a gate's abort branch and a turn
    * that passed its pause check just before the flag settle in between.
    * Idempotent: pressing it again only sweeps again.
+   *
+   * `suspend: false` is the DRAIN form (Rebuild & restart's drain mode,
+   * docs/pause.md § Drain): the flag alone. Nothing new starts, but live
+   * turns, compactions and review rounds are left to finish on their own;
+   * whatever their Stop would start next is held by the flag exactly as
+   * under a full pause and owed to Continue. `already` tells the caller
+   * whether the flag was up before this call (the job continues only a pause
+   * it set itself).
    */
-  async pauseAll(actor = 'human'): Promise<{ suspended: string[] }> {
+  async pauseAll(
+    actor = 'human',
+    opts: { suspend?: boolean } = {},
+  ): Promise<{ suspended: string[]; already: boolean }> {
+    const suspend = opts.suspend !== false;
     const already = await this.isPaused();
     await this.storage.setSetting('orchestrator.paused', true);
-    if (!already) await this.storage.appendEvent({ kind: 'orchestrator.pause', actor, data: { paused: true } });
+    if (!already) {
+      await this.storage.appendEvent({
+        kind: 'orchestrator.pause',
+        actor,
+        data: { paused: true, ...(suspend ? {} : { suspend: false }) },
+      });
+    }
     broadcast({ type: 'orchestrator.status', status: await this.status() });
+    if (!suspend) return { suspended: [], already };
     const suspended = new Set<string>();
     await this.suspendSweep(actor, suspended);
     const deadline = Date.now() + 15_000;
@@ -1694,7 +1720,7 @@ export class Orchestrator implements OrchestratorApi {
       });
     }
     broadcast({ type: 'orchestrator.status', status: await this.status() });
-    return { suspended: [...suspended] };
+    return { suspended: [...suspended], already };
   }
 
   private async suspendSweep(actor: string, out: Set<string>): Promise<void> {
@@ -1784,7 +1810,7 @@ export class Orchestrator implements OrchestratorApi {
    * `REPO_EXCLUSIVE_GATE`) until their resume moves them to `running`, so the
    * claim loop woken here cannot start another task on top of them.
    */
-  async continueAll(actor = 'human'): Promise<{ resumed: string[] }> {
+  async continueAll(actor = 'human'): Promise<{ resumed: string[]; waiting: string[] }> {
     const was = await this.isPaused();
     await this.storage.setSetting('orchestrator.paused', false);
     if (was) await this.storage.appendEvent({ kind: 'orchestrator.pause', actor, data: { paused: false } });
@@ -1792,18 +1818,36 @@ export class Orchestrator implements OrchestratorApi {
     await this.resumeVerifyRounds();
     broadcast({ type: 'orchestrator.status', status: await this.status() });
     this.maybeSchedule();
-    return { resumed };
+    const waiting = (await this.pausedTasks()).map((t) => t.id).filter((id) => !resumed.includes(id));
+    return { resumed, waiting };
   }
 
-  private async resumePaused(): Promise<string[]> {
-    const owed = await this.pausedTasks();
+  /**
+   * Start the owed turns, oldest marker first, while a worker slot is free
+   * (`orchestrator.concurrency`, the same `activeWorkers()` count the claim
+   * loop reads — a resume on its way holds its slot through
+   * `pauseResumesInFlight`). The rest keep their markers, which hold their
+   * repos, and `maybeSchedule` starts them as slots free, ahead of any claim.
+   * Returns the ids started on this call.
+   */
+  private async resumePaused(settings?: AppSettings): Promise<string[]> {
+    const cap = (settings ?? (await this.storage.getSettings()))['orchestrator.concurrency'];
+    const owed = (await this.pausedTasks()).filter((t) => !this.pauseResumesInFlight.has(t.id));
+    const started: Task[] = [];
     for (const t of owed) {
+      if (this.activeWorkers() >= cap) break;
+      started.push(t);
       this.pauseResumesInFlight.set(t.id, t.repoId);
       void this.resumeOne(t)
         .catch((err) => console.error('pause: resume failed:', err))
-        .finally(() => this.pauseResumesInFlight.delete(t.id));
+        .finally(() => {
+          this.pauseResumesInFlight.delete(t.id);
+          // A refused resume freed its slot without a PTY ever exiting:
+          // the next owed turn (or a claim) gets it now.
+          this.maybeSchedule();
+        });
     }
-    return owed.map((t) => t.id);
+    return started.map((t) => t.id);
   }
 
   private async resumeOne(t: Task): Promise<void> {
@@ -1871,6 +1915,10 @@ export class Orchestrator implements OrchestratorApi {
           // delivery — every source of a new turn on this pass is held.
           if (settings['orchestrator.paused']) return;
           const cap = settings['orchestrator.concurrency'];
+          // Turns Continue still owes (docs/pause.md § Continue) come first:
+          // they were working when the pause was pressed, and their markers
+          // hold their repos, so only a free slot is missing.
+          await this.resumePaused(settings);
           // `budget.dayUsd` (docs/token-budget.md § Fuses): past today's cap
           // nothing new is CLAIMED — custom queue, global or overflow. Turns
           // already running finish; dispatch delivery (a continuation, gated

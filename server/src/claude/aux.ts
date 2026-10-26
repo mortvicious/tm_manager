@@ -184,6 +184,11 @@ export class AuxRunner {
     return this.liveLabels().length;
   }
 
+  /** Live sessions with their kind (the restart check lists them for a drain, docs/host.md § Drain). */
+  liveSessions(): { kind: AuxKind; label: string }[] {
+    return [...this.live.values()].filter((l) => !l.exited).map((l) => ({ kind: l.spec.kind, label: l.spec.label }));
+  }
+
   isLive(runId: string): boolean {
     const l = this.live.get(runId);
     return !!l && !l.exited;

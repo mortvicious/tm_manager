@@ -26,14 +26,21 @@ export function registerOrchestratorRoutes(app: FastifyInstance, storage: Storag
   // every other session, nor un-pause a machine the human stopped.
   app.post('/api/orchestrator/pause', async (req, reply) => {
     if (!req.headers.origin) return reply.code(403).send({ error: 'Pause all is a browser action (Origin required)' });
-    const { suspended } = await orch.pauseAll('human');
-    return { ...(await orch.status()), suspended };
+    // `suspend: false` = drain (docs/pause.md § Drain): the flag only, live
+    // turns finish on their own. `by: 'rebuild'` is the front door's
+    // Rebuild & restart job (it calls with its loopback Origin) — an audit
+    // label, nothing more.
+    const body = (req.body ?? {}) as { suspend?: unknown; by?: unknown };
+    const actor = body.by === 'rebuild' ? 'rebuild' : 'human';
+    const { suspended, already } = await orch.pauseAll(actor, { suspend: body.suspend !== false });
+    return { ...(await orch.status()), suspended, wasPaused: already };
   });
 
   app.post('/api/orchestrator/continue', async (req, reply) => {
     if (!req.headers.origin) return reply.code(403).send({ error: 'Continue is a browser action (Origin required)' });
-    const { resumed } = await orch.continueAll('human');
-    return { ...(await orch.status()), resumed };
+    const body = (req.body ?? {}) as { by?: unknown };
+    const { resumed, waiting } = await orch.continueAll(body.by === 'rebuild' ? 'rebuild' : 'human');
+    return { ...(await orch.status()), resumed, waiting };
   });
 
   app.post('/api/orchestrator/stop-and-kill', async () => {

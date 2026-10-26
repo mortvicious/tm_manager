@@ -122,6 +122,8 @@ const KIND_LABEL: Record<string, string> = {
   'schedule.overflow-claim': 'overflow claim',
   'schedule.spawn-fail': 'spawn failed',
   'boot.recovery': 'boot recovery',
+  'server.stopping': 'server stopping',
+  'server.started': 'server started',
   'agent.create': 'agent filed task',
   'sentry.sync': 'sentry sync',
   'remote.login': 'remote sign-in',
@@ -134,6 +136,8 @@ function describeEvent(e: AuditEvent, taskTitle: (id: string | null) => string |
   if (e.kind === 'task.transition') return `${d.from ?? '?'} → ${d.to ?? '?'}${title ? ` · ${title}` : ''}`;
   if (e.kind === 'config.changed') return `${base}: ${(d.keys as string[])?.join(', ') ?? ''}`;
   if (e.kind === 'remote.login') return `${base}: ${d.login ?? '?'}`;
+  if ((e.kind === 'server.stopping' || e.kind === 'server.started') && typeof d.summary === 'string') return `${base}: ${d.summary}`;
+  if (e.kind === 'boot.recovery' && typeof d.summary === 'string') return `${base} after ${d.summary}`;
   if (e.kind === 'sentry.sync') return `${base}: ${d.created ?? 0} new of ${d.fetched ?? 0}`;
   return title ? `${base} · ${title}` : base;
 }

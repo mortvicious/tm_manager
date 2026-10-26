@@ -68,6 +68,26 @@ for compaction gates and fired dispatch turns to settle:
 
 Pressing Pause again only sweeps again (idempotent).
 
+## Drain: the pause without the sweep
+
+`pauseAll(actor, {suspend: false})` (REST: `POST /api/orchestrator/pause
+{suspend: false}`) sets the flag, writes the `orchestrator.pause` row with
+`suspend: false`, and returns there, without either sweep. Everything in § Held
+while paused applies, so nothing new starts. Live worker turns, compaction
+gates and review rounds already in flight are left to finish on their own.
+What a finishing turn's Stop would start next (its review or check round, a
+fix turn, auto-publish) is held by the flag exactly as under a full pause, and
+Continue owes it. A compaction that completes during a drain parks its task
+with the turn it was about to start (`startWorker`'s post-gate check), the same
+as a pause that arrives mid-gate.
+
+It is Rebuild & restart's drain mode (`docs/host.md` § Drain). The front door
+pauses with `by: 'rebuild'` (audit actor `rebuild`), polls the restart check
+until quiet, restarts, and then continues. The route's answer carries
+`wasPaused`, so the job continues only a pause it set itself. Nothing in the
+SPA offers a drain pause on its own: a human who wants the machine quiet now
+presses Pause all.
+
 ## Held while paused
 
 Every automatic way a turn starts checks the flag:
@@ -96,8 +116,14 @@ Stop still lands `review` with its verify round left `pending` for Continue.
 
 `Orchestrator.continueAll(actor)` clears the flag, then:
 
-1. **Every marked task gets its turn, in its own session.** Oldest marker
-   first, fired concurrently:
+1. **Every marked task gets its turn, in its own session**, oldest marker
+   first and **within `orchestrator.concurrency`** (`resumePaused`: while
+   `activeWorkers()` is below the cap, the same count the claim loop reads).
+   The rest keep their markers, and with them their repos. `maybeSchedule`
+   resumes them first on every pass, before the custom-queue pump and the
+   claims, so a freed slot goes to an owed turn before any new task.
+   `continueAll` returns `resumed` (started now) and `waiting` (still owed);
+   Telegram says "n more wait for a free worker slot". Each turn is one of:
    - `resume` without a message → `proceed(…, PAUSE_PROCEED)`. That is
      `claude --resume <its session>`, with a prompt saying the turn was cut by
      a pause, not finished, and to re-check state before carrying on.
@@ -131,8 +157,12 @@ That hold is enforced in three places:
   way.
 - **After that**, the task is `running`, and the existing rules apply.
 
-All owed tasks resume at once, not throttled by `orchestrator.concurrency`:
-they were all running when the pause was pressed.
+Owed turns used to resume all at once, on the grounds that they were all
+running when the pause was pressed. They no longer do: a pause can collect
+more owed turns than the cap (boot recovery of a forced restart, the fix turns
+and publishes a drain holds, human clicks while paused), and resuming them all
+together spent the same money at the same moment that the cap exists to
+spread out (decisions.md 2026-10-26 "Rebuild & restart drains").
 
 ## Restart while paused
 
@@ -144,9 +174,18 @@ Continue cleared the flag but before every owed turn started, boot finishes the
 job (`resumePaused` when unpaused rows still carry a marker).
 
 **Rebuild & restart** (`docs/host.md` § Rebuild & restart) is the one-press
-form of this when the update is to the task manager itself: it builds the SPA,
-restarts the API once quiet, and reloads the window — onto a page that still
-reads paused, with the same markers. Continue stays yours to press.
+form of this when the update is to the task manager itself. It runs in drain
+mode (§ Drain): it pauses without suspending, builds, waits for the live turns
+to finish (30 min by default), restarts, reloads the window and presses
+**Continue**. It presses Continue only when the pause was its own. A pause you
+pressed before it stays yours: the page comes back paused, with the same
+markers. This amends the earlier rule that Continue was always yours to press
+(decisions.md 2026-10-26 "Rebuild & restart drains").
+
+Why the API last stopped is recorded on every boot (`server.started`, and on
+`boot.recovery`; `docs/host.md` § Restart causes). All six boot-recovery
+failures in the 09-22 → 10-18 data came from paths the restart guard never
+saw: a forced restart, a signal, a watch reload, or a crash or reboot.
 
 ## Surfaces
 
@@ -156,8 +195,11 @@ reads paused, with the same markers. Continue stays yours to press.
   directions take a second press (`useArm`): pausing ends live terminals, and
   continuing spends money again. The task badge reads **paused**. The restart
   button's "agents working" tooltip points at Pause all.
-- **REST**: `POST /api/orchestrator/pause` → status + `suspended[]`;
-  `POST /api/orchestrator/continue` → status + `resumed[]`. Both need `Origin`
+- **REST**: `POST /api/orchestrator/pause` (body `{suspend?: false, by?:
+  'rebuild'}`, both optional) → status + `suspended[]` + `wasPaused`;
+  `POST /api/orchestrator/continue` (`{by?: 'rebuild'}`) → status +
+  `resumed[]` + `waiting[]` (owed, waiting for a slot). `by: 'rebuild'` is only
+  the audit actor. Both need `Origin`
   (403 otherwise): a worker's curl must not pause, and so kill, every other
   session, nor un-pause a machine the human stopped. `OrchestratorStatus`
   gains `paused` and `pausedTasks`.
@@ -200,3 +242,21 @@ repo (no test framework yet); see the task's artifacts. 31 assertions:
   flight. The flag and markers are cleared.
 - A refused resume releases the marker and writes the reason on the row.
 - `npm run typecheck` and `npm run build` are clean.
+
+**Drain and the Continue cap** (task 19b93004, harness `drain-check.ts` in that
+task's artifacts; real `Orchestrator` + SQLite, four temp repos, `sleep` PTYs;
+24 assertions). The original 31-assertion harness above still passes against
+the capped Continue.
+
+- A drain pause leaves the live turn `running` with its run and PTY alive. It
+  writes `{paused: true, suspend: false}` as actor `rebuild`, and claims
+  nothing. A second call reads `already`.
+- Once the turn stops (task → `review` + `reviewState: pending`, PTY idle) the
+  restart check's count is 0, and its review round is held.
+- A new `Orchestrator` booting over the same storage while paused writes
+  `boot.recovery` with the cause (`supervisor`, `front door rebuild-restart by
+  rebuild`). A turn the restart cut is owed, not failed, and no review runs.
+- Continue with 3 owed and concurrency 2 starts the 2 oldest. The third keeps
+  its marker, and the held review re-runs. The queued task in a free repo does
+  not take the slot. When one turn goes idle, the next `maybeSchedule` resumes
+  the third before any claim.

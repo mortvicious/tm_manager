@@ -1906,6 +1906,10 @@ export type AuditKind =
   | 'schedule.overflow-claim'
   | 'schedule.spawn-fail'
   | 'boot.recovery'
+  /** the API is on its way out, and why (docs/host.md § Restart causes) */
+  | 'server.stopping'
+  /** the API booted, with the previous process's stop cause (`unknown` = crash, SIGKILL, reboot) */
+  | 'server.started'
   | 'agent.create'
   /** an agent closed a parked task as done/cancelled without a run (docs/agent-api-design.md § Close and move) */
   | 'agent.close'
@@ -2508,7 +2512,30 @@ export interface HostStatus {
  * Rebuild & restart (docs/host.md § Rebuild & restart): one job at a time in
  * the FRONT DOOR's lifetime — it outlives the API it restarts.
  */
-export type RebuildState = 'idle' | 'building' | 'typechecking' | 'restarting' | 'done' | 'failed';
+export type RebuildState =
+  | 'idle'
+  | 'draining'
+  | 'building'
+  | 'typechecking'
+  | 'restarting'
+  | 'continuing'
+  | 'done'
+  | 'failed';
+
+/**
+ * What a draining job still waits for (docs/host.md § Drain): the restart
+ * check's own counts, plus the aux sessions a pause does NOT finish — chats,
+ * reports, feature plans and analyses are human-started and not pause-aware,
+ * so the drain names them instead of waiting on them silently.
+ */
+export interface RebuildWaitingFor {
+  /** live worker turns (they finish on their own under the drain's pause) */
+  running: number;
+  /** every live aux session's label */
+  aux: string[];
+  /** the subset of `aux` the pause will not end: stop them, or force */
+  notPauseAware: string[];
+}
 
 export interface RebuildJob {
   state: RebuildState;
@@ -2518,7 +2545,8 @@ export interface RebuildJob {
   step: string | null;
   error: string | null;
   /** machine reason on a refusal or failure: `not_quiet` when an agent started
-   *  mid-job, `build`, `typecheck`, `restart`, `timeout` */
+   *  mid-job, `build`, `typecheck`, `restart`, `timeout`; drain mode adds
+   *  `drain_timeout`, `cancelled`, `pause` (the pause call failed) */
   reason: string | null;
   /** last lines of the failing (or last) step's output */
   logTail: string;
@@ -2531,6 +2559,16 @@ export interface RebuildJob {
   /** the API's bootedAt before and after the restart */
   bootedBefore: string | null;
   bootedAfter: string | null;
+  /** drain mode: pause (without suspending), let live work finish, then restart */
+  drain: boolean;
+  /** when a drain gives up (ISO); null when not draining */
+  drainDeadline: string | null;
+  /** the drain's latest restart-check reading; null when not draining */
+  waitingFor: RebuildWaitingFor | null;
+  /** the job set `orchestrator.paused` itself (it was not paused before), so it — and only it — presses Continue */
+  pausedByJob: boolean;
+  /** after the restart: true = the job pressed Continue, false = left paused (not its pause, or Continue failed), null = n/a */
+  continued: boolean | null;
 }
 
 // ---- Web Push (docs/push.md) ----

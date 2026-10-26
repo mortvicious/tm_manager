@@ -32,7 +32,12 @@ const set = (patch: Partial<RebuildState>) => {
 };
 
 export const rebuildRunning = (j: RebuildJob | null | undefined) =>
-  !!j && (j.state === 'building' || j.state === 'typechecking' || j.state === 'restarting');
+  !!j &&
+  (j.state === 'draining' ||
+    j.state === 'building' ||
+    j.state === 'typechecking' ||
+    j.state === 'restarting' ||
+    j.state === 'continuing');
 
 let polling = false;
 
@@ -68,11 +73,22 @@ async function follow(): Promise<void> {
   }
 }
 
-/** Press: 202 → follow it here; a 409 (`not_quiet`, `in_progress`) throws. */
+/**
+ * Press: 202 → follow it here; a 409 (`in_progress`) throws. The button always
+ * asks for a DRAIN (docs/host.md § Drain): quiet, it is the old one-press job
+ * plus a pause the job lifts itself; busy, it waits for the live turns instead
+ * of refusing.
+ */
 export async function startRebuild(): Promise<void> {
-  const r = await api.hostRebuild();
+  const r = await api.hostRebuild({ drain: true });
   set({ job: r.rebuild ?? null, mine: true, dismissed: null });
   void follow();
+}
+
+/** Give up a drain: the job releases the pause it set and ends `cancelled`. */
+export async function cancelRebuildDrain(): Promise<void> {
+  const r = await api.hostRebuildCancel();
+  set({ job: r.rebuild ?? state.job });
 }
 
 export function dismissRebuildFailure(finishedAt: string | null): void {

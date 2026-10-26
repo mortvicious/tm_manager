@@ -315,7 +315,11 @@ export function registerStatsRoutes(
       anomalies.push({
         severity: 'warn',
         kind: 'boot-recovery',
-        message: `server restarted mid-run and swept ${(e.data as any)?.swept ?? '?'} run(s)`,
+        // `summary` is the previous process's stop cause (docs/host.md §
+        // Restart causes); rows from before it was recorded have none.
+        message:
+          `server restarted mid-run and swept ${(e.data as any)?.swept ?? '?'} run(s)` +
+          ((e.data as any)?.summary ? ` — previous stop: ${(e.data as any).summary}` : ''),
         at: e.at,
       });
     }

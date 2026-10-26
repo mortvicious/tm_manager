@@ -44,6 +44,7 @@ import { migrateSentryToken } from './sentry.ts';
 import { registerStatsRoutes } from './routes/stats.ts';
 import { registerTaskRoutes } from './routes/tasks.ts';
 import { TelegramBot } from './telegram/bot.ts';
+import { describeStopCause, recordStopCause, signalCause, takeStopCause, type StopCause } from './stop-cause.ts';
 import { registerEventsWs } from './ws/events.ts';
 import { registerTerminalWs } from './ws/terminal.ts';
 
@@ -51,6 +52,17 @@ const cfg = loadBootConfig();
 // Must be set before any route or WS upgrade can be served: every Host/Origin
 // decision in net.ts reads it.
 setLanEnabled(cfg.lan.enabled);
+// Why the previous process stopped (docs/host.md § Restart causes), read and
+// removed before anything else can fail: a boot that dies here must not leave
+// the old record for the boot after it. Nothing recorded = `unknown`.
+const lastStop = takeStopCause();
+console.log(`[boot] previous stop: ${describeStopCause(lastStop)}`);
+// An uncaught exception ends the process (Node's default, unchanged — the
+// MONITOR variant observes without handling); recorded so the next boot says
+// "crash" rather than "unknown".
+process.on('uncaughtExceptionMonitor', (err) => {
+  recordStopCause({ kind: 'crash', detail: String((err as Error)?.message ?? err).slice(0, 300) });
+});
 const storage = await createStorage(cfg);
 // The Sentry token used to live in tm_config, which /api/config serves to any
 // local process (SECURITY.md § Secrets). Move it to data/config.json once.
@@ -107,7 +119,19 @@ const shellRunner = new ShellRunner(storage, shellSessions);
 // by the SPA and the phone. Every turn is an aux terminal (kind `chat`,
 // `claude --resume`), so the restart guard and /killall already cover it.
 const chats = new ChatService({ storage });
-await orchestrator.recoverOnBoot();
+await orchestrator.recoverOnBoot({ lastStop });
+await storage.appendEvent({
+  kind: 'server.started',
+  actor: 'system',
+  data: {
+    cause: lastStop.kind,
+    lastStop,
+    summary: `after ${describeStopCause(lastStop)}`,
+    pid: process.pid,
+    supervised: process.env.TM_SUPERVISED === '1',
+    watch: process.env.TM_WATCH === '1',
+  },
+});
 // Chats left mid-turn by the previous process hold a lock nothing else will
 // release; their children died with that process.
 const strandedChats = await chats.recoverOnBoot();
@@ -217,6 +241,15 @@ const restartGuard = async () => {
   // Like services: reported so the confirm can say what dies, never blocking.
   const shells = shellRunner.running().length;
   const blocked = running > 0 || auxLive.length > 0;
+  // For a drain (docs/host.md § Drain): which live aux sessions a pause does
+  // NOT end. A review round and a compaction are the orchestrator's own and
+  // finish under the pause with nothing new behind them; chats, reports,
+  // plans and analyses are human-started and not pause-aware, so the drain
+  // names them rather than waiting on them silently.
+  const notPauseAware = aux()
+    .liveSessions()
+    .filter((s) => !PAUSE_HELD_AUX_KINDS.has(s.kind))
+    .map((s) => `${s.kind}: ${s.label}`);
   const parts = [
     running > 0 ? `${running} agent session(s)` : null,
     auxLive.length > 0 ? `${auxLive.length} aux session(s) (${auxLive.join(', ')})` : null,
@@ -226,10 +259,13 @@ const restartGuard = async () => {
     error: blocked ? `${parts.join(' and ')} still working — stop them first, or retry with force.` : null,
     running,
     aux: auxLive.length,
+    auxLabels: auxLive,
+    notPauseAware,
     services,
     shells,
   };
 };
+const PAUSE_HELD_AUX_KINDS = new Set<string>(['review', 'compact']);
 app.get('/api/server/restart-check', async () => restartGuard());
 
 // The front door's remote gate (server/src/remote.ts, docs/remote-access.md)
@@ -267,6 +303,17 @@ app.post('/api/server/restart', async (req, reply) => {
       shells: guard.shells,
     });
   }
+  // The cause FIRST (docs/host.md § Restart causes): under the front door the
+  // exit below is followed by nothing that could say why.
+  await auditStopping(
+    recordStopCause({
+      kind: 'route',
+      action: 'restart',
+      force: force === true,
+      actor: req.headers.origin ? 'browser' : 'local',
+      ...(guard.blocked ? { detail: guard.error ?? undefined } : {}),
+    }),
+  );
   // Dev servers are children of this process: kill them deliberately instead
   // of orphaning them onto the port the restarted server's repos will want.
   // Aux sessions only ever exist here on the force path — same reasoning.
@@ -284,7 +331,7 @@ app.post('/api/server/restart', async (req, reply) => {
     // server onto the same port that the host cannot stop, and the host's own
     // replacement would then lose the race described below.
     if (supervised) {
-      void stop();
+      void stop(null);
       return;
     }
     // Release the port BEFORE the replacement is spawned. The old order —
@@ -413,7 +460,26 @@ if (servingSpa) {
   });
 }
 
-const stop = async () => {
+// One `server.stopping` row per process, whichever way out comes first. The
+// record file (stop-cause.ts) is the one that survives a SIGKILL; this row is
+// the audit trail when storage is still there to write it.
+let stoppingAudited = false;
+async function auditStopping(cause: StopCause): Promise<void> {
+  if (stoppingAudited) return;
+  stoppingAudited = true;
+  console.log(`[stop] ${describeStopCause(cause)}`);
+  try {
+    await storage.appendEvent({ kind: 'server.stopping', actor: 'system', data: { ...cause, summary: describeStopCause(cause) } });
+  } catch (err) {
+    console.error('server.stopping: could not audit', err);
+  }
+}
+
+/** `cause` null = already recorded (the restart route). */
+const stop = async (cause: Omit<StopCause, 'at' | 'pid'> | null) => {
+  // Recorded synchronously before any await: `tsx watch` SIGKILLs 5 s after
+  // its SIGTERM, and a cause written later would be lost with the process.
+  if (cause) await auditStopping(recordStopCause(cause));
   // Dev servers and watchers die with us either way; signalling them first is
   // what makes them release their ports before the next boot. Aux sessions
   // are ended explicitly — they would keep spending tokens for nobody.
@@ -436,8 +502,8 @@ const stop = async () => {
   await storage.close();
   process.exit(0);
 };
-process.on('SIGINT', stop);
-process.on('SIGTERM', stop);
+process.on('SIGINT', () => void stop(signalCause('SIGINT')));
+process.on('SIGTERM', () => void stop(signalCause('SIGTERM')));
 
 // 127.0.0.1 by default — the terminal WS is a code-execution surface. LAN mode
 // (data/config.json `lan.enabled` or TM_LAN=1) is the ONE way to widen this, and

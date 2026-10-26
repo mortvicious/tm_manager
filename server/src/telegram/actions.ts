@@ -200,8 +200,11 @@ export async function setPaused(deps: ActionDeps, paused: boolean, actor: string
     );
   }
   if (!before.paused) return done('Not paused.');
-  const { resumed } = await deps.orchestrator.continueAll(actor);
-  return done(`Continued — automatic work is back on.${resumed.length ? ` Resuming ${resumed.length} task(s) in their own sessions.` : ''}`);
+  const { resumed, waiting } = await deps.orchestrator.continueAll(actor);
+  return done(
+    `Continued — automatic work is back on.${resumed.length ? ` Resuming ${resumed.length} task(s) in their own sessions.` : ''}` +
+      (waiting.length ? ` ${waiting.length} more wait for a free worker slot.` : ''),
+  );
 }
 
 /**

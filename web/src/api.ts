@@ -177,8 +177,12 @@ export const api = {
   hostStop: (force = false) => req<HostStatus & { ok: boolean }>('POST', '/host/stop', { force }),
   hostRestart: (force = false) => req<HostStatus & { ok: boolean }>('POST', '/host/restart', { force }),
   // Rebuild & restart (docs/host.md § Rebuild & restart): 202 with the job, 409
-  // `in_progress` / `not_quiet`; the job is then followed on the GET.
-  hostRebuild: (force = false) => req<HostStatus & { ok: boolean }>('POST', '/host/rebuild-restart', { force }),
+  // `in_progress` / `not_quiet`; the job is then followed on the GET. `drain`
+  // (§ Drain) waits for live work instead of refusing; only a draining job
+  // can be cancelled.
+  hostRebuild: (opts: { force?: boolean; drain?: boolean } = {}) =>
+    req<HostStatus & { ok: boolean }>('POST', '/host/rebuild-restart', { force: opts.force ?? false, drain: opts.drain ?? false }),
+  hostRebuildCancel: () => req<HostStatus & { ok: boolean }>('POST', '/host/rebuild-restart/cancel', {}),
   hostRebuildJob: () => req<RebuildJob>('GET', '/host/rebuild-restart'),
 
   listRepos: () => req<Repo[]>('GET', '/api/repos'),

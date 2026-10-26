@@ -1,7 +1,14 @@
 /**
  * Rebuild & restart from a terminal (docs/host.md § Rebuild & restart):
  *
- *   npm run rebuild:restart [-- --force] [-- --no-typecheck]
+ *   npm run rebuild:restart [-- --force] [-- --no-typecheck] [-- --drain [--drain-minutes=30]]
+ *
+ * `--drain` (docs/host.md § Drain, front door only): pause new work WITHOUT
+ * suspending anything, wait for live turns to finish (up to --drain-minutes,
+ * default 30), restart, then Continue — only if the pause was the job's own.
+ * On the deadline it releases its pause and fails `drain_timeout`; with
+ * `--force` it suspends the rest (Pause all) and forces the restart instead.
+ * Ctrl-C while draining cancels the drain.
  *
  * With a front door running it is a client of `POST /host/rebuild-restart` and
  * follows the job to its end — the same job, guard and result as the header
@@ -17,6 +24,9 @@ import { buildSpa, swapDist, typecheck } from '../server/src/rebuild.ts';
 const args = new Set(process.argv.slice(2));
 const force = args.has('--force');
 const check = !args.has('--no-typecheck');
+const drain = args.has('--drain');
+const minutesArg = process.argv.slice(2).find((a) => a.startsWith('--drain-minutes='));
+const drainMinutes = minutesArg ? Number(minutesArg.split('=')[1]) : undefined;
 const cfg = loadBootConfig();
 const HOST = `http://127.0.0.1:${cfg.host.port}`;
 const API = `http://127.0.0.1:${cfg.port}`;
@@ -57,6 +67,15 @@ function report(job) {
   }
   if (job.state === 'failed') fail(`${job.reason ? `[${job.reason}] ` : ''}${job.error}`, job.logTail);
   console.log(`✓ done${job.buildId ? ` — build ${job.buildId}` : ''}${job.bootedAfter ? `, API booted ${job.bootedAfter}` : ''}`);
+  if (job.drain) {
+    console.log(
+      job.continued
+        ? '✓ Continue pressed (the pause was the job’s)'
+        : job.error
+          ? `⚠ ${job.error}`
+          : '⏸ left paused — the pause was yours before the job started; press Continue',
+    );
+  }
   process.exit(0);
 }
 
@@ -64,19 +83,38 @@ function report(job) {
 
 const probe = await get(`${HOST}/host/rebuild-restart`);
 if (probe?.status === 200 && probe.body?.state) {
-  const r = await post(`${HOST}/host/rebuild-restart`, { force, typecheck: check });
+  const r = await post(`${HOST}/host/rebuild-restart`, { force, typecheck: check, drain, drainMinutes });
   if (r.status !== 202) fail(`${r.body?.reason ? `[${r.body.reason}] ` : ''}${r.body?.error ?? `HTTP ${r.status}`}`);
-  console.log(`front door on :${cfg.host.port} is running the job`);
+  console.log(`front door on :${cfg.host.port} is running the job${drain ? ' (drain mode)' : ''}`);
+  // Ctrl-C while draining: cancel the drain (the job releases its own pause);
+  // past the drain the job is minutes from its end and is left to finish.
+  let state = r.body?.rebuild?.state;
+  process.on('SIGINT', async () => {
+    if (state !== 'draining') process.exit(130);
+    console.log('\n… cancelling the drain');
+    await post(`${HOST}/host/rebuild-restart/cancel`, {});
+  });
   let last = '';
+  let lastStuck = '';
   for (;;) {
     await sleep(1000);
     const j = await get(`${HOST}/host/rebuild-restart`);
     if (!j?.body) continue; // a blip; the front door outlives the API restart
     const job = j.body;
+    state = job.state;
     if (job.step && job.step !== last) console.log(`… ${(last = job.step)}`);
+    // The sessions a pause does not end (chats, reports, plans): named once
+    // per change, so a drain never hangs silently on them.
+    const stuck = (job.waitingFor?.notPauseAware ?? []).join('\n  ');
+    if (job.state === 'draining' && stuck && stuck !== lastStuck) {
+      console.log(`⚠ the pause does not stop these — finish or stop them, or the drain times out:\n  ${(lastStuck = stuck)}`);
+    }
     if (job.state === 'done' || job.state === 'failed') report(job);
     if (job.state === 'idle') fail('the front door restarted mid-job and lost it — check its terminal');
   }
+}
+if (drain) {
+  fail('--drain needs the front door (npm start / npm run dev) — it runs the job and outlives the restart');
 }
 if (probe) {
   console.log(`front door on :${cfg.host.port} predates /host/rebuild-restart — running the steps here`);

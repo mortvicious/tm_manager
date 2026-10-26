@@ -142,6 +142,10 @@ login's next request.
 - **Wait for the port**, not for a guess: a replacement is spawned only once
   nothing is listening on the API port.
 
+In dev the child also gets `TM_WATCH=1` (and `npm run dev:server` sets it
+itself), which only labels an unannounced SIGTERM as a watch reload (§ Restart
+causes).
+
 `TM_SUPERVISED=1` changes exactly one thing inside the API: `POST
 /api/server/restart` **exits** instead of detaching a replacement of its own.
 Two supervisors racing for one port is the failure that flag prevents — the
@@ -156,12 +160,13 @@ stop, and the front door's own replacement would then lose to `EADDRINUSE`.
 | `POST /host/start` | start the API if it is not answering; 200 with `already: true` if it is |
 | `POST /host/stop` | stop a **managed** API; 409 on one it merely adopted; 409 `in_progress` during a rebuild |
 | `POST /host/restart` | managed: stop → wait → spawn. Adopted: forward to `POST /api/server/restart`; 409 `in_progress` during a rebuild |
-| `POST /host/rebuild-restart` | start the Rebuild & restart job (below): 202, or 409 `in_progress` / `not_quiet`. Body `{force?, typecheck?}` |
+| `POST /host/rebuild-restart` | start the Rebuild & restart job (below): 202, or 409 `in_progress` / `not_quiet` (never `not_quiet` with `drain`). Body `{force?, typecheck?, drain?, drainMinutes?}` (`drainMinutes` 1…240, default 30; 400 outside) |
+| `POST /host/rebuild-restart/cancel` | cancel a DRAINING job (§ Drain): 202; 409 `not_draining` in any other state |
 | `GET /host/rebuild-restart` | the job alone (`RebuildJob`) |
 
 `stop` and `restart` refuse while agents are working, and they do not restate
 the rule: they `GET /api/server/restart-check` and forward the API's own answer
-verbatim (`{blocked, error, running, aux, services}` — `aux` was `headless` before every claude became a terminal). `{"force": true}`
+verbatim (`{blocked, error, running, aux, auxLabels, notPauseAware, services, shells}` — `aux` was `headless` before every claude became a terminal; `auxLabels`/`notPauseAware` are for the drain). `{"force": true}`
 is the override, same as the API's. An API that is not answering cannot be
 killing anything, so a down server is never blocked.
 
@@ -200,9 +205,12 @@ once the page outlives the server.
 ## Rebuild & restart
 
 One press after an agent finished work on the task manager itself: build the
-SPA, restart the API onto the new server code, reload the window. The usual
-sequence is **Pause all** (`docs/pause.md` § Restart while paused) → **Rebuild &
-restart** → **Continue**.
+SPA, restart the API onto the new server code, reload the window. The button
+runs it in **drain mode** (§ Drain): it pauses new work itself, waits for live
+turns to finish instead of refusing, and presses Continue afterwards when the
+pause was its own. The manual sequence — **Pause all** (`docs/pause.md` §
+Restart while paused) → **Rebuild & restart** → **Continue** — still works and
+is what to use when the live turns must be cut NOW rather than awaited.
 
 **Where it runs.** In the front door, as a job (`runRebuild` in `host.ts`),
 because the API is the thing it restarts. The steps are `server/src/rebuild.ts`
@@ -218,11 +226,11 @@ cannot both start a build.
 
 **Steps.**
 
-1. **Guard** — the same `restart-check` as `/host/restart`: 409 `reason:
-   'not_quiet'` with the counts while any worker or aux session is live; `{force:
-   true}` overrides. It does NOT require `paused` — quiet is the precondition —
-   but the button nudges Pause all, because an unpaused queue can claim a task
-   during the build.
+1. **Guard** (without `drain`) — the same `restart-check` as `/host/restart`:
+   409 `reason: 'not_quiet'` with the counts while any worker or aux session is
+   live; `{force: true}` overrides. It does NOT require `paused` — quiet is the
+   precondition. With `drain` this step is § Drain's pause instead, and steps 4
+   and 6 below are the drain and the Continue.
 2. **Build** (skipped in dev) — `vite build --outDir dist.next --emptyOutDir`,
    never in place (vite empties its outDir first, so a broken build in `dist`
    would leave the front door serving nothing). Success → `swapDist()`: `dist` →
@@ -237,7 +245,8 @@ cannot both start a build.
    'typecheck'`) and leaves the new dist in place — it is already being served
    and is harmless; open tabs are offered the reload.
 4. **Guard again** — the build took a minute; an agent that started meanwhile
-   fails the job with `reason: 'not_quiet'` instead of being killed.
+   fails the job with `reason: 'not_quiet'` instead of being killed. In drain
+   mode: wait for quiet (§ Drain).
 5. **Restart** — managed: `stopApi` → spawn; adopted: the API's own restart
    route. Then wait up to 60 s for `/api/health` to answer with a **new**
    `bootedAt` (merely "up" is not enough — the old one was up). Timeout →
@@ -245,6 +254,7 @@ cannot both start a build.
    child with its usual backoff (500 ms doubling to 15 s), so the UI shows the
    server offline/stopped with **Start server**, and the API's own output (a
    broken server file's stack trace) is in the front door's terminal.
+6. **Continue** (drain only, and only the job's own pause) — § Drain.
 
 Steps are run with `process.execPath` (vite's and tsc's JS entry, argv, never a
 shell), output captured, ANSI stripped. A front door shutting down mid-job
@@ -263,11 +273,97 @@ such a case — a front door that predates the route has no `rebuild` in its
 status, so the button is simply absent until `npm start` is restarted once (the
 CLI falls back to running the steps itself).
 
-**Job state** — `RebuildJob` (`@tm/shared`): `state` (`idle | building |
-typechecking | restarting | done | failed`), `startedAt`, `finishedAt`, `step`
-(words), `error`, `reason` (`not_quiet | build | typecheck | restart | timeout |
+**Job state** — `RebuildJob` (`@tm/shared`): `state` (`idle | draining |
+building | typechecking | restarting | continuing | done | failed`),
+`startedAt`, `finishedAt`, `step` (words), `error`, `reason` (`not_quiet |
+build | typecheck | restart | timeout | drain_timeout | cancelled | pause |
 error`), `logTail`, `buildId`, `hostStale`, `dev`, `bootedBefore`,
-`bootedAfter`. In memory: a front door restart forgets it (`idle`).
+`bootedAfter`, and for a drain `drain`, `drainDeadline`, `waitingFor`
+(`RebuildWaitingFor`: `running`, `aux` labels, `notPauseAware`), `pausedByJob`,
+`continued`. In memory: a front door restart forgets it (`idle`) — the pause a
+draining job set is a row, though, so it survives; press Continue (the front
+door logs this when it shuts down mid-drain).
+
+### Drain
+
+Drain mode (`{drain: true}`; the header button always sends it, the CLI with
+`--drain [--drain-minutes=N]`) turns "refused while agents work" into "wait
+until they are done". Restarting used to mean either cutting the live turns
+(Pause all suspends them, and each resume re-buys the context — ≈$15 at 400k
+tokens, or a compaction above 300k — and loses in-flight tool calls, subagents
+and shells) or waiting by hand for a quiet moment.
+
+0. **Pause, without suspending** — `POST /api/orchestrator/pause {suspend:
+   false, by: 'rebuild'}` from the front door with its loopback Origin
+   (`orchestratorCall`; the route refuses a request without one). This is
+   `pauseAll(actor, {suspend: false})` (`docs/pause.md` § Drain): the flag
+   only. Nothing new starts (claims, queues, loops, wakes, dispatches, review
+   and check rounds, auto-publish — every gate in pause.md's table), and the
+   live turns keep working. The answer's `wasPaused` decides `pausedByJob`: a
+   pause that was already up is the human's. The deadline (`drainMinutes`,
+   default 30) starts here, so the build and typecheck below count against it.
+   With the API down there is nothing to pause or drain. An API that predates
+   drain mode (its restart check has no `notPauseAware`) is refused before
+   any pause, `reason: 'pause'`: its route ignores `suspend: false` and would
+   suspend every live turn.
+1. **Build**, 2. **Typecheck** — as below. Any failure releases the job's pause.
+3. **Drain** — re-read `restart-check` every 2 s until it is quiet. The job's
+   `step` and `waitingFor` say what it waits for: worker turns finishing,
+   review/compaction sessions (the pause lets them end and starts nothing
+   behind them), and — named, because the pause does NOT stop them — chats,
+   reports, feature plans and analyses (`notPauseAware`). The SPA's **Waiting
+   for…** flag opens that list with **Cancel drain**; the CLI prints it once per
+   change, and Ctrl-C cancels. A turn's Stop that would start an automatic
+   follow-on (its review round, a fix turn, auto-publish) is held by the flag
+   exactly as under Pause all, and owed to Continue.
+   - **Deadline, no force** → the job releases its pause (Continue, only if
+     `pausedByJob`) and fails `drain_timeout`. Nothing was cut.
+   - **Deadline, with force** → a normal suspending Pause all (`{suspend:
+     true}`): every live turn is parked to resume in its own session, and the
+     forced restart ends what the pause does not (the chats/reports/plans).
+     Force no longer skips the wait in drain mode; it only decides the
+     deadline.
+   - **Cancel** → like a timeout: pause released, `reason: 'cancelled'`.
+4. **Restart** — as below. An adopted API that answers 409 (a human click
+   started a turn — human clicks are never held by the pause) sends the job back
+   to draining until the deadline.
+5. **Continue** — `POST /api/orchestrator/continue {by: 'rebuild'}`, ONLY when
+   `pausedByJob`. Continue resumes the owed turns within the concurrency cap
+   (`docs/pause.md` § Continue). A pause the human pressed before the job stays
+   theirs: the job ends `done` with `continued: false` and the step says so.
+   A failed Continue is `done` with the error: the machine is still paused.
+
+The audit trail: `orchestrator.pause` rows with actor `rebuild` (`suspend:
+false` on the drain's), the API's `server.stopping` / `server.started` with
+`kind: 'supervisor', action: 'rebuild-restart'` (§ Restart causes).
+
+## Restart causes
+
+Every way the API stops leaves ONE record of why
+(`server/src/stop-cause.ts`), written synchronously before anything else — a
+`tsx watch` reload SIGKILLs 5 s after its SIGTERM — to
+`data/stop-cause.json`, plus a `server.stopping` audit row while storage is
+still open. First writer wins, so the restart route's record is not overwritten
+by the SIGTERM its supervisor sends next. The next boot reads and removes the
+file first thing, logs `[boot] previous stop: …`, writes a `server.started`
+row (`cause`, `lastStop`, `summary`) and puts the same on `boot.recovery` when
+recovery swept anything (the Dashboard's anomaly line ends `— previous stop:
+…`).
+
+| `kind` | when |
+|---|---|
+| `route` | `POST /api/server/restart` (header button, Telegram `/restart` without a front door, the CLI's standalone path): `force`, `actor` (`browser` with Origin, else `local`), and the guard's text when it was forced over work |
+| `supervisor` | the front door stopped its child: `action` `restart` / `stop` / `rebuild-restart` / `shutdown`, `force`. A signal names no sender, so `stopApi` first writes an INTENT (`data/stop-intent.json`); the API's signal handler turns an intent younger than 60 s into the cause and removes it, and the front door removes an unread one after the exit |
+| `watch` | a SIGTERM with no intent while `TM_WATCH=1` — `tsx watch` reloading on a file change, most likely |
+| `signal` | any other SIGTERM/SIGINT: Ctrl-C, `kill`, launchd, logout |
+| `crash` | an uncaught exception (`uncaughtExceptionMonitor`: observed, Node's exit unchanged), with the message |
+| `unknown` | no record at boot: SIGKILL, power loss, a machine reboot, or the front door's crash respawn after a hard death |
+
+Verified end to end in an isolated copy of `server/` on other ports (front
+door + a stub API using the same calls): a first boot reads `unknown`, a
+`/host/restart` reads `front door restart`, a file change under watch reads
+`watch`, a thrown error `crash: boom`, the route `restart route (forced)`, a
+group SIGKILL `unknown`, and a stale intent is ignored.
 
 ### Build id → the window reloads itself
 
@@ -289,12 +385,15 @@ which the front door reports as `host.buildId` (null in dev and when unbuilt).
 ### The button
 
 **Rebuild & restart** sits beside **Restart server** in `ServerControl`
-(desktop header; phone More sheet). Two presses (`useArm`; the armed label says
-`(not paused)` when the machine is not paused). Disabled with **Pause all
-first** while any agent is working (the same count as Restart server). While
-the job runs it reads **Building… / Typechecking… / Restarting… / Reloading…**
-and Restart server is disabled. Pause state survives the restart (it is a
-row); press **Continue** yourself — the job never continues for you.
+(desktop header; phone More sheet). Two presses (`useArm`). It always asks for
+a drain, so it is never disabled by working agents: it reads **Drain &
+rebuild** then (the same count as Restart server). While the job runs it reads
+**Draining… / Building… / Typechecking… / Restarting… / Continuing… /
+Reloading…** and Restart server is disabled; while draining a **Waiting for…**
+flag (**Waiting on n unpausable** when chats/reports/plans hold it) opens what
+it waits for and **Cancel drain**. The job presses Continue only for its own
+pause (decisions.md 2026-10-26 "Rebuild & restart drains"); a pause you pressed
+first stays yours.
 
 ## The handoff race (fixed here, and the reason any of this is load-bearing)
 
@@ -321,6 +420,8 @@ listen error is still fatal on the first try.
 | Rebuild & restart: `failed`, `reason: build` | the SPA does not build | fix it; the old page is still served. The log tail is under **Rebuild failed** |
 | Rebuild & restart: `failed`, `reason: typecheck` | `npm run typecheck` fails | fix it and press again; the API was not restarted (the new SPA is already served) |
 | Rebuild & restart: `failed`, `reason: timeout` | the new server does not boot | read the front door's terminal; the supervisor keeps respawning with backoff, and **Start server** works once it is fixed |
+| Rebuild & restart: `failed`, `reason: drain_timeout` | live work did not finish within `drainMinutes` — often a chat, report or plan the pause does not stop (named in the error and the job's `waitingFor`) | finish or stop them and press again; or press with force to suspend the rest at the deadline. The job's pause was released |
+| the machine stays paused after a drain | the pause was yours before the job (`continued: false`), the front door restarted mid-drain, or Continue failed (`error` on a `done` job) | press **Continue** |
 | no Rebuild & restart button / **Front door stale** | the front door predates the route, or `host.ts` changed since it booted | stop and re-run `npm start` |
 | `403 forbidden: no tailnet identity` on the `ts.net` name | the request came from a tagged node (the Mac itself) or through Funnel — no `Tailscale-User-Login` | expected; open it from the phone |
 | `403 forbidden: remote access is disabled` | `remote.enabled` is false | set it in `data/config.json`, restart the front door |

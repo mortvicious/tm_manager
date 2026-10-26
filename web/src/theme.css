@@ -2722,6 +2722,13 @@ button.badge.badge-link:hover {
   font-size: var(--tm-text-sm);
 }
 
+.rebuild-wait {
+  margin: 0;
+  padding-left: var(--tm-space-4);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+}
+
 .rebuild-note {
   color: var(--tm-text-muted);
   font-size: var(--tm-text-sm);

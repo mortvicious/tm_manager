@@ -7,7 +7,7 @@ import type { InboxReturn, ReturnTo } from '../returnTo.ts';
 import { useApp } from '../state.tsx';
 import { useArm } from '../arm.ts';
 import { toastError, toastSticky } from '../toast.ts';
-import { BUILD_ID, dismissRebuildFailure, rebuildRunning, startRebuild, useRebuild } from '../rebuild.ts';
+import { BUILD_ID, cancelRebuildDrain, dismissRebuildFailure, rebuildRunning, startRebuild, useRebuild } from '../rebuild.ts';
 import { CommandsLauncher } from './Commands.tsx';
 import { EmulatorLauncher } from './Emulator.tsx';
 import { Sheet } from './Sheet.tsx';
@@ -426,9 +426,11 @@ function ServerControl() {
 }
 
 const REBUILD_STEP: Record<string, string> = {
+  draining: 'Draining…',
   building: 'Building…',
   typechecking: 'Typechecking…',
   restarting: 'Restarting…',
+  continuing: 'Continuing…',
   done: 'Reloading…',
 };
 
@@ -437,8 +439,10 @@ const REBUILD_STEP: Record<string, string> = {
  * the API onto new server code, reload this window — one press-twice button
  * beside Restart server. The front door runs the job (it outlives the API), so
  * the button is absent without one, or with one that predates the route. It
- * has the restart's own precondition — no agent working — and nudges Pause all
- * first, which is what keeps one from starting mid-build.
+ * always asks for a DRAIN (docs/host.md § Drain): the job pauses new work
+ * without suspending anything, waits (≤30 min) for live turns to finish,
+ * restarts, and presses Continue only if the pause was its own. While it
+ * drains, a flag opens what it waits for and a Cancel.
  */
 function RebuildButton({ blocked, busyAgents }: { blocked: boolean; busyAgents: number }) {
   const { host, orch } = useApp();
@@ -455,8 +459,10 @@ function RebuildButton({ blocked, busyAgents }: { blocked: boolean; busyAgents: 
   const paused = !!orch.paused;
   const armed = arm.armed === 'rebuild';
   const again = mobile ? 'tap' : 'click';
+  const draining = job.state === 'draining';
+  const waiting = job.waitingFor;
   const press = async () => {
-    if (pressing || running || blocked || !arm.press('rebuild')) return;
+    if (pressing || running || !arm.press('rebuild')) return;
     setPressing(true);
     try {
       await startRebuild();
@@ -469,13 +475,35 @@ function RebuildButton({ blocked, busyAgents }: { blocked: boolean; busyAgents: 
   const what = host.host.dev
     ? 'dev mode: no build (Vite serves source) — typecheck, restart the API, reload this window'
     : 'build the web app (swapped in only when it succeeds), typecheck, restart the API onto the new server code, reload this window';
-  const title = blocked
-    ? `${busyAgents} agent(s) are working — Pause all first: it suspends them so each resumes in its own session on Continue.`
-    : running
-      ? (job.step ?? 'Rebuild & restart running')
-      : `Rebuild & restart — ${what}. Pause state survives the restart; press Continue yourself.${paused ? '' : ' Tip: Pause all first, or the queue may start an agent mid-build and the restart will be refused.'}`;
+  const title = running
+    ? (job.step ?? 'Rebuild & restart running')
+    : blocked
+      ? `Drain & rebuild — ${busyAgents} session(s) working: new work is paused, live turns finish on their own (≤30 min), then ${what}. Nothing is suspended; Continue is pressed for you.`
+      : `Rebuild & restart — ${what}. New work is paused for the duration and resumed after${paused ? '; you paused, so Continue stays yours' : ''}.`;
+  const cancelDrain = async () => {
+    try {
+      await cancelRebuildDrain();
+    } catch (e) {
+      toastError(e, 'Cancel drain');
+    }
+  };
   const details = (
     <div className="rebuild-report">
+      {draining && (
+        <>
+          <p>{job.step}</p>
+          {waiting && waiting.notPauseAware.length > 0 && (
+            <>
+              <p className="warn-text">The pause does not stop these — finish or stop them, or the drain times out:</p>
+              <ul className="rebuild-wait mono">
+                {waiting.notPauseAware.map((l) => (
+                  <li key={l}>{l}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </>
+      )}
       {failed && (
         <>
           <p className="warn-text">{job.error}</p>
@@ -489,6 +517,11 @@ function RebuildButton({ blocked, busyAgents }: { blocked: boolean; busyAgents: 
         </p>
       )}
       <div className="rebuild-acts">
+        {draining && (
+          <button type="button" className="btn ghost warn-text" onClick={cancelDrain}>
+            Cancel drain
+          </button>
+        )}
         {failed && (
           <button
             type="button"
@@ -513,7 +546,7 @@ function RebuildButton({ blocked, busyAgents }: { blocked: boolean; busyAgents: 
         type="button"
         className={`btn ghost rebuild-btn${armed ? ' armed' : ''}`}
         title={title}
-        disabled={pressing || running || blocked}
+        disabled={pressing || running}
         onClick={press}
       >
         {running
@@ -521,11 +554,23 @@ function RebuildButton({ blocked, busyAgents }: { blocked: boolean; busyAgents: 
           : pressing
             ? 'Starting…'
             : armed
-              ? `Rebuild${paused ? '' : ' (not paused)'}? ${again} again`
+              ? `${blocked ? 'Drain & rebuild' : 'Rebuild'}? ${again} again`
               : blocked
-                ? 'Pause all first'
+                ? 'Drain & rebuild'
                 : 'Rebuild & restart'}
       </button>
+      {draining && (
+        <button
+          type="button"
+          className={`btn ghost rebuild-flag${waiting?.notPauseAware.length ? ' warn-text' : ''}`}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          title={job.step ?? 'Draining'}
+          onClick={() => setOpen((v) => !v)}
+        >
+          {waiting?.notPauseAware.length ? `Waiting on ${waiting.notPauseAware.length} unpausable` : 'Waiting for…'}
+        </button>
+      )}
       {(failed || stale) && !running && (
         <button
           type="button"
@@ -540,7 +585,7 @@ function RebuildButton({ blocked, busyAgents }: { blocked: boolean; busyAgents: 
       )}
       {open &&
         (mobile ? (
-          <Sheet label={failed ? 'Rebuild failed' : 'Front door stale'} onClose={() => setOpen(false)} zIndex={38}>
+          <Sheet label={draining ? 'Draining' : failed ? 'Rebuild failed' : 'Front door stale'} onClose={() => setOpen(false)} zIndex={38}>
             {details}
           </Sheet>
         ) : (
