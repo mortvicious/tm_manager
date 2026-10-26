@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { Layout } from './components/Layout.tsx';
 import { QuestionModal } from './components/QuestionModal.tsx';
 import { PushBridge } from './components/PushBridge.tsx';
@@ -46,7 +46,8 @@ export function App() {
   return (
     <Layout onOpenTerminal={openTerm} onOpenTask={setOpenTask} inboxReturn={inboxReturn}>
       <Routes>
-        <Route path="/" element={<DashboardPage onOpenTask={setOpenTask} />} />
+        <Route path="/" element={<OpenOnBoard />} />
+        <Route path="/dashboard" element={<DashboardPage onOpenTask={setOpenTask} />} />
         <Route path="/board" element={<BoardPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
         <Route path="/inbox" element={<InboxPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} inboxReturn={inboxReturn} />} />
         <Route path="/queue" element={<QueuePage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
@@ -89,4 +90,14 @@ export function App() {
       <Toasts />
     </Layout>
   );
+}
+
+/**
+ * The app opens on the Board (docs/mobile.md § The shell). `/` is what the
+ * installed Home Screen app launches and what every push URL points at
+ * (`/?task=<id>`), so the redirect keeps the query and hash for PushBridge.
+ */
+function OpenOnBoard() {
+  const { search, hash } = useLocation();
+  return <Navigate to={{ pathname: '/board', search, hash }} replace />;
 }

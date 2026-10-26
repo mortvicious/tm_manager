@@ -51,6 +51,8 @@ import { liveReviewRun } from '../components/RunKind.tsx';
 import { TaskAttemptsChip, TaskCostChip } from '../components/RunMeta.tsx';
 import { FullSheet } from '../components/Sheet.tsx';
 import { StatusBadge } from '../components/StatusBadge.tsx';
+import { Explainable } from '../components/Explain.tsx';
+import { verdictChip } from '../components/ReviewPanel.tsx';
 import { DragGhost, undoMove, useTaskDrag, type DropZone } from '../components/TaskDrag.tsx';
 import { TaskRow } from '../components/TaskRow.tsx';
 import { TimeAgo, isNew, useNow } from '../components/TimeAgo.tsx';
@@ -81,7 +83,7 @@ const RECENT_LIMIT = 10;
 
 /** Phones: how many tags a row keeps, and which win (docs/mobile.md § Rows). */
 const MOBILE_CHIPS = 2;
-const MOBILE_CHIP_ORDER = ['autolanded', 'loop', 'repo', 'cost', 'attempts', 'dispatch', 'group', 'category', 'feature', 'landing', 'agent', 'source', 'preset', 'reviewer'];
+const MOBILE_CHIP_ORDER = ['verdict', 'checkerror', 'autolanded', 'loop', 'repo', 'cost', 'attempts', 'dispatch', 'group', 'category', 'feature', 'landing', 'agent', 'source', 'preset', 'reviewer'];
 
 const byRecency = (key: 'createdAt' | 'updatedAt') => (a: Task, b: Task) => {
   const d = b[key].localeCompare(a[key]);
@@ -966,6 +968,33 @@ export function BoardPage({
   ) => {
     const repo = repoName(t.repoId);
     const all: [id: string, node: ReactNode][] = [];
+    // a review row answers "ship it or fix it?" without being opened
+    const verdict = verdictChip(t);
+    if (verdict) {
+      all.push([
+        'verdict',
+        <Explainable key="verdict" className={`chip verdict ${verdict.cls}`} explain={verdict} off={selecting}>
+          {verdict.text}
+        </Explainable>,
+      ]);
+    }
+    if (t.status === 'review' && t.checkState === 'error') {
+      all.push([
+        'checkerror',
+        <Explainable
+          key="checkerror"
+          className="chip verdict v-error"
+          explain={{
+            title: 'check error',
+            what: 'A repo check could not run (a timeout or a spawn failure) — that is not a red.',
+            todo: 'Look at the check output in the task panel.',
+          }}
+          off={selecting}
+        >
+          check error
+        </Explainable>,
+      ]);
+    }
     // flat lists have no group header above them, so the tag carries it
     if (ctx === 'recent' && g && g.size > 1) {
       all.push([
@@ -1006,30 +1035,35 @@ export function BoardPage({
     if (t.autoLandedAt && (t.status === 'done' || t.status === 'published')) {
       all.push([
         'autolanded',
-        <span
+        <Explainable
           key="autolanded"
-          className="chip"
-          style={{ color: 'var(--tm-status-done)' }}
-          title={`landed by the orchestrator (${t.status === 'published' ? 'auto-publish' : 'on-green'}): checks green, review clean — no human click`}
+          className="chip chip-done"
+          explain={{
+            title: 'auto-landed',
+            what: `Landed by the orchestrator (${t.status === 'published' ? 'auto-publish' : 'on-green'}): checks green, review clean — no human click.`,
+          }}
+          off={selecting}
         >
           auto-landed
-        </span>,
+        </Explainable>,
       ]);
     } else if (landing !== 'supervised' && t.status !== 'done' && t.status !== 'published' && t.status !== 'cancelled') {
       all.push([
         'landing',
-        <span
+        <Explainable
           key="landing"
-          className="chip"
-          style={{ color: landing === 'auto-publish' ? 'var(--tm-status-published)' : 'var(--tm-status-done)' }}
-          title={
-            landing === 'auto-publish'
-              ? 'auto-publish — commits and pushes on its own once the checks are green and the review is clean'
-              : 'on-green — moves to done on its own once the checks are green and the review is clean'
-          }
+          className={`chip ${landing === 'auto-publish' ? 'chip-published' : 'chip-done'}`}
+          explain={{
+            title: landing,
+            what:
+              landing === 'auto-publish'
+                ? 'Commits and pushes on its own once the checks are green and the review is clean.'
+                : 'Moves to done on its own once the checks are green and the review is clean.',
+          }}
+          off={selecting}
         >
           {landing}
-        </span>,
+        </Explainable>,
       ]);
     }
     if (pendingOut > 0) {
@@ -1116,6 +1150,7 @@ export function BoardPage({
           reviewState={t.reviewState}
           checkState={t.checkState}
           loopState={t.loopState}
+          explain={!selecting}
           onOpenReviewer={(() => {
             const rv = liveReviewRun(runs, t.id);
             return rv ? () => onOpenTerminal(rv.id) : undefined;

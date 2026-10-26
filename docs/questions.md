@@ -124,7 +124,9 @@ question with its header, options as cards (radio or checkbox for
 `multiSelect`), an **Other** card that opens a free-text line (the CLI offers
 the same), and one **Answer** button that is enabled only when every question
 has an answer. Closing dismisses that question for the session; the header
-chip (`❓ n questions`, pulsing) reopens it, and the task panel shows the same
+chip (`❓ n questions`, pulsing) reopens it. A phone has no ❓ chip, so there the
+close button and a line under the form say it waits in the Inbox, and the
+header's urgent Inbox chip reopens it (docs/inbox.md § Header chip), and the task panel shows the same
 form inline under "The agent is asking you". The Board renders `asks you` in
 place of the status badge while a question is pending — a synthetic badge on
 top of `running`, like `needs attention`; deliberately no new `TaskStatus`.

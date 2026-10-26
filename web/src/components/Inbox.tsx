@@ -446,18 +446,32 @@ function ProposalDetail({ item }: { item: Extract<InboxItem, { kind: 'proposal' 
   );
 }
 
-/** Header chip: how many decisions wait (docs/inbox.md). Hidden at zero. */
-export function InboxChip({ onClick, compact = false }: { onClick: () => void; compact?: boolean }) {
-  const items = useInbox();
+/**
+ * Header chip: how many decisions wait (docs/inbox.md). Hidden at zero.
+ * `urgentOnly` (the phone, whose Inbox tab carries the full count): only the
+ * questions and needs-attention items, hidden while there are none.
+ */
+export function InboxChip({
+  onClick,
+  compact = false,
+  urgentOnly = false,
+}: {
+  onClick: () => void;
+  compact?: boolean;
+  urgentOnly?: boolean;
+}) {
+  const all = useInbox();
+  const urgentItems = all.filter((i) => i.kind === 'question' || i.kind === 'attention');
+  const items = urgentOnly ? urgentItems : all;
   const n = items.length;
   if (n === 0) return null;
-  const urgent = items.some((i) => i.kind === 'question' || i.kind === 'attention');
+  const urgent = urgentItems.length > 0;
   return (
     <button
       type="button"
       className={`btn ghost ichip${urgent ? ' urgent' : ''}`}
       title={`${n} item${n === 1 ? '' : 's'} waiting on you — the Inbox`}
-      aria-label={`Inbox, ${n} waiting`}
+      aria-label={urgentOnly ? `${n} urgent in the Inbox` : `Inbox, ${n} waiting`}
       onClick={onClick}
     >
       <IconInbox /> {n}

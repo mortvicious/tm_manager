@@ -90,11 +90,20 @@ Glass), and the `::view-transition` duration.
     shadow.
   - Header controls are glass capsules.
   - On desktop the sidebar is an inset glass pane.
-- **Tab bar (phone).** A floating capsule over the home-indicator inset, with a
-  glass **lens** that slides under the active tab on a spring and swells while
-  pressed.
-  - `TabBar` writes `--tab-i`/`--tab-n`. Any page reached from the More sheet
-    puts the lens on More, which gets the `here` class.
+- **Tab bar (phone).** Three pieces of Liquid Glass on one baseline over the
+  home-indicator inset: a Dashboard · Inbox capsule, the **Board** as a detached
+  disc, and a Queue · More capsule (docs/mobile.md § The shell).
+  - The disc is 10px taller than the capsules and stands on their baseline, so it
+    rises above them. It is accent-tinted glass (`--tm-accent` at 78% over the
+    blur), with the rim and specular of the other glass. While the Board is the
+    page it turns solid accent and gains a halo. Its label is kept for screen
+    readers only.
+  - Each capsule has its own glass **lens**, which slides under the active tab
+    on a spring and swells while pressed. `TabBar` writes
+    `--tab-i`/`--tab-n`/`--lens` per capsule, and the capsule that does not hold
+    the page fades its lens out. Any page reached from the More sheet puts the
+    lens on More, which gets the `here` class. On the Board, neither capsule
+    shows a lens.
   - `--tm-tabbar-clear` grows to the floating geometry, so the page padding and
     the terminal drawer still clear it.
 - **Lists.** Board sections are inset-grouped glass cards with hairline (0.5px)
@@ -148,9 +157,10 @@ Glass), and the `::view-transition` duration.
   destructive actions), and `running n/m` carries its state dot. Its old
   label-off-screen trick is gone with it.
 
-**Hidden in Glass, on the phone**: Features and Chat leave the tab bar and
-the More sheet (`GLASS_HIDDEN` in `Layout.tsx`, applied by `useNav()` only when
-`useIsMobile()`), so the phone has Dashboard · Board · Queue · More. The
+**Hidden in Glass, on the phone**: Features and Chat leave the More sheet
+(`GLASS_HIDDEN` in `Layout.tsx`, applied by `useNav()` only when
+`useIsMobile()`). Neither is a tab in either design any more: the tabs are
+Dashboard · Inbox · Board · Queue · More in both (2026-10-26, UX review #12). The
 **desktop sidebar lists them in both designs** (2026-10-26, UX review #22):
 Glass is the default design, and hiding them on desktop too left the Inbox's
 plan rows deep-linking into `/features/:id`, a section nothing else listed.

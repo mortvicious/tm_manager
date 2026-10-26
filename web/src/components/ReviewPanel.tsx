@@ -57,6 +57,55 @@ export function reviewHeadline(task: Task): { text: string; cls: string } | null
   }
 }
 
+/**
+ * The board row's compact verdict (docs/design.md § Adversarial review): a
+ * review row says whether it is ready to ship or has findings, without opening
+ * it. Only a SETTLED verdict on a task in `review` — an open round is the
+ * badge's (`auto-review`, `checking`), and `skipped` has nothing to say.
+ */
+export function verdictChip(task: Task): { text: string; cls: string; title: string; what: string; todo: string } | null {
+  if (task.status !== 'review') return null;
+  // checks due, running or red: the badge says so, and a verdict from before
+  // the last fix turn would be about a change that is no longer the one here
+  if (task.checkState === 'pending' || task.checkState === 'running' || task.checkState === 'red') return null;
+  const last = task.reviewRounds[task.reviewRounds.length - 1];
+  switch (task.reviewState) {
+    case 'passed': {
+      const minors = last?.findings.length ?? 0;
+      return {
+        text: '✓ clean',
+        cls: 'v-clean',
+        title: 'review clean',
+        what: `The adversarial review found nothing to fix${minors ? ` (${minors} minor note${minors === 1 ? '' : 's'})` : ''}${last ? ` · ${last.model}` : ''}.`,
+        todo: 'Ready to ship: Publish, or Mark done.',
+      };
+    }
+    case 'flagged': {
+      const n = (sev: ReviewFinding['severity']) => last?.findings.filter((f) => f.severity === sev).length ?? 0;
+      const blockers = n('blocker');
+      const majors = n('major');
+      const parts = [blockers ? `${blockers} blocker${blockers === 1 ? '' : 's'}` : '', majors ? `${majors} major` : ''].filter(Boolean);
+      return {
+        text: [blockers ? `⛔ ${blockers}` : '', majors ? `⚠ ${majors}` : ''].filter(Boolean).join(' ') || '⚠ flagged',
+        cls: blockers || last?.verdict === 'blocker' ? 'v-blocker' : 'v-concerns',
+        title: 'review flagged',
+        what: `The adversarial review flagged ${parts.join(' and ') || 'issues'}.`,
+        todo: 'Open the task to read the findings: Follow up to fix them, or publish over them.',
+      };
+    }
+    case 'error':
+      return {
+        text: 'review failed',
+        cls: 'v-error',
+        title: 'review failed',
+        what: 'The adversarial review could not run — the reason is in the task panel.',
+        todo: 'Review now to try again.',
+      };
+    default:
+      return null;
+  }
+}
+
 function Findings({ findings }: { findings: ReviewFinding[] }) {
   if (findings.length === 0) return <div className="muted">No issues found.</div>;
   const sorted = [...findings].sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));

@@ -364,7 +364,14 @@ export function QuestionModal() {
       <span className="qmodal-title">{task?.title ?? `task ${current.taskId.slice(0, 8)}`}</span>
       {pending.length > 1 && <span className="chip">{pending.length} waiting</span>}
       <span className="spacer" style={{ flex: 1 }} />
-      <button className="btn ghost" onClick={dismiss} title="Dismiss for now (the ❓ chip in the header brings it back)">
+      <button
+        className="btn ghost"
+        onClick={dismiss}
+        // a phone has no ❓ chip: the question waits in the Inbox, and the
+        // header's red Inbox chip reopens it (docs/questions.md)
+        title={mobile ? 'Not now — it waits in the Inbox' : 'Dismiss for now (the ❓ chip in the header brings it back)'}
+        aria-label={mobile ? 'Not now — it waits in the Inbox' : 'Dismiss for now'}
+      >
         <IconX />
       </button>
     </div>
@@ -384,6 +391,7 @@ export function QuestionModal() {
         disableDrag={touched}
       >
         <QuestionForm question={current} />
+        <p className="qsheet-later">Not now? Swipe it down — it waits in the Inbox, and the header's Inbox chip brings it back.</p>
       </Sheet>
     );
   return (

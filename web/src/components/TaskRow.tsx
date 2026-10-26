@@ -232,7 +232,7 @@ export function TaskRow({
         )}
         <span className={`task-main ${depth > 0 ? 'child' : ''}`}>
           <span className="title">{task.title}</span>
-          <QueueMark task={task} tasks={tasks} />
+          <QueueMark task={task} tasks={tasks} explain={!select} />
           {liveLine?.text && (
             <span className={`row-activity ${liveLine.kind}`}>
               <span className="live-dot" aria-hidden="true" />

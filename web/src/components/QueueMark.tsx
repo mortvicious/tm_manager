@@ -1,5 +1,6 @@
 import { customQueueHoldsRepo, customQueueWaiting, type Run, type Task } from '@tm/shared';
 import { useApp } from '../state.tsx';
+import { Explainable } from './Explain.tsx';
 
 /**
  * Members of the custom queue (docs/queue.md) that are still waiting, in the
@@ -44,71 +45,92 @@ export function customQueueBlocker(task: Task, tasks: Task[], runs: Run[] = []):
  * still holds the repo (or `blocked` on its children), and `queue · done
  * here` once it sits in review for the human — the queue has moved on.
  */
-export function QueueMark({ task, tasks }: { task: Task; tasks: Task[] }) {
+export function QueueMark({ task, tasks, explain = true }: { task: Task; tasks: Task[]; explain?: boolean }) {
+  const off = !explain;
   const { runs } = useApp();
   if (!task.customQueueAt) {
     // A global-queue task an Undo start put back: same sign, no position.
     return task.status === 'queued' && task.queueHeldAt ? (
-      <span
+      <Explainable
         className="chip queue-chip holding"
-        title="queued, held by Undo start: the queue skips it until you Release it (or Run now)"
+        explain={{ title: 'held', what: 'Queued, but held by Undo start: the queue skips it.', todo: 'Release it, or Run now.' }}
+        off={off}
       >
         held
-      </span>
+      </Explainable>
     ) : null;
   }
   if (task.status === 'running' || task.status === 'waiting') {
     return (
-      <span className="chip queue-chip working" title="custom queue — this task holds its repo's slot; members of other repos run alongside">
+      <Explainable
+        className="chip queue-chip working"
+        explain={{ title: 'queue', what: "Custom queue: this task holds its repo's slot. Members of other repos run alongside it." }}
+        off={off}
+      >
         <span className="dot" /> queue
-      </span>
+      </Explainable>
     );
   }
   if (task.status === 'review' || task.status === 'blocked') {
     return customQueueHoldsRepo(task) ? (
-      <span
+      <Explainable
         className="chip queue-chip holding"
-        title={
-          task.status === 'blocked'
-            ? `custom queue — blocked on its subtasks: it still holds its repo's place, so queued tasks from the same repo wait`
-            : `custom queue — its automatic review is still open: queued tasks from the same repo wait until the review settles`
-        }
+        explain={{
+          title: `queue · in ${task.status === 'review' ? 'auto-review' : task.status}`,
+          what:
+            task.status === 'blocked'
+              ? "Custom queue: blocked on its subtasks, it still holds its repo's place, so queued tasks from the same repo wait."
+              : 'Custom queue: its automatic review is still open, so queued tasks from the same repo wait until the review settles.',
+        }}
+        off={off}
       >
         queue · in {task.status === 'review' ? 'auto-review' : task.status}
-      </span>
+      </Explainable>
     ) : (
-      <span
+      <Explainable
         className="chip queue-chip"
-        title="custom queue — finished and waiting for you in review; the queue has moved on. Its leftovers were committed locally under its own Task trailer before the next task started, and publishing goes in order: Publish (or Mark done) this one before a later task in the same repo can publish"
+        explain={{
+          title: 'queue · done here',
+          what: 'Custom queue: finished and waiting for you in review, so the queue has moved on. Its leftovers were committed locally under its own Task trailer before the next task started.',
+          todo: 'Publishing goes in order: Publish (or Mark done) this one before a later task in the same repo can publish.',
+        }}
+        off={off}
       >
         queue · done here
-      </span>
+      </Explainable>
     );
   }
   if (task.status !== 'queued') return null;
   const pos = customQueueWaiting(tasks).findIndex((t) => t.id === task.id) + 1;
   if (task.queueHeldAt) {
     return (
-      <span
+      <Explainable
         className="chip queue-chip holding"
-        title={`custom queue — position ${pos}, held by Undo start: the queue skips it until you Release it (or Run now)`}
+        explain={{
+          title: `queue #${pos} · held`,
+          what: `Custom queue, position ${pos}, held by Undo start: the queue skips it.`,
+          todo: 'Release it, or Run now.',
+        }}
+        off={off}
       >
         queue #{pos} · held
-      </span>
+      </Explainable>
     );
   }
   const blocker = customQueueBlocker(task, tasks, runs);
   return (
-    <span
+    <Explainable
       className="chip queue-chip"
-      title={
-        blocker
-          ? `custom queue — position ${pos}; behind "${blocker.title}" (${blocker.status}) in the same repo — it starts once that one finishes its turn and review`
-          : `custom queue — position ${pos}; runs one task per repo, even while the global queue is stopped`
-      }
+      explain={{
+        title: `queue #${pos}`,
+        what: blocker
+          ? `Custom queue, position ${pos}: behind "${blocker.title}" (${blocker.status}) in the same repo. It starts once that one finishes its turn and review.`
+          : `Custom queue, position ${pos}: it runs one task per repo, even while the global queue is stopped.`,
+      }}
+      off={off}
     >
       queue #{pos}
       {blocker && <span className="behind"> · behind {blocker.title}</span>}
-    </span>
+    </Explainable>
   );
 }

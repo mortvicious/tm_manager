@@ -30,7 +30,7 @@ import { Markdown } from './Markdown.tsx';
 import { PresetPicker, reviewChoiceOf, reviewValueOf, type ReviewChoice } from './PresetPicker.tsx';
 import { ReviewerFields, reviewIsOn } from './ReviewerPicker.tsx';
 import { RunStatsChips, TaskAttemptsChip, TaskCostChip } from './RunMeta.tsx';
-import { StatusBadge } from './StatusBadge.tsx';
+import { BadgeStrip, StatusBadge } from './StatusBadge.tsx';
 import { KindBadge, liveReviewRun, runTaskId } from './RunKind.tsx';
 import { ReviewPanel } from './ReviewPanel.tsx';
 import { ChecksPanel } from './ChecksPanel.tsx';
@@ -932,6 +932,18 @@ export function TaskSlideOver({
 
   const body = (
     <>
+      {/* a phone cannot hover the badge: what is happening, what you can do
+          (docs/mobile.md § Tap to explain) */}
+      {mobile && (
+        <BadgeStrip
+          status={task.status}
+          attention={latestRun?.needsAttention && task.status === 'running'}
+          question={!!pendingQuestion}
+          reviewState={task.reviewState}
+          checkState={task.checkState}
+          loopState={task.loopState}
+        />
+      )}
       <GroupPath task={task} tasks={tasks} onOpen={onOpenTask} />
       {pendingQuestion && (
         <div className="qpanel so-question">

@@ -152,12 +152,16 @@ its `/proceed` command and 💬 Proceed button; they are the same call as Resume
 
 - It turns attention-coloured while a question or a prompt is in the list.
 - On a desktop it sits next to the question chip and opens `/inbox`.
-- On a phone the bar holds four capsules, so the Inbox chip **replaces** the
-  question chip (questions head the Inbox anyway) and opens the sheet stack.
-  Glass's "hide the switch label while a chip is up" rule covers it too
-  (`:has(.qchip, .ichip)`).
-- The Inbox is also in the nav (desktop sidebar, phone More sheet). It is not a
-  tab-bar slot.
+- On a phone the Inbox chip **replaces** the question chip (questions head the
+  Inbox anyway). It is the urgent shortcut only (`urgentOnly`): it counts the
+  questions and needs-attention items and is hidden while there are none,
+  because the **Inbox tab** carries the full count (docs/mobile.md § The
+  shell). When agent questions are the only urgent items, a tap reopens the
+  question sheet directly (`nudgeQuestions`, the desktop ❓ chip's action).
+  Otherwise it opens the sheet stack.
+- The Inbox is a **tab** on the phone (Dashboard · Inbox · Board · Queue · More,
+  2026-10-26, UX review #12), with the count on its icon, and is in the
+  desktop sidebar and the More sheet.
 
 ### Phone: a Sheet stack
 

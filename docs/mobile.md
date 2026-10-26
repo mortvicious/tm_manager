@@ -95,24 +95,48 @@ cannot be in two parents at once without being **mounted** twice — two emulato
 windows, two usage pollers — which is why this is a JS branch and not a
 display:none pair.
 
-- **Bottom tab bar** (`.tabbar`) — Dashboard · Board · Queue · Features · More.
-  The active tab carries three cues, not one: accent colour, `stroke-width: 2.6`
-  and a top rail, because colour alone is weak in peripheral vision. In the
-  **Glass** design (`docs/glass.md`, picked per device in Config → Appearance)
-  it is a floating capsule with a sliding lens instead of the rail, and it reads
-  Dashboard · Board · Queue · More: Glass leaves Features and Chat out of the
-  phone's tab bar and More sheet (the desktop sidebar keeps them in both
-  designs, `docs/glass.md` § Hidden in Glass), and their routes stay reachable
-  by link.
+- **The app opens on the Board.** `/` redirects to `/board`, keeping the query
+  and hash (`OpenOnBoard` in `App.tsx`), so the installed Home Screen app, whose
+  `start_url` is `/`, and every push URL (`/?task=<id>`, read by `PushBridge`)
+  land there. The Dashboard moved to `/dashboard`. `start_url` itself was left
+  alone: without a manifest `id`, Chrome takes the start URL as the app's
+  identity, and iOS keeps the manifest it saw at install anyway (UX review #12,
+  2026-10-26).
+- **Bottom tab bar** (`.tabbar`, `TabBar` in `Layout.tsx`) — **Dashboard ·
+  Inbox · (Board) · Queue · More**, the same in both designs
+  (`TABS_LEFT`/`TAB_CENTRE`/`TABS_RIGHT`). Features left the tab bar for the
+  More sheet. The **Board** is the centre button: a round accent disc, raised
+  above the bar and visually detached from it. In Classic it is a 52px disc whose
+  top half rises over the bar's top edge. A ring in the page colour cuts the
+  bar's border where they meet, and its `-32px` margin keeps the "Board" label
+  on the other tabs' baseline. While the Board is the page it darkens to
+  `--tm-accent-strong` and gains an accent halo. The two tab groups either side
+  (`.tab-group`) grow by their tab count (`--tab-n`), so every tab keeps one
+  width. The **Inbox** tab carries the Inbox count on its icon's shoulder
+  (`.tab-count`, accent; the attention colour while a question or a
+  needs-attention item is waiting). An ordinary active tab carries three cues,
+  not one: accent colour, `stroke-width: 2.6` and a top rail, because colour
+  alone is weak in peripheral vision. In the **Glass** design (`docs/glass.md`,
+  picked per device in Config → Appearance) the bar is two floating capsules,
+  each with its own sliding lens, and the Board is a separate accent-tinted
+  Liquid Glass disc between them. Glass also leaves Chat (and Features) out of the
+  phone's More sheet (the desktop sidebar keeps them in both designs,
+  `docs/glass.md` § Hidden in Glass), and their routes stay reachable by link.
 - **More sheet** (`.more-sheet`, drawn by the shared `<Sheet>` — § Sheets) — the
-  **whole** nav (so the four slots are a shortcut, never the only route) plus the
+  **whole** nav (so the four tabs are a shortcut, never the only route) plus the
   header controls the compact top bar could not hold: the **queue switch**,
   usage pill, server uptime/restart, repo commands, theme, and the address the
   page was served from. Escape and the overlay close it; it also closes on navigation and on
   crossing the breakpoint.
 - **Top bar** — brand (hidden under 430px), `running n/m` led by the queue's
-  state dot (accent = running, faint = stopped; not a control), the Inbox chip,
-  and the `⋯` that toggles the sheet. The queue switch itself is NOT in the
+  state dot (accent = running, faint = stopped; tap it for what it means), the
+  Inbox chip **only while something is urgent** (a question or a needs-attention
+  item; the tab has the full count), and, in the slot the old `⋯` held, the
+  **connection dot** (`ConnDot`, § Server offline). The tab bar's More is the
+  one way into the More sheet: the header's `⋯` opened the same sheet and is
+  gone (UX review #12). When the only urgent items are agent questions, the
+  Inbox chip reopens the question sheet directly (`nudgeQuestions`). Otherwise it
+  opens the Inbox sheet stack. The queue switch itself is NOT in the
   phone's bar: top-left is where iOS puts Back, and a reflexive tap there used
   to start (or stop) the queue. It lives in the More sheet (§ Confirming
   destructive actions).
@@ -185,6 +209,10 @@ server** sat two taps deep in the More sheet.
   Start goes through `useServerStart()`, the hook the header's `ServerControl`
   uses too, so both offer Start under the same rule (refused while agents are
   recorded as working; a reload clears that stale count).
+- **The connection dot** (`ConnDot`, phone header, right): green while the
+  events socket is up, amber pulsing while it reconnects, red once the front
+  door says the API is stopped. It reads the same state as the banner, at a
+  glance. A tap explains it (§ Tap to explain), and Start stays the banner's.
 - **`loaded`** (`state.tsx`) turns true on the first successful repos + tasks
   fetch. Until then the Board shows "Can't reach the server" (or "Loading…" while the socket is up),
   never "No tasks yet".
@@ -194,6 +222,35 @@ server** sat two taps deep in the More sheet.
   no answer (Safari's "Load failed") reads "can't reach the task-manager server",
   and a 502/503/504 without a JSON reason reads the same with the code. The
   server's own `error` always wins. The front door's 503 now names the banner.
+
+## Tap to explain
+
+A phone cannot hover, and the synthetic states are the app's main information
+(UX review #9). Everything that explained itself only in a `title=` now opens
+that explanation in a small sheet when tapped on a phone. On a desktop the same
+text stays the tooltip.
+
+- **One switch.** `badgeReading()` (`components/StatusBadge.tsx`) returns the
+  badge's label, class, **what** is happening and what you can **do**, for every
+  status and every synthetic reading (`asks you`, `needs attention`, `checking`,
+  `checks red`, `auto-review`, `loop checks`, `next iteration`, `fixing checks`,
+  `fixing`, `waiting`). A settled review verdict and a check `error` refine the
+  plain `review` explanation. The badge, its tooltip, its sheet and the task
+  sheet's strip all read it, so they cannot disagree.
+- **The badge** on a phone is a button (`.badge-tap`) that opens `ExplainSheet`
+  (`components/Explain.tsx`, z-index 38, above the task sheet and the Inbox). The
+  auto-review badge's "open the reviewer's terminal" becomes the sheet's action.
+- **`Explainable`** wraps the rest: the queue marks (`QueueMark`), the row's
+  verdict, landing and auto-landed chips, the run count and the connection dot.
+  `off` hands the tap back to the row, and select mode passes it (a tap there
+  ticks the row). The `+n` chip is left alone: tapping it opens the task, which
+  is what its tooltip says.
+- **The task sheet strip** (`BadgeStrip`, `.so-explain`, order −8): the first
+  line under the head reads what is happening and what you can do, from the same
+  switch.
+- **The task sheet order**: `ChecksPanel` and `LoopPanel` sit at order −3 beside
+  the review, so "checks red" no longer sends you scrolling past Title,
+  Description and Settings to find the failing output (UX review #24).
 
 ## Action errors
 
@@ -616,6 +673,29 @@ compact/breakpoint/run change. The reasoning is in `docs/decisions.md`,
   longer to ingest could still see the Enter arrive early.
 
 ## Verification
+
+**Tab bar, verdict chips, tap to explain (2026-10-26, UX review #12/#8/#9/#23/#24)**:
+Playwright (`playwright-core` 1.63.0, chromium-1243) at 393×852 and 320×640
+(touch, iPhone UA) and 1280×800, against the scratch build served over the
+live front door's origin, API GETs passed through, every write aborted. Review
+verdicts were injected into the `/api/tasks` reply. Classic and Glass, dark and
+light:
+
+- `/` and `/?task=<id>` landed on `/board`, and `/dashboard` drew the Dashboard.
+  The tab bar read Dashboard · Inbox · (Board) · Queue · More. The Board disc
+  rose above the bar (Classic: its top at −23px over the bar's edge; Glass:
+  10px above the capsules). The Inbox count sat on its icon, and Glass's lens
+  followed the Inbox tab inside its capsule. No horizontal overflow at 320px,
+  where "Dashboard" ellipsises.
+- The header held `running n/m` and the connection dot. There is no `⋯`, and More
+  opened the sheet from the tab bar.
+- Review rows showed `✓ clean`, `⛔ 2 ⚠ 1` and `review failed`, ranked first and
+  never truncated. Tapping one opened its explanation. Tapping a row's badge
+  opened the badge sheet. In Select mode the same tap ticked the row and opened
+  nothing. The phone task sheet led with the "what's happening" strip.
+- The desktop sidebar listed Board, Inbox, Queue, Dashboard, Features, Chat, …
+  in both designs. The desktop tooltips are unchanged.
+- No page errors. `npm run typecheck`; `vite build` to a scratch outDir.
 
 **Server offline + action toasts (2026-10-26)**: Playwright (`playwright-core`
 1.63.0, chromium-1243) at 390×844 (touch, iPhone UA) and 1280×800, against the

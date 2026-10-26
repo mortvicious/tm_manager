@@ -11,7 +11,8 @@ import { CommandsLauncher } from './Commands.tsx';
 import { EmulatorLauncher } from './Emulator.tsx';
 import { Sheet } from './Sheet.tsx';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { InboxChip, InboxSheet } from './Inbox.tsx';
+import { InboxChip, InboxSheet, useInbox } from './Inbox.tsx';
+import { Explainable } from './Explain.tsx';
 import {
   IconBoard,
   IconBook,
@@ -421,16 +422,15 @@ interface NavItem {
   to: string;
   label: string;
   icon: ReactNode;
-  /** Gets one of the tab bar's four slots; the rest live behind More. */
-  primary?: boolean;
 }
 
+/** The sidebar's and the More sheet's order. The app opens on the Board (App.tsx). */
 const NAV: NavItem[] = [
-  { to: '/', label: 'Dashboard', icon: <IconQueue />, primary: true },
-  { to: '/board', label: 'Board', icon: <IconBoard />, primary: true },
+  { to: '/board', label: 'Board', icon: <IconBoard /> },
   { to: '/inbox', label: 'Inbox', icon: <IconInbox /> },
-  { to: '/queue', label: 'Queue', icon: <IconTerminal />, primary: true },
-  { to: '/features', label: 'Features', icon: <IconFeature />, primary: true },
+  { to: '/queue', label: 'Queue', icon: <IconTerminal /> },
+  { to: '/dashboard', label: 'Dashboard', icon: <IconQueue /> },
+  { to: '/features', label: 'Features', icon: <IconFeature /> },
   { to: '/chat', label: 'Chat', icon: <IconChat /> },
   { to: '/reports', label: 'Reports', icon: <IconReport /> },
   { to: '/shared', label: 'Shared', icon: <IconShared /> },
@@ -441,7 +441,17 @@ const NAV: NavItem[] = [
 ];
 
 /**
- * Glass on a PHONE leaves these out of the tab bar and the More sheet
+ * The phone's tab bar (docs/mobile.md § The shell), the same in both designs:
+ * two tabs either side of the Board, which is the centre button, raised and
+ * detached from the bar, then More. Every route is in the More sheet too, so a
+ * tab is a shortcut, never the only way in.
+ */
+const TABS_LEFT = ['/dashboard', '/inbox'];
+const TAB_CENTRE = '/board';
+const TABS_RIGHT = ['/queue'];
+
+/**
+ * Glass on a PHONE leaves these out of the More sheet
  * (docs/glass.md § Hidden in Glass). The desktop sidebar keeps them in both
  * designs, and the routes stay, so push deep links, the Inbox's plan rows and
  * the Queue's aux-run links still land on them.
@@ -452,6 +462,10 @@ function useNav() {
   const { design } = useLook();
   const mobile = useIsMobile();
   return design === 'glass' && mobile ? NAV.filter((n) => !GLASS_HIDDEN.has(n.to)) : NAV;
+}
+
+function navItem(to: string): NavItem {
+  return NAV.find((n) => n.to === to)!;
 }
 
 function navClass({ isActive }: { isActive: boolean }) {
@@ -471,8 +485,8 @@ function RunCount({ state = false }: { state?: boolean }) {
       ? `${orch.running} of ${orch.concurrency} worker slots in use · ${orch.aux} aux session(s) (review / plan / analysis / chat / report …) — those run outside the worker budget`
       : `${orch.running} of ${orch.concurrency} worker slots in use`;
   const queue = orch.enabled ? 'Queue running' : 'Queue stopped';
-  return (
-    <span className="runcount" title={state ? `${queue} (switch it in the ⋯ menu) · ${slots}` : slots}>
+  const body = (
+    <>
       {state && (
         <>
           <span className={`queue-dot${orch.enabled ? ' on' : ''}`} aria-hidden="true" />
@@ -481,7 +495,27 @@ function RunCount({ state = false }: { state?: boolean }) {
       )}
       running {orch.running}/{orch.concurrency}
       {(orch.aux ?? 0) > 0 ? ` · +${orch.aux}` : ''}
-    </span>
+    </>
+  );
+  if (!state) {
+    return (
+      <span className="runcount" title={slots}>
+        {body}
+      </span>
+    );
+  }
+  // the phone: a tap says what the dot and the numbers mean (docs/mobile.md § Tap to explain)
+  return (
+    <Explainable
+      className="runcount"
+      explain={{
+        title: 'running',
+        what: `${queue} (the dot: accent while it runs, faint while stopped). ${slots.charAt(0).toUpperCase()}${slots.slice(1)}.`,
+        todo: 'Switch the queue in More.',
+      }}
+    >
+      {body}
+    </Explainable>
   );
 }
 
@@ -508,13 +542,58 @@ function QuestionChip() {
   );
 }
 
+/**
+ * The phone header's connection dot, in the slot the old ⋯ button held
+ * (docs/mobile.md § Server offline): green while the events socket is up,
+ * amber while it is reconnecting, red once the front door says the API is not
+ * running. The banner under the header carries Start server; this is the
+ * at-a-glance reading, and a tap explains it.
+ */
+function ConnDot() {
+  const { connected, bootedAt, host } = useApp();
+  const stopped = !connected && host !== null && !host.api.up;
+  const tone = connected ? 'up' : stopped ? 'stopped' : 'offline';
+  const uptime = (() => {
+    if (!bootedAt) return '';
+    const m = Math.max(0, Math.floor((Date.now() - new Date(bootedAt).getTime()) / 60000));
+    return m >= 60 ? ` · up ${Math.floor(m / 60)}h ${m % 60}m` : ` · up ${m}m`;
+  })();
+  const explain =
+    tone === 'up'
+      ? { title: 'connected', what: `Connected to the task-manager server${uptime}. The board is live.` }
+      : tone === 'stopped'
+        ? {
+            title: 'server stopped',
+            what: 'The API server is not running; this page is served by the front door, so it is still here.',
+            todo: 'Start server, in the banner under the header or in More.',
+          }
+        : {
+            title: 'offline',
+            what: 'Lost contact with the server — reconnecting. What you see is what was loaded last.',
+          };
+  return (
+    <Explainable
+      className={`btn ghost conn-dot-btn ${tone}`}
+      explain={explain}
+      lead={
+        <span className={`conn-lead ${tone}`}>
+          <span className="conn-dot" aria-hidden="true" /> {explain.title}
+        </span>
+      }
+    >
+      <span className="conn-dot" aria-hidden="true" />
+      <span className="sr-only">{explain.title}</span>
+    </Explainable>
+  );
+}
+
 function MoreSheet({ onClose, onOpenTerminal }: { onClose: () => void; onOpenTerminal: (runId: string) => void }) {
   const nav = useNav();
   return (
     <Sheet label="Menu" onClose={onClose}>
       <div className="sheet-nav">
         {nav.map((n) => (
-          <NavLink key={n.to} to={n.to} end={n.to === '/'} className={navClass} onClick={onClose}>
+          <NavLink key={n.to} to={n.to} className={navClass} onClick={onClose}>
             {n.icon} {n.label}
           </NavLink>
         ))}
@@ -539,30 +618,62 @@ function owns(to: string, pathname: string) {
 }
 
 function TabBar({ onMore, moreOpen }: { onMore: () => void; moreOpen: boolean }) {
-  const tabs = useNav().filter((n) => n.primary);
   const { pathname } = useLocation();
-  // Glass's lens sits under the tab that owns this page; a page reached from
-  // the More sheet belongs to More. Classic ignores both variables.
-  const owner = moreOpen ? -1 : tabs.findIndex((n) => owns(n.to, pathname));
-  const lens = owner === -1 ? tabs.length : owner;
-  const lensVars = { '--tab-i': lens, '--tab-n': tabs.length + 1 } as CSSProperties;
+  const inbox = useInbox();
+  const urgent = inbox.some((i) => i.kind === 'question' || i.kind === 'attention');
+  // Slots left to right: left tabs, the Board, right tabs, More. A page reached
+  // from the More sheet belongs to More; the Board is its own button.
+  const slots = [...TABS_LEFT, TAB_CENTRE, ...TABS_RIGHT];
+  const owner = moreOpen ? slots.length : slots.findIndex((to) => owns(to, pathname));
+  const here = owner === -1 ? slots.length : owner;
+  // Glass's lens rides inside the capsule that holds the owner (glass.css § the
+  // tab bar); `--lens: 0` hides it there. Classic ignores all three.
+  const lens = (from: number, n: number) =>
+    ({ '--tab-i': Math.max(0, Math.min(n - 1, here - from)), '--tab-n': n, '--lens': here >= from && here < from + n ? 1 : 0 }) as CSSProperties;
+  const tab = (to: string) => {
+    const n = navItem(to);
+    return (
+      <NavLink key={to} to={to} className={navClass}>
+        {to === '/inbox' ? (
+          <span className="tab-icon">
+            {n.icon}
+            {inbox.length > 0 && (
+              <span className={`tab-count${urgent ? ' urgent' : ''}`} aria-label={`${inbox.length} waiting`}>
+                {inbox.length > 99 ? '99+' : inbox.length}
+              </span>
+            )}
+          </span>
+        ) : (
+          n.icon
+        )}
+        <span>{n.label}</span>
+      </NavLink>
+    );
+  };
+  const rightFrom = TABS_LEFT.length + 1;
   return (
-    <nav className="tabbar" aria-label="Primary" style={lensVars}>
-      {tabs.map((n) => (
-        <NavLink key={n.to} to={n.to} end={n.to === '/'} className={navClass}>
-          {n.icon}
-          <span>{n.label}</span>
-        </NavLink>
-      ))}
-      <button
-        type="button"
-        className={`nav-link ${moreOpen ? 'active' : ''}${lens === tabs.length ? ' here' : ''}`}
-        aria-expanded={moreOpen}
-        onClick={onMore}
-      >
-        <IconMore />
-        <span>More</span>
-      </button>
+    <nav className="tabbar" aria-label="Primary">
+      <div className="tab-group" style={lens(0, TABS_LEFT.length)}>
+        {TABS_LEFT.map(tab)}
+      </div>
+      <NavLink to={TAB_CENTRE} className={({ isActive }) => `nav-link tab-centre${isActive && !moreOpen ? ' active' : ''}`} aria-label="Board">
+        <span className="tab-fab" aria-hidden="true">
+          <IconBoard />
+        </span>
+        <span className="tab-centre-label">Board</span>
+      </NavLink>
+      <div className="tab-group" style={lens(rightFrom, TABS_RIGHT.length + 1)}>
+        {TABS_RIGHT.map(tab)}
+        <button
+          type="button"
+          className={`nav-link ${moreOpen ? 'active' : ''}${here === slots.length ? ' here' : ''}`}
+          aria-expanded={moreOpen}
+          onClick={onMore}
+        >
+          <IconMore />
+          <span>More</span>
+        </button>
+      </div>
     </nav>
   );
 }
@@ -586,6 +697,13 @@ export function Layout({
   const [inboxOpen, setInboxOpen] = useState(false);
   const [inboxKey, setInboxKey] = useState<string | null>(null);
   const navigate = useNavigate();
+  const { nudgeQuestions } = useApp();
+  const inbox = useInbox();
+  // the phone header's Inbox chip is the urgent shortcut only (the tab carries
+  // the count): when nothing but agent questions is urgent, it reopens the
+  // question sheet itself (docs/inbox.md § Header chip)
+  const onlyQuestions =
+    inbox.some((i) => i.kind === 'question') && !inbox.some((i) => i.kind === 'attention');
   const inboxNav = useMemo(() => ({ onOpenTask, onOpenTerminal }), [onOpenTask, onOpenTerminal]);
   const { pathname } = useLocation();
   // A sheet left open across a breakpoint change or a navigation would sit over
@@ -622,7 +740,7 @@ export function Layout({
             <span className="sub">tasks · agents · terminals</span>
           </div>
           {nav.map((n) => (
-            <NavLink key={n.to} to={n.to} end={n.to === '/'} className={navClass}>
+            <NavLink key={n.to} to={n.to} className={navClass}>
               {n.icon} {n.label}
             </NavLink>
           ))}
@@ -639,22 +757,19 @@ export function Layout({
         )}
         {!mobile && <OrchestratorSwitch />}
         <RunCount state={mobile} />
-        {/* A phone's bar holds four capsules: there the Inbox chip stands in
-            for the question chip (questions head the Inbox). */}
+        {/* A phone's bar has no question chip: the Inbox chip stands in for it,
+            shown only while something is urgent (the Inbox tab has the count). */}
         {!mobile && <QuestionChip />}
-        <InboxChip compact={mobile} onClick={() => (mobile ? setInboxOpen(true) : navigate('/inbox'))} />
+        <InboxChip
+          compact={mobile}
+          urgentOnly={mobile}
+          onClick={() => (!mobile ? navigate('/inbox') : onlyQuestions ? nudgeQuestions() : setInboxOpen(true))}
+        />
         {!mobile && <UsagePill />}
         <span className="spacer" />
+        {/* the ⋯ menu is the tab bar's More alone; its old slot reads the connection */}
         {mobile ? (
-          <button
-            type="button"
-            className={`btn ghost tools-btn${moreOpen ? ' on' : ''}`}
-            title="Menu"
-            aria-expanded={moreOpen}
-            onClick={() => setMoreOpen((v) => !v)}
-          >
-            <IconMore />
-          </button>
+          <ConnDot />
         ) : (
           <>
             <ServerControl />

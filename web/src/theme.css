@@ -3956,7 +3956,10 @@ tr.repo-open > td {
    beats a media query that can disagree with the tree it is styling. Only the
    handful of rules below that must react to the viewport alone use @media. */
 
-/* ---- the bottom tab bar: four routes + More ---- */
+/* ---- the bottom tab bar: Dashboard · Inbox · (Board) · Queue · More ----
+   Two capsule groups either side of the Board, which is a raised round button
+   detached from the bar (docs/mobile.md § The shell). A group grows by its tab
+   count (`--tab-n`, set by TabBar), so every tab keeps the same width. */
 
 .tabbar {
   position: fixed;
@@ -4025,6 +4028,102 @@ tr.repo-open > td {
 
 .tabbar .nav-link:active {
   background: var(--tm-bg-overlay);
+}
+
+.tabbar .tab-group {
+  display: flex;
+  flex: var(--tab-n, 2) 1 0;
+  min-width: 0;
+}
+
+/* the icon and badges are not labels: no ellipsis clip on them */
+.tabbar .nav-link :is(.tab-icon, .tab-count, .tab-fab) {
+  max-width: none;
+  overflow: visible;
+}
+
+.tab-icon {
+  position: relative;
+  display: inline-flex;
+}
+
+/* the Inbox's count, on the icon's shoulder like an iOS badge */
+.tab-count {
+  position: absolute;
+  top: calc(var(--tm-space-1) * -1.5);
+  left: calc(100% - var(--tm-space-2));
+  min-width: var(--tm-space-4);
+  height: var(--tm-space-4);
+  padding: 0 var(--tm-space-1);
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-accent);
+  color: var(--tm-accent-contrast);
+  box-shadow: 0 0 0 2px var(--tm-bg-raised);
+  font-family: var(--tm-font-body);
+  font-size: var(--tm-text-xs);
+  font-weight: 700;
+  line-height: var(--tm-space-4);
+  text-align: center;
+}
+
+.tab-count.urgent {
+  background: var(--tm-status-attention);
+  color: var(--tm-gray-0);
+}
+
+/* The Board: a 52px disc whose top half rises above the bar. The ring in the
+   page colour cuts the bar's top border where the two meet, which is what makes
+   it read as detached. Its -32px margin keeps the label on the other tabs'
+   baseline (52 − 32 = the 20px icon it replaces). */
+.tabbar .tab-centre {
+  flex: 1 1 0;
+}
+
+.tabbar .tab-centre .tab-fab {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin-top: -32px;
+  border-radius: 50%;
+  background: var(--tm-accent);
+  color: var(--tm-accent-contrast);
+  box-shadow:
+    0 0 0 5px var(--tm-bg),
+    var(--tm-shadow-md);
+  transition:
+    transform var(--tm-dur-fast) var(--tm-ease-out),
+    box-shadow var(--tm-dur-base) var(--tm-ease-out);
+}
+
+.tabbar .tab-centre .tab-fab svg {
+  width: 24px;
+  height: 24px;
+  stroke-width: 2.2;
+}
+
+.tabbar .tab-centre.active .tab-fab {
+  background: var(--tm-accent-strong);
+  box-shadow:
+    0 0 0 5px var(--tm-bg),
+    0 0 0 7px var(--tm-accent-subtle),
+    var(--tm-shadow-lg);
+}
+
+.tabbar .tab-centre.active .tab-fab svg {
+  stroke-width: 2.6;
+}
+
+.tabbar .tab-centre.active::before {
+  content: none;
+}
+
+.tabbar .tab-centre:active {
+  background: transparent;
+}
+
+.tabbar .tab-centre:active .tab-fab {
+  transform: scale(0.92);
 }
 
 /* ---- the bottom sheet (components/Sheet.tsx, react-modal-sheet) ----
@@ -4473,15 +4572,120 @@ pre.check-tail {
   color: var(--tm-accent);
 }
 
-.tools-btn {
+/* the phone header's connection dot (Layout.tsx ConnDot), in the slot the ⋯
+   button held: green up, amber reconnecting, red stopped */
+.conn-dot-btn {
   min-width: var(--tm-tap-dense);
   min-height: var(--tm-tap-dense);
   justify-content: center;
 }
 
-.tools-btn.on {
-  color: var(--tm-accent);
+.conn-dot {
+  width: var(--tm-space-2);
+  height: var(--tm-space-2);
+  border-radius: 50%;
+  background: var(--tm-status-done);
+}
+
+.conn-lead {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  color: var(--tm-text);
+  font-size: var(--tm-text-md);
+  font-weight: 600;
+}
+
+:is(.conn-dot-btn, .conn-lead).offline .conn-dot {
+  background: var(--tm-status-review);
+  animation: pulse 1.6s var(--tm-ease-in-out) infinite;
+}
+
+:is(.conn-dot-btn, .conn-lead).stopped .conn-dot {
+  background: var(--tm-status-failed);
+}
+
+/* ---- tap to explain (components/Explain.tsx, docs/mobile.md § Tap to explain) ----
+   On a phone a status badge, a queue mark, a verdict or landing chip and the
+   run count are buttons that open their explanation in a small sheet. */
+button.explain-tap,
+button.badge.badge-tap {
+  cursor: pointer;
+  line-height: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button.badge.badge-tap,
+button.runcount.explain-tap {
+  background: none;
+}
+
+button.badge.badge-tap:active,
+button.explain-tap:active {
   background: var(--tm-accent-subtle);
+}
+
+.chip.chip-done {
+  color: var(--tm-status-done);
+}
+
+.chip.chip-published {
+  color: var(--tm-status-published);
+}
+
+.explain {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  padding-bottom: var(--tm-space-2);
+}
+
+.explain-lead {
+  display: flex;
+}
+
+.explain-what,
+.explain-todo {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.explain-what {
+  color: var(--tm-text);
+  font-size: var(--tm-text-md);
+}
+
+.explain-todo {
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-sm);
+}
+
+/* the phone task sheet's "what is happening / what you can do" line */
+.so-explain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-inset);
+  font-size: var(--tm-text-sm);
+  line-height: 1.4;
+}
+
+.so-explain-what {
+  color: var(--tm-text);
+}
+
+.so-explain-todo {
+  color: var(--tm-text-muted);
+}
+
+.qsheet-later {
+  margin: var(--tm-space-3) 0 0;
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-xs);
+  text-align: center;
 }
 
 /* ---- classes lifted out of inline styles so mobile can restyle them ---- */
@@ -5067,6 +5271,12 @@ pre.check-tail {
   flex-shrink: 4;
 }
 
+/* a review verdict (`✓ clean`, `⛔ 2 ⚠ 1`) is short and is the answer: it never
+   gives way — the repo after it does */
+.app.mobile .task-row.m .row-meta > .chip.verdict {
+  flex: none;
+}
+
 /* the meta line indents with the title it belongs to */
 .app.mobile .task-row.m.nested .row-meta {
   padding-left: calc(var(--tm-depth, 1) * 12px);
@@ -5212,6 +5422,16 @@ pre.check-tail {
 
 .app.mobile .slideover-body > .so-review {
   order: -3;
+}
+
+/* the check and loop output sit with the review: "checks red" must not send
+   you scrolling past the edit fields to find what failed */
+.app.mobile .slideover-body > :is(.checks-panel, .loop-panel) {
+  order: -3;
+}
+
+.app.mobile .slideover-body > .so-explain {
+  order: -8;
 }
 
 .app.mobile .slideover-body > .so-summary {

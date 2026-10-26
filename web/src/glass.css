@@ -429,8 +429,9 @@
     background var(--tm-dur-slow) var(--tm-ease-out);
 }
 
-/* a badge that opens the reviewer's terminal is still a badge */
-[data-design='glass'] button.badge.badge-link {
+/* a badge that opens the reviewer's terminal, or its explanation on a phone,
+   is still a badge */
+[data-design='glass'] button.badge:is(.badge-link, .badge-tap) {
   background: color-mix(in srgb, currentColor 16%, transparent);
 }
 
@@ -528,8 +529,7 @@
 }
 
 [data-design='glass'] .header .btn.ghost.on,
-[data-design='glass'] .header .btn.ghost.on:hover,
-[data-design='glass'] .header .tools-btn.on {
+[data-design='glass'] .header .btn.ghost.on:hover {
   background: var(--tm-accent-subtle);
   color: var(--tm-accent);
 }
@@ -541,7 +541,7 @@
   color: var(--tm-status-attention);
 }
 
-[data-design='glass'] .header .tools-btn {
+[data-design='glass'] .header .conn-dot-btn {
   width: 40px;
   padding: 0;
 }
@@ -559,13 +559,28 @@
   }
 }
 
-/* ---------- the tab bar: a floating capsule with a sliding lens ---------- */
+/* ---------- the tab bar: two floating capsules and the Board between ----------
+   Three pieces of Liquid Glass on one baseline (docs/glass.md § What Glass
+   changes): Dashboard · Inbox, then the Board as a raised accent-tinted disc,
+   then Queue · More. The bar itself is only the row that holds them. */
 
 [data-design='glass'] .tabbar {
   left: calc(var(--tm-space-4) + env(safe-area-inset-left, 0px));
   right: calc(var(--tm-space-4) + env(safe-area-inset-right, 0px));
   bottom: var(--tm-tabbar-float);
   height: var(--tm-tabbar-h);
+  padding: 0;
+  gap: var(--tm-space-2);
+  align-items: flex-end;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+
+[data-design='glass'] .tabbar .tab-group {
+  position: relative;
+  isolation: isolate;
+  height: 100%;
   padding: 4px;
   border: 1px solid var(--tm-glass-rim);
   border-radius: var(--tm-radius-pill);
@@ -575,26 +590,91 @@
   box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow);
 }
 
-/* --tab-i / --tab-n come from TabBar: the lens rides under the tab that
-   owns the page (More owns everything reached from the More sheet) */
-[data-design='glass'] .tabbar::before {
+/* --tab-i / --tab-n / --lens come from TabBar: the lens rides under the tab
+   that owns the page, inside the capsule that holds it (More owns everything
+   reached from the More sheet); the other capsule's lens fades out */
+[data-design='glass'] .tabbar .tab-group::before {
   content: '';
   position: absolute;
   z-index: -1;
   top: 4px;
   bottom: 4px;
   left: 4px;
-  width: calc((100% - 8px) / var(--tab-n, 5));
+  width: calc((100% - 8px) / var(--tab-n, 2));
   border-radius: var(--tm-radius-pill);
   background: var(--tm-glass-lens);
   box-shadow: inset 0 1px 0 var(--tm-glass-specular);
+  opacity: var(--lens, 0);
   transform: translateX(calc(var(--tab-i, 0) * 100%));
-  transition: transform var(--tm-dur-spring) var(--tm-ease-spring);
+  transition:
+    transform var(--tm-dur-spring) var(--tm-ease-spring),
+    opacity var(--tm-dur-base) var(--tm-ease-out);
 }
 
 /* the lens swells under a finger, as Liquid Glass does */
-[data-design='glass'] .tabbar:active::before {
+[data-design='glass'] .tabbar .tab-group:active::before {
   transform: translateX(calc(var(--tab-i, 0) * 100%)) scale(1.05);
+}
+
+/* The Board: a disc 10px taller than the capsules, standing on their
+   baseline so it rises above them. Accent-tinted glass, the label kept for
+   screen readers only (the NavLink's aria-label names it). */
+[data-design='glass'] .tabbar .tab-centre {
+  flex: none;
+  width: calc(var(--tm-tabbar-h) + 10px);
+  height: calc(var(--tm-tabbar-h) + 10px);
+}
+
+[data-design='glass'] .tabbar .tab-centre .tab-fab {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: 1px solid var(--tm-glass-rim);
+  background: color-mix(in srgb, var(--tm-accent) 78%, transparent);
+  -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  box-shadow:
+    inset 0 1px 0 var(--tm-glass-specular),
+    var(--tm-glass-shadow);
+  transition:
+    transform var(--tm-dur-spring) var(--tm-ease-spring),
+    background var(--tm-dur-base) var(--tm-ease-out),
+    box-shadow var(--tm-dur-base) var(--tm-ease-out);
+}
+
+[data-design='glass'] .tabbar .tab-centre .tab-fab svg {
+  width: 27px;
+  height: 27px;
+}
+
+[data-design='glass'] .tabbar .tab-centre.active .tab-fab {
+  background: var(--tm-accent);
+  box-shadow:
+    inset 0 1px 0 var(--tm-glass-specular),
+    0 0 0 4px var(--tm-accent-subtle),
+    var(--tm-glass-shadow);
+}
+
+[data-design='glass'] .tabbar .tab-centre:active .tab-fab {
+  transform: scale(0.9);
+  transition-duration: var(--tm-dur-press);
+}
+
+[data-design='glass'] .tabbar .tab-centre:active svg {
+  transform: none;
+}
+
+[data-design='glass'] .tabbar .tab-centre-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+[data-design='glass'] .tab-count {
+  box-shadow: none;
 }
 
 [data-design='glass'] .tabbar .nav-link {
