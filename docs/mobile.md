@@ -655,6 +655,22 @@ over the tab bar and the header), laid out top to bottom:
   (`--tm-vv-h`/`--tm-vv-top`, written on its `resize`/`scroll` and on window
   resize). The prompt and the compose bar therefore stay above the keys, and
   every change schedules a refit, so the PTY learns its new row count.
+- **Only while the keys cover something, and never on a stale reading.** iOS
+  fires those events mid-animation and does not always send one more when the
+  keyboard is down (or the app is back from the background). The drawer then
+  kept the last top/height it saw, and the terminal sat shifted with the page
+  showing below it (task 43dad443). Three rules now apply:
+  - The overrides are written only while `visualViewport` is shorter than the
+    layout viewport or panned. Otherwise they are removed, and CSS
+    `top: 0; height: 100dvh` fills the screen.
+  - Every event, `focusin`/`focusout`, `visibilitychange` and `pageshow` is
+    measured again at 120/400/900 ms, after the keyboard has settled. Each
+    open or re-open measures afresh.
+  - With the keys down but the page still scrolled, or the viewport still
+    panned, the drawer scrolls the window back to 0. The document never
+    scrolls on a phone; `.main` does.
+
+  A refit is scheduled only when the measured box changed.
 - **Refits are debounced, one per burst** (`scheduleRefit`, 60ms). The keyboard
   animates through a dozen heights, and each resize message is a SIGWINCH and a
   full TUI redraw. A `ResizeObserver` on the body covers everything else that

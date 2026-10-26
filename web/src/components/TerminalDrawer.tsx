@@ -473,30 +473,74 @@ export function TerminalDrawer({
   // The phone keyboard does not resize the layout viewport on iOS; it covers
   // it. Only `visualViewport` knows what is left. The full-screen terminal
   // tracks that box, so the prompt and the compose bar stay above the keys.
+  // iOS fires these events mid-animation and not always once more at the end
+  // (keyboard down, back from the background), and can leave the page scrolled
+  // under the keyboard's ghost: the box then kept a stale top/height and the
+  // terminal sat shifted up with the page showing below it. So the overrides
+  // exist only while the keys cover something, every event is re-measured once
+  // iOS has settled, and a leftover scroll is undone (docs/mobile.md § Terminal).
   useEffect(() => {
     const vv = window.visualViewport;
     const el = rootRef.current;
     if (!mobile || compact || !vv || !el) return;
+    let last = '';
     const apply = () => {
-      el.style.setProperty('--tm-vv-h', `${vv.height}px`);
-      el.style.setProperty('--tm-vv-top', `${vv.offsetTop}px`);
+      // the layout viewport: what `top: 0; height: 100dvh` already fills
+      const layoutH = document.documentElement.clientHeight || window.innerHeight;
+      const keysUp = vv.height < layoutH - 1;
+      // keys down yet the page still scrolled or the viewport panned: a leftover
+      // of the keyboard (the document itself never scrolls on a phone; .main does)
+      if (!keysUp && vv.scale <= 1 && (window.scrollY !== 0 || vv.offsetTop > 1)) window.scrollTo(0, 0);
+      const covered = keysUp || vv.offsetTop > 1;
+      const next = covered ? `${vv.height}|${vv.offsetTop}` : '';
+      if (next === last) return;
+      last = next;
+      if (covered) {
+        el.style.setProperty('--tm-vv-h', `${vv.height}px`);
+        el.style.setProperty('--tm-vv-top', `${vv.offsetTop}px`);
+      } else {
+        el.style.removeProperty('--tm-vv-h');
+        el.style.removeProperty('--tm-vv-top');
+      }
       // the observer would catch the body shrinking too, but it runs on the
       // rendering loop, and this must not wait for one (shared debounce: one send)
       scheduleRefitRef.current?.();
     };
-    apply();
-    vv.addEventListener('resize', apply);
-    vv.addEventListener('scroll', apply);
+    // the keyboard animates for ~250-500ms; read again after it, in timers
+    // (rAF never fires in a hidden tab)
+    let settle: ReturnType<typeof setTimeout>[] = [];
+    const onChange = () => {
+      apply();
+      settle.forEach(clearTimeout);
+      settle = [120, 400, 900].map((ms) => setTimeout(apply, ms));
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') onChange();
+    };
+    onChange();
+    vv.addEventListener('resize', onChange);
+    vv.addEventListener('scroll', onChange);
     // rotation and browsers that resize the layout viewport for the keyboard
-    window.addEventListener('resize', apply);
+    window.addEventListener('resize', onChange);
+    // the keyboard coming and going, even when iOS sends no viewport event
+    document.addEventListener('focusin', onChange);
+    document.addEventListener('focusout', onChange);
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('pageshow', onChange);
     return () => {
-      vv.removeEventListener('resize', apply);
-      vv.removeEventListener('scroll', apply);
-      window.removeEventListener('resize', apply);
+      settle.forEach(clearTimeout);
+      vv.removeEventListener('resize', onChange);
+      vv.removeEventListener('scroll', onChange);
+      window.removeEventListener('resize', onChange);
+      document.removeEventListener('focusin', onChange);
+      document.removeEventListener('focusout', onChange);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('pageshow', onChange);
       el.style.removeProperty('--tm-vv-h');
       el.style.removeProperty('--tm-vv-top');
     };
-  }, [mobile, compact]);
+    // a terminal opened (or re-opened) is measured afresh, never on old numbers
+  }, [mobile, compact, runId, expandSignal]);
 
   // Compact-bar identity: an agent run resolves to its task, a command run to
   // its saved definition; either may be gone (finished, pruned) — degrade to id.
