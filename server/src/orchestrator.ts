@@ -4366,6 +4366,46 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /**
+   * `review → running` when a HUMAN starts a turn in the task's live, idle
+   * session (the `UserPromptSubmit` hook — docs/design.md § Worker invocation
+   * + completion detection). Every turn the server starts goes through
+   * `followUp`, which retires the idle PTY and moves the task itself, and the
+   * one text the server types into a live PTY (transient `continue`) is typed
+   * only into a non-idle session of a `running`/`waiting` task — so an IDLE
+   * session submitting a prompt is someone at the attached terminal. A no-op
+   * unless this run is the task's newest run and the task sits in `review`
+   * with its verify round settled (not a loop): an open review round or check
+   * stage owns the status. The session is un-idled with the move, so it takes
+   * a slot again and the next Stop lands through the normal path (the Stop
+   * route drops a Stop from an idle session). Review/check states are left as
+   * they are, exactly as a follow-up leaves them; the diff hash decides at
+   * that Stop whether anything is re-reviewed.
+   */
+  async promptInLiveSession(runId: string): Promise<boolean> {
+    if (!this.sessions.isIdle(runId) || this.sessions.get(runId)?.exit !== null) return false;
+    const run = await this.storage.getRun(runId);
+    if (!run?.taskId || run.mode !== 'worker' || run.status !== 'running') return false;
+    const latest = (await this.storage.listRuns({ taskId: run.taskId }))[0];
+    if (latest && latest.id !== runId) return false;
+    const cur = await this.storage.getTask(run.taskId);
+    if (!cur || cur.status !== 'review' || cur.kind === 'loop' || verifyOpen(cur)) return false;
+    // read synchronously right before the conditional write: a Review now
+    // takes this lock before it marks the row `pending`
+    if (this.pendingReviews.has(cur.id) || !this.sessions.isIdle(runId)) return false;
+    const task = await this.storage.transitionTask(cur.id, ['review'], 'running', 'human', {}, {
+      reason: 'prompt in live session',
+      runId,
+    });
+    if (!task) return false;
+    this.sessions.markActive(runId);
+    const active = await this.storage.updateRun(runId, { idle: false });
+    if (active) broadcast({ type: 'run.updated', run: active });
+    broadcast({ type: 'task.updated', task });
+    if (task.wakeAt) await this.clearWake(task.id);
+    return true;
+  }
+
+  /**
    * A task reached a terminal status — re-evaluate everything that waits on it:
    * its split parent (all-children-resolve semantics) and, when it belongs to a
    * feature, that feature's phase gate. Both are independent: a feature task

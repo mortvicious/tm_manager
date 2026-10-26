@@ -485,6 +485,20 @@ export function registerInternalRoutes(
     return hookDecision(q);
   });
 
+  // UserPromptSubmit hook: a turn starts. It fires for every prompt, the
+  // spawn's own included; only one submitted into an IDLE session of a task
+  // in `review` — a human at the attached terminal — moves the task back to
+  // `running` (Orchestrator.promptInLiveSession, which ignores aux runs).
+  // A slash command (`/compact`, `/cost`…) is not a turn that ends in a Stop,
+  // so it must not move the task — it would sit `running` with nothing to land it.
+  app.post('/api/internal/runs/:id/prompt', async (req) => {
+    const { id } = req.params as { id: string };
+    const prompt = (req.body as { prompt?: unknown } | null)?.prompt;
+    if (typeof prompt === 'string' && prompt.trimStart().startsWith('/')) return { ok: true };
+    await orchestrator.promptInLiveSession(id);
+    return { ok: true };
+  });
+
   // Notification hook: permission prompt / idle in a hidden terminal.
   app.post('/api/internal/runs/:id/needs-attention', async (req) => {
     const { id } = req.params as { id: string };

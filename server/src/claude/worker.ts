@@ -515,6 +515,12 @@ export function buildWorkerInvocation(opts: {
       SessionStart: [
         { hooks: [{ type: 'command', command: hookCurl('/api/internal/runs/$TM_RUN_ID/session-start') }] },
       ],
+      // A turn starts. The server starts its own turns through followUp, which
+      // moves the task itself; this is how it learns a human typed into the
+      // live terminal of a task in `review` (→ `running` again).
+      UserPromptSubmit: [
+        { hooks: [{ type: 'command', command: hookCurl('/api/internal/runs/$TM_RUN_ID/prompt') }] },
+      ],
       Stop: [{ hooks: [{ type: 'command', command: hookCurl('/api/internal/runs/$TM_RUN_ID/stop') }] }],
       // Fires INSTEAD of Stop when the API ended the turn (docs/design.md §
       // Transient API errors): `overloaded`/`server_error` are resumed in the
