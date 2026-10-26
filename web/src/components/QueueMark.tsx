@@ -38,7 +38,7 @@ export function customQueueBlocker(task: Task, tasks: Task[], runs: Run[] = []):
 
 /**
  * The queue sign on a board row: `queue #n` while the task waits its turn
- * (plus what it is waiting for when a same-repo task still holds the repo),
+ * (plus what it is behind when a same-repo task still holds the repo),
  * `queue #n · held` after an Undo start, a pulsing `queue` while it holds the
  * repo's queue slot, `queue · in review` while its automatic review round
  * still holds the repo (or `blocked` on its children), and `queue · done
@@ -103,12 +103,12 @@ export function QueueMark({ task, tasks }: { task: Task; tasks: Task[] }) {
       className="chip queue-chip"
       title={
         blocker
-          ? `custom queue — position ${pos}; waiting for "${blocker.title}" (${blocker.status}) in the same repo to finish its turn and review`
+          ? `custom queue — position ${pos}; behind "${blocker.title}" (${blocker.status}) in the same repo — it starts once that one finishes its turn and review`
           : `custom queue — position ${pos}; runs one task per repo, even while the global queue is stopped`
       }
     >
       queue #{pos}
-      {blocker && <span className="waiting"> · waiting for {blocker.title}</span>}
+      {blocker && <span className="behind"> · behind {blocker.title}</span>}
     </span>
   );
 }

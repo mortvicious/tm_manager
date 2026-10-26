@@ -12,7 +12,8 @@ UI/UX rules, especially on mobile… hide features, chat… transitions, animati
 on-tap animations". Answers to the questions it raised: Liquid Glass (not the
 older frosted iOS 15–18 look); keep the light/dark control and follow the
 system initially; the Classic/Glass choice is per device; Features and Chat
-are hidden in Glass only.
+are hidden in Glass only. Narrowed 2026-10-26 (user decision, UX review #22):
+hidden on the phone only, see § Hidden in Glass.
 
 ## Choosing it: per device
 
@@ -146,11 +147,15 @@ Glass), and the `::view-transition` duration.
   chip is up, the orchestrator switch keeps its knob and moves its label off
   screen. The label stays its accessible name.
 
-**Hidden in Glass**: Features and Chat leave the sidebar, the tab bar and the
-More sheet (`GLASS_HIDDEN` in `Layout.tsx`), so the phone has Dashboard ·
-Board · Queue · More. The **routes stay**: push deep links (`/features/:id`,
-`/chat/:id`, built in `server/src/push/notifier.ts`) and the Queue's aux-run
-links still open them. Classic keeps today's navigation.
+**Hidden in Glass, on the phone**: Features and Chat leave the tab bar and
+the More sheet (`GLASS_HIDDEN` in `Layout.tsx`, applied by `useNav()` only when
+`useIsMobile()`), so the phone has Dashboard · Board · Queue · More. The
+**desktop sidebar lists them in both designs** (2026-10-26, UX review #22):
+Glass is the default design, and hiding them on desktop too left the Inbox's
+plan rows deep-linking into `/features/:id`, a section nothing else listed.
+The **routes stay** everywhere: push deep links (`/features/:id`, `/chat/:id`,
+built in `server/src/push/notifier.ts`), the Inbox's plan rows and the Queue's
+aux-run links still open them. Classic keeps today's navigation.
 
 ## Motion
 
@@ -241,7 +246,7 @@ containing block of its `position: fixed` children. That gives four rules:
   layout, and Chromium at 1280×800 for the blur.
 - Checked in both schemes:
   - Board, Dashboard, Queue and Config.
-  - The More sheet (no Features/Chat entries in Glass), the task panel on phone
+  - The More sheet (no Features/Chat entries in Glass on a phone), the task panel on phone
     and desktop, and the header with a question chip at 375px (no overflow).
 - **Classic** was compared against screenshots taken before the change (same
   layout, and Features is back in the tabs).

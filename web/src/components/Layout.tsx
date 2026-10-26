@@ -350,14 +350,17 @@ const NAV: NavItem[] = [
 ];
 
 /**
- * Glass leaves these out of every menu (docs/glass.md). The routes stay, so
- * push deep links and the Queue's aux-run links still land on them.
+ * Glass on a PHONE leaves these out of the tab bar and the More sheet
+ * (docs/glass.md § Hidden in Glass). The desktop sidebar keeps them in both
+ * designs, and the routes stay, so push deep links, the Inbox's plan rows and
+ * the Queue's aux-run links still land on them.
  */
 const GLASS_HIDDEN = new Set(['/features', '/chat']);
 
 function useNav() {
   const { design } = useLook();
-  return design === 'glass' ? NAV.filter((n) => !GLASS_HIDDEN.has(n.to)) : NAV;
+  const mobile = useIsMobile();
+  return design === 'glass' && mobile ? NAV.filter((n) => !GLASS_HIDDEN.has(n.to)) : NAV;
 }
 
 function navClass({ isActive }: { isActive: boolean }) {

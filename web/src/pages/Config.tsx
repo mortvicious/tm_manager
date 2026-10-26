@@ -309,7 +309,7 @@ export function ConfigPage() {
             <div className="hint">
               a turn that ends because the 5h usage window is spent is parked with the window's reset time and
               resumed automatically in <span className="mono">its own claude session</span> once the window
-              reopens — instead of waiting for someone to notice and hit Proceed. OFF = a spent window leaves the
+              reopens — instead of waiting for someone to notice and hit Resume. OFF = a spent window leaves the
               task where it landed
             </div>
           </div>
@@ -342,7 +342,7 @@ export function ConfigPage() {
             <div>Terminal keep-alive (minutes)</div>
             <div className="hint">
               how long a finished or exited terminal stays attachable before it's evicted. 0 = keep forever;
-              terminals are still recycled oldest-first when all 10 session slots are busy. "Proceed" works even
+              terminals are still recycled oldest-first when all 10 session slots are busy. "Resume" works even
               after eviction — it reopens the session from disk
             </div>
           </div>

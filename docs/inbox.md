@@ -26,7 +26,7 @@ The items appear in this order. A task appears once, under its first kind.
 | 1 | `question` | a task with a pending agent question (`tm_questions`), one item per task | answer inline (`QuestionForm`), `o` | ❓ Answer |
 | 2 | `attention` | a `running` task whose live, non-idle run is flagged needs-attention (a dialog in a hidden terminal) | `t` terminal, `o` | ✖ Kill |
 | 3 | `review` | a task in `review` whose automatic verify round is **settled** (not `verifyOpen`) | `a` mark done, `o` | ✅ Done · 🚀 Publish |
-| 4 | `failed` | a task that failed in the last `INBOX_FAILED_DAYS` (7) | `r` retry, `o` | 🔁 Retry |
+| 4 | `failed` | a task that failed in the last `INBOX_FAILED_DAYS` (7) | `r` retry, `p` resume (limit-stopped only), `o` | 🔁 Retry |
 | 5 | `blocked` | a blocked split parent, with its subtasks settled / failed | `a` unblock, `o` | ⛔ Unblock |
 | 6 | `proposal` | a pending analysis proposal (rewrite, split, new task, options) | `a` accept, `x` reject, `o` | ✅ Accept (only without options) · ✖ Reject |
 | 7 | `feature` | a feature plan in `proposed` | `a` approve, `o` opens the plan | ✅ Approve |
@@ -99,6 +99,7 @@ as buttons that show their key.
 | `j` / `↓`, `k` / `↑` | move |
 | `a` | mark done (review), unblock (blocked), accept (proposal without options), approve (feature plan) |
 | `r` | retry (failed): `POST /retry`, so the fresh agent gets the `## Previous attempt` block (design.md § Retry with context) |
+| `p` | resume (failed, limit-stopped only): `POST /proceed`, the task's own session (§ Retry or Resume) |
 | `x` | reject (proposal) |
 | `t` | open the terminal (needs attention) |
 | `o` / Enter | open the task panel, or the plan for a feature |
@@ -114,6 +115,27 @@ as buttons that show their key.
   selection stays where it was.
 - **An options proposal** shows its options as buttons. `a` is disabled for it,
   because it is a choice.
+
+### Retry or Resume
+
+A failed task is continued in one of two ways, and the SPA names them the same
+everywhere (UX review #20, 2026-10-26):
+
+- **Retry** starts a fresh agent, told what the last attempt hit
+  (`## Previous attempt`). Pick it when the attempt went wrong.
+- **Resume** reopens the agent's own session (`POST /proceed`). Pick it when
+  the terminal died mid-task (the usage limit, a dropped connection, a
+  restart) and the work so far was right.
+
+The Inbox's failed row always offers Retry. It adds **Resume**, and leads with
+it, only when the usage limit stopped the task: `wakeAt` is set, or the error
+names the limit (`limitStopped` in `components/Inbox.tsx`, a text test that
+only decides whether the button shows; a wrong guess costs a button, and the
+server still refuses a task with no session). The task panel, on a failed or
+cancelled task, calls Enqueue **Retry** and Run now **Retry now** (the same
+server moves, through the queue or ahead of it) and calls the follow-up box's
+Proceed **Resume**. A hint under the error says which to pick. Telegram keeps
+its `/proceed` command and 💬 Proceed button; they are the same call as Resume.
 
 ### Header chip
 

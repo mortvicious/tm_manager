@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { buildInbox, type DiffStat, type InboxItem, type InboxKind, type Task } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
-import { IconCheck, IconInbox, IconMore, IconRefresh, IconTerminal, IconX } from './Icons.tsx';
+import { IconCheck, IconInbox, IconMore, IconPlay, IconRefresh, IconTerminal, IconX } from './Icons.tsx';
 import { QuestionForm } from './QuestionModal.tsx';
 import { reviewHeadline } from './ReviewPanel.tsx';
 import { TaskAttemptsChip, TaskCostChip } from './RunMeta.tsx';
@@ -96,9 +96,18 @@ export function itemSummary(item: InboxItem): string {
   }
 }
 
+/**
+ * A failed task the usage limit stopped, rather than its work: parked for the
+ * wake-up (`wakeAt`), or an error that names the limit. Only decides whether
+ * the Inbox offers Resume beside Retry — a wrong guess costs a button.
+ */
+export function limitStopped(t: Task): boolean {
+  return !!t.wakeAt || /usage limit|rate[_ ]limit|\b5-hour limit\b|weekly limit/i.test(t.error ?? '');
+}
+
 /** A keyboard-reachable decision on an item: the key is its desktop shortcut. */
 export interface InboxAct {
-  key: 'a' | 'r' | 'x' | 'o' | 't';
+  key: 'a' | 'r' | 'p' | 'x' | 'o' | 't';
   label: string;
   hint?: string;
   tone?: 'primary' | 'danger';
@@ -145,17 +154,27 @@ export function useInboxActs(nav: InboxNav) {
             },
             ...open(item.task),
           ];
-        case 'failed':
-          return [
-            {
-              key: 'r',
-              label: 'Retry',
-              hint: 'a fresh agent, told what the last attempt hit',
-              tone: 'primary',
-              run: () => then(api.taskAction(item.task.id, 'retry')),
-            },
-            ...open(item.task),
-          ];
+        case 'failed': {
+          // Retry = a fresh agent; Resume = the same session. A turn the
+          // ACCOUNT stopped (docs/wake.md) is the one Resume exists for, so it
+          // is offered — and leads — only then.
+          const limit = limitStopped(item.task);
+          const retry: InboxAct = {
+            key: 'r',
+            label: 'Retry',
+            hint: 'a fresh agent, told what the last attempt hit',
+            tone: limit ? undefined : 'primary',
+            run: () => then(api.taskAction(item.task.id, 'retry')),
+          };
+          const resume: InboxAct = {
+            key: 'p',
+            label: 'Resume',
+            hint: 'the same session, where the usage limit stopped it',
+            tone: 'primary',
+            run: () => then(api.proceed(item.task.id)),
+          };
+          return [...(limit ? [resume, retry] : [retry]), ...open(item.task)];
+        }
         case 'blocked':
           return [
             {
@@ -464,6 +483,7 @@ export function InboxRows({ items, onPick }: { items: InboxItem[]; onPick: (i: I
 const ACT_ICON: Record<InboxAct['key'], ReactNode> = {
   a: <IconCheck />,
   r: <IconRefresh />,
+  p: <IconPlay />,
   x: <IconX />,
   t: <IconTerminal />,
   o: <IconMore />,

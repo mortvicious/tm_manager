@@ -15,8 +15,8 @@ import { useIsMobile } from '../components/Layout.tsx';
 /**
  * The decide view (docs/inbox.md). Desktop: one list, the selected item
  * expanded in place, and the keyboard — j/k (or ↓/↑) move, `a` marks done /
- * approves / unblocks, `r` retries, `x` rejects a proposal, `t` opens a
- * prompt's terminal, `o` (or Enter) opens the task. A decision that removes
+ * approves / unblocks, `r` retries, `p` resumes a limit-stopped session,
+ * `x` rejects a proposal, `t` opens a prompt's terminal, `o` (or Enter) opens the task. A decision that removes
  * the item leaves the selection on the same POSITION, so the next item is the
  * one under the cursor. Phone: the rows, and a row opens its own sheet.
  */
@@ -35,7 +35,7 @@ export function InboxPage({ onOpenTask, onOpenTerminal }: InboxNav) {
       </h1>
       {!mobile && items.length > 0 && (
         <div className="inbox-keys">
-          <kbd>j</kbd>/<kbd>k</kbd> move · <kbd>a</kbd> done / approve / unblock · <kbd>r</kbd> retry · <kbd>x</kbd>{' '}
+          <kbd>j</kbd>/<kbd>k</kbd> move · <kbd>a</kbd> done / approve / unblock · <kbd>r</kbd> retry · <kbd>p</kbd> resume · <kbd>x</kbd>{' '}
           reject · <kbd>t</kbd> terminal · <kbd>o</kbd> open
         </div>
       )}

@@ -294,8 +294,8 @@ export function TaskSlideOver({
       });
   }, [task?.id, files]);
 
-  // Can "Proceed" reopen an earlier agent session? Only the server knows —
-  // it also checks the transcript is still on disk. Re-checked when a run
+  // Can "Resume" (POST /proceed) reopen an earlier agent session? Only the
+  // server knows — it also checks the transcript is still on disk. Re-checked when a run
   // starts/ends so the button appears as soon as a session is recorded.
   useEffect(() => {
     if (!task) return;
@@ -478,13 +478,21 @@ export function TaskSlideOver({
   // the client mirror of the server's hasLiveSession() guard (see TaskRow):
   // enqueue, add-to-queue, release and run-now are refused while the PTY is up
   const liveSession = taskRuns.some((r) => r.status === 'running');
+  // A failed/cancelled task speaks one vocabulary (docs/inbox.md § Retry or
+  // Resume): Retry / Retry now start a FRESH agent, Resume (the follow-up box)
+  // reopens the same session. The server move is the same as Enqueue/Run now.
+  const retryable = task.status === 'failed' || task.status === 'cancelled';
   if (['draft', 'review', 'blocked', 'failed', 'cancelled'].includes(task.status)) {
     actions.push({
       id: 'enqueue',
-      label: 'Enqueue',
+      label: retryable ? 'Retry' : 'Enqueue',
       disabled: liveSession,
-      title: liveSession ? LIVE_MSG : 'Mark it ready — the orchestrator claims it when a slot frees up',
-      onClick: () => action('enqueue'),
+      title: liveSession
+        ? LIVE_MSG
+        : retryable
+          ? 'A fresh agent through the queue, told what the last attempt hit'
+          : 'Mark it ready — the orchestrator claims it when a slot frees up',
+      onClick: () => action(retryable ? 'retry' : 'enqueue'),
     });
   }
   // custom queue (docs/queue.md): runs even with the global queue stopped, one task per repo
@@ -505,11 +513,15 @@ export function TaskSlideOver({
   if (['draft', 'queued', 'review', 'failed', 'cancelled'].includes(task.status)) {
     actions.push({
       id: 'run-now',
-      label: 'Run now',
+      label: retryable ? 'Retry now' : 'Run now',
       icon: <IconPlay />,
       cls: 'primary',
       disabled: liveSession,
-      title: liveSession ? LIVE_MSG : 'Spawn an agent at once, ahead of the queue',
+      title: liveSession
+        ? LIVE_MSG
+        : retryable
+          ? 'A fresh agent at once, ahead of the queue, told what the last attempt hit'
+          : 'Spawn an agent at once, ahead of the queue',
       onClick: () => action('run-now'),
     });
   }
@@ -986,6 +998,13 @@ export function TaskSlideOver({
           {task.error}
         </div>
       )}
+      {retryable && (
+        <div className="hint so-alert">
+          {resumeSession
+            ? 'Retry starts a fresh agent that is told what this attempt hit; Resume (under Follow-up) reopens this agent\'s own session — pick it when the terminal died mid-task, e.g. on the usage limit.'
+            : 'Retry starts a fresh agent that is told what this attempt hit — there is no earlier session to resume.'}
+        </div>
+      )}
       {task.wakeAt && (
         <div className="hint so-alert" style={{ color: 'var(--tm-accent)' }}>
           waiting on the 5h usage window — this task's own session resumes automatically{' '}
@@ -1076,11 +1095,11 @@ export function TaskSlideOver({
               title={
                 resumeSession
                   ? `Reopen session ${resumeSession.slice(0, 8)} and carry on — use this when the terminal died mid-task (usage limit, dropped connection). Any text above is sent as the instruction.`
-                  : 'No agent session to continue — run the task first, or use Run now for a fresh agent'
+                  : `No agent session to continue — run the task first, or use ${retryable ? 'Retry' : 'Run now'} for a fresh agent`
               }
               onClick={() => send(() => api.proceed(task.id, followUpMsg.trim() || undefined))}
             >
-              <IconPlay /> Proceed
+              <IconPlay /> Resume
             </button>
             {resumeSession && (
               <span className="mono muted" style={{ fontSize: 11 }}>
