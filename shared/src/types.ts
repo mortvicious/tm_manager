@@ -214,6 +214,33 @@ export function effectiveLanding(
   return t.landing ?? repo?.landing ?? 'supervised';
 }
 
+/**
+ * What a worker turn is told about `git push` when the server is NOT holding
+ * the ship for a review (docs/publish.md § Push policy). A repo setting
+ * (`Repo.pushPolicy`), no per-task override:
+ * - `repo-rules`: no rule — the repo's own CLAUDE.md decides (the default,
+ *   and the behaviour before the setting existed).
+ * - `agent-pushes`: push without asking, but ONLY when every commit in
+ *   `@{u}..HEAD` carries this task's own `Task:` trailer; otherwise commit
+ *   locally and say so. Never ask whether to push.
+ * - `publish-turn`: never push or deploy; shipping is the publish turn's.
+ * `shipHeldForReview` outranks every policy (the ship gate is the rule then),
+ * and the publish turn gets none of them. An external task (`isExternalTask`)
+ * never gets `agent-pushes`: it resolves to `repo-rules`, like a landing tier
+ * clamps to `supervised`.
+ */
+export type PushPolicy = 'repo-rules' | 'agent-pushes' | 'publish-turn';
+export const PUSH_POLICIES: PushPolicy[] = ['repo-rules', 'agent-pushes', 'publish-turn'];
+
+/** The push policy a task's worker turns get: its repo's, with `agent-pushes` clamped to `repo-rules` for an external task. */
+export function effectivePushPolicy(
+  t: Pick<Task, 'source' | 'createdByRun'>,
+  repo: Pick<Repo, 'pushPolicy'> | null | undefined,
+): PushPolicy {
+  const policy = repo?.pushPolicy ?? 'repo-rules';
+  return policy === 'agent-pushes' && isExternalTask(t) ? 'repo-rules' : policy;
+}
+
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
@@ -467,6 +494,8 @@ export interface Repo {
   previewUrl: string | null;
   /** how far this repo's tasks land on their own (docs/design.md § Landing tiers); a task may override */
   landing: LandingTier;
+  /** what worker turns are told about `git push` when no review holds the ship (docs/publish.md § Push policy) */
+  pushPolicy: PushPolicy;
   createdAt: string;
 }
 

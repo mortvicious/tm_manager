@@ -98,13 +98,15 @@ export interface NewRepo {
   previewUrl?: string | null;
   /** landing tier (docs/design.md § Landing tiers); default supervised */
   landing?: Repo['landing'];
+  /** push policy (docs/publish.md § Push policy); default repo-rules */
+  pushPolicy?: Repo['pushPolicy'];
 }
 
 /** What `stepLoop` may write. */
 export type LoopStep = Partial<Pick<Task, 'loopState' | 'loopIteration' | 'loopHistory' | 'checkResults' | 'checkDiffHash'>>;
 
 /** undefined = leave as-is; null clears the column. */
-export type RepoPatch = Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing'>>;
+export type RepoPatch = Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy'>>;
 
 export interface NewCommand {
   repoId: string;

@@ -742,3 +742,11 @@ concise markdown, grouped by completion date, Russian or English.
   - The Telegram ping against the real bot.
   - The UI in a browser; the SPA only typechecks and builds.
   - The live server, which was not restarted: the live API has no loop routes yet.
+
+## Push policy (2026-10-26, `docs/publish.md` § Push policy)
+
+- **Shared**: `PushPolicy` + `PUSH_POLICIES`, `Repo.pushPolicy`, `effectivePushPolicy` (external tasks: `agent-pushes` → `repo-rules`).
+- **Server**: migration 41 (`tm_repos.push_policy`, default `repo-rules`), both drivers' `createRepo`/`updateRepo`; `POST`/`PATCH /api/repos` take `pushPolicy`, `agent-pushes` needs `Origin` (`pushPolicyNeedsBrowser`), `repo.changed { pushPolicy: { from, to } }`. `claude/worker.ts`: `shipRule()` (ship gate, else `agentPushesRule(taskId)` / `PUBLISH_TURN_RULE`, never the publish turn) on fresh and resumed prompts; the standing rules' closing sentence promises a review only when `reviewWillRun` (the Stop hook's `pending` test). The orchestrator passes `effectivePushPolicy(task, repo)`.
+- **Web**: the Repos page **Push** column (`PushPolicyCell`).
+- **Verified**: typecheck; 288-case prompt matrix over `buildWorkerInvocation`; migration + routes via `app.inject` on a DB copy (decisions.md 2026-10-26).
+- **Not exercised**: a live worker under `agent-pushes`; a browser pass of the new column.

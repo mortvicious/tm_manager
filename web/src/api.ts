@@ -184,7 +184,7 @@ export const api = {
   listRepos: () => req<Repo[]>('GET', '/api/repos'),
   createRepo: (b: { name?: string; path: string; role?: string | null; previewUrl?: string | null }) =>
     req<Repo>('POST', '/api/repos', b),
-  updateRepo: (id: string, b: Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing'>>) =>
+  updateRepo: (id: string, b: Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy'>>) =>
     req<Repo>('PATCH', `/api/repos/${id}`, b),
   deleteRepo: (id: string) => req<{ ok: true }>('DELETE', `/api/repos/${id}`),
   gitStatus: (id: string) => req<{ isRepo: boolean; branch: string | null; dirty: number; ahead: number }>('GET', `/api/repos/${id}/git`),

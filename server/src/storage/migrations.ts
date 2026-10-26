@@ -665,6 +665,13 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
     // gates (queue-sql.ts) and is cleared by every status transition.
     statements: [`ALTER TABLE tm_tasks ADD COLUMN paused_turn TEXT`],
   },
+  {
+    id: 41,
+    // Push policy (docs/publish.md § Push policy): what worker turns are told
+    // about `git push` when no review holds the ship. The default is the
+    // behaviour before the column existed: no rule, the repo's CLAUDE.md decides.
+    statements: [`ALTER TABLE tm_repos ADD COLUMN push_policy TEXT NOT NULL DEFAULT 'repo-rules'`],
+  },
 ];
 
 /** The migration whose rows each driver backfills in JS once it is applied. */

@@ -1,4 +1,4 @@
-import { isCodexModel, type AppSettings, type EffortLevel, type LandingTier, type Task } from '@tm/shared';
+import { isCodexModel, type AppSettings, type EffortLevel, type LandingTier, type PushPolicy, type Task } from '@tm/shared';
 import { needsFallbackModel } from './usage.ts';
 
 export interface WorkerInvocation {
@@ -46,6 +46,7 @@ const WORKER_TOOLS = [
 // Standing instructions appended to every worker prompt (user-mandated caps).
 // Kept deliberately tight: this block is re-sent on every turn of the session,
 // so a paragraph here is paid for dozens of times (docs/token-budget.md).
+// The closing sentence depends on whether a review will run (reviewClosing).
 const STANDING_RULES = [
   'Work autonomously. Before you edit anything, write a short plan — what you will change, in which',
   'files, and how you will verify it. Nobody approves it: write it, then execute it in the same turn.',
@@ -73,10 +74,20 @@ const STANDING_RULES = [
   'yourself; never ask about those. Never ask for a secret\'s VALUE (a token, key, password or',
   "connection string) through AskUserQuestion — answers are stored and shown on other surfaces; ask",
   "the user to put it in the repo's .env or a file you name, and to confirm when it is there.",
-  'Finish with a short summary of what you changed and how you verified it. Your change is then',
-  'adversarially reviewed before the user sees it, so make it correct and self-consistent: verify it',
-  'compiles/passes and handle the edge cases a reviewer would probe.',
+  'Finish with a short summary of what you changed and how you verified it.',
 ].join(' ');
+
+/**
+ * The last sentence of the standing rules. The review promise is made only
+ * when the Stop hook will mark the landing `pending` (`reviewWillRun`, the
+ * same test as routes/internal.ts) — telling a review-off worker it will be
+ * reviewed was a false promise (docs/worker-prompt.md).
+ */
+function reviewClosing(reviewWillRun: boolean): string {
+  return reviewWillRun
+    ? 'Your change is then adversarially reviewed before the user sees it, so make it correct and self-consistent: verify it compiles/passes and handle the edge cases a reviewer would probe.'
+    : 'Nobody reviews it before the user sees it, so make it correct and self-consistent: verify it compiles/passes and handle the edge cases yourself.';
+}
 
 /**
  * The ship gate (docs/design.md § Adversarial review, "Review before ship").
@@ -103,6 +114,46 @@ const SHIP_GATE_RULE = [
  * commits in the same repo never do. On EVERY turn — the publish turn is the
  * one that commits most often — and never on SHIP_GATE_RULE's condition.
  */
+/**
+ * The push policy rules (docs/publish.md § Push policy) — what a worker turn is
+ * told about `git push` when the ship gate does NOT hold. `repo-rules` has no
+ * rule (the repo's CLAUDE.md decides). `agent-pushes` is the human's actual
+ * flow on a supervised repo ("the agent pushes, the human marks it done")
+ * made safe for a shared checkout: a push carries every commit in
+ * `@{u}..HEAD`, so it is allowed only when all of them are this task's — the
+ * question it replaces used to recommend "push all of main", shipping other
+ * tasks' work. Exported for the verification script.
+ */
+export function agentPushesRule(taskId: string): string {
+  return [
+    "Push policy — this overrides the repo's CLAUDE.md wherever it says to ask before pushing: never ask",
+    'whether to push. Push without asking ONLY when every commit in `@{u}..HEAD` carries your own',
+    `\`Task: ${taskId}\` trailer (check: \`git log --format='%h %(trailers:key=Task,valueonly)' @{u}..HEAD\`).`,
+    'Otherwise — a commit of another task or one without the trailer is in that range, or the branch',
+    'has no upstream — commit locally, do NOT push, and say so in your summary. Deploy steps the repo',
+    'ties to a push run only after a push this rule allowed.',
+  ].join(' ');
+}
+
+export const PUBLISH_TURN_RULE = [
+  "Push policy — this overrides the repo's CLAUDE.md and any other instruction to push or deploy: in",
+  'this session never `git push` or deploy, and never ask whether to. Commit locally; shipping is the',
+  "publish turn's (the user's Publish button).",
+].join(' ');
+
+/**
+ * The one ship rule a worker turn carries, or null for none. The ship gate
+ * outranks every policy (a review or the auto-publish tier holds the ship),
+ * and the publish turn — the one turn that SHOULD push — gets none of them.
+ */
+export function shipRule(opts: { taskId: string; shipGate: boolean; pushPolicy: PushPolicy; publishTurn: boolean }): string | null {
+  if (opts.publishTurn) return null;
+  if (opts.shipGate) return SHIP_GATE_RULE;
+  if (opts.pushPolicy === 'agent-pushes') return agentPushesRule(opts.taskId);
+  if (opts.pushPolicy === 'publish-turn') return PUBLISH_TURN_RULE;
+  return null;
+}
+
 export function commitTrailerRule(taskId: string): string {
   return `Every commit you make for this task — merge and squash commits included — ends its message with the trailer line \`Task: ${taskId}\` (e.g. \`git commit --trailer "Task: ${taskId}"\`); the reviewer finds this task's commits by it.`;
 }
@@ -116,8 +167,17 @@ export function commitTrailerRule(taskId: string): string {
  * checks are green and the verdict is clean, so a push from the work turn
  * would ship exactly what that gate exists to stop.
  */
+/**
+ * Whether the Stop hook will mark this task's landing `pending`
+ * (routes/internal.ts, and endLoop for a loop): a non-publish turn of a task
+ * whose review is on. The publish turn is excluded by the caller.
+ */
+export function reviewWillRun(task: Pick<Task, 'review'>, settings: AppSettings): boolean {
+  return task.review ?? settings['review.enabled'];
+}
+
 export function shipHeldForReview(task: Pick<Task, 'review'>, settings: AppSettings, landing: LandingTier): boolean {
-  return landing === 'auto-publish' || (task.review ?? settings['review.enabled']);
+  return landing === 'auto-publish' || reviewWillRun(task, settings);
 }
 
 /**
@@ -248,6 +308,10 @@ function buildWorkerPrompt(opts: {
   loop?: { note: string; result: string };
   /** shipHeldForReview(): add SHIP_GATE_RULE (never on the publish turn). */
   shipGate: boolean;
+  /** The task's effective push policy — the rule when the ship gate does not hold (shipRule). */
+  pushPolicy: PushPolicy;
+  /** The Stop hook's `pending` test: whether the standing rules may promise a review. */
+  reviewWillRun: boolean;
 }): string {
   const { task } = opts;
   // Strict identity on purpose: the publish turn is recognised by BEING the
@@ -265,8 +329,9 @@ function buildWorkerPrompt(opts: {
     ...(opts.sharedNote && !isPublishTurn ? [opts.sharedNote, ''] : []),
   ];
   // The publish turn is the one turn that SHOULD push — the gate is exactly
-  // what it lifts.
-  const gate = opts.shipGate && !isPublishTurn;
+  // what it lifts. Without the gate the repo's push policy is the rule.
+  const ship = shipRule({ taskId: task.id, shipGate: opts.shipGate, pushPolicy: opts.pushPolicy, publishTurn: isPublishTurn });
+  const reviewed = opts.reviewWillRun && !isPublishTurn;
   return opts.resumeSessionId
     ? [
         `# Continuing task: ${task.title}`,
@@ -275,7 +340,7 @@ function buildWorkerPrompt(opts: {
         ...(isPublishTurn ? [RESUME_REMINDER, '', resumeBody] : [resumeBody, '', RESUME_REMINDER]),
         '',
         commitTrailerRule(task.id),
-        ...(gate ? ['', SHIP_GATE_RULE] : []),
+        ...(ship ? ['', ship] : []),
       ].join('\n')
     : [
         // The shared-space block LEADS a fresh prompt: it is what to read
@@ -303,9 +368,9 @@ function buildWorkerPrompt(opts: {
               `\n\n## Previous attempt\n${opts.previousSummary}`
             : '',
         opts.dispatchNote ? `\n\n${opts.dispatchNote}` : '',
-        `\n\n${STANDING_RULES}`,
+        `\n\n${STANDING_RULES} ${reviewClosing(reviewed)}`,
         `\n\n${commitTrailerRule(task.id)}`,
-        gate ? `\n\n${SHIP_GATE_RULE}` : '',
+        ship ? `\n\n${ship}` : '',
         opts.loop && !isPublishTurn ? `\n\n${opts.loop.result}` : '',
       ].join('');
 }
@@ -413,6 +478,8 @@ export function buildWorkerInvocation(opts: {
   doneNote?: string;
   /** the task's effective landing tier (`effectiveLanding`) — decides the ship gate */
   landing: LandingTier;
+  /** the task's effective push policy (`effectivePushPolicy`) — the ship rule when the gate does not hold */
+  pushPolicy: PushPolicy;
   /**
    * Continue an existing claude session instead of starting a fresh one
    * (`claude --resume <id>`) — the "proceed" flow. The agent keeps its whole
@@ -455,6 +522,8 @@ export function buildWorkerInvocation(opts: {
       previousSummary: opts.previousSummary,
       loop: opts.resumeSessionId ? undefined : opts.loop,
       shipGate: shipHeldForReview(task, settings, opts.landing),
+      pushPolicy: opts.pushPolicy,
+      reviewWillRun: reviewWillRun(task, settings),
     });
     // `-c model_reasoning_effort` has no Codex-CLI-wide free/paid distinction
     // worth encoding yet, so effort is not forwarded — "free" is entirely a
@@ -639,6 +708,8 @@ export function buildWorkerInvocation(opts: {
     previousSummary: opts.previousSummary,
     loop: opts.resumeSessionId ? undefined : opts.loop,
     shipGate: shipHeldForReview(task, settings, opts.landing),
+    pushPolicy: opts.pushPolicy,
+    reviewWillRun: reviewWillRun(task, settings),
   });
   args.push(prompt);
 

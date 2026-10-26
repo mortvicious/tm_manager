@@ -18,7 +18,7 @@ import type {
   LandingTier,
   Task,
 } from '@tm/shared';
-import { LANDING_TIERS } from '@tm/shared';
+import { LANDING_TIERS, PUSH_POLICIES } from '@tm/shared';
 
 const CHECK_STATES: (CheckState | null)[] = ['pending', 'running', 'green', 'red', 'error'];
 const LOOP_STATES = new Set<string>([
@@ -58,6 +58,8 @@ export function rowToRepo(r: any): Repo {
     previewUrl: r.preview_url ?? null,
     // An unknown value (hand-edited row) reads as the safe tier.
     landing: landingTier(r.landing) ?? 'supervised',
+    // likewise: an unknown value reads as the default (no rule)
+    pushPolicy: PUSH_POLICIES.includes(r.push_policy) ? r.push_policy : 'repo-rules',
     createdAt: r.created_at,
   };
 }

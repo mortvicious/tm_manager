@@ -42,7 +42,23 @@ The board shows an **auto-publish** chip on open work whose effective tier is `a
 
 ## The ship gate — the worker does not push a reviewed change
 
-The gate above assumes the worker leaves its change unshipped, but some repos' CLAUDE.md tell every agent to push and deploy on its own. So when the task's change will be verified before it ships (`shipHeldForReview(task, settings, landing)`: review on for the task or globally, OR the `auto-publish` tier — always, since its publish turn is what ships), every worker turn except this publish turn carries a server-injected rule that overrides the repo's CLAUDE.md: no push, no deploy, no production check. Local commits are fine: the reviewer reads the task's commits (by their `Task: <id>` trailer) as well as the working tree. The push **and** the repo's post-push deploy/verify steps then happen here, in the publish turn (step 5 of `PUBLISH_INSTRUCTION`). Tasks with review off on a lower tier keep the repo's own behaviour. Details: `docs/design.md` § Adversarial review, *Review before ship*.
+The gate above assumes the worker leaves its change unshipped, but some repos' CLAUDE.md tell every agent to push and deploy on its own. So when the task's change will be verified before it ships (`shipHeldForReview(task, settings, landing)`: review on for the task or globally, OR the `auto-publish` tier — always, since its publish turn is what ships), every worker turn except this publish turn carries a server-injected rule that overrides the repo's CLAUDE.md: no push, no deploy, no production check. Local commits are fine: the reviewer reads the task's commits (by their `Task: <id>` trailer) as well as the working tree. The push **and** the repo's post-push deploy/verify steps then happen here, in the publish turn (step 5 of `PUBLISH_INSTRUCTION`). Tasks with review off on a lower tier get the repo's **push policy** instead (next section). Details: `docs/design.md` § Adversarial review, *Review before ship*.
+
+## Push policy — what a review-off worker is told about `git push`
+
+Without the ship gate a worker used to get NO push rule, so the repo's own CLAUDE.md decided — and on the user's setup (review off, every repo supervised) 148 of 310 questions were "push now?", whose recommended option was often "push all of main", shipping OTHER tasks' commits from the shared checkout. `push_policy` is a per-repo setting (`tm_repos.push_policy`, migration 41; Repos page **Push** column, `PATCH /api/repos/:id { pushPolicy }`), not derived from the landing tier — `supervised` is ambiguous: the human's real flow is often "the agent pushes, I mark it done".
+
+| `pushPolicy` | Rule on every worker turn (not the publish turn) |
+| --- | --- |
+| `repo-rules` (default) | None — the repo's CLAUDE.md decides. The behaviour before the setting existed. |
+| `agent-pushes` | Push without asking ONLY when every commit in `@{u}..HEAD` carries this task's own `Task:` trailer (`git log --format='%h %(trailers:key=Task,valueonly)' @{u}..HEAD`); otherwise — another task's commit, a trailer-less commit, or no upstream — commit locally, do not push, and say so in the summary. Never ask whether to push. Deploy steps the repo ties to a push run only after an allowed push. |
+| `publish-turn` | Never push or deploy, never ask; commit locally — shipping is the publish turn's (**Publish**). |
+
+- **The ship gate wins.** When `shipHeldForReview` holds (review on, or the `auto-publish` tier), the gate is the rule whatever the policy; `shipRule()` in `claude/worker.ts` emits exactly one of them.
+- **The publish turn is unchanged**: it gets no policy rule (it is the turn that pushes).
+- **External tasks** (`isExternalTask`) never get `agent-pushes`: `effectivePushPolicy` resolves it to `repo-rules`, the way a landing tier clamps to `supervised`. `publish-turn` applies to them as to any task.
+- **Raising** to `agent-pushes` needs the dashboard (`Origin`, else 403 `push policies are set from the dashboard`), on POST and PATCH alike; `repo-rules` and `publish-turn` add no autonomy and are accepted from anywhere. A change is audited on `repo.changed { pushPolicy: { from, to } }`.
+- **Not built: a "may I push?" agent endpoint over `publishPlan`.** `publishPlan`'s `full` also passes commits of APPROVED peers (done/published tasks), which is a wider test than the rule's "only my own trailer"; exposing it would give the agent two answers to one question. The trailer test runs in the agent's own git, needs no round trip, and is what the reviewer already keys on.
 
 ## What actually happens
 

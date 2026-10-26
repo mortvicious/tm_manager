@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
-import { LANDING_TIERS, type LandingTier } from '@tm/shared';
+import { LANDING_TIERS, PUSH_POLICIES, type LandingTier, type PushPolicy } from '@tm/shared';
 import { z } from 'zod';
 import { expandHome } from '../config.ts';
 import { commitRepo, gitStatus, pushRepo } from '../git.ts';
@@ -16,6 +16,8 @@ const repoBody = z
     previewUrl: z.string().nullish(),
     // how far this repo's tasks land on their own (docs/design.md § Landing tiers)
     landing: z.enum(LANDING_TIERS as [LandingTier, ...LandingTier[]]).optional(),
+    // what worker turns are told about `git push` (docs/publish.md § Push policy)
+    pushPolicy: z.enum(PUSH_POLICIES as [PushPolicy, ...PushPolicy[]]).optional(),
   })
   .strict();
 
@@ -29,6 +31,17 @@ export function landingNeedsBrowser(landing: LandingTier | null | undefined, ori
   return !!landing && landing !== 'supervised' && !origin;
 }
 export const LANDING_FROM_BROWSER = 'landing tiers are set from the dashboard';
+
+/**
+ * The same rule for the push policy (docs/publish.md § Push policy):
+ * `agent-pushes` lets a worker push with nobody asked, so only the dashboard
+ * sets it. `repo-rules` and `publish-turn` never add autonomy (the latter
+ * takes it away) and are allowed from anywhere.
+ */
+export function pushPolicyNeedsBrowser(policy: PushPolicy | null | undefined, origin: string | undefined): boolean {
+  return policy === 'agent-pushes' && !origin;
+}
+export const PUSH_POLICY_FROM_BROWSER = 'push policies are set from the dashboard';
 
 /** The emulator puts this string straight into an iframe `src`, so the scheme
  *  is pinned to http/https here — the one place every write passes through. */
@@ -62,6 +75,7 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
   app.post('/api/repos', async (req, reply) => {
     const body = repoBody.parse(req.body);
     if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
+    if (pushPolicyNeedsBrowser(body.pushPolicy, req.headers.origin)) return reply.code(403).send({ error: PUSH_POLICY_FROM_BROWSER });
     let abs: string;
     try {
       abs = expandHome(body.path);
@@ -80,12 +94,12 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
-    const repo = await storage.createRepo({ name, path: abs, role: body.role ?? null, previewUrl, landing: body.landing });
+    const repo = await storage.createRepo({ name, path: abs, role: body.role ?? null, previewUrl, landing: body.landing, pushPolicy: body.pushPolicy });
     await storage.appendEvent({
       kind: 'repo.changed',
       actor: 'human',
       repoId: repo.id,
-      data: { action: 'created', name, landing: repo.landing },
+      data: { action: 'created', name, landing: repo.landing, pushPolicy: repo.pushPolicy },
     });
     return repo;
   });
@@ -94,6 +108,7 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
     const { id } = req.params as { id: string };
     const body = repoBody.partial().parse(req.body);
     if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
+    if (pushPolicyNeedsBrowser(body.pushPolicy, req.headers.origin)) return reply.code(403).send({ error: PUSH_POLICY_FROM_BROWSER });
     let abs: string | undefined;
     if (body.path) {
       try {
@@ -115,8 +130,15 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
         return reply.code(400).send({ error: (e as Error).message });
       }
     }
-    const before = body.landing ? await storage.getRepo(id) : null;
-    const repo = await storage.updateRepo(id, { name: body.name, path: abs, role: body.role, previewUrl, landing: body.landing });
+    const before = body.landing || body.pushPolicy ? await storage.getRepo(id) : null;
+    const repo = await storage.updateRepo(id, {
+      name: body.name,
+      path: abs,
+      role: body.role,
+      previewUrl,
+      landing: body.landing,
+      pushPolicy: body.pushPolicy,
+    });
     if (!repo) return reply.code(404).send({ error: 'repo not found' });
     await storage.appendEvent({
       kind: 'repo.changed',
@@ -125,6 +147,7 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
       data: {
         action: 'updated',
         ...(before && before.landing !== repo.landing ? { landing: { from: before.landing, to: repo.landing } } : {}),
+        ...(before && before.pushPolicy !== repo.pushPolicy ? { pushPolicy: { from: before.pushPolicy, to: repo.pushPolicy } } : {}),
       },
     });
     return repo;

@@ -31,10 +31,11 @@ a stale reminder silently overrides the new rules for the rest of the session.
 | **Stop unneeded background shells** | A background shell still running at the end of a turn holds the task in `waiting` (no review, repo held) until it exits or its budget runs out, so the agent stops (`TaskStop`) every one it no longer needs before finishing. A command the Bash TIMEOUT moved to the background does not hold the task (decisions.md 2026-10-26), so a result it still needs is read before the turn ends, or the command is launched with `run_in_background` on purpose. In `RESUME_REMINDER` too (`docs/design.md` § Waiting). |
 | **Ask on big decisions** | When a choice would materially change the outcome (architecture/library, ambiguous or conflicting requirement, destructive step, scope that could go two ways), ask with `AskUserQuestion` — it reaches the dashboard and the phone and the session waits (`docs/questions.md`). Images for the choice: saved at the top of `$TM_ARTIFACTS_DIR` and named in the question or option, they show there as thumbnails (§ Images). Small things: decide, never ask. Never a secret's VALUE: ask for it in the repo's `.env` or a named file, and for a confirmation (`docs/questions.md` § Secrets). |
 | Final summary | The orchestrator stores it as `result_summary`; the review round and the next run read it. |
-| Adversarial review warning | The change is reviewed before the human sees it, so it must compile and hold up. |
+| Review sentence (conditional) | The closing sentence of `STANDING_RULES` (`reviewClosing`). When a review WILL run — `reviewWillRun(task, settings)`, the Stop hook's own `pending` test (`task.review ?? review.enabled`, never on the publish turn) — "Your change is then adversarially reviewed before the user sees it…". Otherwise "Nobody reviews it before the user sees it, so … handle the edge cases yourself." Until 2026-10-26 every worker was promised a review, review off or not (decisions.md 2026-10-26, *Push policy*). |
 | **Commit trailer** | `commitTrailerRule(task.id)`, on EVERY turn including publish: every commit for this task ends with `Task: <id>`. It is how the reviewer finds the task's commits on any ref (`docs/design.md` § Adversarial review, *What the reviewer reads*). |
 | **Definition of done** (conditional) | Only on a FRESH prompt (never resumed, never the publish turn), when the task has `acceptance` text or repo checks apply: a `## Definition of done` block right under the description (`definitionOfDone()` → `doneNote`, built in `startWorker`): the acceptance text, the checks the server runs when the turn ends, and "run them yourself; never weaken or delete one" (`docs/checks.md`). A red check later arrives as a resumed turn whose instruction is the failure itself. |
 | **Ship gate** (conditional) | Only when `shipHeldForReview(task, settings, landing)`, i.e. the change will be reviewed, or the task's landing tier is `auto-publish` (always, review on or off: the server verifies it before its publish turn ships; `docs/design.md` § Landing tiers). It is appended after the standing rules (fresh) and after the reminder (resumed): no push, no deploy, no production verify; local commits are fine. It overrides the repo's CLAUDE.md. The publish turn never gets it; that turn ships (`docs/design.md` § Adversarial review, *Review before ship*). |
+| **Push policy** (conditional) | Only when the ship gate does NOT hold and the repo's `push_policy` (`docs/publish.md` § Push policy, resolved by `effectivePushPolicy`) is not `repo-rules`. Same placement as the ship gate, and `shipRule()` picks exactly one of the two: `agent-pushes` → `agentPushesRule(task.id)` (push without asking ONLY when every commit in `@{u}..HEAD` carries this task's trailer, else commit locally and say so; never ask whether to push); `publish-turn` → `PUBLISH_TURN_RULE` (never push or deploy; commit locally). Never on the publish turn. An external task never gets `agent-pushes`. |
 
 ### One exception: the publish turn
 
@@ -43,8 +44,9 @@ standing rules — no code, no subagents, and the closing report is the commit s
 and push result rather than a work summary. On that turn only, the reminder is
 placed **above** the instruction, so the last thing the agent reads is the narrow
 version and not "plan, delegate, summarise". Every other resumed turn keeps the
-usual order (instruction, then reminder), plus the ship gate after it when that
-applies. The publish turn never carries the gate: it is the turn that pushes.
+usual order (instruction, then reminder), plus the ship gate or push-policy rule
+after it when one applies. The publish turn never carries either: it is the turn
+that pushes.
 
 ## Why "delegate" is phrased as a directive, not a cap (2026-08-27)
 
@@ -171,3 +173,11 @@ states a plan, and exploration shows up as sidechain messages with **non-zero**
 subagent token usage rather than a long inline run of `sed`/`grep`/`cat`.
 `tm_runs.stats` for a comparable task before/after gives the number that
 matters: cost per task.
+
+The ship rule and the review sentence have a matrix of their own (2026-10-26,
+saved with task 6f3a4ebb as `verify-push-policy.ts` in its artifacts): landing
+tier × review (task override and global, both ways) × push policy × turn
+(fresh, fresh follow-up, resume, publish) × external task — 288 compositions
+through the real `buildWorkerInvocation`, each asserting exactly one of {ship
+gate, `agent-pushes` rule, `publish-turn` rule, none} and the review sentence
+only on a fresh prompt whose review will run.
