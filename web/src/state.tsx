@@ -78,6 +78,13 @@ interface AppState {
   settings: AppSettings | null;
   token: string | null;
   connected: boolean;
+  /**
+   * true once repos + tasks have been fetched successfully at least once.
+   * Until then an empty `tasks` means "never heard from the server", not "no
+   * tasks" — the board and the offline banner read this instead of guessing
+   * from an empty list (docs/mobile.md § Server offline).
+   */
+  loaded: boolean;
   bootedAt: string | null;
   /**
    * The front door's view of the API (docs/host.md), or null when the page is
@@ -123,6 +130,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [bootedAt, setBootedAt] = useState<string | null>(null);
   const [host, setHost] = useState<HostStatus | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -131,6 +139,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const [r, t] = await Promise.all([api.listRepos(), api.listTasks()]);
     setRepos(r);
     setTasks(t);
+    setLoaded(true);
     // These endpoints appear in later phases; tolerate their absence.
     api.listRuns().then(setRuns).catch(() => {});
     // Snapshot, not merge: the server's map IS the set of live runs, so a run
@@ -507,6 +516,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         settings,
         token,
         connected,
+        loaded,
         bootedAt,
         host,
         refresh,

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Anomaly, AuditEvent, StatsOverview } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
+import { errorText } from '../toast.ts';
 
 const fmtDuration = (ms: number) => {
   const h = Math.floor(ms / 3600_000);
@@ -138,8 +139,11 @@ function describeEvent(e: AuditEvent, taskTitle: (id: string | null) => string |
 }
 
 export function DashboardPage({ onOpenTask }: { onOpenTask: (id: string) => void }) {
-  const { tasks, auditEvents } = useApp();
+  const { tasks, auditEvents, connected } = useApp();
   const [overview, setOverview] = useState<StatsOverview | null>(null);
+  // why the first load has not landed — shown instead of an endless "Loading…"
+  // (docs/mobile.md § Server offline); a later failure keeps the last numbers
+  const [loadErr, setLoadErr] = useState<string | null>(null);
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [feed, setFeed] = useState<AuditEvent[]>([]);
   const [days, setDays] = useState(14);
@@ -147,10 +151,15 @@ export function DashboardPage({ onOpenTask }: { onOpenTask: (id: string) => void
 
   const load = async () => {
     lastFetch.current = Date.now();
-    const [o, a, f] = await Promise.all([api.statsOverview(days), api.anomalies(), api.events(60)]);
-    setOverview(o);
-    setAnomalies(a);
-    setFeed(f);
+    try {
+      const [o, a, f] = await Promise.all([api.statsOverview(days), api.anomalies(), api.events(60)]);
+      setOverview(o);
+      setAnomalies(a);
+      setFeed(f);
+      setLoadErr(null);
+    } catch (e) {
+      setLoadErr(errorText(e));
+    }
   };
 
   useEffect(() => {
@@ -163,6 +172,13 @@ export function DashboardPage({ onOpenTask }: { onOpenTask: (id: string) => void
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [days]);
+
+  // The socket coming back is the server coming back: reload now rather than
+  // sit on the error (or stale numbers) until the 60s tick.
+  useEffect(() => {
+    if (connected) load().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected]);
 
   // Throttled refetch on meaningful live events (≥15s apart). Depends on the
   // NEWEST event id, not array length — the cap-200 buffer keeps length
@@ -181,7 +197,18 @@ export function DashboardPage({ onOpenTask }: { onOpenTask: (id: string) => void
 
   const taskTitle = (id: string | null) => tasks.find((t) => t.id === id)?.title?.slice(0, 48) ?? null;
 
-  if (!overview) return <div className="muted">Loading…</div>;
+  if (!overview)
+    return loadErr ? (
+      <div className="empty panel">
+        <div className="big">{connected ? "Couldn't load the dashboard" : "Can't reach the server"}</div>
+        <div className="warn-text">{loadErr}</div>
+        <button className="btn" style={{ marginTop: 'var(--tm-space-3)' }} onClick={() => void load()}>
+          Try again
+        </button>
+      </div>
+    ) : (
+      <div className="muted">Loading…</div>
+    );
   const t = overview.totals;
 
   return (

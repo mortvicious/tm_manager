@@ -179,25 +179,20 @@ function UsagePill() {
   );
 }
 
-function ServerControl() {
-  const { connected, bootedAt, orch, commandRuns, shells, host, refreshHost } = useApp();
-  const [restarting, setRestarting] = useState(false);
+/**
+ * The front door's reading of the API and the one action that can put it back
+ * (docs/host.md). Shared by the header's ServerControl and the phone's offline
+ * banner, so the two can never disagree about whether Start is offered.
+ */
+function useServerStart() {
+  const { orch, host, refreshHost } = useApp();
   const [starting, setStarting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const uptime = (() => {
-    if (!bootedAt) return '';
-    const s = Math.max(0, Math.floor((Date.now() - new Date(bootedAt).getTime()) / 1000));
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    return h > 0 ? `${h}h ${m}m` : `${m}m`;
-  })();
   // Restarting kills every agent: workers lose their sessions and boot recovery
   // fails their tasks, and an aux session (review, plan, chat, …) dies mid-run.
   // So the button is CLOSED while any agent is working — the server refuses it
   // too (409), this is just the honest label. `aux` is absent on a server that
   // predates the field, which reads as "none" rather than blocking forever.
-  const live = commandRuns.filter((r) => r.status === 'running').length;
-  const liveShells = shells.filter((s) => s.status === 'running').length;
   const auxLive = orch.aux ?? 0;
   const busyAgents = orch.running + auxLive;
   const blocked = busyAgents > 0;
@@ -213,6 +208,9 @@ function ServerControl() {
     : host?.api.lastExit
       ? `exited ${host.api.lastExit.signal ?? host.api.lastExit.code} at ${new Date(host.api.lastExit.at).toLocaleTimeString()}`
       : 'not running';
+  const startTitle = blocked
+    ? `${busyAgents} agent(s) are recorded as working — refresh once the API is back before starting it.`
+    : `Start the task-manager API on :${host?.api.port ?? ''}`;
   const start = async () => {
     setStarting(true);
     setErr(null);
@@ -225,6 +223,23 @@ function ServerControl() {
     setStarting(false);
     void refreshHost();
   };
+  return { stopped, canStart, blocked, busyAgents, auxLive, downReason, startTitle, starting, err, setErr, start };
+}
+
+function ServerControl() {
+  const { connected, bootedAt, orch, commandRuns, shells, host, refreshHost } = useApp();
+  const { stopped, canStart, blocked, busyAgents, auxLive, downReason, startTitle, starting, err, setErr, start } =
+    useServerStart();
+  const [restarting, setRestarting] = useState(false);
+  const uptime = (() => {
+    if (!bootedAt) return '';
+    const s = Math.max(0, Math.floor((Date.now() - new Date(bootedAt).getTime()) / 1000));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  })();
+  const live = commandRuns.filter((r) => r.status === 'running').length;
+  const liveShells = shells.filter((s) => s.status === 'running').length;
   const restart = async () => {
     if (blocked) return;
     if (
@@ -291,11 +306,7 @@ function ServerControl() {
         // pointed at a dead API has nothing to talk to.
         <button
           className="btn ghost"
-          title={
-            blocked
-              ? `${busyAgents} agent(s) are recorded as working — refresh once the API is back before starting it.`
-              : `Start the task-manager API on :${host!.api.port}`
-          }
+          title={startTitle}
           disabled={starting || !canStart}
           onClick={start}
         >
@@ -323,6 +334,58 @@ function ServerControl() {
         </span>
       )}
     </span>
+  );
+}
+
+/** after a dropped socket, how long before the phone says so: a server restart
+ *  or the page's own first connect is over well inside it */
+const OFFLINE_GRACE_MS = 4000;
+
+/**
+ * The phone's out-of-contact state (docs/mobile.md § Server offline). Its
+ * header has no room for ServerControl, so without this a stopped API read as
+ * an empty board or a live-looking stale one. A slim bar at the top of the
+ * page: "stopped" (the front door says the API is not running) carries Start
+ * server; "offline" (socket down, nobody to ask) just says we are retrying.
+ */
+function OfflineBanner() {
+  const { connected, loaded } = useApp();
+  const { stopped, canStart, blocked, downReason, startTitle, starting, err, start } = useServerStart();
+  const [lost, setLost] = useState(false);
+  useEffect(() => {
+    if (connected) {
+      setLost(false);
+      return;
+    }
+    const t = setTimeout(() => setLost(true), OFFLINE_GRACE_MS);
+    return () => clearTimeout(t);
+  }, [connected]);
+  // the front door's "stopped" is an answer, not a blip: no grace needed
+  if (connected || !(lost || stopped)) return null;
+  const tone = stopped && !starting ? 'stopped' : 'offline';
+  return (
+    <div className={`offline-banner ${tone}`} role="alert">
+      <span className="offline-dot" aria-hidden="true" />
+      <span className="offline-text">
+        <b>{starting ? 'Starting server…' : stopped ? 'Server stopped' : 'Offline'}</b>
+        <span className="offline-sub">
+          {stopped
+            ? blocked
+              ? // the agent count is the last thing the API said; a reload starts from zero
+                'agents were recorded as working — reload the page to start it'
+              : downReason
+            : loaded
+              ? 'showing what was loaded last — reconnecting…'
+              : "can't reach the server — retrying…"}
+        </span>
+        {err && <span className="offline-sub warn-text">{err}</span>}
+      </span>
+      {stopped && (
+        <button type="button" className="btn primary" title={startTitle} disabled={starting || !canStart} onClick={start}>
+          {starting ? 'Starting…' : 'Start server'}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -558,6 +621,7 @@ export function Layout({
         )}
       </header>
       <main className="main" ref={mainRef}>
+        {mobile && <OfflineBanner />}
         {children}
       </main>
       {mobile && <TabBar moreOpen={moreOpen} onMore={() => setMoreOpen((v) => !v)} />}

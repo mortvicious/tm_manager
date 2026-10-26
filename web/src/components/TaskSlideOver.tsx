@@ -39,6 +39,7 @@ import { DoneFields } from './DoneFields.tsx';
 import { LandingPicker } from './LandingPicker.tsx';
 import { QuestionForm } from './QuestionModal.tsx';
 import { Sheet, SheetAction } from './Sheet.tsx';
+import { toastError } from '../toast.ts';
 import { exitGhost } from '../motion.ts';
 
 /**
@@ -226,7 +227,6 @@ export function TaskSlideOver({
   const [reviewModel, setReviewModel] = useState<string>('');
   const [reviewEffort, setReviewEffort] = useState<string>('');
   const [landing, setLanding] = useState<LandingTier | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [followUpMsg, setFollowUpMsg] = useState('');
   const [sendingFollowUp, setSendingFollowUp] = useState(false);
   const [resumeSession, setResumeSession] = useState<string | null>(null);
@@ -359,7 +359,6 @@ export function TaskSlideOver({
       (groupName !== (task.groupName ?? '') || groupColor !== (task.groupColor == null ? '' : String(task.groupColor))));
 
   const save = async () => {
-    setErr(null);
     try {
       // The group move goes first and on its own route: it positions the task
       // (end of the group) and it is the half that can be refused (a blocked
@@ -397,32 +396,30 @@ export function TaskSlideOver({
       });
       await refresh();
     } catch (e) {
-      setErr((e as Error).message);
+      toastError(e, 'Save');
     }
   };
 
   const action = async (
     a: Parameters<typeof api.taskAction>[1],
   ) => {
-    setErr(null);
     try {
       await api.taskAction(task.id, a);
       await refresh();
     } catch (e) {
-      setErr((e as Error).message);
+      toastError(e);
     }
   };
 
   const analyze = async () => {
-    setErr(null);
     if (!task.repoId) {
-      setErr('Assign a repo before analyzing');
+      toastError('Assign a repo before analyzing');
       return;
     }
     try {
       await api.analyze({ repoId: task.repoId, taskIds: [task.id] });
     } catch (e) {
-      setErr((e as Error).message);
+      toastError(e);
     }
   };
 
@@ -432,12 +429,11 @@ export function TaskSlideOver({
     const arr = Array.from(fileList);
     if (arr.length === 0) return;
     setUploading(true);
-    setErr(null);
     try {
       await api.uploadTaskFiles(task.id, arr);
       loadFiles();
     } catch (e) {
-      setErr((e as Error).message);
+      toastError(e, 'Upload');
     } finally {
       setUploading(false);
     }
@@ -448,20 +444,19 @@ export function TaskSlideOver({
       await api.deleteTaskFile(task.id, name);
       loadFiles();
     } catch (e) {
-      setErr((e as Error).message);
+      toastError(e);
     }
   };
 
   // Both follow-up buttons: same busy/error/clear handling, different call.
   const send = async (call: () => Promise<unknown>) => {
-    setErr(null);
     setSendingFollowUp(true);
     try {
       await call();
       setFollowUpMsg('');
       await refresh();
     } catch (e) {
-      setErr((e as Error).message);
+      toastError(e);
     } finally {
       setSendingFollowUp(false);
     }
@@ -473,7 +468,7 @@ export function TaskSlideOver({
       await api.deleteTask(task.id);
       onClose();
     } catch (e) {
-      setErr((e as Error).message);
+      toastError(e);
     }
   };
 
@@ -599,7 +594,6 @@ export function TaskSlideOver({
           ? 'Run the adversarial reviewer over the current diff now — blocker/major findings go back to the live session to fix'
           : 'Run the adversarial reviewer over the current diff now — the verdict is recorded, the status stays',
       onClick: async () => {
-        setErr(null);
         try {
           // No refresh(): the round can settle (empty/unchanged diff)
           // within ms, and a full list read in flight across that
@@ -607,7 +601,7 @@ export function TaskSlideOver({
           // The `task.updated` broadcasts carry both steps in order.
           await api.reviewNow(task.id);
         } catch (e) {
-          setErr((e as Error).message);
+          toastError(e);
         }
       },
     });
@@ -621,12 +615,11 @@ export function TaskSlideOver({
         ? 'Send the review findings back to a worker to fix'
         : 'Adversarially review this task and fix what it finds',
       onClick: async () => {
-        setErr(null);
         try {
           await api.applyReview(task.id);
           await refresh();
         } catch (e) {
-          setErr((e as Error).message);
+          toastError(e);
         }
       },
     });
@@ -652,12 +645,11 @@ export function TaskSlideOver({
       destructive: true,
       title: "Close the agent's terminal session (task status is unchanged)",
       onClick: async () => {
-        setErr(null);
         try {
           await api.stopAgent(task.id);
           await refresh();
         } catch (e) {
-          setErr((e as Error).message);
+          toastError(e);
         }
       },
     });
@@ -1011,7 +1003,6 @@ export function TaskSlideOver({
         </div>
       )}
 
-      {err && <div className="warn-text so-alert">{err}</div>}
       {task.error && (
         <div className="warn-text so-alert" style={{ whiteSpace: 'pre-wrap' }}>
           {task.error}
@@ -1035,7 +1026,7 @@ export function TaskSlideOver({
           held by Undo start — it keeps its place, but the queue skips it until you Release it (or Run now)
         </div>
       )}
-      <LoopPanel task={task} onError={setErr} />
+      <LoopPanel task={task} onError={toastError} />
       <ChecksPanel task={task} onOpenTerminal={onOpenTerminal} />
       <div className="so-review">
         <ReviewPanel task={task} />

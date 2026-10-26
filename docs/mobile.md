@@ -159,6 +159,62 @@ not a new set of sizes.
   and the slide-over each pay their own side back, so landscape on a notched
   phone does not lose content under the cutout.
 
+## Server offline
+
+The page outlives the API (`docs/host.md`), so being out of contact is a state the
+phone has to show. Before this, a stopped API rendered as "No tasks yet", the
+Dashboard said "Loading…" forever, a stale board looked live, and **Start
+server** sat two taps deep in the More sheet.
+
+- **The banner** (`OfflineBanner` in `components/Layout.tsx`, phone only — the
+  desktop header already carries the server pill) is the first child of `.main`,
+  `position: sticky`, so it stays in view on a board scrolled far down. It has two readings:
+  - **Server stopped**: the front door answered and says the API is not running.
+    It is red, shows the last exit or spawn error, and carries **Start server**.
+    It appears at once, because this reading is an answer and not a blip.
+  - **Offline**: the socket is down and nothing says why. It is amber, reads
+    "showing what was loaded last — reconnecting…" (or "can't reach the server"
+    before anything loaded), and has no button. It waits 4s first
+    (`OFFLINE_GRACE_MS`), so the page's own first connect and a server restart do
+    not flash it.
+
+  Start goes through `useServerStart()`, the hook the header's `ServerControl`
+  uses too, so both offer Start under the same rule (refused while agents are
+  recorded as working; a reload clears that stale count).
+- **`loaded`** (`state.tsx`) turns true on the first successful repos + tasks
+  fetch. Until then the Board shows "Can't reach the server" (or "Loading…" while the socket is up),
+  never "No tasks yet".
+- **Dashboard** shows the load error with **Try again** instead of an endless
+  "Loading…", and reloads as soon as the socket reconnects.
+- **Error text.** `api.ts` no longer surfaces a bare status: a fetch that got
+  no answer (Safari's "Load failed") reads "can't reach the task-manager server",
+  and a 502/503/504 without a JSON reason reads the same with the code. The
+  server's own `error` always wins. The front door's 503 now names the banner.
+
+## Action errors
+
+A refused action is reported in ONE place: a toast stack (`components/Toasts.tsx`,
+store in `src/toast.ts`) mounted once in `App.tsx` and portalled into `.app` like
+`<Sheet>`. It sits bottom right on a desktop and full width above the tab bar on
+a phone, at z-index 60, above every sheet, the question modal and the drag ghost. That
+way a 409 from the review panel's bar is read where the eye already is, not in a
+line at the top of a panel you scrolled away from.
+
+- `toastError(e, title?)` is the API: it shows the server's reason verbatim
+  ("publish held: …"), with an optional "Publish failed:" lead. The same text
+  again restarts its timer instead of stacking a copy, at most three show at once,
+  each stays 9s (held while hovered or touched), and × dismisses it.
+- **Fed by:** the task panel (every action, Save, upload, loop controls; its
+  inline action-error line is gone, while the task's own `error` alert stays), board
+  rows (replaces the 6s `row-err` line), board drag-and-drop and group edits
+  (replaces the `board-err` banner), Inbox acts and proposal choices (both the
+  page and the phone's sheet stack), Queue's Kill, and the Feature page's
+  actions. Form validation stays inline next to its form (new task, new
+  feature, the question modal, repo/command editors), because there the field is
+  right beside the message.
+- Glass gives the toasts thick glass with a spring rise and a `tm-exit` fade
+  (`docs/glass.md`); Reduce Motion drops the rise.
+
 ## When it does not load
 
 The server prints what is wrong; read its output before anything else.
@@ -369,7 +425,7 @@ to close; × animates out the same way.
   row, because the server's `hasLiveSession()` would 409 them. This applies to
   the desktop row too, where they used to be clickable into an error.
 - **Reading order**, by CSS `order` on the body's flex column, so the JSX is
-  shared: breadcrumb, alerts (error, wake-up, held), the agent's question, run
+  shared: breadcrumb, alerts (the task's own error, wake-up, held — an action's refusal is a toast, § Action errors), the agent's question, run
   stats, review, the worker's summary, follow-up. Then the title and
   description, the settings, and the rest in desktop order. What happened comes
   first, then your answer to it, then the task itself.
@@ -461,6 +517,25 @@ compact/breakpoint/run change. The reasoning is in `docs/decisions.md`,
   longer to ingest could still see the Enter arrive early.
 
 ## Verification
+
+**Server offline + action toasts (2026-10-26)**: Playwright (`playwright-core`
+1.63.0, chromium-1243) at 390×844 (touch, iPhone UA) and 1280×800, against the
+built SPA served statically with `/api` and `/host` mocked. The cases were the
+API stopped (every `/api` call 503 with `apiDown`, `/host/status` reporting
+`up: false`), the socket refused (the offline reading), and the API up with
+every write 409. Classic and Glass, dark and light:
+
+- Stopped: the red banner with **Start server** sat under the header and the
+  Board read "Can't reach the server". The Dashboard showed the reason and
+  Try again on both phone and desktop. In Glass the banner stays below the
+  floating header (sticky `top: 0` is `.main`'s content edge). Scrolled 600px,
+  it stayed pinned.
+- Socket refused after a good load: the amber "Offline · showing what was loaded
+  last" bar appeared after the grace, over the loaded board.
+- A row's ▶ refused twice gave ONE toast holding the server's reason, above the
+  tab bar. A refusal from inside the phone's task sheet showed above the sheet,
+  and its × was the topmost element and dismissed it.
+- No page errors. `npm run typecheck`; `vite build` to a scratch outDir.
 
 **Inbox + Select mode (2026-10-19)**: Playwright at 393×852 (touch, iPhone UA,
 `platform = 'iPhone'`), both designs, synthetic tasks injected into the GET

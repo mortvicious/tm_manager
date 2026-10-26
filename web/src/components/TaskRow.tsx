@@ -1,8 +1,9 @@
-import { useEffect, useState, type CSSProperties, type HTMLAttributes, type MouseEvent, type ReactNode } from 'react';
+import { useState, type CSSProperties, type HTMLAttributes, type MouseEvent, type ReactNode } from 'react';
 import { publishCaution, publishGateReason, type Task, type TaskStatus } from '@tm/shared';
 import { api } from '../api.ts';
 import { confirmPublish, publishIsPrimary } from '../publish.ts';
 import { useApp } from '../state.tsx';
+import { toastError } from '../toast.ts';
 import { IconCheck, IconEye, IconGrip, IconMore, IconPlay, IconPublish, IconQueue, IconTerminal, IconX } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
 import { QueueMark } from './QueueMark.tsx';
@@ -87,15 +88,7 @@ export function TaskRow({
   const { runs, tasks, activity, refresh } = useApp();
   const mobile = useIsMobile();
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
   const [sheet, setSheet] = useState(false);
-
-  // Row errors are transient — a 409 here is informational, not a state to sit in.
-  useEffect(() => {
-    if (!err) return;
-    const t = setTimeout(() => setErr(null), 6000);
-    return () => clearTimeout(t);
-  }, [err]);
 
   const taskRuns = runs.filter((r) => r.taskId === task.id);
   // Prefer the live session (its PTY is certain to still be attachable);
@@ -111,12 +104,13 @@ export function TaskRow({
     e?.stopPropagation();
     if (busy) return;
     setBusy(true);
-    setErr(null);
     try {
       await fn();
       await refresh();
     } catch (e2) {
-      setErr((e2 as Error).message);
+      // the shared toast (docs/mobile.md § Action errors): a row is too small
+      // to hold a 409 reason, and the refused row may be scrolled off by now
+      toastError(e2);
     } finally {
       setBusy(false);
     }
@@ -275,11 +269,6 @@ export function TaskRow({
           </QuickBtn>
         </span>
         {children && <span className="row-meta">{children}</span>}
-        {err && (
-          <span className="warn-text row-err" title={err}>
-            {err}
-          </span>
-        )}
         {sheet && (
           <Sheet label={`Actions for ${task.title}`} title={task.title} onClose={close}>
             <div className="sheet-actions">
@@ -385,11 +374,6 @@ export function TaskRow({
         )}
       </span>
       {children}
-      {err && (
-        <span className="warn-text row-err" title={err}>
-          {err}
-        </span>
-      )}
       <span className="row-actions">
         <QuickBtn
           label={queueLabel}

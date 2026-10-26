@@ -1544,11 +1544,133 @@ button.badge.badge-link:hover {
 }
 
 /* a refused move or rename, above the board */
-.board-err {
+/* ---------- action-error toasts (components/Toasts.tsx, docs/mobile.md § Action errors) ---------- */
+/* One stack, bottom right; on a phone full width above the tab bar. Above
+   every sheet (35/36), the question modal and the drag ghost (50). */
+.toasts {
+  position: fixed;
+  z-index: 60;
+  right: var(--tm-space-4);
+  bottom: calc(var(--tm-tabbar-clear) + var(--tm-space-4));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--tm-space-2);
+  width: min(420px, calc(100vw - 2 * var(--tm-space-4)));
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2) var(--tm-space-1) var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-status-failed);
+  border-radius: var(--tm-radius-md);
+  background: color-mix(in srgb, var(--tm-status-failed) var(--tm-group-tint), var(--tm-bg-raised));
+  color: var(--tm-text);
+  box-shadow: var(--tm-shadow-lg);
+  font-size: var(--tm-text-sm);
+  line-height: 1.45;
+  pointer-events: auto;
+}
+
+.toast-dot,
+.offline-dot {
+  flex: none;
+  width: var(--tm-space-2);
+  height: var(--tm-space-2);
+  border-radius: 50%;
+  background: var(--tm-status-failed);
+}
+
+.toast-dot {
+  /* centred on the first line of text */
+  margin-top: calc((1.45em - var(--tm-space-2)) / 2);
+}
+
+.toast-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.toast-text b {
+  font-weight: 600;
+}
+
+.toast-x {
+  flex: none;
+  margin: calc(-1 * var(--tm-space-1)) 0;
+  padding: var(--tm-space-1);
+  color: var(--tm-text-muted);
+}
+
+.app.mobile .toasts {
+  left: calc(var(--tm-space-3) + env(safe-area-inset-left, 0px));
+  right: calc(var(--tm-space-3) + env(safe-area-inset-right, 0px));
+  bottom: calc(var(--tm-tabbar-clear) + var(--tm-space-3));
+  width: auto;
+}
+
+/* ---------- the phone's offline banner (Layout.tsx OfflineBanner, docs/mobile.md § Server offline) ---------- */
+/* First child of .main, sticky, so a stale board scrolled far down still says
+   it is stale. `top: 0` is .main's CONTENT edge, which in Glass already sits
+   below the floating header (its padding-top), so neither design needs more. `offline` = socket down and retrying (amber), `stopped` = the
+   front door says the API is not running (red, carries Start server). */
+.offline-banner {
+  position: sticky;
+  top: 0;
+  /* Glass's scroll-edge blur's level (25), later in the DOM so above it; the
+     header (26) still wins wherever the two could meet */
+  z-index: 25;
   display: flex;
   align-items: center;
   gap: var(--tm-space-2);
   margin: 0 0 var(--tm-space-3);
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-status-review);
+  border-radius: var(--tm-radius-md);
+  background: color-mix(in srgb, var(--tm-status-review) var(--tm-group-tint), var(--tm-bg-raised));
+  color: var(--tm-text);
+  box-shadow: var(--tm-shadow-md);
+  font-size: var(--tm-text-sm);
+}
+
+.offline-banner.stopped {
+  border-color: var(--tm-status-failed);
+  background: color-mix(in srgb, var(--tm-status-failed) var(--tm-group-tint), var(--tm-bg-raised));
+}
+
+.offline-banner.offline .offline-dot {
+  background: var(--tm-status-review);
+}
+
+.offline-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.offline-text b {
+  font-weight: 600;
+}
+
+.offline-sub {
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+  overflow-wrap: anywhere;
+}
+
+.offline-sub.warn-text {
+  color: var(--tm-status-failed);
+}
+
+.offline-banner .btn {
+  flex: none;
 }
 
 /* ---------- group picker (new-task form, task panel) ---------- */
@@ -1817,14 +1939,6 @@ button.badge.badge-link:hover {
   align-items: center;
   gap: var(--tm-space-1);
   margin-left: calc(-1 * var(--tm-space-2));
-}
-
-.task-row .row-err {
-  font-size: var(--tm-text-xs);
-  max-width: 32ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .section-head {
@@ -4357,11 +4471,6 @@ pre.check-tail {
   margin-left: auto;
 }
 
-.app.mobile .row-err {
-  flex-basis: 100%;
-  max-width: 100%;
-}
-
 /* Half the desktop indent, marker included — 22px per level eats a phone row.
    Both values must move together or the `\2514` hangs off its own child. */
 .app.mobile .task-row .task-main.child {
@@ -4857,12 +4966,6 @@ pre.check-tail {
 /* the meta line indents with the title it belongs to */
 .app.mobile .task-row.m.nested .row-meta {
   padding-left: calc(var(--tm-depth, 1) * 12px);
-}
-
-.app.mobile .task-row.m .row-err {
-  grid-area: err;
-  max-width: 100%;
-  white-space: normal;
 }
 
 .more-chip {
@@ -6073,10 +6176,6 @@ pre.check-tail {
 
 .inbox-acts .btn {
   gap: var(--tm-space-2);
-}
-
-.inbox-err {
-  margin-top: var(--tm-space-2);
 }
 
 .inbox-empty {

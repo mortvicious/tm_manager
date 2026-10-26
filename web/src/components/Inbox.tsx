@@ -4,6 +4,7 @@ import { buildInbox, publishCaution, type DiffStat, type InboxItem, type InboxKi
 import { api } from '../api.ts';
 import { confirmPublish } from '../publish.ts';
 import { useApp } from '../state.tsx';
+import { toastError } from '../toast.ts';
 import { IconAnalyze, IconCheck, IconInbox, IconMore, IconPlay, IconPublish, IconRefresh, IconTerminal, IconX } from './Icons.tsx';
 import { QuestionForm } from './QuestionModal.tsx';
 import { reviewHeadline } from './ReviewPanel.tsx';
@@ -251,28 +252,26 @@ export function useInboxActs(nav: InboxNav) {
   );
 }
 
-/** Runs one act at a time per surface and keeps the refusal to show. */
+/** Runs one act at a time per surface; a refusal goes to the shared toast. */
 export function useActRunner() {
   const [busy, setBusy] = useState<string | null>(null);
-  const [err, setErr] = useState<{ key: string; text: string } | null>(null);
   const run = useCallback(
     async (itemKey: string, act: InboxAct, onDone?: () => void) => {
       if (act.disabled || busy) return;
       if (act.confirm && !act.confirm()) return;
       setBusy(itemKey);
-      setErr(null);
       try {
         await act.run();
         onDone?.();
       } catch (e) {
-        setErr({ key: itemKey, text: (e as Error).message });
+        toastError(e, act.label);
       } finally {
         setBusy(null);
       }
     },
     [busy],
   );
-  return { busy, err, run };
+  return { busy, run };
 }
 
 /** One row: kind tag, title, repo, the one-line summary. */
@@ -408,16 +407,14 @@ function ReviewDetail({ task, ready }: { task: Task; ready: string | null }) {
 function ProposalDetail({ item }: { item: Extract<InboxItem, { kind: 'proposal' }> }) {
   const { refresh } = useApp();
   const p = item.proposal.payload;
-  const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const choose = async (i: number) => {
     setBusy(true);
-    setErr(null);
     try {
       await api.acceptProposal(item.proposal.id, i);
       await refresh();
     } catch (e) {
-      setErr((e as Error).message);
+      toastError(e, 'Accept');
     } finally {
       setBusy(false);
     }
@@ -443,7 +440,6 @@ function ProposalDetail({ item }: { item: Extract<InboxItem, { kind: 'proposal' 
           ))}
         </div>
       )}
-      {err && <div className="warn-text">{err}</div>}
     </div>
   );
 }
@@ -528,14 +524,13 @@ const ACT_ICON: Record<InboxAct['key'], ReactNode> = {
 /** One item's sheet, stacked above the list: detail, then the actions. */
 export function InboxItemSheet({ item, nav, onClose }: { item: InboxItem; nav: InboxNav; onClose: () => void }) {
   const actsFor = useInboxActs(nav);
-  const { busy, err, run } = useActRunner();
+  const { busy, run } = useActRunner();
   return (
     <Sheet label={itemTitle(item)} title={itemTitle(item)} onClose={onClose} zIndex={36}>
       <div className="inbox-sheet-meta">
         <InboxRowHead item={item} bare />
       </div>
       <InboxDetail item={item} />
-      {err && <div className="warn-text inbox-err">{err.text}</div>}
       <div className="inbox-sheet-acts">
         {actsFor(item).map((a) => (
           <SheetAction

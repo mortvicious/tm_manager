@@ -1,8 +1,8 @@
-import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { compareClaimOrder, type Run } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
+import { toastError } from '../toast.ts';
 import { IconTerminal } from '../components/Icons.tsx';
 import { Elapsed } from '../components/RunMeta.tsx';
 import { TaskRow } from '../components/TaskRow.tsx';
@@ -11,7 +11,6 @@ import { KindBadge, runLink, runTitle } from '../components/RunKind.tsx';
 
 export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (runId: string) => void; onOpenTask: (id: string) => void }) {
   const { runs, tasks, refresh } = useApp();
-  const [err, setErr] = useState<string | null>(null);
   const active = runs.filter((r) => r.status === 'running' && !r.idle);
   const idle = runs.filter((r) => r.status === 'running' && r.idle);
   // Custom queue (docs/queue.md) first, in run order; the rest is the global queue.
@@ -32,19 +31,17 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
 
   const kill = async (id: string) => {
     if (!confirm('Kill this session?')) return;
-    setErr(null);
     try {
       await api.killRun(id);
       await refresh();
     } catch (e) {
-      setErr((e as Error).message);
+      toastError(e, 'Kill');
     }
   };
 
   return (
     <div>
       <h1 className="page-title">Queue</h1>
-      {err && <div className="warn-text" style={{ marginBottom: 10 }}>{err}</div>}
 
       <div className="section-head">
         Active sessions <span className="count">{active.length}</span>

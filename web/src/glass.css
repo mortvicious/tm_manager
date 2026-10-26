@@ -1030,11 +1030,33 @@
   border-radius: 0;
 }
 
+/* ---------- toasts and the offline banner (docs/mobile.md § Action errors, § Server offline) ---------- */
+/* Thick glass like the other floating pieces; the status hue stays on the dot
+   and the rim, so red still reads as red over any wallpaper. */
+[data-design='glass'] .toast,
+[data-design='glass'] .offline-banner {
+  border-color: color-mix(in srgb, var(--tm-status-failed) 45%, var(--tm-glass-rim));
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-glass-thick);
+  -webkit-backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow);
+}
+
+[data-design='glass'] .toast {
+  animation: tm-toast-in var(--tm-dur-spring) var(--tm-ease-spring);
+}
+
+[data-design='glass'] .offline-banner.offline {
+  border-color: color-mix(in srgb, var(--tm-status-review) 45%, var(--tm-glass-rim));
+}
+
 /* ---------- motion ---------- */
 
 /* pages rise into place. `backwards`, never `both`: a transform left on the
    page root after the animation would trap every fixed element inside it */
-[data-design='glass'] .main > :first-child {
+/* the phone's offline banner (theme.css) is never the page: the one after it is */
+[data-design='glass'] .main > :is(:first-child, .offline-banner + *):not(.offline-banner) {
   animation: tm-page-in var(--tm-dur-page) var(--tm-ease-smooth) backwards;
 }
 
@@ -1057,7 +1079,8 @@
 /* Reduce Motion: theme.css collapses durations but not delays, which would
    leave staggered rows invisible for a beat. Nothing rises at all instead. */
 @media (prefers-reduced-motion: reduce) {
-  [data-design='glass'] .main > :first-child,
+  [data-design='glass'] .main > :is(:first-child, .offline-banner + *):not(.offline-banner),
+  [data-design='glass'] .toast,
   [data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group) {
     animation: none;
   }
@@ -1096,11 +1119,22 @@
   animation: tm-alert-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
 }
 
+[data-design='glass'] .toast.tm-exit {
+  animation: tm-fade-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
+}
+
 /* a design or scheme switch cross-fades the whole page (src/appearance.ts).
    Unscoped: during a switch TO Classic the root already says classic. */
 ::view-transition-old(root),
 ::view-transition-new(root) {
   animation-duration: var(--tm-dur-slow);
+}
+
+@keyframes tm-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--tm-space-4)) scale(0.96);
+  }
 }
 
 @keyframes tm-fade-in {

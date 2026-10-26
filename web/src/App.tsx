@@ -5,6 +5,7 @@ import { QuestionModal } from './components/QuestionModal.tsx';
 import { PushBridge } from './components/PushBridge.tsx';
 import { TaskSlideOver } from './components/TaskSlideOver.tsx';
 import { TerminalDrawer } from './components/TerminalDrawer.tsx';
+import { Toasts } from './components/Toasts.tsx';
 import { BoardPage } from './pages/Board.tsx';
 import { ChatPage } from './pages/Chat.tsx';
 import { DashboardPage } from './pages/Dashboard.tsx';
@@ -69,6 +70,8 @@ export function App() {
       <QuestionModal />
       {/* service worker + notification taps + ?task=<id> deep links (docs/push.md) */}
       <PushBridge onOpenTask={setOpenTask} />
+      {/* the one place a refused action is reported (docs/mobile.md § Action errors) */}
+      <Toasts />
     </Layout>
   );
 }

@@ -248,7 +248,7 @@ function proxyHttp(req: http.IncomingMessage, res: http.ServerResponse): void {
     res.end(
       JSON.stringify({
         error: down
-          ? 'the task-manager API is not running — start it from the header, or POST /host/start'
+          ? 'the task-manager API is not running — tap Start server (the header, or the offline banner on a phone), or POST /host/start'
           : `proxy error: ${(e as Error).message}`,
         apiDown: down,
       }),

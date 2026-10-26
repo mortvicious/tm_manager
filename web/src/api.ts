@@ -115,19 +115,40 @@ export function normalizeTask(t: Task): Task {
   };
 }
 
+/**
+ * What a failure without a server reason should say. A bare "502", or Safari's
+ * "Load failed" for a request that never got an answer, told the user nothing
+ * (docs/mobile.md § Action errors); the server's own `error` text always wins
+ * over these.
+ */
+function statusText(res: Response): string {
+  if (res.status === 502 || res.status === 503 || res.status === 504)
+    return `can't reach the task-manager server (${res.status})`;
+  return res.statusText ? `${res.status} ${res.statusText}` : `request failed (${res.status})`;
+}
+
 async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
-  const res = await fetch(url, {
-    method,
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (e) {
+    // fetch rejects only when no response arrived at all ("Load failed",
+    // "Failed to fetch", "NetworkError when…"): the server or the network is gone.
+    // An abort is the caller's own doing and keeps its identity.
+    if ((e as Error).name === 'AbortError') throw e;
+    throw new Error("can't reach the task-manager server — check that it is running");
+  }
   if (!res.ok) {
-    let msg = `${res.status}`;
+    let msg = statusText(res);
     try {
       const j = await res.json();
-      msg = j.error ?? msg;
+      if (typeof j?.error === 'string' && j.error) msg = j.error;
     } catch {
-      /* keep status text */
+      /* keep the status text */
     }
     throw new Error(msg);
   }

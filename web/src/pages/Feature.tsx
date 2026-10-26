@@ -10,6 +10,7 @@ import {
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
+import { toastError } from '../toast.ts';
 import { FeatureBadge } from '../components/FeatureBadge.tsx';
 import { StatusBadge } from '../components/StatusBadge.tsx';
 import { Markdown } from '../components/Markdown.tsx';
@@ -315,7 +316,6 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
   const [draftPlan, setDraftPlan] = useState<FeaturePlan | null>(null);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const [showRequest, setShowRequest] = useState(true);
   // The global feature list arrives asynchronously; without this the page
@@ -376,12 +376,11 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
   const act = async (label: string, fn: () => Promise<unknown>) => {
     if (busy) return;
     setBusy(label);
-    setErr(null);
     try {
       await fn();
       await refresh();
     } catch (e) {
-      setErr((e as Error).message);
+      toastError(e);
     } finally {
       setBusy(null);
     }
@@ -496,7 +495,6 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
         </div>
       </div>
 
-      {err && <div className="warn-text" style={{ marginBottom: 12 }}>{err}</div>}
       {feature.error && <div className="warn-text" style={{ marginBottom: 12 }}>{feature.error}</div>}
 
       <div className="section-head" style={{ cursor: 'pointer' }} onClick={() => setShowRequest((v) => !v)}>

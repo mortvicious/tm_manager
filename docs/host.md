@@ -180,6 +180,12 @@ The header's server pill now distinguishes two things it used to call `offline`:
   error. This is the case that used to be unreachable, because the page died
   with the server.
 
+A phone's header has no room for that pill, so the phone gets the same two
+readings as a sticky banner at the top of the page, with **Start server** on the
+`stopped` one (`docs/mobile.md` § Server offline). Both call one hook,
+`useServerStart()` in `Layout.tsx`, so they cannot disagree about when Start is
+offered.
+
 `/host/status` is polled every 3s only while the socket is down; with the socket
 up the API is already telling the page everything. A page not served through a
 front door gets a failed fetch, `host: null`, and no new controls — `npm run
@@ -206,7 +212,7 @@ listen error is still fatal on the first try.
 
 | symptom | cause | fix |
 |---|---|---|
-| `503 {"apiDown": true}` from `/api/...` | the API is not running; the front door is | **Start server** in the header, or `POST /host/start` |
+| `503 {"apiDown": true}` from `/api/...` | the API is not running; the front door is | **Start server** in the header (on a phone, in the offline banner), or `POST /host/start` |
 | the UI is a 503 text page | `web/dist` is missing | `npm run build` — the front door re-checks per request, no restart needed |
 | `/host/*` requests fail, no Start button | no front door in front of this page (`dev:web` alone, `start:api`) | run `npm start` or `npm run dev` |
 | `409` from `/host/stop` on an API that is up | it was adopted, not spawned here | stop it where you started it |

@@ -17,6 +17,7 @@ import {
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
+import { toastError } from '../toast.ts';
 import {
   absorbTyped,
   buildHaystacks,
@@ -633,7 +634,7 @@ export function BoardPage({
   onOpenTask: (id: string) => void;
   onOpenTerminal: (runId: string) => void;
 }) {
-  const { tasks, repos, runs, settings, refresh, dispatches, questions, features } = useApp();
+  const { tasks, repos, runs, settings, refresh, dispatches, questions, features, loaded, connected } = useApp();
   // default ON so the board is coloured before /api/config answers, matching
   // DEFAULT_SETTINGS['board.groupColors']
   const groupColors = settings?.['board.groupColors'] ?? true;
@@ -908,8 +909,8 @@ export function BoardPage({
 
   // Drag and drop (docs/grouping.md § Drag and drop). The server resolves the
   // drop; the WS broadcast and the refresh both land the result.
-  const [boardErr, setBoardErr] = useState<string | null>(null);
-  const report = (e: unknown) => setBoardErr(e instanceof Error ? e.message : String(e));
+  // Refusals (a child leaving a blocked split parent…) go to the shared toast,
+  // not a banner at the top of a board you may be scrolled far down.
   const onDrop = (moving: Task, zone: DropZone, targetId: string) => {
     const target = byId.get(targetId);
     // Reordering among roots is only visible in queue order — switch to it
@@ -917,21 +918,19 @@ export function BoardPage({
     if ((zone === 'before' || zone === 'after') && target && !target.parentId && sort !== 'manual') {
       setPrefs((p) => ({ ...p, sort: 'manual' }));
     }
-    setBoardErr(null);
     api
       .moveTask(moving.id, { place: zone, targetId })
       .then(() => refresh())
-      .catch(report);
+      .catch((e) => toastError(e, 'Move'));
   };
   const { drag, gripProps, dropClass } = useTaskDrag(tasks, onDrop);
 
   const patchGroup = async (rootId: string, patch: { groupName?: string | null; groupColor?: number | null }) => {
-    setBoardErr(null);
     try {
       await api.updateTask(rootId, patch);
       await refresh();
     } catch (e) {
-      report(e);
+      toastError(e, 'Group edit');
       throw e;
     }
   };
@@ -1320,17 +1319,17 @@ export function BoardPage({
           onOpenTask={onOpenTask}
         />
       )}
-      {boardErr && (
-        <div className="board-err warn-text" role="alert">
-          <span>{boardErr}</span>
-          <button className="btn ghost" onClick={() => setBoardErr(null)}>
-            dismiss
-          </button>
-        </div>
-      )}
       {!mobile && <NewTaskForm onCreated={refresh} />}
       <DragGhost drag={drag} tasks={tasks} />
-      {tasks.length === 0 && (
+      {/* An empty list before the first successful load means "never heard
+          from the server", not "no tasks" (docs/mobile.md § Server offline). */}
+      {tasks.length === 0 && !loaded && (
+        <div className="empty panel" style={{ marginTop: 20 }}>
+          <div className="big">{connected ? 'Loading…' : "Can't reach the server"}</div>
+          {connected ? null : 'Tasks will appear once it answers — retrying.'}
+        </div>
+      )}
+      {tasks.length === 0 && loaded && (
         <div className="empty panel" style={{ marginTop: 20 }}>
           <div className="big">No tasks yet</div>
           Add a repo, then create your first task.

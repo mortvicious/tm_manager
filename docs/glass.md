@@ -212,8 +212,9 @@ containing block of its `position: fixed` children. That gives four rules:
 
 - **No blur, filter or transform on `.main`.** It holds the slide-over, the
   terminal drawer, the question modal and the drag ghost. The page-enter
-  animation is on `.main > :first-child` with `animation-fill-mode: backwards`,
-  never `both`, so no transform outlives it.
+  animation is on `.main > :first-child` (or the page after the phone's
+  offline banner, which never animates as the page) with
+  `animation-fill-mode: backwards`, never `both`, so no transform outlives it.
 - **Nor on `.header`** (it holds the desktop emulator) **or `.app`** (the sheet
   portal host). The header paints over the page using grid-item z-index (26,
   above the drawer's 25, as the emulator was before), which creates no
@@ -224,7 +225,9 @@ containing block of its `position: fixed` children. That gives four rules:
 - **Cards don't blur.** Nothing is behind them but the wallpaper, and a blur of
   a soft gradient is that gradient. Only things that float over content get one
   (bars, the tab bar, sheets, the panel, the modal, popovers, the phone's sticky
-  Save bar), which keeps scrolling cheap on a phone.
+  Save bar, the action-error toasts and the phone's sticky offline banner), which
+  keeps scrolling cheap on a phone. Those last two keep their status hue on the
+  dot and the rim (`docs/mobile.md` § Server offline, § Action errors).
 
 ## Limits
 

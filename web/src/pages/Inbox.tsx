@@ -68,7 +68,7 @@ function keyIsOurs(e: KeyboardEvent): boolean {
 
 function DeskList({ items, nav }: { items: InboxItem[]; nav: InboxNav }) {
   const actsFor = useInboxActs(nav);
-  const { busy, err, run } = useActRunner();
+  const { busy, run } = useActRunner();
   const [selKey, setSelKey] = useState<string | null>(null);
   const lastIndex = useRef(0);
   // The selected item, or — when it just left the list — whatever now sits at its position.
@@ -144,7 +144,6 @@ function DeskList({ items, nav }: { items: InboxItem[]; nav: InboxNav }) {
             {on && (
               <>
                 <InboxDetail item={i} />
-                {err?.key === i.key && <div className="warn-text inbox-err">{err.text}</div>}
                 <div className="inbox-acts">
                   {actsFor(i).map((a) => (
                     <button

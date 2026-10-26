@@ -14,7 +14,8 @@ npm start          # → http://localhost:5176
 page, and the **API** on :5175, which it starts and watches. That split is why
 the header's **Restart server** button can put the server back — the page is not
 being served by the thing it just restarted (`docs/host.md`). When the API is
-down the pill reads `stopped` and the button becomes **Start server**.
+down the pill reads `stopped` and the button becomes **Start server**; on a phone
+the same reading and button sit in a banner at the top of the page.
 
 1. **Repos** → add a local path (`~/Development/my-app`) with a role note ("backend", "frontend").
 2. **Board** → **+ New task** — title, description, repo. Model/effort overrides are optional; leave them on *auto (router)*, or click a **Preset** to set model, effort and adversarial review in one go:
