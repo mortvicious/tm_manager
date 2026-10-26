@@ -11,6 +11,7 @@ import {
   type InboxNav,
 } from '../components/Inbox.tsx';
 import { useIsMobile } from '../components/Layout.tsx';
+import type { InboxReturn } from '../returnTo.ts';
 
 /**
  * The decide view (docs/inbox.md). Desktop: one list, the selected item
@@ -20,12 +21,17 @@ import { useIsMobile } from '../components/Layout.tsx';
  * the item leaves the selection on the same POSITION, so the next item is the
  * one under the cursor. Phone: the rows, and a row opens its own sheet.
  */
-export function InboxPage({ onOpenTask, onOpenTerminal }: InboxNav) {
+export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav & { inboxReturn: InboxReturn | null }) {
   const mobile = useIsMobile();
   const items = useInbox();
   const nav = useMemo(() => ({ onOpenTask, onOpenTerminal }), [onOpenTask, onOpenTerminal]);
   const [openKey, setOpenKey] = useState<string | null>(null);
   const open = items.find((i) => i.key === openKey) ?? null;
+  // a terminal opened from an item's sheet comes back to it (docs/mobile.md
+  // § Returning from a terminal); the desktop list never closed
+  useEffect(() => {
+    if (inboxReturn && !inboxReturn.sheet && mobile) setOpenKey(inboxReturn.key);
+  }, [inboxReturn]);
 
   return (
     <div className="inbox-page">

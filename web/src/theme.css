@@ -4355,6 +4355,7 @@ pre.check-tail {
 
 .so-save {
   display: flex;
+  gap: var(--tm-space-2);
 }
 
 .brand-mini {
@@ -5141,6 +5142,11 @@ pre.check-tail {
   flex: 1;
   justify-content: center;
   min-height: var(--tm-tap);
+}
+
+/* Discard is the minor half of the bar: its own width, Save takes the rest */
+.app.mobile .so-save .btn.ghost {
+  flex: 0 0 auto;
 }
 
 .so-settings-toggle {

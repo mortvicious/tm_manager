@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   EFFORT_LEVELS,
   GROUP_COLOR_COUNT,
@@ -86,6 +86,67 @@ const LIVE_MSG = 'Previous session is still live — open its terminal or kill i
 function placeOfParent(t: Task): GroupChoicePlace {
   if (!t.parentId) return 'ungroup';
   return t.parentId === t.groupId ? 'group' : 'child';
+}
+
+/** The panel's editable fields, as the form holds them. */
+interface EditFields {
+  title: string;
+  description: string;
+  acceptance: string;
+  checks: string[] | null;
+  repoId: string;
+  parentId: string;
+  parentPlace: GroupChoicePlace;
+  model: string;
+  effort: string;
+  category: string;
+  groupName: string;
+  groupColor: string;
+  review: ReviewChoice;
+  reviewModel: string;
+  reviewEffort: string;
+  landing: LandingTier | null;
+}
+
+/** What the form shows for a task with nothing edited. */
+function fieldsOf(t: Task): EditFields {
+  return {
+    title: t.title,
+    description: t.description ?? '',
+    acceptance: t.acceptance ?? '',
+    checks: t.checks,
+    repoId: t.repoId ?? '',
+    parentId: t.parentId ?? '',
+    parentPlace: placeOfParent(t),
+    model: t.model ?? '',
+    effort: t.effort ?? '',
+    category: t.category ?? '',
+    groupName: t.groupName ?? '',
+    groupColor: t.groupColor == null ? '' : String(t.groupColor),
+    review: reviewChoiceOf(t.review),
+    reviewModel: t.reviewModel ?? '',
+    reviewEffort: t.reviewEffort ?? '',
+    landing: t.landing,
+  };
+}
+
+/**
+ * Unsaved edits and follow-up text per task, kept when the panel closes
+ * (docs/mobile.md § Drafts survive a close): a stray click beside the panel, a
+ * swipe down the sheet, or a trip to the terminal must never cost typed text.
+ * Only the fields that DIFFER from the task at close are kept, so reopening
+ * never reverts a change made elsewhere meanwhile. Memory only — a reload is a
+ * deliberate act; Save, Send and Discard clear the entry.
+ */
+const panelDrafts = new Map<string, { fields: Partial<EditFields>; followUp: string }>();
+
+function stashDraft(id: string, fields: EditFields, base: EditFields, followUp: string) {
+  const changed: Partial<EditFields> = {};
+  for (const k of Object.keys(fields) as (keyof EditFields)[]) {
+    if (JSON.stringify(fields[k]) !== JSON.stringify(base[k])) (changed as Record<string, unknown>)[k] = fields[k];
+  }
+  if (Object.keys(changed).length || followUp.trim()) panelDrafts.set(id, { fields: changed, followUp });
+  else panelDrafts.delete(id);
 }
 
 /**
@@ -257,30 +318,75 @@ export function TaskSlideOver({
     [taskRuns],
   );
 
+  const setFields = (f: EditFields) => {
+    setTitle(f.title);
+    setDescription(f.description);
+    setAcceptance(f.acceptance);
+    setChecks(f.checks);
+    setRepoId(f.repoId);
+    setParentId(f.parentId);
+    setParentPlace(f.parentPlace);
+    setModel(f.model);
+    setEffort(f.effort);
+    setCategory(f.category);
+    setGroupName(f.groupName);
+    setGroupColor(f.groupColor);
+    setReview(f.review);
+    setReviewModel(f.reviewModel);
+    setReviewEffort(f.reviewEffort);
+    setLanding(f.landing);
+  };
+  // the task the form's state was last loaded for — until the load effect has
+  // run, the state still holds the previous task's (or the initial empty) values
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  // the last committed form, read by the load effect's cleanup to stash a draft
+  const latest = useRef<{ id: string; fields: EditFields; base: EditFields; followUp: string } | null>(null);
+  // set by Delete: a deleted task's draft is not kept
+  const dropDraft = useRef(false);
+
   // Keyed on id, not the task object: task.updated events must not wipe edits.
+  // A draft kept from an earlier close is laid over the task's values; the
+  // cleanup (close, or the breadcrumb swapping tasks) keeps this one's.
   useEffect(() => {
-    if (task) {
-      setTitle(task.title);
-      setDescription(task.description ?? '');
-      setAcceptance(task.acceptance ?? '');
-      setChecks(task.checks);
-      setRepoId(task.repoId ?? '');
-      setParentId(task.parentId ?? '');
-      setParentPlace(placeOfParent(task));
-      setModel(task.model ?? '');
-      setEffort(task.effort ?? '');
-      setCategory(task.category ?? '');
-      setGroupName(task.groupName ?? '');
-      setGroupColor(task.groupColor == null ? '' : String(task.groupColor));
-      setReview(reviewChoiceOf(task.review));
-      setReviewModel(task.reviewModel ?? '');
-      setReviewEffort(task.reviewEffort ?? '');
-      setLanding(task.landing);
-      setFollowUpMsg('');
-      setSettingsOpen(task.status === 'draft');
-      setMoreOpen(false);
-    }
+    if (!task) return;
+    const id = task.id;
+    const kept = panelDrafts.get(id);
+    setFields({ ...fieldsOf(task), ...kept?.fields });
+    setFollowUpMsg(kept?.followUp ?? '');
+    setLoadedFor(id);
+    setSettingsOpen(task.status === 'draft');
+    setMoreOpen(false);
+    dropDraft.current = false;
+    return () => {
+      const l = latest.current;
+      if (dropDraft.current) panelDrafts.delete(id);
+      else if (l && l.id === id) stashDraft(id, l.fields, l.base, l.followUp);
+    };
   }, [task?.id]);
+  const fields: EditFields = {
+    title,
+    description,
+    acceptance,
+    checks,
+    repoId,
+    parentId,
+    parentPlace,
+    model,
+    effort,
+    category,
+    groupName,
+    groupColor,
+    review,
+    reviewModel,
+    reviewEffort,
+    landing,
+  };
+  // Declared after the load effect, so on a task swap its cleanup still reads
+  // the OLD task's form; it only records a form that belongs to `task`.
+  useEffect(() => {
+    latest.current =
+      task && loadedFor === task.id ? { id: task.id, fields, base: fieldsOf(task), followUp: followUpMsg } : null;
+  });
 
   // Deliverable files — refresh when the panel opens and when the task's
   // status changes (a finished run may have just written files).
@@ -395,9 +501,16 @@ export function TaskSlideOver({
           : {}),
       });
       await refresh();
+      panelDrafts.delete(task.id);
     } catch (e) {
       toastError(e, 'Save');
     }
+  };
+
+  // back to the task as it is, and nothing kept for the next open
+  const discard = () => {
+    setFields(fieldsOf(task));
+    panelDrafts.delete(task.id);
   };
 
   const action = async (
@@ -466,6 +579,7 @@ export function TaskSlideOver({
     if (!confirm('Delete this task?')) return;
     try {
       await api.deleteTask(task.id);
+      dropDraft.current = true;
       onClose();
     } catch (e) {
       toastError(e);
@@ -997,6 +1111,9 @@ export function TaskSlideOver({
 
       {dirty && (
         <div className="so-save">
+          <button className="btn ghost" onClick={discard} title="Back to the saved values">
+            Discard
+          </button>
           <button className="btn primary" onClick={save}>
             Save changes
           </button>

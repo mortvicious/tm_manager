@@ -70,6 +70,20 @@ const loadMobileFont = (): number => {
  */
 const SUBMIT_DELAY_MS = 120;
 
+/**
+ * `reconnecting` is a lost socket while the session may still be alive;
+ * `ended` only ever follows the server's word (an `exit` frame or 4404).
+ */
+type TermStatus = 'connecting' | 'live' | 'reconnecting' | 'ended';
+const STATUS_LABEL: Record<TermStatus, string> = {
+  connecting: 'connecting',
+  live: 'live',
+  reconnecting: 'reconnecting…',
+  ended: 'session ended',
+};
+/** backoff between reopen attempts of a dropped terminal socket; the last repeats */
+const RECONNECT_MS = [500, 1000, 2000, 4000, 8000, 15000];
+
 export function TerminalDrawer({
   runId,
   expandSignal = 0,
@@ -78,7 +92,8 @@ export function TerminalDrawer({
   runId: string;
   /** bumped by the app each time something asks to open a terminal — re-expands a compacted drawer */
   expandSignal?: number;
-  onClose: () => void;
+  /** `outside` = the desktop click-outside setting, not a deliberate close (App skips the return then) */
+  onClose: (how?: 'outside') => void;
 }) {
   const { token, runs, tasks, commandRuns, shells, activity, settings } = useApp();
   const hostRef = useRef<HTMLDivElement>(null);
@@ -95,7 +110,7 @@ export function TerminalDrawer({
   const composeRef = useRef<HTMLTextAreaElement>(null);
   const [draft, setDraft] = useState('');
   const [mobileFont, setMobileFont] = useState(loadMobileFont);
-  const [status, setStatus] = useState<'connecting' | 'live' | 'closed'>('connecting');
+  const [status, setStatus] = useState<TermStatus>('connecting');
   const [compact, setCompact] = useState(false);
   const mobile = useIsMobile();
   // The size a terminal built right now should have. Read by the xterm effect
@@ -153,7 +168,7 @@ export function TerminalDrawer({
     if (compact || clickOutside === 'nothing' || mobile) return;
     const onDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        if (clickOutside === 'close') onClose();
+        if (clickOutside === 'close') onClose('outside');
         else setCompact(true);
       }
     };
@@ -182,15 +197,24 @@ export function TerminalDrawer({
     const detachTouch = attachTouchScroll(term, hostRef.current);
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/ws/terminal/${runId}?token=${token}`);
     const encoder = new TextEncoder();
+    // The socket is replaceable: a dropped one (iOS suspends a backgrounded
+    // PWA's sockets, a laptop sleeps, Wi-Fi changes) is reopened, and only the
+    // server can say the session is over — an `exit` frame, or 4404 for an id
+    // no pool knows any more.
+    let ws: WebSocket | null = null;
+    let ended = false;
+    let retries = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    // set once any socket has replayed history into this terminal
+    let attached = false;
 
     const refit = () => {
       // While compacted the body is display:none and measures 0 wide — fitting
       // then would shrink the PTY to 2×1 cells; expand() refits instead.
       if (disposed || !hostRef.current || hostRef.current.clientWidth === 0) return;
       fit.fit();
-      if (ws.readyState === WebSocket.OPEN) {
+      if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
       }
     };
@@ -204,35 +228,75 @@ export function TerminalDrawer({
       }
     };
 
-    ws.onopen = () => {
-      if (!disposed) setStatus('live');
-    };
-    ws.onmessage = (ev) => {
-      if (disposed) return;
-      let msg: TerminalServerMsg;
-      try {
-        msg = JSON.parse(ev.data);
-      } catch {
-        return;
-      }
-      try {
-        if (msg.type === 'history') {
-          writeChunked(b64ToBytes(msg.data));
-          // resize AFTER replay: SIGWINCH forces a clean redraw over any seam artifacts
-          requestAnimationFrame(refit);
-        } else if (msg.type === 'data') {
-          writeChunked(b64ToBytes(msg.data));
-        } else if (msg.type === 'exit') {
-          term.write(`\r\n\x1b[2m[session exited${msg.code === null ? '' : ` with code ${msg.code}`}]\x1b[0m\r\n`);
-          setStatus('closed');
+    const connect = () => {
+      clearTimeout(retryTimer);
+      if (disposed || ended) return;
+      const sock = new WebSocket(`${proto}://${location.host}/ws/terminal/${runId}?token=${token}`);
+      ws = sock;
+      // the server replays the whole ring buffer on every attach, so a second
+      // history frame repaints from scratch instead of appending a copy
+      let replayed = false;
+      sock.onmessage = (ev) => {
+        if (disposed || ws !== sock) return;
+        let msg: TerminalServerMsg;
+        try {
+          msg = JSON.parse(ev.data);
+        } catch {
+          return;
         }
-      } catch {
-        // malformed frame (bad base64 etc.) — drop it rather than crash the drawer (R5)
+        try {
+          if (msg.type === 'history') {
+            // Live on the replay, not on open: the server accepts the upgrade
+            // before it refuses one (4403 stale token, 4404), so an open alone
+            // would flash "live" and reset the backoff on every refusal.
+            if (attached) term.reset();
+            attached = true;
+            replayed = true;
+            retries = 0;
+            setStatus('live');
+            writeChunked(b64ToBytes(msg.data));
+            // resize AFTER replay: SIGWINCH forces a clean redraw over any seam artifacts
+            requestAnimationFrame(refit);
+          } else if (msg.type === 'data') {
+            writeChunked(b64ToBytes(msg.data));
+          } else if (msg.type === 'exit') {
+            term.write(`\r\n\x1b[2m[session exited${msg.code === null ? '' : ` with code ${msg.code}`}]\x1b[0m\r\n`);
+            ended = true;
+            setStatus('ended');
+          }
+        } catch {
+          // malformed frame (bad base64 etc.) — drop it rather than crash the drawer (R5)
+        }
+      };
+      sock.onerror = () => sock.close();
+      sock.onclose = (ev) => {
+        if (disposed || ws !== sock || ended) return;
+        ws = null;
+        if (ev.code === 4404) {
+          // no pool knows the id: the session is gone (a restart, or long over)
+          if (!replayed) term.write('\r\n\x1b[2m[session ended]\x1b[0m\r\n');
+          ended = true;
+          setStatus('ended');
+          return;
+        }
+        setStatus('reconnecting');
+        retryTimer = setTimeout(connect, RECONNECT_MS[Math.min(retries, RECONNECT_MS.length - 1)]);
+        retries++;
+      };
+    };
+    // Coming back to the app (or onto a network) is exactly when the terminal is
+    // wanted — a needs-attention prompt — so a pending retry goes now.
+    const reconnectNow = () => {
+      if (disposed || ended || document.visibilityState !== 'visible') return;
+      if (ws === null) {
+        retries = 0;
+        connect();
       }
     };
-    ws.onclose = () => {
-      if (!disposed) setStatus('closed');
-    };
+    document.addEventListener('visibilitychange', reconnectNow);
+    window.addEventListener('online', reconnectNow);
+    setStatus('connecting');
+    connect();
 
     // The single input path. Everything typed — soft keyboard, hardware keyboard
     // or the mobile key row — arrives here, so the sticky Ctrl is applied once.
@@ -244,7 +308,7 @@ export function TerminalDrawer({
         // stay armed after a key is a modifier you cannot see is stuck.
         setCtrlOn(false);
       }
-      if (ws.readyState === WebSocket.OPEN) {
+      if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'input', data: bytesToB64(encoder.encode(out)) }));
       }
     };
@@ -283,7 +347,10 @@ export function TerminalDrawer({
       window.removeEventListener('resize', refit);
       dataSub.dispose();
       detachTouch();
-      ws.close();
+      clearTimeout(retryTimer);
+      document.removeEventListener('visibilitychange', reconnectNow);
+      window.removeEventListener('online', reconnectNow);
+      ws?.close();
       term.dispose();
     };
   }, [runId, token, setCtrlOn]);
@@ -369,7 +436,7 @@ export function TerminalDrawer({
   const dotClass = inReview ? 'review' : live ? 'running' : 'off';
   const activityLine =
     activity[runId]?.text ??
-    (cmdRun ? cmdRun.command : shell ? shell.cwd : status === 'closed' ? 'session ended' : 'no recent activity');
+    (cmdRun ? cmdRun.command : shell ? shell.cwd : status === 'ended' ? 'session ended' : 'no recent activity');
 
   // Keeps focus (and therefore the soft keyboard) on the terminal: a tap that
   // moves focus to the button would dismiss the keyboard on every keypress.
@@ -442,8 +509,8 @@ export function TerminalDrawer({
       )}
       <div className="term-head">
         <span className="term-name">{name}</span>
-        <span className={`badge ${status === 'live' ? 's-running' : ''}`}>
-          <span className="dot" /> {status}
+        <span className={`badge ${status === 'live' ? 's-running' : status === 'reconnecting' ? 's-attention' : ''}`}>
+          <span className="dot" /> {STATUS_LABEL[status]}
         </span>
         <span style={{ flex: 1 }} />
         {mobile && (
@@ -477,7 +544,7 @@ export function TerminalDrawer({
             <IconChevron />
           </span>
         </button>
-        <button className="btn ghost" title="Close terminal" onClick={onClose}>
+        <button className="btn ghost" title="Close terminal" onClick={() => onClose()}>
           <IconX />
         </button>
       </div>
@@ -533,7 +600,7 @@ export function TerminalDrawer({
             className="field"
             rows={1}
             value={draft}
-            placeholder={status === 'live' ? 'Message… (Send = type + Enter)' : 'not connected'}
+            placeholder={status === 'live' ? 'Message… (Send = type + Enter)' : status === 'ended' ? 'session ended' : 'not connected'}
             enterKeyHint="send"
             aria-label="Message to the terminal"
             onChange={(e) => setDraft(e.target.value)}

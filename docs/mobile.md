@@ -435,7 +435,51 @@ to close; × animates out the same way.
   written, and closed otherwise.
 - **Save is a sticky bottom bar** while there is something to save. It is last
   in the order, so it rests below everything. It carries a negative `bottom`
-  because sticky insets count from inside the body's padding.
+  because sticky insets count from inside the body's padding. **Discard** sits
+  beside it at its own width and puts the fields back to the task's values.
+
+### Drafts survive a close
+
+A stray click beside the 560px desktop panel, a swipe down the phone sheet, its
+backdrop, × and a trip to the terminal all unmount the panel. None of them may
+cost typed text (UX review #6), so the panel keeps a module-level
+`panelDrafts` map, `taskId → { fields, followUp }`, written by the load
+effect's cleanup whenever the panel closes or the breadcrumb swaps tasks:
+
+- **Only fields that differ from the task at that moment are kept.** Reopening
+  lays them over the task's CURRENT values, so a model changed elsewhere in the
+  meantime is not reverted by a later Save of an old title edit.
+- **The follow-up text is kept too**, whether or not anything else is.
+- **Save, Send/Resume and Discard clear it**; Delete drops it. Nothing edited
+  and no follow-up text means no entry.
+- **Memory only.** A reload is a deliberate act, and a draft written against
+  an old task row should not outlive the tab.
+- There is no "Discard changes?" confirm: on a phone the sheet has already
+  played its exit by the time `onClose` runs, and a prompt after a swipe is
+  worse than a draft that is simply still there next time.
+
+The agent's question form keeps its own drafts the same way (`docs/questions.md`
+§ Drafts).
+
+### Returning from a terminal
+
+Opening a terminal has to clear the screen for it: the task panel's overlay
+sits above the drawer, and on a phone the Inbox sheets would fight it. The
+opener is remembered instead of lost (UX review #13): `openTerm(runId, from)`
+in `App.tsx` stores a `ReturnTo` (`web/src/returnTo.ts`) — `{ kind: 'task', id }`
+from the task panel, `{ kind: 'inbox', key, sheet }` from an Inbox item — and
+closing the drawer (× or ⌄-then-× on a phone, × on the desktop) reopens it: the
+panel with its drafts, or the Inbox item's sheet (on the header-chip
+`InboxSheet` when `sheet`, on the `/inbox` page's own stack otherwise). An item
+that resolved meanwhile is simply not reopened; the chip's sheet still comes
+back on its list.
+
+Not restored: a desktop click-outside close (`onClose('outside')`, the
+`terminal.clickOutside: close` setting) — that click was aimed at something
+else — a terminal opened from anywhere else (the board, Queue, Terminals,
+Repos), and an Inbox return while a task panel has been opened over the
+terminal. Opening a second terminal replaces the first one's `from`. The
+desktop `/inbox` list never closed, so it needs no return.
 
 ## The terminal
 
@@ -491,6 +535,21 @@ over the tab bar and the header), laid out top to bottom:
 - **Text size**: A−/A+ from 8 to 16px (default 11, about 56 columns at 390px
   instead of 45 at the desktop's 12.5), remembered in
   `localStorage['tm.term.mobileFont']`. Desktop stays at 12.5 with no control.
+- **A dropped socket reconnects** (UX review #10). iOS suspends a backgrounded
+  PWA's sockets, and coming back to answer a permission prompt is exactly the
+  moment the terminal is needed. `onclose` without an `exit` frame shows
+  **reconnecting…** (the attention badge) and reopens with backoff — 0.5, 1, 2,
+  4, 8, then every 15 s — and `visibilitychange → visible` or `online` retries
+  at once. The server replays the 2 MiB ring buffer on every attach, so the
+  second `history` frame `term.reset()`s and repaints rather than appending a
+  copy. **session ended** comes only from the server: an `exit` frame, or close
+  code 4404 (no pool knows the id — a restart, or a session long over). The
+  status turns `live` on the replay, not on `open`, because the server accepts
+  the upgrade before it refuses a stale token (4403) or an unknown id, and an
+  open alone would flash "live" and reset the backoff on every refusal. A
+  stale token is fixed by the events socket, which fetches the new one and so
+  re-runs the drawer's effect. Desktop gets the same, for sleep and Wi-Fi
+  changes.
 - **Tapping "outside" does nothing on a phone.** The only outside is a sheet or
   the question modal drawn over the terminal, and answering one must not fold it
   away. The ⌄ button still compacts it to the bar above the tab bar. That bar
@@ -512,6 +571,9 @@ compact/breakpoint/run change. The reasoning is in `docs/decisions.md`,
   Ctrl-with-a-symbol, function keys and Alt still have no key.
 - Reordering on a phone is still the drag grip, which does work on touch
   (pointer events). There is no "move up/down" action in the row sheet.
+- A socket iOS leaves half-open (still `OPEN` on resume, nothing arriving) is
+  not detected: there is no ping, so only a real `close` triggers the
+  reconnect. How quickly iOS closes a backgrounded socket is unmeasured.
 - The compose bar's Enter delay (120ms) is a timing assumption about the TUI's
   read loop, not a protocol guarantee. A very long paste that the CLI takes
   longer to ingest could still see the Enter arrive early.

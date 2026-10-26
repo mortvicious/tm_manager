@@ -19,22 +19,36 @@ import { SharedPage } from './pages/Shared.tsx';
 import { ReportsPage } from './pages/Reports.tsx';
 import { ReposPage } from './pages/Repos.tsx';
 import { TerminalsPage } from './pages/Terminals.tsx';
+import type { InboxReturn, ReturnTo } from './returnTo.ts';
 
 export function App() {
   const [openTask, setOpenTask] = useState<string | null>(null);
-  // nonce so re-opening the already-open terminal still re-expands a compacted drawer
-  const [openTerminal, setOpenTerminal] = useState<{ runId: string; nonce: number } | null>(null);
+  // nonce so re-opening the already-open terminal still re-expands a compacted drawer;
+  // `from` is the panel or Inbox item it replaced, reopened when it closes
+  const [openTerminal, setOpenTerminal] = useState<{ runId: string; nonce: number; from?: ReturnTo } | null>(null);
   const openTerm = useCallback(
-    (runId: string) => setOpenTerminal((cur) => ({ runId, nonce: (cur?.nonce ?? 0) + 1 })),
+    (runId: string, from?: ReturnTo) => setOpenTerminal((cur) => ({ runId, nonce: (cur?.nonce ?? 0) + 1, from })),
     [],
   );
+  const [inboxReturn, setInboxReturn] = useState<InboxReturn | null>(null);
+  // Back to where the terminal was opened from (UX review #13: "read findings →
+  // check the terminal → come back and Publish" is the supervision loop). Not
+  // after a click-outside close: that click was aimed at something else.
+  const closeTerm = (how?: 'outside') => {
+    const from = openTerminal?.from;
+    setOpenTerminal(null);
+    if (!from || how === 'outside') return;
+    if (from.kind === 'task') setOpenTask((cur) => cur ?? from.id);
+    // a task panel opened over the terminal meanwhile keeps the screen
+    else if (!openTask) setInboxReturn((cur) => ({ key: from.key, sheet: from.sheet, nonce: (cur?.nonce ?? 0) + 1 }));
+  };
 
   return (
-    <Layout onOpenTerminal={openTerm} onOpenTask={setOpenTask}>
+    <Layout onOpenTerminal={openTerm} onOpenTask={setOpenTask} inboxReturn={inboxReturn}>
       <Routes>
         <Route path="/" element={<DashboardPage onOpenTask={setOpenTask} />} />
         <Route path="/board" element={<BoardPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
-        <Route path="/inbox" element={<InboxPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
+        <Route path="/inbox" element={<InboxPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} inboxReturn={inboxReturn} />} />
         <Route path="/queue" element={<QueuePage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/chat/:id" element={<ChatPage />} />
@@ -54,8 +68,9 @@ export function App() {
           onClose={() => setOpenTask(null)}
           onOpenTerminal={(runId) => {
             // Slide-over closes: its overlay sits above the terminal drawer (review R7).
+            // Its edits survive in the panel's draft memory, and it comes back on close.
             setOpenTask(null);
-            openTerm(runId);
+            openTerm(runId, { kind: 'task', id: openTask });
           }}
         />
       )}
@@ -63,7 +78,7 @@ export function App() {
         <TerminalDrawer
           runId={openTerminal.runId}
           expandSignal={openTerminal.nonce}
-          onClose={() => setOpenTerminal(null)}
+          onClose={closeTerm}
         />
       )}
       {/* an agent's question pops up on whatever page is open (docs/questions.md) */}

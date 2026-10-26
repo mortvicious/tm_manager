@@ -64,6 +64,7 @@ export function Sheet({
   bodyClassName = 'sheet-body',
   tall,
   zIndex = 35,
+  disableDrag = false,
 }: {
   /** accessible name of the dialog */
   label: string;
@@ -81,6 +82,8 @@ export function Sheet({
   tall?: boolean;
   /** stacking: sheets 35, the agent's question above them */
   zIndex?: number;
+  /** the content stops dragging the sheet (a half-filled form); the header still does */
+  disableDrag?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [host, setHost] = useState<HTMLDivElement | null>(null);
@@ -161,7 +164,7 @@ export function Sheet({
               <div className="sheet-grip" />
               {header ?? (title && <div className="sheet-title">{title}</div>)}
             </ModalSheet.Header>
-            <ModalSheet.Content className="sheet-content">
+            <ModalSheet.Content className="sheet-content" disableDrag={disableDrag}>
               <div className={bodyClassName}>{children}</div>
             </ModalSheet.Content>
           </ModalSheet.Container>

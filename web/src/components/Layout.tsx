@@ -3,6 +3,7 @@ import type { UsageSnapshot, UsageWindow } from '@tm/shared';
 import { NavLink } from 'react-router-dom';
 import { api } from '../api.ts';
 import { toggleScheme, useLook } from '../appearance.ts';
+import type { InboxReturn, ReturnTo } from '../returnTo.ts';
 import { useApp } from '../state.tsx';
 import { CommandsLauncher } from './Commands.tsx';
 import { EmulatorLauncher } from './Emulator.tsx';
@@ -537,16 +538,20 @@ export function Layout({
   children,
   onOpenTerminal,
   onOpenTask,
+  inboxReturn,
 }: {
   children: ReactNode;
-  onOpenTerminal: (runId: string) => void;
+  onOpenTerminal: (runId: string, from?: ReturnTo) => void;
   onOpenTask: (taskId: string) => void;
+  /** a closed terminal returning to the Inbox sheet it was opened from */
+  inboxReturn: InboxReturn | null;
 }) {
   const mobile = useIsMobile();
   const nav = useNav();
   const [moreOpen, setMoreOpen] = useState(false);
   // the phone's Inbox sheet stack, opened from the header chip (docs/inbox.md)
   const [inboxOpen, setInboxOpen] = useState(false);
+  const [inboxKey, setInboxKey] = useState<string | null>(null);
   const navigate = useNavigate();
   const inboxNav = useMemo(() => ({ onOpenTask, onOpenTerminal }), [onOpenTask, onOpenTerminal]);
   const { pathname } = useLocation();
@@ -555,7 +560,13 @@ export function Layout({
   useEffect(() => {
     setMoreOpen(false);
     setInboxOpen(false);
+    setInboxKey(null);
   }, [mobile, pathname]);
+  useEffect(() => {
+    if (!inboxReturn?.sheet || !mobile) return;
+    setInboxKey(inboxReturn.key);
+    setInboxOpen(true);
+  }, [inboxReturn]);
   // Glass's row cascade runs only while a section is entering (glass.css § motion):
   // a reorder moves rows, and a moved row would replay an always-on animation.
   const mainRef = useRef<HTMLElement>(null);
@@ -626,7 +637,16 @@ export function Layout({
       </main>
       {mobile && <TabBar moreOpen={moreOpen} onMore={() => setMoreOpen((v) => !v)} />}
       {mobile && moreOpen && <MoreSheet onClose={() => setMoreOpen(false)} onOpenTerminal={onOpenTerminal} />}
-      {mobile && inboxOpen && <InboxSheet nav={inboxNav} onClose={() => setInboxOpen(false)} />}
+      {mobile && inboxOpen && (
+        <InboxSheet
+          nav={inboxNav}
+          initialKey={inboxKey}
+          onClose={() => {
+            setInboxOpen(false);
+            setInboxKey(null);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { buildInbox, publishCaution, type DiffStat, type InboxItem, type InboxKi
 import { api } from '../api.ts';
 import { confirmPublish } from '../publish.ts';
 import { useApp } from '../state.tsx';
+import type { ReturnTo } from '../returnTo.ts';
 import { toastError } from '../toast.ts';
 import { IconAnalyze, IconCheck, IconInbox, IconMore, IconPlay, IconPublish, IconRefresh, IconTerminal, IconX } from './Icons.tsx';
 import { QuestionForm } from './QuestionModal.tsx';
@@ -124,7 +125,8 @@ export interface InboxAct {
 
 export interface InboxNav {
   onOpenTask: (id: string) => void;
-  onOpenTerminal: (runId: string) => void;
+  /** `from` = the item to reopen when the terminal closes (docs/mobile.md § Returning from a terminal) */
+  onOpenTerminal: (runId: string, from?: ReturnTo) => void;
 }
 
 export function useInboxActs(nav: InboxNav) {
@@ -145,7 +147,7 @@ export function useInboxActs(nav: InboxNav) {
               label: 'Open terminal',
               hint: 'answer the prompt there',
               tone: 'primary',
-              run: () => nav.onOpenTerminal(item.run.id),
+              run: () => nav.onOpenTerminal(item.run.id, { kind: 'inbox', key: item.key, sheet: false }),
             },
             ...open(item.task),
           ];
@@ -469,9 +471,18 @@ export function InboxChip({ onClick, compact = false }: { onClick: () => void; c
  * its own sheet ON TOP with the detail and the actions, so the list is where
  * you return to after each decision.
  */
-export function InboxSheet({ onClose, nav }: { onClose: () => void; nav: InboxNav }) {
+export function InboxSheet({
+  onClose,
+  nav,
+  initialKey = null,
+}: {
+  onClose: () => void;
+  nav: InboxNav;
+  /** the item to reopen on top — the one a terminal was opened from */
+  initialKey?: string | null;
+}) {
   const items = useInbox();
-  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [openKey, setOpenKey] = useState<string | null>(initialKey);
   const open = items.find((i) => i.key === openKey) ?? null;
   // opening a task or terminal leaves the inbox: both stacks would fight for the screen
   const leave = useMemo<InboxNav>(
@@ -480,9 +491,10 @@ export function InboxSheet({ onClose, nav }: { onClose: () => void; nav: InboxNa
         onClose();
         nav.onOpenTask(id);
       },
-      onOpenTerminal: (runId) => {
+      // …and closing the terminal comes back to THIS sheet, on the same item
+      onOpenTerminal: (runId, from) => {
         onClose();
-        nav.onOpenTerminal(runId);
+        nav.onOpenTerminal(runId, from?.kind === 'inbox' ? { ...from, sheet: true } : from);
       },
     }),
     [nav, onClose],

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type SyntheticEvent } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore, type SyntheticEvent } from 'react';
 import { imagePreviewType, referencedFileNames, type Question, type QuestionItem, type QuestionOption } from '@tm/shared';
 import { api } from '../api.ts';
 import { exitGhost } from '../motion.ts';
@@ -166,15 +166,42 @@ function answerOf(item: QuestionItem, v: { picked: number[]; other: string } | u
   return parts.join(', ');
 }
 
+/**
+ * Half-answered questions, by question id (docs/questions.md § Drafts): the
+ * form is unmounted by every dismissal — an overlay click, a swipe down the
+ * phone sheet, the panel closing — and a dismissal must only hide it. Shared by
+ * every QuestionForm, so a pick in the modal is there in the task panel too.
+ * Dropped once the answer is accepted.
+ */
+const questionDrafts = new Map<string, Draft>();
+const draftListeners = new Set<() => void>();
+const NO_DRAFT: Draft = {};
+const subscribeDrafts = (l: () => void) => {
+  draftListeners.add(l);
+  return () => {
+    draftListeners.delete(l);
+  };
+};
+function setQuestionDraft(id: string, d: Draft | null) {
+  if (d) questionDrafts.set(id, d);
+  else questionDrafts.delete(id);
+  for (const l of draftListeners) l();
+}
+
+/** Anything picked or typed — what a stray swipe would cost. */
+const draftTouched = (d: Draft | undefined): boolean =>
+  !!d && Object.values(d).some((v) => v.picked.length > 0 || v.other.trim() !== '');
+
 /** The form itself — shared by the modal and the task panel. */
 export function QuestionForm({ question, onDone }: { question: Question; onDone?: () => void }) {
-  const [draft, setDraft] = useState<Draft>({});
+  // the store is the state: an unmount at any moment loses nothing, and the
+  // modal and the task panel showing the same question stay one draft
+  const draft = useSyncExternalStore(subscribeDrafts, () => questionDrafts.get(question.id) ?? NO_DRAFT);
+  const setDraft = (next: (d: Draft) => Draft) =>
+    setQuestionDraft(question.id, next(questionDrafts.get(question.id) ?? NO_DRAFT));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  useEffect(() => {
-    setDraft({});
-    setErr(null);
-  }, [question.id]);
+  useEffect(() => setErr(null), [question.id]);
 
   // the task's images, read once per question: the agent saved them before it asked
   const [files, setFiles] = useState<ImageFile[]>([]);
@@ -243,6 +270,7 @@ export function QuestionForm({ question, onDone }: { question: Question; onDone?
     setErr(null);
     try {
       await api.answerQuestion(question.id, answers);
+      setQuestionDraft(question.id, null);
       onDone?.();
     } catch (e) {
       setErr((e as Error).message);
@@ -302,6 +330,9 @@ export function QuestionModal() {
   // the slice is the pending set (state.tsx); oldest first
   const pending = useMemo(() => [...questions].sort((a, b) => a.createdAt.localeCompare(b.createdAt)), [questions]);
   const current = pending.find((q) => !dismissed.has(q.id)) ?? null;
+  const touched = useSyncExternalStore(subscribeDrafts, () =>
+    current ? draftTouched(questionDrafts.get(current.id)) : false,
+  );
 
   useEffect(() => {
     if (!current) return;
@@ -338,7 +369,9 @@ export function QuestionModal() {
       </button>
     </div>
   );
-  // a phone: a sheet above every other sheet; swiping it down is "not now"
+  // A phone: a sheet above every other sheet; swiping it down is "not now".
+  // Once an answer is under way the form stops dragging the sheet — a flick
+  // while scrolling the options must not dismiss it — and only the grip does.
   if (mobile)
     return (
       <Sheet
@@ -348,6 +381,7 @@ export function QuestionModal() {
         zIndex={41}
         onClose={close}
         head={head}
+        disableDrag={touched}
       >
         <QuestionForm question={current} />
       </Sheet>

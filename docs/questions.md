@@ -131,6 +131,21 @@ top of `running`, like `needs attention`; deliberately no new `TaskStatus`.
 The state slice `questions` is the PENDING set: a `question.updated` frame that
 is not pending removes the row.
 
+### Drafts
+
+Every dismissal unmounts `QuestionForm` — the desktop overlay click, a swipe
+down the phone sheet, the task panel closing — and a dismissal must only hide
+it (UX review #6). The picks and the "Other" text live in a module-level store,
+`questionDrafts: Map<questionId, Draft>`, read through `useSyncExternalStore`,
+so the modal, the task panel and the Inbox row showing the same question are
+one draft and an unmount at any moment loses nothing. An accepted answer
+deletes the entry; a refused one keeps it. Memory only.
+
+On a phone, once anything is picked or typed the form stops dragging the sheet
+(`Sheet`'s `disableDrag`, which applies to the content only): a flick while
+scrolling the options must not dismiss it. The grip and header still drag, and
+× and the backdrop still close — the draft is there when the chip reopens it.
+
 **Telegram.** One message per question (a keyboard belongs to one message),
 the first headed with the task title: options numbered with descriptions, a
 button per option, `✔ Done` for multi-select, `✍️ Other…` always. A tap on a

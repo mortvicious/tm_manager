@@ -171,7 +171,9 @@ The chip opens `InboxSheet` (`docs/mobile.md` § Sheets):
 - **After a decision** the item sheet closes and you are back on the list,
   which has already dropped the item.
 - **Open and Terminal** close the whole stack first, so two stacks never share
-  the screen with the task panel or the terminal drawer.
+  the screen with the task panel or the terminal drawer. Closing a terminal
+  opened from an item brings the stack back on that item (`docs/mobile.md`
+  § Returning from a terminal).
 - **The `/inbox` route on a phone** shows the same rows inline and the same
   item sheet.
 - **Glass:** every sheet is Liquid Glass.
