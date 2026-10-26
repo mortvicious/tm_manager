@@ -90,7 +90,7 @@ import {
 import { needsFallbackModel, sessionUsagePct } from './claude/usage.ts';
 import { sharedPromptBlock, spaceForRepo, validateSpacePath, writeFolderDocs, writeSharedMemory } from './spaces/service.ts';
 import { broadcast } from './events.ts';
-import { AnomalyAlerts } from './anomalies.ts';
+import { AnomalyAlerts, COST_LINE_WINDOW_MS, costLine, costVerdict, type CostLine } from './anomalies.ts';
 import { checkFixMessage, checksVerdict, definitionOfDone, runChecks, selectChecks } from './checks.ts';
 import type { CommandRunner } from './commands/runner.ts';
 import {
@@ -416,6 +416,8 @@ export class Orchestrator implements OrchestratorApi {
   private readonly alerts: AnomalyAlerts;
   /** single-flight for the anomaly/budget sweep */
   private anomalySweeping = false;
+  /** the `cost-high` baseline: one 30-day task read, reused for an hour */
+  private costBaselineCache: { at: number; tasks: Pick<Task, 'repoId' | 'costUsd'>[] } | null = null;
   /**
    * `budget.runMinutes` (docs/token-budget.md § Fuses): runs the fuse has
    * flagged once — never again for the same run — and the subset whose
@@ -657,6 +659,15 @@ export class Orchestrator implements OrchestratorApi {
     return run.needsAttention && !this.overtimeFlags.has(run.id);
   }
 
+  private async costBaseline(nowMs: number): Promise<Pick<Task, 'repoId' | 'costUsd'>[]> {
+    const c = this.costBaselineCache;
+    if (c && nowMs - c.at < 3600_000) return c.tasks;
+    const rows = await this.storage.listTasks({ updatedSince: new Date(nowMs - COST_LINE_WINDOW_MS).toISOString() });
+    const tasks = rows.map((t) => ({ repoId: t.repoId, costUsd: t.costUsd }));
+    this.costBaselineCache = { at: nowMs, tasks };
+    return tasks;
+  }
+
   /**
    * Every minute: the `budget.runMinutes` fuse, then the `anomaly.*`
    * thresholds as notifications (the Dashboard computes the same rules on
@@ -695,7 +706,7 @@ export class Orchestrator implements OrchestratorApi {
       // recent-or-live rule — so the first boot does not ping every expensive
       // task in history; stale review only for a stay that crossed the
       // threshold in the last day, for the same reason.
-      const costCap = settings['anomaly.costUsd'];
+      const fixedLine = settings['anomaly.taskCostUsd'];
       const staleMs = settings['anomaly.staleReviewHours'] * 3600_000;
       const recent = new Set<string>();
       for (const r of await this.storage.listRuns({ since: new Date(nowMs - 24 * 3600_000).toISOString() })) {
@@ -703,15 +714,29 @@ export class Orchestrator implements OrchestratorApi {
         if (id) recent.add(id);
       }
       for (const r of live) if (r.taskId) recent.add(r.taskId);
+      // The line is the repo's own history (docs/token-budget.md § The
+      // expensive-task alert): warn above it, critical above 2× — once each
+      // per task, so a task that keeps growing escalates exactly once.
+      const baseline = fixedLine > 0 ? [] : await this.costBaseline(nowMs);
+      const lines = new Map<string | null, CostLine>();
       for (const id of recent) {
         const t = await this.storage.getTask(id);
-        if (!t || !(costCap > 0) || t.costUsd <= costCap) continue;
+        if (!t) continue;
+        let line = lines.get(t.repoId);
+        if (!line) lines.set(t.repoId, (line = costLine(t.repoId, baseline, fixedLine)));
+        const verdict = costVerdict(t.costUsd, line);
+        if (!verdict) continue;
+        const key = verdict.severity === 'critical' ? `cost-high-2x:${t.id}` : `cost-high:${t.id}`;
+        // A line that moved up can drop a task already pinged critical back
+        // under 2× — never follow a critical with a warn.
+        if (verdict.severity === 'warn' && (await this.alerts.has(`cost-high-2x:${t.id}`))) continue;
         await this.alerts.emit({
           type: 'cost-high',
-          severity: 'critical',
-          message: `has cost $${t.costUsd.toFixed(2)}, over the $${costCap} threshold`,
-          key: `cost-high:${t.id}`,
+          severity: verdict.severity,
+          message: verdict.message,
+          key,
           taskId: t.id,
+          data: { costUsd: t.costUsd, lineUsd: line.usd, lineSource: line.source, p90: line.p90, n: line.n },
         });
       }
       if (staleMs > 0) {

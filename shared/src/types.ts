@@ -1498,8 +1498,17 @@ export interface AppSettings {
   'feature.analysisMaxRounds': number;
   /** a live worker turn older than this is an anomaly: Dashboard + one `anomaly` notification per turn */
   'anomaly.longRunMin': number;
-  /** a run (Dashboard) / a task's whole roll-up (notification, once per task) costing more than this is an anomaly */
+  /** a single RUN costing more than this is an anomaly — the Dashboard's per-run rule only (the per-TASK alert is `anomaly.taskCostUsd`) */
   'anomaly.costUsd': number;
+  /**
+   * a TASK whose roll-up (`Task.costUsd`) passes this line is an anomaly: one
+   * `cost-high` notification (warn), a second one (critical) past 2× the line.
+   * 0 = adaptive, the default: the p90 of the repo's task roll-ups over the
+   * last 30 days (the all-repo p90 below 10 tasks), never under $10
+   * (docs/token-budget.md § The expensive-task alert). An alert, not a control
+   * — `budget.taskUsd` is the control.
+   */
+  'anomaly.taskCostUsd': number;
   /** a task sitting in review this long is an anomaly: Dashboard + one notification per stay in review */
   'anomaly.staleReviewHours': number;
   /**
@@ -1651,6 +1660,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'feature.analysisMaxRounds': 2,
   'anomaly.longRunMin': 30,
   'anomaly.costUsd': 10,
+  'anomaly.taskCostUsd': 0,
   'anomaly.staleReviewHours': 72,
   'budget.taskUsd': 0,
   'budget.dayUsd': 0,

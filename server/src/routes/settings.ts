@@ -81,6 +81,8 @@ const settingsSchema = z
     'feature.analysisMaxRounds': z.number().int().min(0).max(5),
     'anomaly.longRunMin': z.number().int().min(5),
     'anomaly.costUsd': z.number().min(0.5),
+    // 0 = adaptive (the repo's 30-day p90, floor $10); a fixed line keeps the per-run floor.
+    'anomaly.taskCostUsd': z.number().max(100_000).refine((v) => v === 0 || v >= 0.5, 'must be 0 (adaptive) or at least 0.5'),
     'anomaly.staleReviewHours': z.number().int().min(1),
     // Budget fuses (docs/token-budget.md § Fuses): 0 — or null — is off.
     'budget.taskUsd': z.number().min(0).max(10_000).nullable().transform((v) => v ?? 0),

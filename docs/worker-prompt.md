@@ -119,7 +119,7 @@ Prompt text alone cannot fix these; they are structural:
   still means "≥100% of a 200k window"; the raw last-turn total it is computed
   from is now stored next to it as `RunStats.contextTokens`, which is what the
   resume gate reads.
-- `anomaly.costUsd` is read only by the stats dashboard route, never enforced.
+- `anomaly.costUsd` is read only by the stats dashboard route (per run), never enforced; the per-task alert is `anomaly.taskCostUsd` and the enforced ceiling is `budget.taskUsd` (`docs/token-budget.md`).
 - The sticky `fableUnavailable` latch, now one process-wide cache in `server/src/claude/aux.ts` (`withModelFallback`). Since 2026-09-24 it is set only by a Fable StopFailure `model_not_found`, but it still lasts until restart.
 - ~~The fixed ~52k preamble~~ — done 2026-08-27, see `docs/token-budget.md`.
   (Not via `agent.allowedTools`: that flag is a permission gate and moves no

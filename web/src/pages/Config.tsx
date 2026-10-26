@@ -748,8 +748,8 @@ export function ConfigPage() {
         </div>
         <div className="cfg-row">
           <div>
-            <div>Expensive task alert ($)</div>
-            <div className="hint">ping once per task whose total cost passes this</div>
+            <div>Expensive run alert ($)</div>
+            <div className="hint">per RUN, Dashboard only: flags one session turn costing more than this</div>
           </div>
           <input
             className="field"
@@ -759,6 +759,24 @@ export function ConfigPage() {
             style={{ width: 90 }}
             value={cfg['anomaly.costUsd'] ?? DEFAULT_SETTINGS['anomaly.costUsd']}
             onChange={(e) => set('anomaly.costUsd', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Expensive task alert ($)</div>
+            <div className="hint">
+              per TASK (its total cost): one ping, a critical one past 2×. 0 = adaptive — the repo&apos;s 30-day p90,
+              never under $10
+            </div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={0}
+            step={1}
+            style={{ width: 90 }}
+            value={cfg['anomaly.taskCostUsd'] ?? DEFAULT_SETTINGS['anomaly.taskCostUsd']}
+            onChange={(e) => set('anomaly.taskCostUsd', Number(e.target.value))}
           />
         </div>
         <div className="cfg-row">

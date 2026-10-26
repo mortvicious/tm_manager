@@ -468,6 +468,57 @@ At or OVER the cap refuses. It returns `{ ok: true }` or
   the usage-limit parker, which skipped any flagged run and so never parked an
   over-time turn the 5h window then cut short.
 
+### The expensive-task alert: each repo's own history (2026-10-26)
+
+The `cost-high` notification (`docs/telegram.md` § Anomalies, push kind
+`anomaly`) used to compare a task's roll-up to `anomaly.costUsd` = $10, which
+sat below the median task of every repo but one: 126 critical alerts for 126 of
+146 tasks in a week, so neither the alert nor the word "critical" carried a
+signal. Two settings now, one rule each:
+
+| setting | compares | where | default |
+|---|---|---|---|
+| `anomaly.costUsd` | one RUN's `stats.costUsd` | the Dashboard's `cost-high` row only (`routes/stats.ts`) | $10 |
+| `anomaly.taskCostUsd` | a TASK's roll-up `Task.costUsd` | the minute sweep's `cost-high` notification | `0` = adaptive |
+
+**The line** (`costLine(repoId, tasks, fixed)` in `server/src/anomalies.ts`,
+pure): a fixed `anomaly.taskCostUsd` > 0 is the line as given. `0` is adaptive:
+the nearest-rank p90 of the task roll-ups of the SAME repo over the tasks
+updated in the last 30 days (`COST_LINE_WINDOW_MS`), counting only tasks that
+cost something (a $0 draft says nothing about what work costs); a repo with
+fewer than 10 such tasks (`COST_LINE_MIN_TASKS`) uses the all-repo p90; and the
+line is never below **$10** (`COST_LINE_FLOOR_USD`). The baseline is ONE
+`listTasks({ updatedSince })` per sweep, cached for an hour
+(`Orchestrator.costBaseline`). The tasks judged are unchanged: those with a run
+in the last 24h or still live.
+
+**Severity** (`costVerdict`): above the line → `warn`, key `cost-high:<task>`;
+above 2× the line → `critical`, key `cost-high-2x:<task>`. Each key goes out
+once ever, so a task that keeps growing escalates exactly once; a task that
+jumps straight past 2× gets only the critical one, and a task already pinged
+critical never gets a warn after it (the line moved up). Tasks pinged under the
+old rule keep their `cost-high:` key, so they can only escalate. The `budget.*`
+fuse trips (`task-budget`, `day-budget`) stay their own alert types.
+
+**The message states the baseline**: `has cost $118.40, 1.3× this repo's p90
+($92)`; the all-repo and floor cases say so (`the all-repo p90 ($92; this repo
+has under 10 tasks in 30 days)`, `the $10 floor (p90 $7.50)`), a fixed line says
+`the $50 threshold`. The audit row's data carries `costUsd`, `lineUsd`,
+`lineSource`, `p90`, `n`.
+
+**The alert is not the control.** An adaptive line self-normalises: if every
+task gets dearer the p90 drifts up with it and the alert goes quiet — the floor
+bounds that from below only. The hard ceiling is `budget.taskUsd` (off by
+default, above); set it, not this, to stop spend.
+
+Measured on a copy of the live DB (2026-10-26, after subagent spend was counted):
+lines neko-frontend $98, neko-nest $73, task-manager $58, neko-vite-new $24,
+two small repos on the all-repo $92; of the 136 tasks with a run in the last 7
+days the old rule alerted 117 (86%), the new one 17 warn + 0 critical (12.5%).
+
+Not built: the velocity rule (one run's cost growing > $X in 10 min from the
+20s live-stats tick), which would catch context growth while it happens.
+
 ## Cost accounting: what a run is charged (2026-10-26)
 
 `RunStats` is parsed from the session's transcripts by `summarizeTranscript`

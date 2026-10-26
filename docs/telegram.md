@@ -429,12 +429,12 @@ The Dashboard's `anomaly.*` thresholds used to be display-only. They are now als
 | type | fires when | once per |
 |---|---|---|
 | `long-run` | a live, non-idle worker turn is older than `anomaly.longRunMin` | turn (run) |
-| `cost-high` | a task's roll-up (`Task.costUsd`) passes `anomaly.costUsd` — only tasks with a run in the last 24h or live, the Dashboard's recent-or-live rule, so the first boot does not ping all of history | task |
+| `cost-high` | a task's roll-up (`Task.costUsd`) passes its line — `anomaly.taskCostUsd`, by default (`0`) the repo's 30-day p90, floor $10 ([`token-budget.md`](token-budget.md) § The expensive-task alert): `warn` above it, `critical` above 2× — only tasks with a run in the last 24h or live, the Dashboard's recent-or-live rule, so the first boot does not ping all of history | task (warn once, critical once) |
 | `stale-review` | a task has sat in `review` longer than `anomaly.staleReviewHours`, and crossed that line within the last day (same reason) | stay in review (`updatedAt`) |
 | `task-budget` | an automatic turn was refused by `budget.taskUsd` | task and cap |
 | `day-budget` | claiming stopped for the day (`budget.dayUsd`) | server-local day |
 
-The coalescing memory is the audit log: every alert is an `anomaly.notified` row carrying its key, and a boot re-reads the last 30 days of them, so a restart never re-pings the same stale review. The Dashboard's per-RUN `cost-high` is unchanged; the notification is per TASK on purpose — it is the number on the card and the one the budget measures.
+The coalescing memory is the audit log: every alert is an `anomaly.notified` row carrying its key, and a boot re-reads the last 30 days of them, so a restart never re-pings the same stale review. The Dashboard's per-RUN `cost-high` is unchanged and keeps `anomaly.costUsd`; the notification is per TASK on purpose, with its own setting — it is the number on the card and the one the budget measures.
 
 ### Buttons
 
