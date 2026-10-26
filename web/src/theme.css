@@ -1042,6 +1042,47 @@ button.badge.badge-link:hover {
   background: var(--tm-bg-overlay);
 }
 
+/* Approximate progress of a live task (docs/task-progress.md): a hairline along
+   the row's bottom edge, its length the row's %, plus "~45%" by the badge.
+   Grows from the left with transform so a step never reflows the row. */
+.task-row.has-progress {
+  position: relative;
+}
+.row-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--tm-space-1) / 2);
+  background: var(--tm-status-running);
+  transform: scaleX(var(--tm-progress, 0));
+  transform-origin: left center;
+  transition: transform var(--tm-dur-slow) var(--tm-ease-out);
+  pointer-events: none;
+}
+.row-progress[data-band='checks'],
+.row-progress[data-band='auto-review'] {
+  background: var(--tm-status-review);
+}
+.row-progress.overrun {
+  background: var(--tm-text-muted);
+}
+.progress-pct {
+  flex: none;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.progress-pct.overrun {
+  font-style: italic;
+}
+@media (prefers-reduced-motion: reduce) {
+  .row-progress {
+    transition: none;
+  }
+}
+
 /* title + (when the agent is live) the line of what it is doing, stacked so
    the activity reads as a caption of the task rather than another chip */
 .task-row .task-main {
@@ -5659,6 +5700,11 @@ button.explain-tap:active {
 
 /* status first: it is what the eye looks for on the second line */
 .app.mobile .task-row.m .row-meta .badge {
+  order: -1;
+}
+
+/* the row's ~% rides right after the status it qualifies (docs/task-progress.md) */
+.app.mobile .task-row.m .row-meta .progress-pct {
   order: -1;
 }
 

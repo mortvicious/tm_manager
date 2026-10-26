@@ -43,6 +43,7 @@ import { registerRunRoutes } from './routes/runs.ts';
 import { registerSettingsRoutes } from './routes/settings.ts';
 import { migrateSentryToken } from './sentry.ts';
 import { registerStatsRoutes } from './routes/stats.ts';
+import { registerProgressRoutes } from './routes/progress.ts';
 import { registerTaskRoutes } from './routes/tasks.ts';
 import { TelegramBot } from './telegram/bot.ts';
 import { describeStopCause, recordStopCause, signalCause, takeStopCause, type StopCause } from './stop-cause.ts';
@@ -169,7 +170,7 @@ const activity = new ActivityWatcher({
     const runs = await storage.listRuns({ status: 'running' });
     return runs
       .filter((r) => !r.idle)
-      .map((r) => ({ runId: r.id, taskId: r.taskId, transcriptPath: r.transcriptPath }));
+      .map((r) => ({ runId: r.id, taskId: r.taskId, transcriptPath: r.transcriptPath, startedAt: r.startedAt }));
   },
   emit: (a) => broadcast({ type: 'run.activity', activity: a }),
   progressed: (runId, at) => void orchestrator.attentionProgress(runId, at).catch(() => {}),
@@ -391,6 +392,7 @@ registerBackgroundShellRoutes(app, orchestrator);
 registerProposalRoutes(app, storage);
 registerFeatureRoutes(app, storage);
 registerStatsRoutes(app, storage, sessions, orchestrator);
+registerProgressRoutes(app, storage);
 registerChatRoutes(app, chats);
 registerQuestionRoutes(app, orchestrator.questions);
 registerReportRoutes(app, storage);

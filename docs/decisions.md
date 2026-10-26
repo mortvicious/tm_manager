@@ -1,5 +1,14 @@
 # Decision log
 
+- **2026-10-26 — Board: an approximate progress % on live task rows (`docs/task-progress.md`)**: task 3d8f7415, design chosen with the user in task e10cf300 (`progress-spec.md`).
+  - **Lifecycle bands + a work %, one pure function** (`taskProgress` in `shared/src/progress.ts`): work 0–70 · checks 70–80 · auto-review 80–90 · fixing/landing 90–95 · done 100, the band read off the row like `badgeReading()`; hidden on draft/queued/blocked/failed/cancelled, a settled review and a Pause-all marker.
+  - **Work % = todo list, else output tokens vs the repo baseline** (median → 0.6, p90 → 0.95; the repo's own line at ≥ 10 landed tasks, else all repos, else no work %). **Rejected: run wall time** — idle PTYs inflate it (medians 28–75 min, max ≈ 14,900 min). **Rejected: cost** — model price mixes make it a worse proxy for work than output tokens.
+  - **Overrun holds** at 95 % of the work band with a muted "longer than usual" — no asymptotic creep, no hiding.
+  - **Never backwards** through a per-task floor kept by the SPA (localStorage), void once a newer worker run starts; a fix round's re-check holds the fix band's value. Rejected: deriving "after a fix" from `reviewRounds`, which outlive the chain and would inflate the next one.
+  - **No new column or event**: the SPA already holds every run with live stats, so only the baseline is served (`GET /api/progress/baseline`, cached hourly); todo counts ride on `run.activity`.
+  - **Finding**: no worker transcript has a todo tool call — CLI 2.1.280 has no `TodoWrite` and `TaskCreate`/`TaskUpdate` are not in `WORKER_TOOLS`. The tracker reads both shapes; enabling the task tools for workers is left as a separate decision.
+  - **Verified**: typecheck, scratch `vite build`, baseline via `app.inject` on a DB copy (matches the spec), a tsx check over 3,840 state combinations, Playwright screenshots (Classic + Glass, desktop + phone).
+
 - **2026-10-26 — Board groups are a coloured rail + a slim caption, not a header band (`docs/grouping.md` § On the Board)**: task 836e86ff ("too bulky, consider something else instead of horizontal line").
   - **Amends the group block's header.** The full-width tinted, uppercase-mono band (30px, its own bottom rule, a count pill and `of N`) is gone; the group reads from a rounded 3px rail in its colour down the block and a one-line caption sized to its words (`1/15` as plain figures, pencil on hover). Fold, filter, rename/recolour and the drop target are unchanged — same `GroupHead` controls, same classes.
   - **Rejected:** a name written vertically in the rail (unreadable on one-row blocks, which are the common case: `1 of 15` in a status section) and a legend overlapping the previous row's border (collides with the panel's top edge and with rows' own padding).

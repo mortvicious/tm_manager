@@ -55,6 +55,7 @@ import { Explainable } from '../components/Explain.tsx';
 import { verdictChip } from '../components/ReviewPanel.tsx';
 import { DragGhost, undoMove, useTaskDrag, type DropZone } from '../components/TaskDrag.tsx';
 import { TaskRow } from '../components/TaskRow.tsx';
+import { ProgressPct } from '../components/TaskProgress.tsx';
 import { TimeAgo, isNew, useNow } from '../components/TimeAgo.tsx';
 
 const ORDER: TaskStatus[] = [
@@ -1259,6 +1260,7 @@ export function BoardPage({
         grip={ctx === 'recent' || selecting ? undefined : gripProps(t)}
         dropClass={ctx === 'recent' || selecting ? undefined : dropClass(t.id, 'task')}
         select={selecting ? { on: selected.includes(t.id), toggle: () => toggleSelected(t.id) } : undefined}
+        progress
       >
         {!focus && rowChips(t, ctx, g, pendingOut)}
         <StatusBadge
@@ -1275,6 +1277,7 @@ export function BoardPage({
             return rv ? () => onOpenTerminal(rv.id) : undefined;
           })()}
         />
+        <ProgressPct task={t} />
         {!focus && (
           <TimeAgo
             iso={t[field]}

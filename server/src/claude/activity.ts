@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import type { RunActivity } from '@tm/shared';
+import type { RunActivity, TodoCounts } from '@tm/shared';
 
 /**
  * Live "what is this agent doing right now" line for the Board.
@@ -73,7 +73,10 @@ export function describeTool(name: string, input: unknown): string {
     case 'WebFetch':
       return withArg('Fetch', hostOf(str('url')));
     case 'TodoWrite':
+    case 'TaskUpdate':
       return 'Updating the todo list';
+    case 'TaskCreate':
+      return withArg('Todo ·', clean(str('subject')));
     case 'Skill':
       return withArg('Skill', clean(str('skill')));
     case 'ExitPlanMode':
@@ -124,19 +127,121 @@ export function activityFromLine(line: string): ParsedActivity | null {
   return found && found.text ? found : null;
 }
 
+type TodoStatus = 'pending' | 'in_progress' | 'completed';
+const TODO_STATUSES: readonly string[] = ['pending', 'in_progress', 'completed'];
+/** cheap gate before a JSON.parse: only these lines can move a todo list */
+const TODO_HINT = /"(?:TodoWrite|TaskCreate|TaskUpdate)"/;
+
+/**
+ * The agent's todo list, rebuilt from the transcript (docs/task-progress.md § Todo
+ * list). Two shapes exist: the older `TodoWrite` rewrites the WHOLE list on
+ * every call (`input.todos[]{content,status}`), the newer task tools build it
+ * call by call — `TaskCreate {subject}` (its id comes back in the result:
+ * `toolUseResult.task.id`, or "Task #3 created…" in the text) and
+ * `TaskUpdate {taskId, status}` (`deleted` drops it). Whichever was touched
+ * last is the list. Sidechain lines are a subagent's own list, never this one.
+ */
+export class TodoTracker {
+  private written: TodoStatus[] | null = null;
+  private tasks = new Map<string, TodoStatus>();
+  /** TaskCreate tool_use ids waiting for the result that names the task */
+  private creating = new Set<string>();
+  private seq = 0;
+  private mode: 'write' | 'tasks' | null = null;
+  /** transcript time of the newest call that touched the list */
+  lastAt: string | null = null;
+
+  feed(line: string): void {
+    const hinted = TODO_HINT.test(line);
+    if (!hinted && (this.creating.size === 0 || !line.includes('"tool_result"'))) return;
+    let j: any;
+    try {
+      j = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (j?.isSidechain === true) return;
+    const msg = j?.message;
+    if (!Array.isArray(msg?.content)) return;
+    const at = typeof j.timestamp === 'string' ? j.timestamp : null;
+    for (const b of msg.content) {
+      if (msg.role === 'assistant' && b?.type === 'tool_use') {
+        const input = typeof b.input === 'object' && b.input !== null ? b.input : {};
+        if (b.name === 'TodoWrite' && Array.isArray(input.todos)) {
+          this.written = input.todos
+            .map((t: any) => t?.status)
+            .filter((st: unknown): st is TodoStatus => typeof st === 'string' && TODO_STATUSES.includes(st));
+          this.touch('write', at);
+        } else if (b.name === 'TaskCreate' && typeof b.id === 'string') {
+          this.creating.add(b.id);
+        } else if (b.name === 'TaskUpdate' && input.taskId != null) {
+          const id = String(input.taskId);
+          if (input.status === 'deleted') this.tasks.delete(id);
+          else if (typeof input.status === 'string' && TODO_STATUSES.includes(input.status))
+            this.tasks.set(id, input.status as TodoStatus);
+          else continue;
+          this.touch('tasks', at);
+        }
+      } else if (msg.role === 'user' && b?.type === 'tool_result' && this.creating.has(b.tool_use_id)) {
+        this.creating.delete(b.tool_use_id);
+        if (b.is_error === true) continue;
+        const text = typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.map((c: any) => c?.text ?? '').join(' ') : '';
+        const named = j.toolUseResult?.task?.id ?? /Task #(\w+)/.exec(text)?.[1];
+        const id = named != null ? String(named) : String(++this.seq);
+        const n = Number(id);
+        if (Number.isFinite(n)) this.seq = Math.max(this.seq, n);
+        if (!this.tasks.has(id)) this.tasks.set(id, 'pending');
+        this.touch('tasks', at);
+      }
+    }
+  }
+
+  private touch(mode: 'write' | 'tasks', at: string | null): void {
+    this.mode = mode;
+    if (at) this.lastAt = at;
+  }
+
+  /** The counts, when the list was last touched at or after `sinceIso` (null = any time). */
+  counts(sinceIso: string | null): TodoCounts | null {
+    if (!this.mode) return null;
+    if (sinceIso && (!this.lastAt || Date.parse(this.lastAt) < Date.parse(sinceIso))) return null;
+    const list = this.mode === 'write' ? (this.written ?? []) : [...this.tasks.values()];
+    if (list.length === 0) return null;
+    let done = 0;
+    let inProgress = 0;
+    for (const st of list) {
+      if (st === 'completed') done++;
+      else if (st === 'in_progress') inProgress++;
+    }
+    return { done, inProgress, total: list.length };
+  }
+}
+
+const sameTodos = (a: TodoCounts | null | undefined, b: TodoCounts | null | undefined): boolean =>
+  (a ?? null) === (b ?? null) ||
+  (!!a && !!b && a.done === b.done && a.inProgress === b.inProgress && a.total === b.total);
+
+/** the todo pre-scan of a resumed transcript reads at most this much from its end */
+const MAX_TODO_SCAN = 64 * 1024 * 1024;
+const SCAN_CHUNK = 1024 * 1024;
+
 interface Tail {
   runId: string;
   taskId: string | null;
   path: string;
+  /** the run's start: an older todo list belongs to an earlier turn */
+  startedAt: string | null;
   offset: number;
   partial: string;
   last: RunActivity | null;
+  todos: TodoTracker;
 }
 
 export interface WatchedRun {
   runId: string;
   taskId: string | null;
   transcriptPath: string | null;
+  startedAt?: string | null;
 }
 
 const POLL_MS = 1200;
@@ -207,6 +312,8 @@ export class ActivityWatcher {
           runId: r.runId,
           taskId: r.taskId,
           path: r.transcriptPath,
+          startedAt: r.startedAt ?? null,
+          todos: new TodoTracker(),
           // Start at the tail: a resumed run inherits the whole earlier
           // transcript and only the newest line is interesting.
           offset: -1,
@@ -242,15 +349,21 @@ export class ActivityWatcher {
         // the tail may have been dropped by a reconcile while we awaited
         if (!this.tails.has(tail.runId)) continue;
         const parsed = await this.readTail(tail);
-        if (!parsed) continue;
-        if (parsed.at) this.opts.progressed?.(tail.runId, parsed.at);
-        if (tail.last?.text === parsed.text) continue; // unchanged — no traffic
+        const todos = tail.todos.counts(tail.startedAt);
+        const todosMoved = !sameTodos(tail.last?.todos, todos);
+        if (!parsed && !todosMoved) continue;
+        if (parsed?.at) this.opts.progressed?.(tail.runId, parsed.at);
+        // unchanged — no traffic
+        if ((!parsed || tail.last?.text === parsed.text) && !todosMoved) continue;
+        const base = parsed ?? tail.last;
+        if (!base?.text) continue; // nothing to narrate yet; the todos ride on the first line
         const activity: RunActivity = {
           runId: tail.runId,
           taskId: tail.taskId,
-          text: parsed.text,
-          kind: parsed.kind,
-          at: parsed.at ?? new Date().toISOString(),
+          text: base.text,
+          kind: base.kind,
+          at: parsed ? (parsed.at ?? new Date().toISOString()) : (tail.last?.at ?? new Date().toISOString()),
+          todos,
         };
         tail.last = activity;
         this.opts.emit(activity);
@@ -270,17 +383,24 @@ export class ActivityWatcher {
     }
     try {
       const { size } = await fh.stat();
+      // the todo list is built call by call, so a seek past lines must
+      // rebuild it from the file instead of feeding only the tail
+      let todosUpTo = -1;
       if (tail.offset < 0) {
         // first read: seek near the end rather than replaying the whole file
         tail.offset = Math.max(0, size - MAX_CATCHUP);
         tail.partial = '';
+        todosUpTo = size;
       } else if (size < tail.offset) {
         tail.offset = 0; // truncated / replaced underneath us
         tail.partial = '';
+        tail.todos = new TodoTracker();
       } else if (size - tail.offset > MAX_CATCHUP) {
         tail.offset = size - MAX_CATCHUP;
         tail.partial = '';
+        todosUpTo = size;
       }
+      if (todosUpTo >= 0) tail.todos = await scanTodos(fh, todosUpTo);
       if (size === tail.offset) return null;
       const len = size - tail.offset;
       const buf = Buffer.allocUnsafe(len);
@@ -299,6 +419,8 @@ export class ActivityWatcher {
       for (const line of lines) {
         const a = activityFromLine(line);
         if (a) newest = a;
+        // the pre-scan already read these bytes for the todo list
+        if (todosUpTo < 0) tail.todos.feed(line);
       }
       return newest;
     } catch {
@@ -307,4 +429,26 @@ export class ActivityWatcher {
       await fh.close().catch(() => {});
     }
   }
+}
+
+/**
+ * Rebuilds the todo list from the transcript's first `upTo` bytes (at most
+ * the last MAX_TODO_SCAN of them), in chunks: a resumed run inherits the whole
+ * session, and a TaskCreate far above the tail still counts.
+ */
+async function scanTodos(fh: fs.promises.FileHandle, upTo: number): Promise<TodoTracker> {
+  const tracker = new TodoTracker();
+  let pos = Math.max(0, upTo - MAX_TODO_SCAN);
+  let carry = '';
+  const buf = Buffer.allocUnsafe(SCAN_CHUNK);
+  while (pos < upTo) {
+    const { bytesRead } = await fh.read(buf, 0, Math.min(SCAN_CHUNK, upTo - pos), pos);
+    if (bytesRead <= 0) break;
+    pos += bytesRead;
+    const lines = (carry + buf.subarray(0, bytesRead).toString('utf8')).split('\n');
+    carry = lines.pop() ?? '';
+    if (carry.length > MAX_CATCHUP) carry = '';
+    for (const line of lines) tracker.feed(line);
+  }
+  return tracker;
 }

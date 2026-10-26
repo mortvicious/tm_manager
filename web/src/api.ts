@@ -35,6 +35,7 @@ import type {
   RunActivity,
   ShellSession,
   StatsOverview,
+  ProgressBaseline,
   Task,
   UsageSnapshot,
   TaskMovePlace,
@@ -367,6 +368,8 @@ export const api = {
 
   listRuns: () => req<Run[]>('GET', '/api/runs'),
   runActivity: () => req<RunActivity[]>('GET', '/api/runs/activity'),
+  /** the board's progress % baseline (docs/task-progress.md), cached hourly on the server */
+  progressBaseline: () => req<ProgressBaseline>('GET', '/api/progress/baseline'),
   killRun: (id: string) => req<Run>('POST', `/api/runs/${id}/kill`),
 
   analyze: (b: { repoId: string; taskIds?: string[] }) => req<{ runId: string }>('POST', '/api/analyze', b),

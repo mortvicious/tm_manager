@@ -758,3 +758,9 @@ concise markdown, grouped by completion date, Russian or English.
 - **Web**: the Repos page **Autopilot** column (`AutopilotCell`); a sticky "Auto-picked" toast with Open (`nav.ts` → `PushBridge`).
 - **Verified**: typecheck; `app.inject` on a DB copy, 34 checks (decisions.md 2026-10-26); the filter replayed over the 391 stored calls.
 - **Not exercised**: a live CLI session receiving the autopilot decision; a browser pass of the column and toast; a real push.
+
+## Board: approximate progress % on live task rows (2026-10-26)
+
+- [x] A 2px bar along the bottom of each live board row plus `~45%` beside the status badge, from the shared pure `taskProgress` (bands work 0–70 · checks 70–80 · auto-review 80–90 · fixing/landing 90–95 · done 100; work % from loop iterations, the run's todo list, else worker output tokens vs the repo baseline; overrun held at 67 with "longer than usual"; a per-task floor keeps it from moving backwards). Baseline served by `GET /api/progress/baseline`, cached hourly. Full write-up: `docs/task-progress.md`; decisions.md 2026-10-26.
+- Verified: typecheck, scratch `vite build`, baseline via `app.inject` on a DB copy, a tsx check over 3,840 state combinations + the todo tracker, Playwright screenshots in Classic/Glass at desktop/phone widths.
+- Not exercised: a real worker todo list — no worker on CLI 2.1.280 has a todo tool (see `docs/task-progress.md` § Todo list).

@@ -9,6 +9,7 @@ import { IconCheck, IconEye, IconGrip, IconMore, IconPlay, IconPublish, IconQueu
 import { useIsMobile } from './Layout.tsx';
 import { QueueMark } from './QueueMark.tsx';
 import { Sheet, SheetAction } from './Sheet.tsx';
+import { ProgressBar } from './TaskProgress.tsx';
 
 // Mirrors the server guards (server/src/routes/tasks.ts + orchestrator.runNow)
 // so a disabled quick action gives the same answer a 409 would have.
@@ -66,6 +67,7 @@ export function TaskRow({
   grip,
   dropClass,
   select,
+  progress,
   children,
 }: {
   task: Task;
@@ -84,6 +86,8 @@ export function TaskRow({
   /** board multi-select (docs/inbox.md § Bulk actions): a click toggles the
    *  row instead of opening it, and a checkbox leads the row */
   select?: { on: boolean; toggle: () => void };
+  /** draw the approximate progress bar along the row's bottom (docs/task-progress.md; the board only) */
+  progress?: boolean;
   children?: ReactNode;
 }) {
   const { runs, tasks, activity, refresh, orch } = useApp();
@@ -232,7 +236,7 @@ export function TaskRow({
     };
     return (
       <div
-        className={`task-row m ${grip ? '' : 'no-grip'} ${depth > 0 ? 'nested' : ''} ${fresh ? 'fresh' : ''} ${dropClass ?? ''}`}
+        className={`task-row m ${progress ? 'has-progress' : ''} ${grip ? '' : 'no-grip'} ${depth > 0 ? 'nested' : ''} ${fresh ? 'fresh' : ''} ${dropClass ?? ''}`}
         // on the row, not the title: the meta line below indents by it too
         style={depth > 1 ? ({ '--tm-depth': depth } as CSSProperties) : undefined}
         data-drop-task={grip ? task.id : undefined}
@@ -370,13 +374,14 @@ export function TaskRow({
             </div>
           </Sheet>
         )}
+        {progress && <ProgressBar task={task} />}
       </div>
     );
   }
 
   return (
     <div
-      className={`task-row ${fresh ? 'fresh' : ''} ${dropClass ?? ''}`}
+      className={`task-row ${progress ? 'has-progress' : ''} ${fresh ? 'fresh' : ''} ${dropClass ?? ''}`}
       data-drop-task={grip ? task.id : undefined}
       // where the task panel hands focus back on close (dialogFocus.ts):
       // focusable by script and click, never a Tab stop
@@ -474,6 +479,7 @@ export function TaskRow({
           <IconCheck />
         </QuickBtn>
       </span>
+      {progress && <ProgressBar task={task} />}
     </div>
   );
 }

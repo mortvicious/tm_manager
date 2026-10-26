@@ -2307,6 +2307,12 @@ export interface RunActivity {
   kind: 'tool' | 'text';
   /** ISO time the line was produced */
   at: string;
+  /**
+   * the agent's latest todo list in THIS run (TodoWrite, or TaskCreate/
+   * TaskUpdate), counted — the board's work % (docs/task-progress.md); absent or
+   * null when the run keeps none
+   */
+  todos?: import('./progress.ts').TodoCounts | null;
 }
 
 /**
@@ -3044,3 +3050,6 @@ export function taskTemplateProblem(list: TaskTemplate[], presets: TaskPreset[] 
   }
   return null;
 }
+
+// Approximate progress % of a live task (docs/task-progress.md)
+export * from './progress.ts';
