@@ -6901,6 +6901,22 @@ button.explain-tap:active {
   color: var(--tm-text-faint);
 }
 
+/* under the stale drafts (docs/inbox.md § Stale drafts): "N of M" + Keep all / Hide all */
+.inbox-stale-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-3) var(--tm-space-2);
+  font-size: var(--tm-text-sm);
+}
+
+.inbox-stale-acts {
+  display: flex;
+  gap: var(--tm-space-2);
+}
+
 /* phone: the rows of the Inbox page and of the header chip's sheet */
 .inbox-rows {
   display: flex;

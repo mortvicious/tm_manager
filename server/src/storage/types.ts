@@ -428,6 +428,14 @@ export interface Storage {
    */
   setTaskHidden(id: string, hidden: boolean): Promise<Task | null>;
   /**
+   * Keep a stale draft (docs/inbox.md § Stale drafts): a CONDITIONAL write of
+   * `inbox_kept_until` on a task that is still `draft` — a claim or edit racing
+   * the click never stamps a task that moved on. Deliberately NOT part of
+   * `updateTask`, so a stale full-row patch can never undo a Keep. null when the
+   * row is gone or no longer a draft.
+   */
+  keepTaskInInbox(id: string, until: string): Promise<Task | null>;
+  /**
    * Loop tasks (docs/loops.md): a CONDITIONAL write of the loop columns (and
    * the latest check results they carry) on a `running` loop task whose
    * `loop_state` is one of `from` (null matches NULL). null when the row did

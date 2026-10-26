@@ -592,6 +592,15 @@ export class PostgresStorage implements Storage {
     return rows[0] ? rowToTask(rows[0]) : null;
   }
 
+  async keepTaskInInbox(id: string, until: string): Promise<Task | null> {
+    // Twin of the sqlite driver.
+    const rows = await this.q(
+      `UPDATE tm_tasks SET inbox_kept_until = ?, updated_at = ? WHERE id = ? AND status = 'draft' RETURNING *`,
+      [until, now(), id],
+    );
+    return rows[0] ? rowToTask(rows[0]) : null;
+  }
+
   async updateTask(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Promise<Task | null> {
     // A re-parent rewrites the moved subtree too, so it must be one transaction.
     return this.tx((c) => this.updateTaskWith(c, id, patch));
@@ -789,6 +798,8 @@ export class PostgresStorage implements Storage {
     }
     // Any status change unhides (twin of the sqlite driver).
     sets.push('hidden_at = NULL');
+    // Any status change ends a stale-draft Keep (twin of the sqlite driver).
+    sets.push('inbox_kept_until = NULL');
     // Terminal status ends custom-queue membership (twin of the sqlite driver).
     if (TERMINAL_TASK_STATUSES.includes(to)) sets.push('custom_queue_at = NULL');
     // The auto-landed stamp (twin of the sqlite driver).

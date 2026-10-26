@@ -544,11 +544,14 @@ export async function setHiddenTask(deps: TaskActionDeps, id: string, hidden: bo
 }
 
 /**
- * Cancel: queued tasks can be de-queued without the orchestrator (R12);
- * anything running goes through it so the PTY dies with the row.
+ * Cancel: drafts and queued tasks are cancelled without the orchestrator (R12;
+ * a draft since the Inbox's stale-draft triage, docs/inbox.md § Stale drafts);
+ * anything running goes through it so the PTY dies with the row. `reason` lands
+ * in the `task.transition` audit row's data.
  */
-export async function cancelTask(deps: TaskActionDeps, id: string, actor: string): Promise<ActionResult> {
-  const dequeued = await deps.storage.transitionTask(id, ['queued'], 'cancelled', actor);
+export async function cancelTask(deps: TaskActionDeps, id: string, actor: string, reason?: string): Promise<ActionResult> {
+  const audit = reason ? { reason } : undefined;
+  const dequeued = await deps.storage.transitionTask(id, ['draft', 'queued'], 'cancelled', actor, undefined, audit);
   if (dequeued) {
     broadcast({ type: 'task.updated', task: dequeued });
     // cancelled child resolves its parent (F2) — as 'system', see completeTask
@@ -556,7 +559,30 @@ export async function cancelTask(deps: TaskActionDeps, id: string, actor: string
     return { task: dequeued };
   }
   if (!deps.orchestrator) return err(503, 'orchestrator not ready');
-  return deps.orchestrator.cancel(id, actor);
+  return deps.orchestrator.cancel(id, actor, reason);
+}
+
+/** The reason every stale-draft Cancel records (SPA, bulk, Telegram). */
+export const STALE_DRAFT_CANCEL_REASON = 'stale draft triage';
+
+/**
+ * Keep a stale draft (docs/inbox.md § Stale drafts): off the Inbox's stale
+ * list for another `inbox.staleDraftDays` days, still on the board — a Keep
+ * is "not now", hiding is "not on my board". Only a `draft` can be kept (the
+ * write is conditional on it). Never automatic: only a human/Telegram press.
+ */
+export async function keepDraftTask(deps: TaskActionDeps, id: string, actor: string): Promise<ActionResult> {
+  const { storage } = deps;
+  const cur = await storage.getTask(id);
+  if (!cur) return err(404, 'task not found');
+  if (cur.status !== 'draft') return err(409, 'only a draft can be kept');
+  const days = (await storage.getSettings())['inbox.staleDraftDays'];
+  const until = new Date(Date.now() + days * 86_400_000).toISOString();
+  const task = await storage.keepTaskInInbox(id, until);
+  if (!task) return (await storage.getTask(id)) ? err(409, 'only a draft can be kept') : err(404, 'task not found');
+  await storage.appendEvent({ kind: 'task.kept', actor, taskId: id, repoId: task.repoId, data: { until, days } });
+  broadcast({ type: 'task.updated', task });
+  return { task };
 }
 
 /**

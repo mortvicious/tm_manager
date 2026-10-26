@@ -5,6 +5,8 @@ import {
   InboxItemSheet,
   InboxRowHead,
   InboxRows,
+  StaleDraftsFooter,
+  decisions,
   useActRunner,
   useInbox,
   useInboxActs,
@@ -17,13 +19,15 @@ import type { InboxReturn } from '../returnTo.ts';
  * The decide view (docs/inbox.md). Desktop: one list, the selected item
  * expanded in place, and the keyboard — j/k (or ↓/↑) move, `a` marks done /
  * approves / unblocks, `r` retries, `p` resumes a limit-stopped session,
- * `x` rejects a proposal, `t` opens a prompt's terminal, `o` (or Enter) opens the task. A decision that removes
+ * `x` rejects a proposal or cancels a stale draft, `l` keeps a stale draft, `h` hides one, `t` opens a prompt's terminal, `o` (or Enter) opens the task. A decision that removes
  * the item leaves the selection on the same POSITION, so the next item is the
  * one under the cursor. Phone: the rows, and a row opens its own sheet.
  */
 export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav & { inboxReturn: InboxReturn | null }) {
   const mobile = useIsMobile();
   const items = useInbox();
+  const waiting = decisions(items).length;
+  const stale = items.length - waiting;
   const nav = useMemo(() => ({ onOpenTask, onOpenTerminal }), [onOpenTask, onOpenTerminal]);
   const [openKey, setOpenKey] = useState<string | null>(null);
   const open = items.find((i) => i.key === openKey) ?? null;
@@ -37,12 +41,15 @@ export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav 
     <div className="inbox-page">
       <h1 className="page-title">
         Inbox
-        <span className="inbox-count">{items.length ? `${items.length} waiting on you` : 'nothing waiting'}</span>
+        <span className="inbox-count">
+          {waiting ? `${waiting} waiting on you` : 'nothing waiting'}
+          {stale > 0 && ` · ${stale === 1 ? '1 stale draft' : `${stale} stale drafts`}`}
+        </span>
       </h1>
       {!mobile && items.length > 0 && (
         <div className="inbox-keys">
           <kbd>j</kbd>/<kbd>k</kbd> move · <kbd>p</kbd> publish / resume · <kbd>d</kbd> mark done ·{' '}
-          <kbd>f</kbd> send findings back · <kbd>a</kbd> approve / unblock · <kbd>r</kbd> retry · <kbd>x</kbd> reject ·{' '}
+          <kbd>f</kbd> send findings back · <kbd>a</kbd> approve / unblock · <kbd>r</kbd> retry · <kbd>x</kbd> reject / cancel · <kbd>l</kbd> keep · <kbd>h</kbd> hide ·{' '}
           <kbd>t</kbd> terminal · <kbd>o</kbd> open
         </div>
       )}
@@ -172,6 +179,7 @@ function DeskList({ items, nav }: { items: InboxItem[]; nav: InboxNav }) {
           </div>
         );
       })}
+      <StaleDraftsFooter items={items} />
     </div>
   );
 }

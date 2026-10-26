@@ -98,6 +98,7 @@ export function normalizeTask(t: Task): Task {
     shippedAt: t.shippedAt ?? null,
     customQueueAt: t.customQueueAt ?? null,
     hiddenAt: t.hiddenAt ?? null,
+    inboxKeptUntil: t.inboxKeptUntil ?? null,
     reviewState: t.reviewState ?? null,
     reviewModel: t.reviewModel ?? null,
     reviewEffort: t.reviewEffort ?? null,
@@ -324,6 +325,10 @@ export const api = {
       | 'hide'
       | 'unhide',
   ) => req<Task>('POST', `/api/tasks/${id}/${action}`),
+  /** Inbox stale-draft triage (docs/inbox.md § Stale drafts): off the stale list for `inbox.staleDraftDays` */
+  keepDraft: (id: string) => req<Task>('POST', `/api/tasks/${id}/keep`).then(normalizeTask),
+  /** Cancel with a reason on the task.transition audit row (drafts included) */
+  cancelTask: (id: string, reason: string) => req<Task>('POST', `/api/tasks/${id}/cancel`, { reason }).then(normalizeTask),
   stopAgent: (id: string) => req<{ ok: true; closed: number }>('POST', `/api/tasks/${id}/stop-agent`),
   followUp: (id: string, message: string) => req<Task>('POST', `/api/tasks/${id}/follow-up`, { message }),
   applyReview: (id: string) => req<Task>('POST', `/api/tasks/${id}/apply-review`),

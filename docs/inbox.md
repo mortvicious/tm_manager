@@ -30,14 +30,19 @@ The items appear in this order. A task appears once, under its first kind.
 | 5 | `blocked` | a blocked split parent, with its subtasks settled / failed | `a` unblock, `o` | ⛔ Unblock |
 | 6 | `proposal` | a pending analysis proposal (rewrite, split, new task, options) | `a` accept, `x` reject, `o` | ✅ Accept (only without options) · ✖ Reject |
 | 7 | `feature` | a feature plan in `proposed` | `a` approve, `o` opens the plan | ✅ Approve |
+| 8 | `stale-draft` | an agent-filed draft nobody has triaged, older than `inbox.staleDraftDays` (14), at most 10 listed (§ Stale drafts) | `l` keep, `h` hide, `x` cancel, `o` | 📌 Keep · 🙈 Hide · 🚫 Cancel |
 
 - **Questions and attention come first** because each holds a live session,
   which means a worker slot and the repo with it.
 - **Review comes next**: it holds a landing, and through the feature gate it
   may hold later phases.
 - **Failed and blocked follow**: each holds a retry or a tree.
-- **Proposals and plans come last**: they are new work that nobody waits on
+- **Proposals and plans come next**: they are new work that nobody waits on
   yet.
+- **Stale drafts come last**: backlog hygiene. Nothing waits on them at all,
+  so they are not counted on the header chip, the phone tab or the page title's
+  "n waiting on you" (`decisions()` in `components/Inbox.tsx`; Telegram's 📥 tab
+  count the same).
 - Two things are left out on purpose:
   - A `review` task with an open round (`checking`, `auto-review`, `fixing`).
     The machine is still working on it.
@@ -103,7 +108,9 @@ as buttons that show their key.
 | `a` | unblock (blocked), accept (proposal without options), approve (feature plan) |
 | `r` | retry (failed): `POST /retry`, so the fresh agent gets the `## Previous attempt` block (design.md § Retry with context) |
 | `p` (failed) | resume (limit-stopped only): `POST /proceed`, the task's own session (§ Retry or Resume) |
-| `x` | reject (proposal) |
+| `x` | reject (proposal), cancel (stale draft — asks first) |
+| `l` | keep (stale draft): off the stale list for `inbox.staleDraftDays` |
+| `h` | hide (stale draft) |
 | `t` | open the terminal (needs attention) |
 | `o` / Enter | open the task panel, or the plan for a feature |
 
@@ -185,6 +192,56 @@ The chip opens `InboxSheet` (`docs/mobile.md` § Sheets):
   item sheet.
 - **Glass:** every sheet is Liquid Glass.
 
+### Stale drafts
+
+Agents file follow-ups as drafts, and a draft nobody starts rots. The round
+analysis (663c5006) counted 47 agent drafts, 30 older than 14 days. Hiding
+already existed (`docs/design.md` § Hidden tasks); what was missing was a place
+that **asks**. The last Inbox kind is that place — a surface, never a sweep:
+nothing is cancelled or hidden without a human press.
+
+- **The rule** (`isStaleDraft`, shared, pure — no SQL twin). A task is a stale
+  draft when all of these hold:
+  - it is agent-filed: `isExternalTask` (`createdByRun` set, or a source other
+    than `manual`/`feature` — a feature task came from a plan the human
+    approved);
+  - its status is `draft`;
+  - it is not hidden (`hiddenAt` null). The human's own deliberate hides (the
+    two "SECURITY CRITICAL" drafts on 10-22) never come back here;
+  - it was **created** more than `inbox.staleDraftDays` (default 14, Config ›
+    Board) days ago. `createdAt`, never `updatedAt`: a hide toggle or an edit
+    moves `updatedAt`. The Dashboard's `untriaged-agent-draft` anomaly (7 days,
+    `routes/stats.ts`) is the same idea, unchanged;
+  - it is not kept: `inboxKeptUntil` is null or in the past.
+- **Order and cap.** Oldest filed first. At most `INBOX_STALE_DRAFT_CAP` (10)
+  are items; each carries `total`, so the surfaces say "10 of 18 stale drafts —
+  8 more come up as these are triaged". Each row shows its age and the agent's
+  brief.
+- **Keep** — `POST /api/tasks/:id/keep` (Origin required: an agent must not
+  keep its own drafts out of triage; `keepDraftTask` in `task-actions.ts`,
+  audited `task.kept { until, days }`). It stamps `tm_tasks.inbox_kept_until`
+  (migration 44, both drivers via the shared migration list) = now +
+  `inbox.staleDraftDays`. The draft stays on the board; only the stale list
+  forgets it until then. The write is conditional on `status = 'draft'`
+  (`keepTaskInInbox`, 409 `only a draft can be kept`), it is NOT part of
+  `updateTask` (a stale full-row patch cannot undo it) and every status
+  transition clears it, like `hidden_at`.
+- **Hide** — the existing `POST /api/tasks/:id/hide`. A hidden draft leaves
+  the stale list for good (until unhidden).
+- **Cancel** — the existing cancel, with `{ "reason": "stale draft triage" }`.
+  `cancelTask` now accepts a `draft` (before, only `queued`/`running`/`waiting`
+  could be cancelled, so a draft could only be deleted) and an optional reason,
+  which lands in the `task.transition` audit row's data. The SPA asks first.
+- **Bulk.** Under the stale rows, **Keep all n** / **Hide all n** act on the
+  rows LISTED, through `POST /api/tasks/bulk` (`keep` is a bulk action; Hide
+  all asks first). There is deliberately no Cancel all — closing work stays one
+  press per task.
+- **Telegram** rows carry 📌 Keep (`t:keep`) · 🙈 Hide (`t:hide`) · 🚫 Cancel
+  (`t:sdx`, cancel with the triage reason) from the stateless action codec —
+  mutations, so each press is a `telegram.command` audit row; opening the row
+  is an `l:` navigation and is not audited. The last listed row says how many
+  more there are.
+
 ### Telegram `/inbox`
 
 `/inbox [repo]` opens the board's 📥 view (`docs/telegram.md` § The board).
@@ -216,16 +273,18 @@ still acted on, so the count says so: `3 selected (1 hidden by filter)`.
 
 ```
 POST /api/tasks/bulk
-{ "action": "enqueue" | "queue" | "cancel" | "complete" | "hide" | "unhide" | "edit",
+{ "action": "enqueue" | "queue" | "cancel" | "complete" | "hide" | "unhide" | "edit" | "keep",
   "ids": ["…"],                      // 1..100, de-duplicated, run in order
-  "patch": { "model"?: string|null, "effort"?: EffortLevel|null } }   // edit only
+  "patch": { "model"?: string|null, "effort"?: EffortLevel|null },   // edit only
+  "reason": string }                 // cancel only — on each task.transition audit row
 → 200 { action, results: [{ id, ok: true, task } | { id, ok: false, code, error }], ok, failed }
 ```
 
 - **It loops over `task-actions.ts`**, one id at a time, calling the same
   function the single-task route calls: `enqueueTask(…, ENQUEUE_FROM)`,
   `queueAddTask`, `cancelTask`, `completeTask`, `setHiddenTask` (hide/unhide,
-  `docs/design.md` § Hidden tasks), `editTask`. Actor is `human`.
+  `docs/design.md` § Hidden tasks), `editTask`, `keepDraftTask` (keep, § Stale
+  drafts). Actor is `human`.
   There is no second copy of lifecycle logic, so every refusal, broadcast,
   audit row and `maybeSchedule` is the single route's own.
 - **A refusal is that id's result** (`{ ok: false, code, error }`), never the
@@ -382,3 +441,25 @@ goes on to the preset step. The summary names the template and its checks.
   - Real round-trips through the bot's API.
   - The Postgres driver: no schema change; `task.templates` is a config row.
   - A real reviewer round writing `diffStat`.
+
+## Verification (2026-10-26, stale drafts)
+
+Task 6f1e41a1. A throwaway `app.inject` harness over a `.backup` copy of the
+live DB (migration 44 applied to the copy) plus a pure `buildInbox` fixture
+with a pinned clock, 31/31 checks (`verification.txt` in the task's
+artifacts):
+
+- fixture: stale drafts listed after every other kind, oldest first; hidden,
+  human-filed, feature, young, kept and non-draft tasks excluded; an expired
+  Keep is back; `staleDraftDays` honoured; 15 stale → 10 items with
+  `total: 15`;
+- live copy: 41 agent drafts (15 hidden) → 18 stale, 10 listed, all last; the
+  two hidden SECURITY drafts absent;
+- Keep: 403 without Origin, 200 with `inboxKeptUntil` = now + 14 days, off the
+  list but not hidden, back 15 days later; 409 on a non-draft; `task.kept`
+  audited;
+- Hide removes it; Cancel of a draft → `cancelled` with `reason` on the
+  `task.transition` row; cancel without a body still works;
+- bulk `keep` reports per-id results; `reason` off `cancel` is a 400;
+  `inbox.staleDraftDays` 7 accepted, 0 refused;
+- `npm run typecheck` clean.

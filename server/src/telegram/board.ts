@@ -378,16 +378,19 @@ interface Snapshot {
   attention: Set<string>;
   liveByTask: Map<string, Run>;
   activity: Map<string, RunActivity>;
+  /** `inbox.staleDraftDays` — the Inbox's stale-draft line (docs/inbox.md § Stale drafts) */
+  staleDraftDays: number;
 }
 
 async function load(deps: BoardDeps): Promise<Snapshot> {
-  const [tasks, repos, live, questions, proposals, features] = await Promise.all([
+  const [tasks, repos, live, questions, proposals, features, settings] = await Promise.all([
     deps.storage.listTasks(),
     deps.storage.listRepos(),
     deps.storage.listRuns({ status: 'running' }),
     deps.storage.listQuestions({ status: 'pending' }),
     deps.storage.listProposals({ status: 'pending' }),
     deps.storage.listFeatures({ status: 'proposed' }),
+    deps.storage.getSettings(),
   ]);
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const liveByTask = new Map<string, Run>();
@@ -425,6 +428,7 @@ async function load(deps: BoardDeps): Promise<Snapshot> {
     attention,
     liveByTask,
     activity,
+    staleDraftDays: settings['inbox.staleDraftDays'],
   };
 }
 
@@ -485,6 +489,8 @@ interface Item {
   /** the row's first button (label gets `n.`) and its action buttons */
   open: { label: string; data: string } | null;
   actions: InlineKeyboardButton[];
+  /** a stale-draft row: listed, but not counted on the 📥 tab (backlog hygiene, not a decision) */
+  stale?: true;
 }
 
 const act = (text: string, a: ButtonAction): InlineKeyboardButton => ({ text, callback_data: encodeAction(a) });
@@ -528,6 +534,7 @@ function inboxItems(snap: Snapshot, state: BoardState, inRepo: (id: string | nul
     runs: snap.live,
     proposals: snap.proposals.filter((p) => inRepo(p.repoId)),
     features: snap.features.filter((f) => inRepo(f.repoId)),
+    staleDraftDays: snap.staleDraftDays,
   });
   const errorLine = (t: Task) => (max: number) => (t.error ? [`⚠ ${escapeHtml(clip(t.error, max + 40))}`] : []);
   return inbox.map((x): Item => {
@@ -598,6 +605,24 @@ function inboxItems(snap: Snapshot, state: BoardState, inRepo: (id: string | nul
           open: { label: `🧩 ${f.title}`, data: encodeList({ kind: 'feature', id: f.id }) },
           actions: [act('✅ Approve', { kind: 'feature.approve', id: f.id })],
         };
+      }
+      case 'stale-draft': {
+        // keep / hide / cancel (docs/inbox.md § Stale drafts) — the same three
+        // as the SPA row; never automatic. The last listed row carries "N more".
+        const t = x.task;
+        const listed = inbox.filter((i) => i.kind === 'stale-draft').length;
+        const last = inbox[inbox.length - 1] === x;
+        const it = taskItem(snap, t, state, () => [
+          `🗂 stale draft · filed by an agent ${x.ageDays}d ago, never started`,
+          ...(last && x.total > listed ? [`…and ${x.total - listed} more stale drafts — they come up as these are triaged`] : []),
+        ]);
+        it.actions.push(
+          act('📌 Keep', { kind: 'task.keep', id: t.id }),
+          act('🙈 Hide', { kind: 'task.hide', id: t.id }),
+          act('🚫 Cancel', { kind: 'task.cancelStale', id: t.id }),
+        );
+        it.stale = true;
+        return it;
       }
     }
   });
@@ -719,7 +744,7 @@ export async function renderBoard(deps: BoardDeps, want: BoardState): Promise<Re
   const counts = new Map<BoardView, number>();
   const inRepo = (id: string | null) => !repo || id === repo.id;
   for (const v of TABS) {
-    counts.set(v, v === 'in' ? inboxItems(snap, state, inRepo).length : viewTasks(snap, v, null).filter((t) => inRepo(t.repoId)).length);
+    counts.set(v, v === 'in' ? inboxItems(snap, state, inRepo).filter((it) => !it.stale).length : viewTasks(snap, v, null).filter((t) => inRepo(t.repoId)).length);
   }
   rows.push(
     TABS.map((v) => ({

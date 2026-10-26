@@ -3635,7 +3635,7 @@ export class Orchestrator implements OrchestratorApi {
     return { task: (await this.storage.getTask(taskId))! };
   }
 
-  async cancel(taskId: string, actor = 'human'): Promise<ActionResult> {
+  async cancel(taskId: string, actor = 'human', reason?: string): Promise<ActionResult> {
     // A resume gate compacting this task's session has no run row yet (the row
     // is created after it returns), so killing runs would miss it entirely and
     // it would keep paying for a summary of work nobody wants. startWorker
@@ -3649,7 +3649,14 @@ export class Orchestrator implements OrchestratorApi {
       await this.storage.updateRun(run.id, { status: 'killed', endedAt: new Date().toISOString() });
       await this.storage.appendEvent({ kind: 'run.killed', actor, runId: run.id, taskId });
     }
-    const task = await this.storage.transitionTask(taskId, ['running', 'waiting', 'queued'], 'cancelled', actor);
+    const task = await this.storage.transitionTask(
+      taskId,
+      ['running', 'waiting', 'queued'],
+      'cancelled',
+      actor,
+      undefined,
+      reason ? { reason } : undefined,
+    );
     if (!task) return { error: 'task is not running or queued', code: 409 };
     broadcast({ type: 'task.updated', task });
     // cancelled counts as resolved for split parents (review F2).

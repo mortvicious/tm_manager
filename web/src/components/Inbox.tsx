@@ -1,12 +1,31 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { buildInbox, publishCaution, type DiffStat, type InboxItem, type InboxKind, type Task } from '@tm/shared';
+import {
+  DEFAULT_SETTINGS,
+  buildInbox,
+  publishCaution,
+  type DiffStat,
+  type InboxItem,
+  type InboxKind,
+  type Task,
+} from '@tm/shared';
 import { api } from '../api.ts';
 import { confirmMarkPublished, confirmPublish, markPublishedOffered } from '../publish.ts';
 import { useApp } from '../state.tsx';
 import type { ReturnTo } from '../returnTo.ts';
 import { toastError } from '../toast.ts';
-import { IconAnalyze, IconCheck, IconInbox, IconMore, IconPlay, IconPublish, IconRefresh, IconTerminal, IconX } from './Icons.tsx';
+import {
+  IconAnalyze,
+  IconCheck,
+  IconEye,
+  IconInbox,
+  IconMore,
+  IconPlay,
+  IconPublish,
+  IconRefresh,
+  IconTerminal,
+  IconX,
+} from './Icons.tsx';
 import { QuestionForm } from './QuestionModal.tsx';
 import { reviewHeadline } from './ReviewPanel.tsx';
 import { TaskAttemptsChip, TaskCostChip } from './RunMeta.tsx';
@@ -19,12 +38,28 @@ import { Sheet, SheetAction } from './Sheet.tsx';
  * on the WS event that changed it, with no polling and no route of its own.
  */
 export function useInbox(): InboxItem[] {
-  const { tasks, questions, runs, proposals, features } = useApp();
+  const { tasks, questions, runs, proposals, features, settings } = useApp();
+  const staleDraftDays = staleDays(settings);
   return useMemo(
-    () => buildInbox({ tasks, questions, runs, proposals, features }),
-    [tasks, questions, runs, proposals, features],
+    () => buildInbox({ tasks, questions, runs, proposals, features, staleDraftDays }),
+    [tasks, questions, runs, proposals, features, staleDraftDays],
   );
 }
+
+function staleDays(settings: ReturnType<typeof useApp>['settings']): number {
+  return settings?.['inbox.staleDraftDays'] ?? DEFAULT_SETTINGS['inbox.staleDraftDays'];
+}
+
+/**
+ * The decisions a count shows (header chip, phone tab, page title): every item
+ * but a stale draft (docs/inbox.md § Stale drafts) — backlog hygiene sits at
+ * the bottom of the list and must not keep the badge lit on its own.
+ */
+export function decisions(items: InboxItem[]): InboxItem[] {
+  return items.filter((i) => i.kind !== 'stale-draft');
+}
+
+const CANCEL_STALE_REASON = 'stale draft triage';
 
 export const KIND_LABEL: Record<InboxKind, string> = {
   question: 'asks you',
@@ -34,6 +69,7 @@ export const KIND_LABEL: Record<InboxKind, string> = {
   blocked: 'blocked',
   proposal: 'proposal',
   feature: 'feature plan',
+  'stale-draft': 'stale draft',
 };
 
 /** The task an item is about, when it is about one. */
@@ -96,6 +132,8 @@ export function itemSummary(item: InboxItem): string {
       const n = phases.reduce((a, ph) => a + ph.tasks.filter((c) => !c.excluded).length, 0);
       return `${phases.length} phase(s), ${n} task(s) planned`;
     }
+    case 'stale-draft':
+      return `filed by an agent ${item.ageDays} days ago, never started${item.task.brief ? ` — ${item.task.brief}` : ''}`;
   }
 }
 
@@ -110,7 +148,7 @@ export function limitStopped(t: Task): boolean {
 
 /** A keyboard-reachable decision on an item: the key is its desktop shortcut. */
 export interface InboxAct {
-  key: 'a' | 'd' | 'f' | 'r' | 'p' | 'x' | 'o' | 't';
+  key: 'a' | 'd' | 'f' | 'r' | 'p' | 'x' | 'o' | 't' | 'l' | 'h';
   label: string;
   hint?: string;
   tone?: 'primary' | 'danger';
@@ -131,7 +169,8 @@ export interface InboxNav {
 
 export function useInboxActs(nav: InboxNav) {
   const navigate = useNavigate();
-  const { refresh } = useApp();
+  const { refresh, settings } = useApp();
+  const keepDays = staleDays(settings);
   return useCallback(
     (item: InboxItem): InboxAct[] => {
       const open = (t: Task | null): InboxAct[] =>
@@ -260,9 +299,40 @@ export function useInboxActs(nav: InboxNav) {
             },
             { key: 'o', label: 'Open', hint: 'the plan', run: () => navigate(`/features/${item.feature.id}`) },
           ];
+        case 'stale-draft': {
+          // Keep / Hide / Cancel (docs/inbox.md § Stale drafts) — a surface,
+          // never a sweep: nothing here happens without the human's press.
+          const t = item.task;
+          return [
+            {
+              key: 'l',
+              label: 'Keep',
+              hint: `off this list for ${keepDays} days, still on the board`,
+              tone: 'primary',
+              icon: <IconCheck />,
+              run: () => then(api.keepDraft(t.id)),
+            },
+            {
+              key: 'h',
+              label: 'Hide',
+              hint: "off the board's sections and this list (Board › Hidden brings it back)",
+              icon: <IconEye />,
+              run: () => then(api.taskAction(t.id, 'hide')),
+            },
+            {
+              key: 'x',
+              label: 'Cancel',
+              hint: 'close it as cancelled — stale draft triage',
+              tone: 'danger',
+              confirm: () => window.confirm(`Cancel “${t.title}”? It is closed as cancelled (stale draft triage).`),
+              run: () => then(api.cancelTask(t.id, CANCEL_STALE_REASON)),
+            },
+            ...open(t),
+          ];
+        }
       }
     },
-    [nav, navigate, refresh],
+    [nav, navigate, refresh, keepDays],
   );
 }
 
@@ -348,6 +418,19 @@ export function InboxDetail({ item }: { item: InboxItem }) {
       );
     case 'proposal':
       return <ProposalDetail item={item} />;
+    case 'stale-draft':
+      return (
+        <div className="inbox-detail">
+          {item.task.brief && <Block label="Brief">{item.task.brief}</Block>}
+          {item.task.description ? (
+            <Block label="Description">
+              {item.task.description.length > 1200 ? `${item.task.description.slice(0, 1200)}…` : item.task.description}
+            </Block>
+          ) : (
+            <div className="hint">No description.</div>
+          )}
+        </div>
+      );
     case 'feature':
       return (
         <div className="inbox-detail">
@@ -472,7 +555,7 @@ export function InboxChip({
   compact?: boolean;
   urgentOnly?: boolean;
 }) {
-  const all = useInbox();
+  const all = decisions(useInbox());
   const urgentItems = all.filter((i) => i.kind === 'question' || i.kind === 'attention');
   const items = urgentOnly ? urgentItems : all;
   const n = items.length;
@@ -527,7 +610,7 @@ export function InboxSheet({
   );
   return (
     <>
-      <Sheet label="Inbox" title={`Inbox · ${items.length}`} onClose={onClose} tall>
+      <Sheet label="Inbox" title={`Inbox · ${decisions(items).length}`} onClose={onClose} tall>
         <InboxRows items={items} onPick={(i) => setOpenKey(i.key)} />
       </Sheet>
       {open && <InboxItemSheet item={open} nav={leave} onClose={() => setOpenKey(null)} />}
@@ -544,6 +627,55 @@ export function InboxRows({ items, onPick }: { items: InboxItem[]; onPick: (i: I
           <InboxRowHead item={i} />
         </button>
       ))}
+      <StaleDraftsFooter items={items} />
+    </div>
+  );
+}
+
+/**
+ * Under the stale drafts (docs/inbox.md § Stale drafts): how many are listed
+ * of how many there are, and Keep/Hide for every one LISTED in one bulk call
+ * (`POST /api/tasks/bulk`). No bulk Cancel — closing work stays one press per
+ * task. Nothing when there are no stale drafts.
+ */
+export function StaleDraftsFooter({ items }: { items: InboxItem[] }) {
+  const { refresh, settings } = useApp();
+  const [busy, setBusy] = useState(false);
+  const stale = items.filter((i): i is Extract<InboxItem, { kind: 'stale-draft' }> => i.kind === 'stale-draft');
+  if (!stale.length) return null;
+  const total = stale[0].total;
+  const more = total - stale.length;
+  const ids = stale.map((i) => i.task.id);
+  const bulk = async (action: 'keep' | 'hide') => {
+    if (action === 'hide' && !window.confirm(`Hide the ${ids.length} stale draft(s) listed? Board › Hidden brings them back.`))
+      return;
+    setBusy(true);
+    try {
+      const r = await api.bulkTasks({ action, ids });
+      if (r.failed) toastError(new Error(`${r.failed} of ${ids.length} refused`), action === 'keep' ? 'Keep all' : 'Hide all');
+      await refresh();
+    } catch (e) {
+      toastError(e, action === 'keep' ? 'Keep all' : 'Hide all');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="inbox-stale-foot">
+      <span className="hint">
+        {more > 0
+          ? `${stale.length} of ${total} stale drafts — ${more} more come up as these are triaged`
+          : `${total} stale draft${total === 1 ? '' : 's'}`}{' '}
+        · older than {staleDays(settings)} days
+      </span>
+      <span className="inbox-stale-acts">
+        <button type="button" className="btn" disabled={busy} onClick={() => void bulk('keep')}>
+          Keep all {stale.length}
+        </button>
+        <button type="button" className="btn" disabled={busy} onClick={() => void bulk('hide')}>
+          Hide all {stale.length}
+        </button>
+      </span>
     </div>
   );
 }
@@ -557,6 +689,8 @@ const ACT_ICON: Record<InboxAct['key'], ReactNode> = {
   x: <IconX />,
   t: <IconTerminal />,
   o: <IconMore />,
+  l: <IconCheck />,
+  h: <IconEye />,
 };
 
 /** One item's sheet, stacked above the list: detail, then the actions. */

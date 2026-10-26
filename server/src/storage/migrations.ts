@@ -687,6 +687,14 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
     // published, so it always describes the CURRENT landing.
     statements: [`ALTER TABLE tm_tasks ADD COLUMN shipped_sha TEXT`, `ALTER TABLE tm_tasks ADD COLUMN shipped_at TEXT`],
   },
+  {
+    id: 44,
+    // Stale drafts (docs/inbox.md § Stale drafts): ISO time a "Keep" on the
+    // Inbox's stale-draft row expires — until then the draft is off that list
+    // (it stays on the board). Written only by keepTaskInInbox, cleared by
+    // every status transition.
+    statements: [`ALTER TABLE tm_tasks ADD COLUMN inbox_kept_until TEXT`],
+  },
 ];
 
 /** The migration whose rows each driver backfills in JS once it is applied. */

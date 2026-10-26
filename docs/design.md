@@ -368,7 +368,7 @@ On desktop the drawer (`components/TerminalDrawer.tsx`) has a resize edge, `.ter
 
 ### Hidden tasks
 
-A human can park a task out of sight without cancelling it (2026-10-21). `tm_tasks.hidden_at` (migration 38, ISO time, null = visible) → `Task.hiddenAt`, set by `POST /api/tasks/:id/hide` and cleared by `/unhide` (`setHiddenTask` in `task-actions.ts`, idempotent, audited `task.hidden` / `task.unhidden`, also in `POST /api/tasks/bulk` as `hide` / `unhide`). It is a **board-only flag**: no claim, queue gate, inbox or notifier reads it, so a hidden `queued` task still runs.
+A human can park a task out of sight without cancelling it (2026-10-21). `tm_tasks.hidden_at` (migration 38, ISO time, null = visible) → `Task.hiddenAt`, set by `POST /api/tasks/:id/hide` and cleared by `/unhide` (`setHiddenTask` in `task-actions.ts`, idempotent, audited `task.hidden` / `task.unhidden`, also in `POST /api/tasks/bulk` as `hide` / `unhide`). It is a **board-only flag**: no claim, queue gate or notifier reads it, so a hidden `queued` task still runs. The one Inbox reader is the stale-draft kind (`docs/inbox.md` § Stale drafts, 2026-10-26): a hidden draft is never listed there, so a deliberate hide stays out of triage; every other Inbox kind still ignores it.
 
 - **Only a task at rest.** Hiding a `running`/`waiting` task is a 409 (`a working task cannot be hidden`). The storage write (`setTaskHidden`) is conditional on the same, so a claim racing the click cannot leave a working task hidden.
 - **Any status change unhides.** `transitionTask` clears `hidden_at` in both drivers, beside the Undo-start hold, so a task that is enqueued, claimed, retried or landed is back in its usual section. `PATCH` does not touch it (the strict body refuses `hiddenAt`).

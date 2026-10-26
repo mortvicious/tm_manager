@@ -28,6 +28,7 @@ import {
   cancelTask,
   releaseTask,
   setHiddenTask,
+  keepDraftTask,
   stopWaitingTask,
   undoTask,
   completeTask,
@@ -516,9 +517,23 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     });
   }
 
+  // Stale drafts (docs/inbox.md § Stale drafts): off the Inbox's stale list
+  // for another `inbox.staleDraftDays`, still on the board. A browser action —
+  // an agent must not keep its own drafts out of the human's triage.
+  app.post('/api/tasks/:id/keep', async (req, reply) => {
+    if (!req.headers.origin) return reply.code(403).send({ error: 'keep is a browser action (Origin required)' });
+    const { id } = req.params as { id: string };
+    const r = await keepDraftTask(deps(), id, 'human');
+    if ('error' in r) return reply.code(r.code).send({ error: r.error });
+    return r.task;
+  });
+
+  // optional `{ reason }` — recorded on the task.transition audit row (the Inbox sends "stale draft triage")
+  const cancelBody = z.object({ reason: z.string().trim().min(1).max(200).optional() }).strict().nullish();
   app.post('/api/tasks/:id/cancel', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const r = await cancelTask(deps(), id, 'human');
+    const body = cancelBody.parse(req.body);
+    const r = await cancelTask(deps(), id, 'human', body?.reason);
     if ('error' in r) return reply.code(r.code).send({ error: r.error });
     return r.task;
   });
@@ -539,9 +554,11 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
         })
         .strict()
         .optional(),
+      reason: z.string().trim().min(1).max(200).optional(),
     })
     .strict()
     .superRefine((b, ctx) => {
+      if (b.action !== 'cancel' && b.reason) ctx.addIssue({ code: 'custom', message: 'reason is for the cancel action only' });
       const keys = Object.keys(b.patch ?? {});
       if (b.action === 'edit' && !keys.length) ctx.addIssue({ code: 'custom', message: 'edit needs a patch (model and/or effort)' });
       if (b.action !== 'edit' && b.patch) ctx.addIssue({ code: 'custom', message: 'patch is for the edit action only' });
@@ -556,7 +573,9 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
         case 'queue':
           return queueAddTask(deps(), id, 'human');
         case 'cancel':
-          return cancelTask(deps(), id, 'human');
+          return cancelTask(deps(), id, 'human', body.reason);
+        case 'keep':
+          return keepDraftTask(deps(), id, 'human');
         case 'complete':
           return completeTask(deps(), id, 'human');
         case 'hide':

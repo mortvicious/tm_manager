@@ -591,6 +591,13 @@ export class SqliteStorage implements Storage {
     return r ? rowToTask(r) : null;
   }
 
+  async keepTaskInInbox(id: string, until: string): Promise<Task | null> {
+    const r = this.db
+      .prepare(`UPDATE tm_tasks SET inbox_kept_until = ?, updated_at = ? WHERE id = ? AND status = 'draft' RETURNING *`)
+      .get(until, now(), id);
+    return r ? rowToTask(r) : null;
+  }
+
   async updateTask(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Promise<Task | null> {
     // A re-parent rewrites the moved subtree too, so it must be one transaction.
     return this.inTxn(() => this.updateTaskSync(id, patch));
@@ -798,6 +805,9 @@ export class SqliteStorage implements Storage {
     // Hiding (docs/design.md § Hidden tasks) is for a task at rest: any status
     // change makes it visible again, so a hidden task can never be working.
     sets.push('hidden_at = NULL');
+    // A Keep on a stale draft (docs/inbox.md § Stale drafts) is about the draft
+    // as it sat: any status change ends it.
+    sets.push('inbox_kept_until = NULL');
     // A terminal status ends the task's custom-queue membership (docs/queue.md):
     // a mark must never outlive the work, or a later follow-up into `review`
     // would hold its repo's place in the queue again.

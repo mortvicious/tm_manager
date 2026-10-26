@@ -831,6 +831,25 @@ export function ConfigPage() {
               default and the key stays out of the save diff until touched */}
           <Toggle on={cfg['board.groupColors'] ?? true} onChange={(v) => set('board.groupColors', v)} />
         </div>
+        <div className="cfg-row">
+          <div>
+            <div>Stale drafts (days)</div>
+            <div className="hint">
+              an agent-filed draft older than this is listed last in the Inbox to keep, hide or cancel; Keep takes it
+              off that list for this long again (docs/inbox.md § Stale drafts)
+            </div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={1}
+            max={365}
+            step={1}
+            style={{ width: 90 }}
+            value={cfg['inbox.staleDraftDays'] ?? DEFAULT_SETTINGS['inbox.staleDraftDays']}
+            onChange={(e) => set('inbox.staleDraftDays', Number(e.target.value))}
+          />
+        </div>
       </div>
 
       <div className="panel cfg-group">

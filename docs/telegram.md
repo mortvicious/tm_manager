@@ -680,6 +680,7 @@ Nobody types 36 characters on a phone, so **every `<id>` above accepts a prefix*
 | 5 | blocked split parents, with `subtasks: n of m settled, k failed` | ⛔ Unblock |
 | 6 | pending proposals | ✅ Accept (only when the proposal has **no** options) · ✖ Reject; the title sends the proposal in full, with one accept per option |
 | 7 | proposed features | ✅ Approve; the title sends the plan report |
+| 8 | stale agent drafts — agent-filed, never started, older than `inbox.staleDraftDays` (14), not hidden or kept; oldest first, 10 at most, the last row says how many more (`docs/inbox.md` § Stale drafts). Not counted on the 📥 tab | 📌 Keep · 🙈 Hide · 🚫 Cancel (reason "stale draft triage") |
 
 Within a kind: what releases the most open tasks first (later feature phases, blocked split ancestors), then a ready review (checks green, review clean) before one that needs reading, then oldest first. A task appears once, in its first group.
 

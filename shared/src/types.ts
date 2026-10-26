@@ -967,6 +967,13 @@ export interface Task {
    */
   hiddenAt: string | null;
   /**
+   * ISO time a "Keep" on its Inbox stale-draft row expires (docs/inbox.md §
+   * Stale drafts, migration 44): until then the draft is out of the stale
+   * list but still on the board. Set only on a `draft`; every status
+   * transition clears it. null = never kept.
+   */
+  inboxKeptUntil: string | null;
+  /**
    * What this task has cost so far, in USD (docs/token-budget.md § Fuses):
    * the sum of `RunStats.costUsd` over its worker runs AND the aux runs about
    * it (subject = this task: review, compact). Kept on the row by the storage
@@ -1610,6 +1617,12 @@ export interface AppSettings {
   /** a task sitting in review this long is an anomaly: Dashboard + one notification per stay in review */
   'anomaly.staleReviewHours': number;
   /**
+   * An agent-filed draft older than this many days is listed last in the
+   * Inbox as a stale draft (keep / hide / cancel), and a Keep takes it out
+   * of that list for this many days again (docs/inbox.md § Stale drafts).
+   */
+  'inbox.staleDraftDays': number;
+  /**
    * Budget fuses (docs/token-budget.md § Fuses). 0 = off, the default for all three.
    * `budget.taskUsd`: no AUTOMATIC turn (review fix round, dispatch wake, auto
    * wake-up, later check/transient rounds) starts once the task's `costUsd`
@@ -1770,6 +1783,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'anomaly.costUsd': 10,
   'anomaly.taskCostUsd': 0,
   'anomaly.staleReviewHours': 72,
+  'inbox.staleDraftDays': 14,
   'budget.taskUsd': 0,
   'budget.dayUsd': 0,
   'budget.runMinutes': 0,
@@ -1909,6 +1923,8 @@ export type AuditKind =
   /** a human hid / unhid the task (docs/design.md § Hidden tasks) */
   | 'task.hidden'
   | 'task.unhidden'
+  /** a human kept a stale draft off the Inbox's stale list for N days (docs/inbox.md § Stale drafts); data `{ until, days }` */
+  | 'task.kept'
   | 'task.follow-up'
   | 'task.dispatch'
   | 'task.publish'
@@ -2697,19 +2713,36 @@ export interface PushMessage {
 
 // ---- Inbox (docs/inbox.md) --------------------------------------------------
 
-export type InboxKind = 'question' | 'attention' | 'review' | 'failed' | 'blocked' | 'proposal' | 'feature';
+export type InboxKind = 'question' | 'attention' | 'review' | 'failed' | 'blocked' | 'proposal' | 'feature' | 'stale-draft';
 
 /**
  * The order the kinds are listed in — by how much one decision unblocks: a
  * question or a permission prompt holds a LIVE session (its slot and its
  * repo), a review holds a landing (and any later feature phase), a failure
  * holds a retry, a blocked split parent its tree; proposals and planned
- * features are new work nobody waits on yet.
+ * features are new work nobody waits on yet; a stale agent draft is backlog
+ * hygiene — last, because nothing at all waits on it.
  */
-export const INBOX_KINDS: InboxKind[] = ['question', 'attention', 'review', 'failed', 'blocked', 'proposal', 'feature'];
+export const INBOX_KINDS: InboxKind[] = ['question', 'attention', 'review', 'failed', 'blocked', 'proposal', 'feature', 'stale-draft'];
 
 /** A `failed` task older than this has been seen and left alone — it drops out of the inbox (the board still lists it). */
 export const INBOX_FAILED_DAYS = 7;
+
+/** At most this many stale drafts are listed; the rest is a count (`total`) the surfaces show as "N more". */
+export const INBOX_STALE_DRAFT_CAP = 10;
+
+/**
+ * An agent-filed draft nobody has triaged (docs/inbox.md § Stale drafts): filed
+ * by an agent or an outside source (`isExternalTask`), still `draft`, not
+ * hidden, created more than `days` ago (`createdAt`, never `updatedAt` — a hide
+ * toggle or an edit moves that), and not kept within the last window
+ * (`inboxKeptUntil` in the past or unset). The JS rule IS the rule — no SQL twin.
+ */
+export function isStaleDraft(t: Task, now: number, days: number): boolean {
+  if (t.status !== 'draft' || t.hiddenAt || !isExternalTask(t)) return false;
+  if (Date.parse(t.createdAt) > now - days * 86_400_000) return false;
+  return !t.inboxKeptUntil || Date.parse(t.inboxKeptUntil) <= now;
+}
 
 interface InboxBase {
   /** stable list key: `<kind>:<id>` */
@@ -2734,7 +2767,15 @@ export type InboxItem =
   | (InboxBase & { kind: 'failed'; task: Task })
   | (InboxBase & { kind: 'blocked'; task: Task; children: { total: number; open: number; failed: number } })
   | (InboxBase & { kind: 'proposal'; proposal: Proposal; task: Task | null })
-  | (InboxBase & { kind: 'feature'; feature: Feature });
+  | (InboxBase & { kind: 'feature'; feature: Feature })
+  | (InboxBase & {
+      kind: 'stale-draft';
+      task: Task;
+      /** whole days since it was filed */
+      ageDays: number;
+      /** every stale draft the input holds; only the oldest `INBOX_STALE_DRAFT_CAP` are items — the rest is "N more" */
+      total: number;
+    });
 
 export interface InboxInput {
   tasks: Task[];
@@ -2747,6 +2788,8 @@ export interface InboxInput {
   /** `proposed` ones are used */
   features: Feature[];
   now?: number;
+  /** `inbox.staleDraftDays`; the default when omitted */
+  staleDraftDays?: number;
 }
 
 /**
@@ -2860,13 +2903,22 @@ export function buildInbox(input: InboxInput): InboxItem[] {
   for (const f of [...input.features].filter((f) => f.status === 'proposed').sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
     out.push({ kind: 'feature', key: `feature:${f.id}`, feature: f, unblocks: 0 });
   }
+  // stale agent drafts — oldest filed first, capped (never auto-cancelled or auto-hidden: a surface, not a sweep)
+  const days = input.staleDraftDays ?? DEFAULT_SETTINGS['inbox.staleDraftDays'];
+  const stale = input.tasks
+    .filter((t) => !seen.has(t.id) && isStaleDraft(t, now, days))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  for (const t of stale.slice(0, INBOX_STALE_DRAFT_CAP)) {
+    const ageDays = Math.floor((now - Date.parse(t.createdAt)) / 86_400_000);
+    out.push({ kind: 'stale-draft', key: `stale-draft:${t.id}`, task: t, ageDays, total: stale.length, unblocks: 0 });
+  }
   return out;
 }
 
 // ---- Bulk actions (docs/inbox.md § Bulk actions) ----------------------------
 
-export type BulkAction = 'enqueue' | 'queue' | 'cancel' | 'complete' | 'hide' | 'unhide' | 'edit';
-export const BULK_ACTIONS: BulkAction[] = ['enqueue', 'queue', 'cancel', 'complete', 'hide', 'unhide', 'edit'];
+export type BulkAction = 'enqueue' | 'queue' | 'cancel' | 'complete' | 'hide' | 'unhide' | 'edit' | 'keep';
+export const BULK_ACTIONS: BulkAction[] = ['enqueue', 'queue', 'cancel', 'complete', 'hide', 'unhide', 'edit', 'keep'];
 /** ids per bulk call */
 export const BULK_MAX = 100;
 
@@ -2875,6 +2927,8 @@ export interface BulkRequest {
   ids: string[];
   /** `edit` only: the per-task overrides it sets (null = back to the default) */
   patch?: { model?: string | null; effort?: EffortLevel | null };
+  /** `cancel` only: recorded on each `task.transition` audit row (e.g. "stale draft triage") */
+  reason?: string;
 }
 
 /** One id's outcome; a refusal is reported here, never fatal to the batch. */

@@ -183,5 +183,7 @@ function verb(a: BulkAction): string {
       return 'unhidden';
     case 'edit':
       return 'updated';
+    case 'keep':
+      return 'kept off the stale-draft list';
   }
 }

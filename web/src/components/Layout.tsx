@@ -12,7 +12,7 @@ import { CommandsLauncher } from './Commands.tsx';
 import { EmulatorLauncher } from './Emulator.tsx';
 import { Sheet } from './Sheet.tsx';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { InboxChip, InboxSheet, useInbox } from './Inbox.tsx';
+import { InboxChip, InboxSheet, decisions, useInbox } from './Inbox.tsx';
 import { Explainable } from './Explain.tsx';
 import {
   IconBoard,
@@ -871,7 +871,7 @@ function owns(to: string, pathname: string) {
 
 function TabBar({ onMore, moreOpen }: { onMore: () => void; moreOpen: boolean }) {
   const { pathname } = useLocation();
-  const inbox = useInbox();
+  const inbox = decisions(useInbox());
   const urgent = inbox.some((i) => i.kind === 'question' || i.kind === 'attention');
   // Slots left to right: left tabs, the Board, right tabs, More. A page reached
   // from the More sheet belongs to More; the Board is its own button.

@@ -137,6 +137,7 @@ export function rowToTask(r: any): Task {
     queueHeldAt: r.queue_held_at ?? null,
     pausedTurn: safeParse(r.paused_turn, null),
     hiddenAt: r.hidden_at ?? null,
+    inboxKeptUntil: r.inbox_kept_until ?? null,
     costUsd: Number(r.cost_usd ?? 0) || 0,
     attempts: Number(r.attempts ?? 0) || 0,
     acceptance: r.acceptance ?? null,

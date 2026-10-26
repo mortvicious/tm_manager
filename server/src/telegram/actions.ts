@@ -8,6 +8,9 @@ import {
   ENQUEUE_FROM,
   RETRY_FROM,
   cancelTask as svcCancelTask,
+  keepDraftTask as svcKeepDraftTask,
+  setHiddenTask as svcSetHiddenTask,
+  STALE_DRAFT_CANCEL_REASON,
   completeTask as svcCompleteTask,
   createTask as svcCreateTask,
   editTask as svcEditTask,
@@ -92,6 +95,24 @@ export async function runNowTask(deps: ActionDeps, taskId: string, actor: string
 /** POST /api/tasks/:id/cancel — de-queue, or kill the session and cancel. */
 export async function cancelTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
   return outcome(await svcCancelTask(deps, taskId, actor), (t) => `“${t.title}” cancelled.`);
+}
+
+/** POST /api/tasks/:id/keep — a stale draft off the Inbox's stale list for another N days (docs/inbox.md § Stale drafts). */
+export async function keepDraft(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  return outcome(await svcKeepDraftTask(deps, taskId, actor), (t) => {
+    const until = t.inboxKeptUntil ? ` until ${t.inboxKeptUntil.slice(0, 10)}` : '';
+    return `“${t.title}” kept${until} — off the stale list, still on the board.`;
+  });
+}
+
+/** POST /api/tasks/:id/hide — off the board's sections and the stale list (docs/design.md § Hidden tasks). */
+export async function hideTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  return outcome(await svcSetHiddenTask(deps, taskId, true, actor), (t) => `“${t.title}” hidden.`);
+}
+
+/** POST /api/tasks/:id/cancel `{ reason: 'stale draft triage' }` — the stale-draft row's Cancel. */
+export async function cancelStaleDraft(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  return outcome(await svcCancelTask(deps, taskId, actor, STALE_DRAFT_CANCEL_REASON), (t) => `“${t.title}” cancelled (stale draft triage).`);
 }
 
 /** POST /api/tasks/:id/undo — stop the turn, back to where it was (docs/queue.md § Undo start). */
@@ -359,6 +380,10 @@ export type ButtonAction =
   | { kind: 'task.unblock'; id: string }
   | { kind: 'task.queueAdd'; id: string }
   | { kind: 'task.queueRemove'; id: string }
+  /** the Inbox's stale-draft row (docs/inbox.md § Stale drafts): keep / hide / cancel as triage */
+  | { kind: 'task.keep'; id: string }
+  | { kind: 'task.hide'; id: string }
+  | { kind: 'task.cancelStale'; id: string }
   /** `option` set = "accept, choosing THIS solution option" (0-based) */
   | { kind: 'proposal.accept'; id: string; option?: number }
   | { kind: 'proposal.reject'; id: string }
@@ -383,6 +408,9 @@ const WIRE: Record<ButtonAction['kind'], string> = {
   'task.unblock': 't:unb',
   'task.queueAdd': 't:qadd',
   'task.queueRemove': 't:qrm',
+  'task.keep': 't:keep',
+  'task.hide': 't:hide',
+  'task.cancelStale': 't:sdx',
   'proposal.accept': 'p:acc',
   'proposal.reject': 'p:rej',
   'feature.approve': 'f:ok',
@@ -442,6 +470,12 @@ export function runButtonAction(deps: ActionDeps, a: ButtonAction, actor: string
       return queueAdd(deps, a.id, actor);
     case 'task.queueRemove':
       return queueRemove(deps, a.id, actor);
+    case 'task.keep':
+      return keepDraft(deps, a.id, actor);
+    case 'task.hide':
+      return hideTask(deps, a.id, actor);
+    case 'task.cancelStale':
+      return cancelStaleDraft(deps, a.id, actor);
     case 'run.kill':
       return killRun(deps, a.id, actor);
     case 'proposal.accept':

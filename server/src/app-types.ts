@@ -10,7 +10,8 @@ export interface OrchestratorApi {
   holdCustomQueue(taskId: string): void;
   releaseCustomQueue(taskId: string): void;
   runNow(taskId: string, actor?: string): Promise<ActionResult>;
-  cancel(taskId: string, actor?: string): Promise<ActionResult>;
+  /** `reason` lands in the task.transition audit row (e.g. "stale draft triage") */
+  cancel(taskId: string, actor?: string, reason?: string): Promise<ActionResult>;
   /** "Undo start" (docs/queue.md § Undo start): stop the running turn and put
    *  the task back in the status it had before it, held if that is `queued`. */
   undoStart(taskId: string, actor?: string): Promise<ActionResult>;
