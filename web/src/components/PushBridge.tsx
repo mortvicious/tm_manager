@@ -10,14 +10,14 @@ import { findTaskById } from '../taskId.ts';
  * nothing; it
  * - registers /sw.js, so a subscribed device keeps an active worker;
  * - routes a tapped notification: the worker posts `tm-navigate` to an open
- *   app, or opens a new one at the URL, and `?task=<id>` opens that task's
- *   panel over whatever page the path names (a short id works too, by the
- *   Board's find-by-id rules);
+ *   app, or opens a new one at the URL, and `?task=<id>` is that task's
+ *   panel over whatever page the path names (App.tsx; a short id is resolved
+ *   here, by the Board's find-by-id rules);
  * - closes question banners that are no longer pending — iOS must show a
  *   banner for every push, so "answered elsewhere" is never pushed; the open
  *   app tidies up instead.
  */
-export function PushBridge({ onOpenTask }: { onOpenTask: (id: string) => void }) {
+export function PushBridge() {
   const navigate = useNavigate();
   const location = useLocation();
   const { questions, tasks } = useApp();
@@ -27,23 +27,23 @@ export function PushBridge({ onOpenTask }: { onOpenTask: (id: string) => void })
     void registerServiceWorker();
   }, []);
 
-  // ?task=<id> → open the panel, then drop the param so a reload or Back does
-  // not reopen it
+  // ?task=<id> IS the open panel (App.tsx useOpenTask). A short id is
+  // resolved to the full one in place, keeping the history entry and its
+  // state; it needs the task list, so it waits for the first load. An id
+  // that does not resolve is left as it is: a full id whose task has not
+  // arrived yet still opens once it does.
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const id = params.get('task');
     if (!id) return;
-    // a short id needs the task list to resolve against; an empty list at boot
-    // means "not loaded yet", so keep the param until it lands. An unresolved
-    // id goes through as it was: a full id whose task has not arrived yet
-    // still opens once it does.
     const match = findTaskById(tasks, id);
-    if (match.kind !== 'found' && tasks.length === 0) return;
-    onOpenTask(match.kind === 'found' ? match.task.id : id);
-    params.delete('task');
-    const rest = params.toString();
-    navigate({ pathname: location.pathname, search: rest ? `?${rest}` : '', hash: location.hash }, { replace: true });
-  }, [location.search, location.pathname, location.hash, navigate, onOpenTask, tasks]);
+    if (match.kind !== 'found' || match.task.id === id) return;
+    params.set('task', match.task.id);
+    navigate(
+      { pathname: location.pathname, search: `?${params.toString()}`, hash: location.hash },
+      { replace: true, state: location.state },
+    );
+  }, [location.search, location.pathname, location.hash, location.state, navigate, tasks]);
 
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { FormEvent, MouseEvent as ReactMouseEvent } from 'react';
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { TerminalServerMsg } from '@tm/shared';
 import { useApp } from '../state.tsx';
-import { IconArrowDown, IconChevron, IconSend, IconX } from './Icons.tsx';
+import { clampHeight, clampWidth, savedHeight, savedWidth, saveHeight, saveWidth, setTermDock, useTermDock } from '../termLayout.ts';
+import { IconArrowDown, IconChevron, IconDockBottom, IconDockRight, IconSend, IconX } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
 import { attachTouchScroll } from './termTouchScroll.ts';
 
@@ -131,6 +132,85 @@ export function TerminalDrawer({
 
   const clickOutside = settings?.['terminal.clickOutside'] ?? 'compact';
 
+  // Desktop geometry (termLayout.ts, UX review #18): a drag-to-resize edge —
+  // the top one at the bottom, the left one docked right — remembered per
+  // browser and published as --tm-term-h/-w so .main makes room for it.
+  const { canDock, docked: dockPref } = useTermDock();
+  const docked = dockPref && !mobile;
+  const [height, setHeight] = useState<number | null>(savedHeight);
+  const [width, setWidth] = useState<number | null>(savedWidth);
+  const [, setViewport] = useState(0);
+  useEffect(() => {
+    if (mobile) return;
+    const root = document.documentElement.style;
+    if (height === null) root.removeProperty('--tm-term-h');
+    else root.setProperty('--tm-term-h', `${clampHeight(height)}px`);
+    if (width === null) root.removeProperty('--tm-term-w');
+    else root.setProperty('--tm-term-w', `${clampWidth(width)}px`);
+  });
+  useEffect(() => {
+    if (mobile) return;
+    // a smaller window re-clamps a remembered size
+    const onResize = () => setViewport((n) => n + 1);
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      document.documentElement.style.removeProperty('--tm-term-h');
+      document.documentElement.style.removeProperty('--tm-term-w');
+    };
+  }, [mobile]);
+  const dragRef = useRef<{ id: number; from: number; size: number } | null>(null);
+  const onResizeDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || !rootRef.current) return;
+    e.preventDefault();
+    const box = rootRef.current.getBoundingClientRect();
+    dragRef.current = { id: e.pointerId, from: docked ? e.clientX : e.clientY, size: docked ? box.width : box.height };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    document.documentElement.classList.add(docked ? 'term-resizing-x' : 'term-resizing-y');
+  };
+  const onResizeMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (!d || d.id !== e.pointerId) return;
+    // growing is toward the page: up at the bottom, left when docked
+    if (docked) setWidth(clampWidth(d.size + d.from - e.clientX));
+    else setHeight(clampHeight(d.size + d.from - e.clientY));
+  };
+  const onResizeEnd = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.id !== e.pointerId) return;
+    dragRef.current = null;
+    document.documentElement.classList.remove('term-resizing-x', 'term-resizing-y');
+    if (docked) saveWidth(width);
+    else saveHeight(height);
+  };
+  // the separator's keys: arrows step 32px (Shift: 128), Home/End the bounds,
+  // and a double-click (or Enter) goes back to the default size
+  const onResizeKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const box = rootRef.current?.getBoundingClientRect();
+    if (!box) return;
+    const step = e.shiftKey ? 128 : 32;
+    const grow: Record<string, number> = docked ? { ArrowLeft: step, ArrowRight: -step } : { ArrowUp: step, ArrowDown: -step };
+    const delta = grow[e.key];
+    let next: number | null | undefined;
+    if (delta !== undefined) next = (docked ? box.width : box.height) + delta;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = Number.MAX_SAFE_INTEGER;
+    else if (e.key === 'Enter') next = null;
+    if (next === undefined) return;
+    e.preventDefault();
+    resizeTo(next);
+  };
+  const resizeTo = (px: number | null) => {
+    const v = px === null ? null : docked ? clampWidth(px) : clampHeight(px);
+    if (docked) {
+      setWidth(v);
+      saveWidth(v);
+    } else {
+      setHeight(v);
+      saveHeight(v);
+    }
+  };
+  const sizeNow = docked ? width : height;
+
   const expand = () => {
     setCompact(false);
     // refit after the body is visible again — while compacted it measures 0×0
@@ -165,7 +245,8 @@ export function TerminalDrawer({
   // terminal fills the screen, so its only "outside" is a sheet or the question
   // modal drawn over it, and tapping those must not fold it away.
   useEffect(() => {
-    if (compact || clickOutside === 'nothing' || mobile) return;
+    // Docked right it covers nothing (the page makes room), so nothing is outside.
+    if (compact || clickOutside === 'nothing' || mobile || docked) return;
     const onDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
         if (clickOutside === 'close') onClose('outside');
@@ -174,7 +255,7 @@ export function TerminalDrawer({
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
-  }, [compact, clickOutside, onClose, mobile]);
+  }, [compact, clickOutside, onClose, mobile, docked]);
 
   useEffect(() => {
     if (!hostRef.current || !token) return;
@@ -484,7 +565,25 @@ export function TerminalDrawer({
   const full = mobile && !compact;
 
   return (
-    <div className={`term-drawer ${compact ? 'compact' : ''} ${full ? 'full' : ''}`} ref={rootRef}>
+    <div className={`term-drawer ${compact ? 'compact' : ''} ${full ? 'full' : ''} ${docked ? 'docked' : ''}`} ref={rootRef}>
+      {!mobile && !compact && (
+        <div
+          className="term-resize"
+          role="separator"
+          aria-orientation={docked ? 'vertical' : 'horizontal'}
+          aria-label="Resize terminal"
+          aria-valuenow={sizeNow === null ? undefined : docked ? clampWidth(sizeNow) : clampHeight(sizeNow)}
+          title="Drag to resize · double-click for the default size"
+          tabIndex={0}
+          onPointerDown={onResizeDown}
+          onPointerMove={onResizeMove}
+          onPointerUp={onResizeEnd}
+          onPointerCancel={onResizeEnd}
+          onLostPointerCapture={onResizeEnd}
+          onDoubleClick={() => resizeTo(null)}
+          onKeyDown={onResizeKey}
+        />
+      )}
       {compact && (
         <div className="term-compact" onClick={expand} title="Expand terminal">
           <span className={`term-compact-dot ${dotClass}`} />
@@ -534,6 +633,16 @@ export function TerminalDrawer({
               A+
             </button>
           </span>
+        )}
+        {!mobile && canDock && (
+          <button
+            className="btn ghost"
+            title={docked ? 'Dock to the bottom' : 'Dock right, beside the task panel'}
+            aria-label={docked ? 'Dock to the bottom' : 'Dock right'}
+            onClick={() => setTermDock(docked ? 'bottom' : 'right')}
+          >
+            {docked ? <IconDockBottom /> : <IconDockRight />}
+          </button>
         )}
         <button
           className="btn ghost"

@@ -87,6 +87,13 @@
 
   /* ---- app layout ---- */
   --tm-sidebar-w: 212px;
+  /* The desktop terminal drawer: its height at the bottom, its width docked
+     right (docs/design.md § Terminal drawer). A dragged size overrides these
+     on <html> while a drawer is open (termLayout.ts). */
+  --tm-term-h: 46vh;
+  --tm-term-w: min(720px, 38vw);
+  /* the desktop board column: rows stay near their own buttons on a wide window */
+  --tm-board-max: 1200px;
   /* Mobile shell (docs/mobile.md). The clearance is 0 on desktop so `.main`
      and `.term-drawer` can read it unconditionally; `.app.mobile` raises it. */
   --tm-tabbar-h: 56px;
@@ -965,6 +972,17 @@ button.badge.badge-link:hover {
 }
 
 /* ---------- task rows ---------- */
+
+/* a row takes focus back from the task panel (dialogFocus.ts): ring inside
+   the panel's clip; the dialogs themselves take focus without a ring */
+.task-row:focus-visible {
+  outline-offset: -2px;
+}
+
+.slideover:focus-visible,
+.qmodal:focus-visible {
+  outline: none;
+}
 
 .task-row {
   display: flex;
@@ -2922,7 +2940,7 @@ table.tbl tr:last-child td {
   right: 0;
   /* sits ON the tab bar, never over it — the token is 0px on desktop */
   bottom: var(--tm-tabbar-clear);
-  height: 46vh;
+  height: var(--tm-term-h);
   background: var(--tm-terminal-bg);
   border-top: 1px solid var(--tm-border-strong);
   z-index: 25;
@@ -2947,6 +2965,114 @@ table.tbl tr:last-child td {
   flex: 1;
   min-height: 0;
   padding: 6px 2px 14px 8px;
+}
+
+/* The drag-to-resize edge (desktop): the top edge at the bottom, the left
+   edge docked right. Inside the drawer, so Glass's overflow clip keeps it. */
+.term-resize {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--tm-space-2);
+  z-index: 1;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.term-resize::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  width: var(--tm-space-7);
+  height: 3px;
+  margin-left: calc(var(--tm-space-7) / -2);
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-gray-5);
+  opacity: 0;
+  transition: opacity var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.term-resize:hover::after,
+.term-resize:focus-visible::after,
+.term-resizing-y .term-resize::after,
+.term-resizing-x .term-resize::after {
+  opacity: 1;
+  background: var(--tm-accent);
+}
+
+.term-resize:focus-visible {
+  outline: none;
+}
+
+.term-drawer.docked .term-resize {
+  right: auto;
+  bottom: 0;
+  width: var(--tm-space-2);
+  height: auto;
+  cursor: col-resize;
+}
+
+.term-drawer.docked .term-resize::after {
+  top: 50%;
+  left: 2px;
+  width: 3px;
+  height: var(--tm-space-7);
+  margin-left: 0;
+  margin-top: calc(var(--tm-space-7) / -2);
+}
+
+/* while dragging, the whole page shows the resize cursor and selects nothing */
+html.term-resizing-y,
+html.term-resizing-y * {
+  cursor: row-resize !important;
+  user-select: none;
+}
+
+html.term-resizing-x,
+html.term-resizing-x * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+/* a remembered height never buries the whole page (termLayout.ts clamps too) */
+.app:not(.mobile) .term-drawer:not(.compact):not(.docked) {
+  max-height: calc(100vh - var(--tm-space-9));
+}
+
+/* The page makes room for an open drawer, so the last rows stay reachable
+   (UX review #18): below it at the bottom, beside it docked right. */
+.app:not(.mobile) .main:has(> .term-drawer:not(.compact):not(.docked)) {
+  padding-bottom: calc(var(--tm-term-h) + var(--tm-space-5));
+}
+
+.app:not(.mobile) .main:has(> .term-drawer.docked:not(.compact)) {
+  padding-right: calc(var(--tm-term-w) + var(--tm-space-5));
+}
+
+/* Docked right (a window of 1600px+, the drawer's dock button): a column
+   under the header, above the task panel's overlay so it stays live beside
+   the panel, which moves left of it. Compacted, it is the footer line again. */
+.term-drawer.docked:not(.compact) {
+  top: var(--tm-space-7); /* the header row (.app's 48px) */
+  bottom: 0;
+  left: auto;
+  right: 0;
+  width: var(--tm-term-w);
+  height: auto;
+  border-top: 0;
+  border-left: 1px solid var(--tm-border-strong);
+  z-index: 32;
+}
+
+.main:has(> .slideover) > .term-drawer.docked:not(.compact) {
+  top: 0;
+}
+
+.main:has(> .term-drawer.docked:not(.compact)) > .slideover {
+  right: var(--tm-term-w);
+  width: min(560px, calc(100vw - var(--tm-term-w) - var(--tm-sidebar-w)));
 }
 
 /* Compacted drawer: a full-width footer line; the terminal stays mounted
@@ -4386,6 +4512,16 @@ tr.repo-open > td {
 
 .so-chips {
   display: contents;
+}
+
+/* Desktop: many chips (a long group name, agent depth, subtask) wrap within
+   the head instead of pushing its Close button out of the 560px panel. */
+.slideover .so-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+  min-width: 0;
 }
 
 /* ReviewPanel renders nothing for a never-reviewed task; the empty wrapper must not cost a gap */
@@ -6305,6 +6441,12 @@ button.explain-tap:active {
   font-family: var(--tm-font-mono);
   font-size: var(--tm-text-xs);
   line-height: 1.5;
+}
+
+/* Desktop: the board is one column capped at --tm-board-max (UX review #30),
+   so a row's quick buttons stay near its title on a 2560px window. */
+.app:not(.mobile) .board {
+  max-width: var(--tm-board-max);
 }
 
 .inbox-desk {

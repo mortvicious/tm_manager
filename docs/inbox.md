@@ -117,7 +117,10 @@ as buttons that show their key.
 - **On a review item the primary is never Mark done.** Ready → Publish;
   flagged → Send findings back; red checks or no clean verdict → Open.
 - **Keys are ignored** while you type in a field, inside a terminal, or while
-  any dialog, sheet, task panel or the search popover is open.
+  any dialog, sheet, task panel or the search popover is open. `o` opens the
+  panel with focus inside it, and **Escape** closes it again (the first Escape
+  in a field only leaves the field), so triage carries on without the mouse
+  (`docs/design.md` § Desktop dialogs).
 - **Enter is ignored** on a focused button, because there it is that button's
   click.
 - **A refusal is shown on the item** (a 409's text, for example) and the

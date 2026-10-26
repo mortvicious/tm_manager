@@ -1096,6 +1096,24 @@
   border-radius: 0;
 }
 
+/* docked right: a floating pane like the task panel, under the floating header */
+[data-design='glass'] .term-drawer.docked:not(.compact) {
+  top: calc(var(--tm-head-h) + var(--tm-space-2));
+  right: var(--tm-space-2);
+  bottom: var(--tm-space-2);
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-lg);
+  animation: tm-panel-in var(--tm-dur-sheet) var(--tm-ease-smooth);
+}
+
+[data-design='glass'] .main:has(> .slideover) > .term-drawer.docked:not(.compact) {
+  top: var(--tm-space-2);
+}
+
+[data-design='glass'] .main:has(> .term-drawer.docked:not(.compact)) > .slideover {
+  right: calc(var(--tm-term-w) + var(--tm-space-2) * 2);
+}
+
 /* ---------- toasts and the offline banner (docs/mobile.md § Action errors, § Server offline) ---------- */
 /* Thick glass like the other floating pieces; the status hue stays on the dot
    and the rim, so red still reads as red over any wallpaper. */

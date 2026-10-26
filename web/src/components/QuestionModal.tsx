@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState, useSyncExternalStore, type SyntheticEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type SyntheticEvent } from 'react';
 import { imagePreviewType, referencedFileNames, type Question, type QuestionItem, type QuestionOption } from '@tm/shared';
 import { api } from '../api.ts';
+import { useDialogFocus } from '../dialogFocus.ts';
 import { exitGhost } from '../motion.ts';
 import { useApp } from '../state.tsx';
 import { IconX } from './Icons.tsx';
@@ -353,6 +354,19 @@ export function QuestionModal() {
     return () => window.removeEventListener('keydown', onKey, true);
   }, [current]);
 
+  // Desktop: focus moves into the modal (per question), Tab stays in, and goes
+  // back to what had it when the last one is answered or dismissed (UX review #5)
+  const modalRef = useRef<HTMLDivElement | null>(null);
+  const modalNode = useCallback((node: HTMLDivElement | null) => {
+    modalRef.current = node;
+    const ghost = exitGhost(node);
+    return () => {
+      modalRef.current = null;
+      ghost?.();
+    };
+  }, []);
+  useDialogFocus(modalRef, !mobile && !!current, current?.id);
+
   if (!current) return null;
   const task = tasks.find((t) => t.id === current.taskId);
   const close = () => setDismissed((d) => new Set(d).add(current.id));
@@ -397,7 +411,7 @@ export function QuestionModal() {
   return (
     <>
       <div className="overlay qmodal-overlay" ref={exitGhost} onClick={close} />
-      <div className="qmodal" ref={exitGhost} role="dialog" aria-label="An agent is asking you">
+      <div className="qmodal" ref={modalNode} role="dialog" aria-modal="true" aria-label="An agent is asking you" tabIndex={-1}>
         {head(close)}
         <div className="qmodal-body">
           <QuestionForm question={current} />

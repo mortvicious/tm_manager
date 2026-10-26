@@ -97,7 +97,7 @@ display:none pair.
 
 - **The app opens on the Board.** `/` redirects to `/board`, keeping the query
   and hash (`OpenOnBoard` in `App.tsx`), so the installed Home Screen app, whose
-  `start_url` is `/`, and every push URL (`/?task=<id>`, read by `PushBridge`)
+  `start_url` is `/`, and every push URL (`/?task=<id>`, the open task panel: `docs/design.md` § Task URLs)
   land there. The Dashboard moved to `/dashboard`. `start_url` itself was left
   alone: without a manifest `id`, Chrome takes the start URL as the app's
   identity, and iOS keeps the manifest it saw at install anyway (UX review #12,

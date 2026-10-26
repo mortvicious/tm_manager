@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   EFFORT_LEVELS,
   GROUP_COLOR_COUNT,
@@ -19,6 +19,7 @@ import {
   type Task,
 } from '@tm/shared';
 import { api } from '../api.ts';
+import { topmostDialog, useDialogFocus } from '../dialogFocus.ts';
 import { confirmPublish, publishIsPrimary } from '../publish.ts';
 import { useApp } from '../state.tsx';
 import { DispatchStrip } from './DispatchStrip.tsx';
@@ -438,6 +439,49 @@ export function TaskSlideOver({
     [questions, taskId],
   );
   const taskProposals = useMemo(() => proposals.filter((p) => p.taskId === taskId), [proposals, taskId]);
+
+  // Desktop: a real modal dialog (UX review #5, docs/design.md § Desktop
+  // dialogs) — focus moves in, Tab stays in, Escape closes, and focus returns
+  // to the row it was opened from. A phone's Sheet does all of this itself.
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const panelNode = useCallback((node: HTMLDivElement | null) => {
+    panelRef.current = node;
+    const ghost = exitGhost(node);
+    return () => {
+      panelRef.current = null;
+      ghost?.();
+    };
+  }, []);
+  const dialog = !mobile && !!task;
+  useDialogFocus(panelRef, dialog, taskId, () =>
+    document.querySelector<HTMLElement>(`.task-row[data-task-row="${CSS.escape(taskId)}"]`),
+  );
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    if (!dialog) return;
+    // Bubble phase on window, like <Sheet>: the lightbox marks the key
+    // (preventDefault), the question modal and the search popover stop it,
+    // and topmostDialog covers whatever is above without doing either.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
+      const node = panelRef.current;
+      if (!node || !topmostDialog(node)) return;
+      const t = e.target instanceof HTMLElement ? e.target : null;
+      // a terminal's Escape is the agent's interrupt key
+      if (t?.closest('.xterm')) return;
+      // the first Escape leaves a field, the second closes (an edit is never
+      // one stray key from gone — though drafts survive a close anyway)
+      if (t && node.contains(t) && isTextField(t)) {
+        t.blur();
+        node.focus({ preventScroll: true });
+        return;
+      }
+      closeRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [dialog]);
 
   if (!task) return null;
 
@@ -1426,11 +1470,18 @@ export function TaskSlideOver({
   return (
     <>
       <div className="overlay" ref={exitGhost} onClick={onClose} />
-      <div className="slideover" ref={exitGhost}>
+      <div className="slideover" ref={panelNode} role="dialog" aria-modal="true" aria-label={task.title} tabIndex={-1}>
         {head(onClose)}
         <div className="slideover-body">{body}</div>
       </div>
       {lightbox}
     </>
   );
+}
+
+const TEXT_INPUTS = new Set(['text', 'search', 'url', 'email', 'number', 'password', 'tel', 'date', 'datetime-local', 'time']);
+function isTextField(el: HTMLElement): boolean {
+  if (el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) return true;
+  if (el instanceof HTMLInputElement) return TEXT_INPUTS.has(el.type);
+  return el.isContentEditable;
 }

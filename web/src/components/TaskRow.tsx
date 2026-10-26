@@ -350,6 +350,10 @@ export function TaskRow({
     <div
       className={`task-row ${fresh ? 'fresh' : ''} ${dropClass ?? ''}`}
       data-drop-task={grip ? task.id : undefined}
+      // where the task panel hands focus back on close (dialogFocus.ts):
+      // focusable by script and click, never a Tab stop
+      data-task-row={task.id}
+      tabIndex={-1}
       onClick={() => (select ? select.toggle() : onOpenTask(task.id))}
       data-selected={select?.on || undefined}
     >

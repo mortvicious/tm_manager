@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { Layout } from './components/Layout.tsx';
 import { QuestionModal } from './components/QuestionModal.tsx';
 import { PushBridge } from './components/PushBridge.tsx';
@@ -20,9 +20,10 @@ import { ReportsPage } from './pages/Reports.tsx';
 import { ReposPage } from './pages/Repos.tsx';
 import { TerminalsPage } from './pages/Terminals.tsx';
 import type { InboxReturn, ReturnTo } from './returnTo.ts';
+import { useTermDock } from './termLayout.ts';
 
 export function App() {
-  const [openTask, setOpenTask] = useState<string | null>(null);
+  const [openTask, setOpenTask] = useOpenTask();
   // nonce so re-opening the already-open terminal still re-expands a compacted drawer;
   // `from` is the panel or Inbox item it replaced, reopened when it closes
   const [openTerminal, setOpenTerminal] = useState<{ runId: string; nonce: number; from?: ReturnTo } | null>(null);
@@ -31,6 +32,8 @@ export function App() {
     [],
   );
   const [inboxReturn, setInboxReturn] = useState<InboxReturn | null>(null);
+  // a wide window can dock the drawer right of the panel: both stay open then
+  const { docked } = useTermDock();
   // Back to where the terminal was opened from (UX review #13: "read findings →
   // check the terminal → come back and Publish" is the supervision loop). Not
   // after a click-outside close: that click was aimed at something else.
@@ -70,7 +73,8 @@ export function App() {
           onOpenTerminal={(runId) => {
             // Slide-over closes: its overlay sits above the terminal drawer (review R7).
             // Its edits survive in the panel's draft memory, and it comes back on close.
-            setOpenTask(null);
+            // Docked right (a window of 1600px+) the drawer sits beside it instead.
+            if (!docked) setOpenTask(null);
             openTerm(runId, { kind: 'task', id: openTask });
           }}
         />
@@ -85,11 +89,57 @@ export function App() {
       {/* an agent's question pops up on whatever page is open (docs/questions.md) */}
       <QuestionModal />
       {/* service worker + notification taps + ?task=<id> deep links (docs/push.md) */}
-      <PushBridge onOpenTask={setOpenTask} />
+      <PushBridge />
       {/* the one place a refused action is reported (docs/mobile.md § Action errors) */}
       <Toasts />
     </Layout>
   );
+}
+
+type OpenTaskSetter = (next: string | null | ((cur: string | null) => string | null)) => void;
+
+/** history-state mark on an entry the panel pushed: closing it is Back */
+const PANEL_PUSHED = 'tmTaskPanel';
+
+/**
+ * The open task panel IS the URL's `?task=<id>` (UX review #19, docs/design.md
+ * § Task URLs), on whatever page the path names, so a task link can be shared
+ * or bookmarked and browser Back closes the panel:
+ * - opening from no panel PUSHES an entry (marked), so Back closes it;
+ * - swapping tasks inside the panel REPLACES, so Back still closes rather
+ *   than walking every task looked at;
+ * - closing a pushed entry goes Back (Forward reopens it); closing one that
+ *   arrived with the URL (a link, a push tap, a reload) replaces it away.
+ * Leaving the page drops the param, so the panel closes with it; Back to
+ * that entry brings it back.
+ */
+function useOpenTask(): [string | null, OpenTaskSetter] {
+  const { search } = useLocation();
+  const navigate = useNavigate();
+  const openTask = new URLSearchParams(search).get('task') || null;
+  const set = useCallback<OpenTaskSetter>(
+    (next) => {
+      // the live URL, not this render's: calls in one tick must compose
+      const url = new URL(window.location.href);
+      const cur = url.searchParams.get('task') || null;
+      const id = typeof next === 'function' ? next(cur) : next;
+      if (id === cur) return;
+      const state = (window.history.state as { usr?: unknown } | null)?.usr;
+      const pushed = !!state && typeof state === 'object' && (state as Record<string, unknown>)[PANEL_PUSHED] === true;
+      if (id === null) {
+        if (pushed) {
+          navigate(-1);
+          return;
+        }
+        url.searchParams.delete('task');
+      } else url.searchParams.set('task', id);
+      const to = { pathname: url.pathname, search: url.search, hash: url.hash };
+      if (cur === null && id !== null) navigate(to, { state: { [PANEL_PUSHED]: true } });
+      else navigate(to, { replace: true, state });
+    },
+    [navigate],
+  );
+  return [openTask, set];
 }
 
 /**

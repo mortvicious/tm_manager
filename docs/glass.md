@@ -151,7 +151,10 @@ Glass), and the `::view-transition` duration.
     phone.
   - The question modal is an alert that pops in from slightly too big.
     Popovers grow out of their button.
-  - The terminal drawer rises like a sheet.
+  - The terminal drawer rises like a sheet. Docked right (a window of at least
+    1600px, `docs/design.md` § Terminal drawer), it becomes a floating pane like
+    the task panel. It sits under the floating header, or at the top edge while
+    the panel is open, and the panel floats to its left.
 - **Header fit.** A phone bar holds four capsules at most. The queue switch
   is not one of them: it lives in the More sheet (`docs/mobile.md` § Confirming
   destructive actions), and `running n/m` carries its state dot. Its old

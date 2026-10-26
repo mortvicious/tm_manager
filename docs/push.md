@@ -81,12 +81,14 @@ unreadable payload.
 focused and sent `{type:'tm-navigate', url}`. `PushBridge` (mounted in `App.tsx`)
 routes it through react-router, so the open terminal and scroll position survive.
 Otherwise `clients.openWindow(url)`. Only same-origin paths are followed. The deep
-link **`/?task=<id>`** is new and general: any page with `?task=` opens that task's
-panel, then the parameter is dropped (`replace`), so Back and reload do not reopen
-it. A short id (a unique prefix, ≥4 characters) resolves by the Board's find-by-id
-rules (`web/src/taskId.ts`); it waits for the first task list to load, and an id
-that resolves to nothing is passed through unchanged, so a full id whose task has
-not arrived yet still opens when it does.
+link **`/?task=<id>`** is general: `?task=` on any page IS that task's open panel
+(`useOpenTask` in `App.tsx`, `docs/design.md` § Task URLs), so the parameter stays
+while the panel is open and closing the panel removes it. A short id (a unique
+prefix, ≥4 characters) is rewritten in place to the full id by `PushBridge`, using
+the Board's find-by-id rules (`web/src/taskId.ts`). It waits for the first task
+list to load. An id that resolves to nothing is left unchanged, so a full id whose
+task has not arrived yet still opens when it does. (Until 2026-10-26 the parameter
+was consumed and dropped.)
 
 ## The service worker
 

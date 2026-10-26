@@ -148,6 +148,22 @@ export const IconChevron = () => (
   </svg>
 );
 
+/** the terminal docked right of the panel */
+export const IconDockRight = () => (
+  <svg {...p}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M14 4v16" />
+  </svg>
+);
+
+/** the terminal back along the bottom */
+export const IconDockBottom = () => (
+  <svg {...p}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M3 13h18" />
+  </svg>
+);
+
 export const IconPhone = () => (
   <svg {...p}>
     <rect x="6" y="2" width="12" height="20" rx="2.5" />
