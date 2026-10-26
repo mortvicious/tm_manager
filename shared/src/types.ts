@@ -1904,6 +1904,13 @@ export interface OrchestratorStatus {
    * run became a terminal; a server predating this field omits it.
    */
   aux: number;
+  /**
+   * Tasks parked in `waiting` by background shells alone — no subagent of
+   * theirs still out — which a human may land now with Stop waiting
+   * (`POST /api/tasks/:id/stop-waiting`, docs/design.md § Waiting). In
+   * memory, so a server predating it omits it.
+   */
+  shellWaits?: string[];
 }
 
 /**

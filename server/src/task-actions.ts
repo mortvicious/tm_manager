@@ -469,6 +469,16 @@ export async function completeTask(deps: TaskActionDeps, id: string, actor: stri
 }
 
 /**
+ * "Stop waiting" (docs/design.md § Waiting): land a turn parked in `waiting`
+ * by background shells alone, killing those shells — the human answer to a
+ * stray shell holding the task, the reviewer and the queue.
+ */
+export async function stopWaitingTask(deps: TaskActionDeps, id: string, actor: string): Promise<ActionResult> {
+  if (!deps.orchestrator) return err(503, 'orchestrator not ready');
+  return deps.orchestrator.stopWaiting(id, actor);
+}
+
+/**
  * "Undo start" (docs/queue.md § Undo start): stop a running task and put it
  * back where it was before the turn — not `cancelled`, not `failed`.
  */

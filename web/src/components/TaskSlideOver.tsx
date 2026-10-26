@@ -24,7 +24,7 @@ import { confirmPublish, publishIsPrimary } from '../publish.ts';
 import { useApp } from '../state.tsx';
 import { DispatchStrip } from './DispatchStrip.tsx';
 import { GroupPicker, type GroupChoicePlace } from './GroupPicker.tsx';
-import { IconAnalyze, IconChevron, IconMore, IconPlay, IconPublish, IconQueue, IconTerminal, IconX } from './Icons.tsx';
+import { IconAnalyze, IconChevron, IconMore, IconPlay, IconPublish, IconQueue, IconStop, IconTerminal, IconX } from './Icons.tsx';
 import { ImageLightbox, type LightboxImage } from './ImageLightbox.tsx';
 import { useIsMobile } from './Layout.tsx';
 import { Markdown } from './Markdown.tsx';
@@ -83,7 +83,7 @@ const mobilePrimary = (live: boolean, publishHeld: boolean) =>
   publishHeld
     ? ['terminal', 'complete', 'release', 'unblock', 'run-now', 'enqueue']
     : live
-      ? ['publish', 'complete', 'release', 'unblock', 'terminal', 'run-now', 'enqueue']
+      ? ['stop-waiting', 'publish', 'complete', 'release', 'unblock', 'terminal', 'run-now', 'enqueue']
       : ['publish', 'complete', 'release', 'unblock', 'run-now', 'enqueue', 'terminal'];
 const MOBILE_BAR_MAX = 3;
 /** Same words as the board row (TaskRow), for the same server refusal. */
@@ -269,7 +269,7 @@ export function TaskSlideOver({
   onOpenTask: (id: string) => void;
   onOpenTerminal: (runId: string) => void;
 }) {
-  const { tasks, repos, runs, proposals, dispatches, refresh, questions, settings } = useApp();
+  const { tasks, repos, runs, proposals, dispatches, refresh, questions, settings, orch } = useApp();
   const task = tasks.find((t) => t.id === taskId);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -715,6 +715,20 @@ export function TaskSlideOver({
       disabled: liveSession,
       title: liveSession ? LIVE_MSG : 'Let the queue take this task again, from the place it kept',
       onClick: () => action('release'),
+    });
+  }
+  // Stop waiting (docs/design.md § Waiting): offered only while background
+  // shells alone hold the park — a subagent's park ends on its own.
+  if (task.status === 'waiting' && orch.shellWaits?.includes(task.id)) {
+    actions.push({
+      id: 'stop-waiting',
+      label: 'Stop waiting',
+      icon: <IconStop />,
+      cls: 'primary',
+      title:
+        'Only background shells keep this task waiting. Land the turn now — review and queue go on as if the shells had exited — and kill those shells. Asks for a second press.',
+      confirm: `Stop waiting? ${again}`,
+      onClick: () => action('stop-waiting'),
     });
   }
   if (running) {

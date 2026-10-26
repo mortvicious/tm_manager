@@ -1,5 +1,33 @@
 # Decision log
 
+- **2026-10-26 — A shell the CLI auto-backgrounded never holds `waiting`; Stop waiting lands a shell-held park (`docs/design.md` § Waiting)**: task a5a5eca4 ran a foreground `find / … | head -3` that the CLI moved to the background after its 120 s Bash timeout. The agent got its answer another way and finished, but the `find` held the task in `waiting` for up to `agent.shellWaitMinutes` (30), with the reviewer and the repo held too. The only way out was typing into the session.
+
+  **Option chosen: a shell auto-backgrounded by the Bash timeout is not counted.** Three options were weighed, each against the real CLI (2.1.280) and the incident's own transcript:
+  - *"Not referenced since launch"* would NOT have helped. a5a5eca4 did read the shell's output file (`cat …/tasks/bytqz0j2w.output`) right after the timeout. The rule would also be a heuristic over tool inputs: a Read of the file, a `cat`, a `tail`.
+  - *A lower default* weakens the 2026-09-15 Lighthouse hold, a 10-minute pass, for every task, and still holds a stray shell for the new budget.
+  - *Auto-backgrounded* is a fact the CLI records, not a guess. The Stop payload's entry is identical for both kinds (`{ id, type: 'shell', status, command, description }`), but the launching Bash `tool_result` carries `toolUseResult.backgroundTaskId` plus `timedOutAfterMs` only when the CLI moved a foreground command. An explicit launch has `input.run_in_background: true` and no `timedOutAfterMs`. A command the agent meant to run in the foreground was never something it decided to end its turn on. The 2026-09-15 incident was an explicit `run_in_background` launch, so it still parks.
+
+  The cost: an agent that wanted a timed-out command's result and ends its turn "waiting for it" lands. That is the pre-2026-09-15 behaviour, for that case only, and the prompt now tells it to read the result first or relaunch with `run_in_background`. The 2026-09-15 bounded budget still applies to explicit shells.
+
+  **Stop waiting** is the human way out of the remaining case, an explicit shell the agent no longer needs. It is offered only for a park held by shells alone (`OrchestratorStatus.shellWaits`), on the SPA panel, the board row and the Telegram card. It requires `Origin`, because it kills processes. It does not add a second landing path: it goes through the timer's replay (`settleStop(…, replayOf, by)`), audited `expired: 'human'`. Shells are killed by process GROUP of each direct child of the worker's claude pid whose argv carries `eval '<command>'`. Measured: a background shell is exactly such a child, a group leader, and the CLI quotes `'` as `'"'"'`. Killing everything under the claude pid was rejected because MCP servers live there too. The kill is best effort and the turn lands regardless. The prompt also gained a standing rule: stop (`TaskStop`) background shells you no longer need before ending a turn.
+
+  **Verified**:
+  - Payload/transcript shapes captured from a real `claude -p` with Stop/PostToolUse hooks dumping stdin, one timeout-backgrounded and one explicit shell (`BASH_DEFAULT_TIMEOUT_MS=8000`). The artifacts are `stop.jsonl` and `post.jsonl`.
+  - The incident transcript (`997ff901…`) carries `timedOutAfterMs: 120000` on `bytqz0j2w`.
+  - `killBackgroundShells` was run against a real CLI background shell of a live session: the wrong command signalled 0, the right one signalled 1 and the shell was gone.
+  - A tsx harness (artifact `stopwait.test.mts`) drives the real Orchestrator and Stop route with stubbed storage and a real process tree. It covers 8 cases:
+    - an auto-backgrounded shell lands and is audited;
+    - an explicit shell parks;
+    - with both kinds, only the explicit one counts;
+    - an unknown shell counts;
+    - each shell is judged once;
+    - Stop waiting is refused when the task is not waiting or a subagent holds it;
+    - Stop waiting lands via the replay, audited `expired: 'human'` under the telegram actor, kills the listed shell and leaves an unlisted child alone;
+    - an open prompt gets a 409 and keeps the park;
+    - budget 0 skips the judging.
+  - The 2026-09-15 harness still passes all 10 cases.
+  - `npm run typecheck` and `npm run build` pass.
+
 - **2026-10-26 — Phone quick capture, contrast, Reduce Motion, Dynamic Type (`docs/mobile.md` § Board, § Dynamic Type, § Contrast, § Sheets, § The terminal; `docs/chat.md` § Layout)**: UX review 726471ca, findings #15, #16, #25, #26, #27 and #28.
   - **#15.** The phone New task form folds everything after Repo into More options, and On create + Create are a foot pinned to the sheet's bottom. The repo defaults to the board's one-repo filter, else the last repo used (`tm.newTask.repo`), on desktop too. The filter wins because it is the context the human is looking at right now.
   - **#16.** Labels, hints, row quick actions and the fold summary use muted, not faint. Glass light's muted moved 0.7 → 0.74 alpha to clear 4.5:1 on its grouped background. Faint itself is unchanged: darkening it would have collapsed the faint/muted step everywhere it is decoration.

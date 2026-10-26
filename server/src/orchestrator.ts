@@ -26,6 +26,18 @@ import {
   type TaskStatus,
 } from '@tm/shared';
 import type { ActionResult, OrchestratorApi } from './app-types.ts';
+
+/**
+ * The Stop route's replay of a shell park (routes/internal.ts `settleStop`).
+ * `by` is set when a human stopped the wait (`stopWaiting`), unset for the
+ * shell-wait timer.
+ */
+export type ShellWaitHandler = (
+  runId: string,
+  body: unknown,
+  parkedAt: number,
+  by?: { actor: string; killed: number },
+) => Promise<void>;
 import {
   DEFAULT_PROCEED,
   PUBLISH_INSTRUCTION,
@@ -62,6 +74,7 @@ import {
 import { aux } from './claude/aux.ts';
 import { headAt, readHeadBase, reviewWorkerChange, workerDiff, type ChangeScope } from './claude/review.ts';
 import { summarizeRun, summarizeTranscript, type TranscriptSummary } from './claude/stats.ts';
+import { killBackgroundShells, shellEntries } from './claude/shells.ts';
 import { liveWindow, readAccountUsage } from './claude/account-usage.ts';
 import {
   LIVE_TAIL_STRICT_CHARS,
@@ -386,8 +399,15 @@ export class Orchestrator implements OrchestratorApi {
    * dev server cannot re-earn a fresh budget every turn. Cleared at run end.
    */
   private readonly shellsSeen = new Map<string, Map<string, number>>();
-  /** the Stop route's replay, called when a shell wait runs out (see above) */
-  private shellWaitHandler: ((runId: string, body: unknown, parkedAt: number) => Promise<void>) | null = null;
+  /**
+   * Background shells of a live run that never hold its park: auto-
+   * backgrounded by the CLI's Bash timeout (`ignoreShells` from the Stop
+   * route) or given up on by a human's Stop waiting (`stopWaiting`). runId →
+   * shell ids. Cleared at run end.
+   */
+  private readonly ignoredShells = new Map<string, Set<string>>();
+  /** the Stop route's replay, called when a shell wait runs out (see above) or a human stops the wait */
+  private shellWaitHandler: ShellWaitHandler | null = null;
   /** runs whose rejected banner has already been audited once (see below) */
   private readonly stallSkipsAudited = new Set<string>();
   /**
@@ -1206,6 +1226,7 @@ export class Orchestrator implements OrchestratorApi {
       // liveCount() cannot see them — by design, they take no worker slot —
       // but the restart guard and the header need them counted.
       aux: aux().liveCount(),
+      shellWaits: this.shellWaitTasks(),
     };
   }
 
@@ -3058,6 +3079,7 @@ export class Orchestrator implements OrchestratorApi {
     this.childrenInFlight.delete(runId);
     this.dropWait(runId);
     this.shellsSeen.delete(runId);
+    this.ignoredShells.delete(runId);
     // Nothing will collect an answer for this run any more — stop asking the
     // human (docs/questions.md). Before the row is touched, so a consumer that
     // reacts to `run.exited` never sees a live question under a dead run.
@@ -4279,12 +4301,14 @@ export class Orchestrator implements OrchestratorApi {
     let shellDeadline: number | null = null;
     if (shells?.length) {
       const now = Date.now();
+      const ignored = this.ignoredShells.get(runId);
       let seen = this.shellsSeen.get(runId);
       if (!seen) {
         seen = new Map<string, number>();
         this.shellsSeen.set(runId, seen);
       }
       for (const id of shells) {
+        if (ignored?.has(id)) continue;
         if (!seen.has(id)) seen.set(id, now);
         const deadline = seen.get(id)! + shellWaitMs;
         if (deadline <= now) continue;
@@ -4335,8 +4359,83 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** Registered once by the Stop route (routes/internal.ts). */
-  onShellWaitExpired(handler: (runId: string, body: unknown, parkedAt: number) => Promise<void>): void {
+  onShellWaitExpired(handler: ShellWaitHandler): void {
     this.shellWaitHandler = handler;
+  }
+
+  /**
+   * Shells of `shells` this run's Stop route has not judged yet — the first
+   * Stop that lists a shell is the one that decides whether it is a stray
+   * (`ignoreShells`); later Stops leave that decision alone.
+   */
+  unjudgedShells(runId: string, shells: string[]): string[] {
+    const seen = this.shellsSeen.get(runId);
+    const ignored = this.ignoredShells.get(runId);
+    return shells.filter((id) => !seen?.has(id) && !ignored?.has(id));
+  }
+
+  /** These shells never hold this run's park (see `ignoredShells`). */
+  ignoreShells(runId: string, ids: string[]): void {
+    if (!ids.length) return;
+    let set = this.ignoredShells.get(runId);
+    if (!set) {
+      set = new Set<string>();
+      this.ignoredShells.set(runId, set);
+    }
+    for (const id of ids) set.add(id);
+  }
+
+  /**
+   * Tasks parked in `waiting` by background shells ALONE (no child of the run
+   * still out), i.e. the ones a human may land with Stop waiting. A shell
+   * park always has a timer (each shell counts only for a budget), which is
+   * also the mark `subagentStopped` reads.
+   */
+  shellWaitTasks(): string[] {
+    const out: string[] = [];
+    for (const [runId, w] of this.waitingRuns) {
+      if (w.timer && this.pendingChildren(runId) === 0) out.push(w.taskId);
+    }
+    return out;
+  }
+
+  /**
+   * Stop waiting (docs/design.md § Waiting): a human lands a turn that only
+   * background shells hold, instead of waiting out `agent.shellWaitMinutes`.
+   * The shells it gives up on are ignored for the rest of the run and killed
+   * (best effort — the turn lands either way), and the park's own payload
+   * goes through the SAME replay the shell-wait timer uses, so the landing,
+   * review and queue are exactly a timer expiry's — audited `task.waiting
+   * { expired: 'human' }` with this actor. A park a subagent holds is
+   * refused: that child re-invokes the session on its own.
+   */
+  async stopWaiting(taskId: string, actor = 'human'): Promise<ActionResult> {
+    const cur = await this.storage.getTask(taskId);
+    if (!cur) return { error: 'task not found', code: 404 };
+    if (cur.status !== 'waiting') return { error: 'task is not waiting', code: 409 };
+    let found: [string, { at: number; timer: NodeJS.Timeout | null; replay: unknown }] | null = null;
+    for (const [runId, w] of this.waitingRuns) if (w.taskId === taskId) found = [runId, w];
+    if (!found) return { error: 'no live wait to stop for this task', code: 409 };
+    const [runId, w] = found;
+    if (this.pendingChildren(runId) > 0) {
+      return { error: 'a background subagent is still running — the task resumes on its own when it returns', code: 409 };
+    }
+    if (!w.timer) return { error: 'this wait is not held by background shells', code: 409 };
+    const handler = this.shellWaitHandler;
+    if (!handler) return { error: 'server not ready', code: 503 };
+    const shells = shellEntries(w.replay);
+    this.ignoreShells(runId, shells.map((s) => s.id));
+    const killed = await killBackgroundShells(
+      this.sessions.get(runId)?.pty.pid,
+      shells.map((s) => s.command),
+    );
+    await handler(runId, w.replay, w.at, { actor, killed });
+    const task = await this.storage.getTask(taskId);
+    if (!task) return { error: 'task not found', code: 404 };
+    if (task.status === 'waiting') {
+      return { error: 'the turn could not land — the session is showing a prompt or went back to work', code: 409 };
+    }
+    return { task };
   }
 
   /** When this run's current park began, or null when it is not parked. */

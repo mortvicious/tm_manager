@@ -15,6 +15,7 @@ import {
   queueAddTask as svcQueueAdd,
   queueRemoveTask as svcQueueRemove,
   releaseTask as svcReleaseTask,
+  stopWaitingTask as svcStopWaitingTask,
   reviewTask as svcReviewTask,
   unblockTask as svcUnblock,
   undoTask as svcUndoTask,
@@ -99,6 +100,13 @@ export async function undoTask(deps: ActionDeps, taskId: string, actor: string):
     t.queueHeldAt
       ? `“${t.title}” stopped and back in the queue — held until you Release it.`
       : `“${t.title}” stopped and back in ${t.status}.`,
+  );
+}
+
+/** POST /api/tasks/:id/stop-waiting — land a turn only background shells hold (docs/design.md § Waiting). */
+export async function stopWaitingTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  return outcome(await svcStopWaitingTask(deps, taskId, actor), (t) =>
+    `“${t.title}” stopped waiting on its background shells — now ${t.status}.`,
   );
 }
 
@@ -310,6 +318,7 @@ export type ButtonAction =
   | { kind: 'task.run'; id: string }
   | { kind: 'task.cancel'; id: string }
   | { kind: 'task.undo'; id: string }
+  | { kind: 'task.stopWait'; id: string }
   | { kind: 'task.release'; id: string }
   | { kind: 'task.retry'; id: string }
   | { kind: 'task.review'; id: string }
@@ -332,6 +341,7 @@ const WIRE: Record<ButtonAction['kind'], string> = {
   'task.run': 't:run',
   'task.cancel': 't:can',
   'task.undo': 't:und',
+  'task.stopWait': 't:sw',
   'task.release': 't:rel',
   'task.retry': 't:rty',
   'task.review': 't:rev',
@@ -381,6 +391,8 @@ export function runButtonAction(deps: ActionDeps, a: ButtonAction, actor: string
       return cancelTask(deps, a.id, actor);
     case 'task.undo':
       return undoTask(deps, a.id, actor);
+    case 'task.stopWait':
+      return stopWaitingTask(deps, a.id, actor);
     case 'task.release':
       return releaseTask(deps, a.id, actor);
     case 'task.retry':

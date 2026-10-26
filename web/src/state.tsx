@@ -126,7 +126,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [commandRuns, setCommandRuns] = useState<CommandRun[]>([]);
   const [shells, setShells] = useState<ShellSession[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
-  const [orch, setOrch] = useState<OrchestratorStatus>({ enabled: false, running: 0, concurrency: 2, aux: 0 });
+  const [orch, setOrch] = useState<OrchestratorStatus>({ enabled: false, running: 0, concurrency: 2, aux: 0, shellWaits: [] });
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);

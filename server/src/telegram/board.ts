@@ -122,7 +122,11 @@ export async function queueLine(storage: Storage, t: Task): Promise<string> {
  * at PRESS time as "Unknown button" if a `WIRE` entry is ever renamed —
  * `notifications.ts` has always used the codec for exactly this reason.
  */
-export function taskActionKeyboard(t: Task): InlineKeyboardMarkup | undefined {
+/**
+ * `shellWait`: the task is parked by background shells alone
+ * (`Orchestrator.shellWaitTasks`), which offers Stop waiting.
+ */
+export function taskActionKeyboard(t: Task, opts: { shellWait?: boolean } = {}): InlineKeyboardMarkup | undefined {
   const b: InlineKeyboardButton[] = [];
   const add = (text: string, kind: ButtonAction['kind']) =>
     b.push({ text, callback_data: encodeAction({ kind, id: t.id } as ButtonAction) });
@@ -141,6 +145,7 @@ export function taskActionKeyboard(t: Task): InlineKeyboardMarkup | undefined {
     add('⏳ Queue', 'task.enqueue');
     add('▶ Run now', 'task.run');
   }
+  if (t.status === 'waiting' && opts.shellWait) add('⏹ Stop waiting', 'task.stopWait');
   if (t.status === 'running' || t.status === 'waiting') add('↩ Undo start', 'task.undo');
   if (t.status === 'queued' && t.queueHeldAt) add('▶ Release', 'task.release');
   if (t.status === 'queued' || t.status === 'running') add('🚫 Cancel', 'task.cancel');
@@ -835,7 +840,8 @@ export async function renderCard(deps: BoardDeps, t: Task, back: BoardState): Pr
   };
   const html = [1, 0.5, 0.2].map(build).find((h) => h.length <= MAX_MESSAGE_CHARS) ?? build(0.05);
 
-  const rows = [...(taskActionKeyboard(t)?.inline_keyboard ?? [])];
+  const shellWait = deps.orchestrator.shellWaitTasks().includes(t.id);
+  const rows = [...(taskActionKeyboard(t, { shellWait })?.inline_keyboard ?? [])];
   const extra: InlineKeyboardButton[] = [];
   if (questions.length) extra.push({ text: '❓ Answer', callback_data: encodeList({ kind: 'ask', task: t.id }) });
   if (run) extra.push(act('✖ Kill run', { kind: 'run.kill', id: run.id }));

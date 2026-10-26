@@ -5,7 +5,7 @@ import { confirmPublish, publishIsPrimary } from '../publish.ts';
 import { useApp } from '../state.tsx';
 import { toastError } from '../toast.ts';
 import { useArm } from '../arm.ts';
-import { IconCheck, IconEye, IconGrip, IconMore, IconPlay, IconPublish, IconQueue, IconTerminal, IconX } from './Icons.tsx';
+import { IconCheck, IconEye, IconGrip, IconMore, IconPlay, IconPublish, IconQueue, IconStop, IconTerminal, IconX } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
 import { QueueMark } from './QueueMark.tsx';
 import { Sheet, SheetAction } from './Sheet.tsx';
@@ -86,7 +86,7 @@ export function TaskRow({
   select?: { on: boolean; toggle: () => void };
   children?: ReactNode;
 }) {
-  const { runs, tasks, activity, refresh } = useApp();
+  const { runs, tasks, activity, refresh, orch } = useApp();
   const mobile = useIsMobile();
   const [busy, setBusy] = useState(false);
   const [sheet, setSheet] = useState(false);
@@ -130,6 +130,12 @@ export function TaskRow({
   const inQueue = !!task.customQueueAt && task.status === 'queued';
   // hiding is for a task at rest (docs/design.md § Hidden tasks)
   const working = task.status === 'running' || task.status === 'waiting';
+  // parked by background shells alone (docs/design.md § Waiting): Stop waiting lands it
+  const shellWait = task.status === 'waiting' && !!orch.shellWaits?.includes(task.id);
+  const stopWaitArmed = arm.armed === 'stop-waiting';
+  const stopWaitLabel = stopWaitArmed
+    ? `Stop waiting? ${mobile ? 'tap' : 'click'} again`
+    : 'Stop waiting — only background shells hold this task; land the turn now and kill them (asks for a second press)';
   const canQueue = inQueue || (!!task.repoId && CAN_QUEUE.includes(task.status) && !live);
   const unqueueArmed = inQueue && arm.armed === 'unqueue';
   const queueLabel = inQueue
@@ -300,6 +306,19 @@ export function TaskRow({
                   onClick={fromSheet(() => void doPublish(null))}
                 />
               )}
+              {shellWait && (
+                <SheetAction
+                  icon={<IconStop />}
+                  label={stopWaitArmed ? 'Stop waiting? tap again' : 'Stop waiting'}
+                  hint="Only background shells hold this task — land the turn now and kill them"
+                  tone="primary"
+                  disabled={busy}
+                  onClick={() => {
+                    if (!arm.press('stop-waiting')) return;
+                    fromSheet(() => void act(null, () => api.taskAction(task.id, 'stop-waiting')))();
+                  }}
+                />
+              )}
               <SheetAction
                 icon={<IconPlay />}
                 label="Run now"
@@ -391,6 +410,22 @@ export function TaskRow({
       </span>
       {children}
       <span className="row-actions">
+        {shellWait && (
+          <QuickBtn
+            label={stopWaitLabel}
+            className={stopWaitArmed ? 'armed' : undefined}
+            disabled={busy}
+            onClick={(e) => {
+              if (!arm.press('stop-waiting')) {
+                e.stopPropagation();
+                return;
+              }
+              void act(e, () => api.taskAction(task.id, 'stop-waiting'));
+            }}
+          >
+            {stopWaitArmed ? 'Stop?' : <IconStop />}
+          </QuickBtn>
+        )}
         <QuickBtn
           label={queueLabel}
           className={unqueueArmed ? 'armed' : inQueue ? 'queued' : undefined}

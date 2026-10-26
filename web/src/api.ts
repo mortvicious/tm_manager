@@ -280,6 +280,7 @@ export const api = {
       | 'run-now'
       | 'cancel'
       | 'undo'
+      | 'stop-waiting'
       | 'release'
       | 'retry'
       | 'unblock'

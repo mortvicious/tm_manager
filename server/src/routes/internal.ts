@@ -2,6 +2,7 @@ import type { CheckState, ReviewState } from '@tm/shared';
 import type { FastifyInstance } from 'fastify';
 import { aux } from '../claude/aux.ts';
 import { summarizeRun } from '../claude/stats.ts';
+import { autoBackgroundedShells } from '../claude/shells.ts';
 import { broadcastTaskCost } from '../budget.ts';
 import { broadcast } from '../events.ts';
 import type { Orchestrator } from '../orchestrator.ts';
@@ -133,7 +134,16 @@ export function registerInternalRoutes(
   // itself is new (no flush sleep, no attention/question sweep, which belong
   // to a real turn end), and the landing accepts `waiting` alone, so a
   // session that started talking meanwhile is never landed under its feet.
-  const settleStop = async (id: string, body: unknown, replayOf: number | null): Promise<{ ok: boolean }> => {
+  //
+  // `by` marks a replay a HUMAN asked for (Stop waiting, `Orchestrator.
+  // stopWaiting`) rather than the timer: the shells were already ignored, so
+  // the replay lands, under that actor and audited `expired: 'human'`.
+  const settleStop = async (
+    id: string,
+    body: unknown,
+    replayOf: number | null,
+    by?: { actor: string; killed: number },
+  ): Promise<{ ok: boolean }> => {
     // Stale-hook guard (review R3a): a user chatting in an OLD idle session
     // fires Stops that must never touch the task again — especially not while
     // a NEWER run is working on it.
@@ -211,8 +221,30 @@ export function registerInternalRoutes(
       // was landed, reviewed, and its fix round killed the PTY — and the
       // shell with it — before the agent ever saw the numbers.
       const shellWaitMs = settings['agent.shellWaitMinutes'] * 60_000;
+      const shells = runningShells(body);
+      // A shell the CLI moved to the background after its Bash timeout was a
+      // FOREGROUND command the agent never chose to end its turn on (task
+      // a5a5eca4: a `find /` it had already worked around held the task half
+      // an hour) — it never holds the park. Judged once, at the first Stop
+      // that lists it, from the transcript (decisions.md 2026-10-26).
+      if (!publishRun && replayOf === null && shells?.length && shellWaitMs > 0) {
+        const fresh = orchestrator.unjudgedShells(id, shells);
+        const tp = readHookBody(body).transcriptPath ?? run.transcriptPath;
+        const stray = fresh.length && tp ? await autoBackgroundedShells(tp, fresh) : [];
+        if (stray.length) {
+          orchestrator.ignoreShells(id, stray);
+          await storage.appendEvent({
+            kind: 'task.waiting',
+            actor: 'hook',
+            runId: id,
+            taskId: run.taskId,
+            repoId: run.repoId,
+            data: { ignored: 'auto-backgrounded', shellIds: stray },
+          });
+        }
+      }
       const wait = !publishRun
-        ? orchestrator.waitDecision(id, runningSubagents(body), runningShells(body), shellWaitMs)
+        ? orchestrator.waitDecision(id, runningSubagents(body), shells, shellWaitMs)
         : { children: 0, shells: 0, shellDeadline: null, snapshot: '', stale: false };
       if ((wait.children > 0 && !wait.stale) || wait.shells > 0) {
         if (replayOf !== null) {
@@ -326,20 +358,25 @@ export function registerInternalRoutes(
         run.taskId,
         replayOf !== null ? ['waiting'] : ['running', 'waiting'],
         to,
-        replayOf !== null ? 'system' : 'hook',
+        by ? by.actor : replayOf !== null ? 'system' : 'hook',
         patch,
       );
       if (task) {
         orchestrator.dropWait(id);
         if (replayOf !== null) {
-          // the shell(s) outlived their budget — a decision, not a gap
+          // the shell(s) outlived their budget, or a human gave up on them —
+          // a decision, not a gap
           await storage.appendEvent({
             kind: 'task.waiting',
-            actor: 'system',
+            actor: by ? by.actor : 'system',
             runId: id,
             taskId: task.id,
             repoId: task.repoId,
-            data: { expired: 'shell-wait', waitedMs: Date.now() - replayOf },
+            data: {
+              expired: by ? 'human' : 'shell-wait',
+              waitedMs: Date.now() - replayOf,
+              ...(by ? { killedShells: by.killed } : {}),
+            },
           });
         }
         broadcast({ type: 'task.updated', task });
@@ -422,8 +459,8 @@ export function registerInternalRoutes(
     await orchestrator.onStopFailure(id, req.body);
     return { ok: true };
   });
-  orchestrator.onShellWaitExpired(async (runId, body, parkedAt) => {
-    await settleStop(runId, body, parkedAt);
+  orchestrator.onShellWaitExpired(async (runId, body, parkedAt, by) => {
+    await settleStop(runId, body, parkedAt, by);
   });
 
   // SubagentStart / SubagentStop (docs/design.md § Waiting): the count of a

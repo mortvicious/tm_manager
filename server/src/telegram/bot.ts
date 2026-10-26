@@ -1007,7 +1007,7 @@ export class TelegramBot {
       let next: InlineKeyboardMarkup | undefined;
       if (action.kind.startsWith('task.')) {
         const t = await this.storage.getTask(action.id);
-        next = t ? taskActionKeyboard(t) : undefined;
+        next = t ? taskActionKeyboard(t, { shellWait: this.orchestrator.shellWaitTasks().includes(t.id) }) : undefined;
       }
       await this.api.editMessageReplyMarkup(m.chat.id, m.message_id, next, { signal: this.abort.signal });
     } catch (e) {

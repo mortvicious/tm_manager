@@ -28,6 +28,7 @@ import {
   cancelTask,
   releaseTask,
   setHiddenTask,
+  stopWaitingTask,
   undoTask,
   completeTask,
   createTask,
@@ -471,6 +472,17 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
   app.post('/api/tasks/:id/undo', async (req, reply) => {
     const { id } = req.params as { id: string };
     const r = await undoTask(deps(), id, 'human');
+    if ('error' in r) return reply.code(r.code).send({ error: r.error });
+    return r.task;
+  });
+
+  // Stop waiting (docs/design.md § Waiting): land a turn only background
+  // shells hold. Kills processes, so a browser action — a worker's curl
+  // carries no Origin and must not land its own (or a peer's) wait.
+  app.post('/api/tasks/:id/stop-waiting', async (req, reply) => {
+    if (!req.headers.origin) return reply.code(403).send({ error: 'Stop waiting is a browser action (Origin required)' });
+    const { id } = req.params as { id: string };
+    const r = await stopWaitingTask(deps(), id, 'human');
     if ('error' in r) return reply.code(r.code).send({ error: r.error });
     return r.task;
   });

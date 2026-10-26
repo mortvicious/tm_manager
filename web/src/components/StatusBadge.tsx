@@ -38,8 +38,8 @@ const PLAIN: Record<TaskStatus, { what: string; todo?: string }> = {
   queued: { what: 'In the queue, waiting for a worker slot and for its repo to be free.', todo: 'Run now jumps the queue.' },
   running: { what: 'An agent is working on it in its own terminal.', todo: 'Open the terminal to watch or type into it.' },
   waiting: {
-    what: 'The agent ended its turn with a background subagent still running. It resumes on its own when that child returns.',
-    todo: 'Nothing to do — it is not waiting on you.',
+    what: 'The agent ended its turn with a background subagent or shell still running. It resumes on its own when that returns; a shell holds it only for a limited time.',
+    todo: 'Nothing to do — it is not waiting on you. If only a shell holds it and the agent no longer needs it, Stop waiting lands it now.',
   },
   blocked: { what: 'Split into child tasks; it waits for them to finish.', todo: 'Unblock it to run it anyway.' },
   review: { what: 'The agent finished its turn; the change waits for you.', todo: 'Read the summary, then Publish, Mark done or Follow up.' },

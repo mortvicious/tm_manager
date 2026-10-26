@@ -527,6 +527,7 @@ Registered with `setMyCommands`, so they autocomplete in the client. The tables 
 | `/questions` | everything the agents are waiting on you to decide, with the option buttons again ([`questions.md`](questions.md)) |
 | `/cancel <id>` | de-queue, or kill the session and cancel |
 | `/undo <id>` | Undo start: stop a running task and put it back where it was before the turn — a queued task keeps its place, held (`docs/queue.md` § Undo start); the card shows ↩ Undo start on a running/waiting task |
+| (card only) ⏹ Stop waiting | on a task parked in `waiting` by background shells alone (`OrchestratorStatus.shellWaits`): lands the turn now and kills those shells, the same `Orchestrator.stopWaiting` as the SPA (`docs/design.md` § Waiting) |
 | `/release <id>` | let the queue take a task Undo start held; the card shows ▶ Release on a held task |
 | `/retry <id>` | re-queue a `failed`/`cancelled` task |
 | `/unblock <id>` | `blocked` → `review` |
