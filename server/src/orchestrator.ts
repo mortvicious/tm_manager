@@ -8,6 +8,7 @@ import {
   isCodexModel,
   landingReason,
   verifyOpen,
+  publishGateReason,
   runTaskId,
   REVIEW_NOW_FROM,
   type AppSettings,
@@ -2442,6 +2443,13 @@ export class Orchestrator implements OrchestratorApi {
     if (task.status !== 'review') {
       return { error: `cannot publish from status '${task.status}' — publish is offered on a task in review`, code: 409 };
     }
+    // Review gates the ship (decisions.md 2026-10-26): nobody — web, Telegram,
+    // the API — pushes while the automatic round is still deciding. A SETTLED
+    // flagged review or red checks stays publishable for a human (the SPA
+    // confirms first). `landIfClean` never gets here with the round open:
+    // `landingReason` needs a settled verdict, so auto-publish is unaffected.
+    const gate = publishGateReason(task);
+    if (gate) return { error: gate, code: 409 };
     if (actor === LANDING_ACTOR) this.autoPublishing.add(taskId);
     else this.autoPublishing.delete(taskId);
     await this.storage.appendEvent({

@@ -15,7 +15,16 @@ Two things make it more than a commit button:
 
 ## The button
 
-`review` is the only status Publish is offered from — on the task panel (next to **Mark done**) and as a quick action on the task's board row. Both call `POST /api/tasks/:id/publish`.
+`review` is the only status Publish is offered from — on the task panel (next to **Mark done**), as a quick action on the task's board row, and on an Inbox review item. All call `POST /api/tasks/:id/publish`.
+
+### The verify gate (2026-10-26)
+
+Publish pushes, and its turn runs the repo's deploy steps. Nothing in the UI can take that back. So it waits for the verdict:
+
+- **While the round is open** (`verifyOpen`: review `pending|reviewing|fixing`, checks `pending|running`) `Orchestrator.publish()` answers **409** with the reason from `publishGateReason` (shared), e.g. `the automatic review is still open — publish once it gives a verdict`. This is for every caller: the SPA, Telegram and the API. Nothing is audited for a refusal at this point, because no publish started. The SPA disables Publish with that reason, and Telegram leaves 🚀 Publish off the task card.
+- **Over a settled non-clean verdict** (review `flagged`/`error`, checks `red`/`error`) a human may still publish, but Publish is no longer the primary action. The phone row's glyph becomes the terminal, the panel bar leads with Terminal, and the Inbox leads with Send findings back or Open. Pressing it asks first. `confirmPublish` (`web/src/publish.ts`) shows a `confirm()` that restates the verdict from `publishCaution` (shared): *"Review flagged 2 blockers, 1 major — publish anyway?"* The button reads **Publish anyway**.
+- **Over a clean verdict, or with review and checks off**, Publish stays the primary action and does not ask.
+- **Auto-publish is unaffected.** `landIfClean` calls `publish()` only when `landingReason` passes, which needs a settled clean verdict, so the gate never fires for it.
 
 ## Auto-publish — the top landing tier
 

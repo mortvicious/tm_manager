@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties, type HTMLAttributes, type MouseEvent, type ReactNode } from 'react';
-import type { Task, TaskStatus } from '@tm/shared';
+import { publishCaution, publishGateReason, type Task, type TaskStatus } from '@tm/shared';
 import { api } from '../api.ts';
+import { confirmPublish, publishIsPrimary } from '../publish.ts';
 import { useApp } from '../state.tsx';
 import { IconCheck, IconEye, IconGrip, IconMore, IconPlay, IconPublish, IconQueue, IconTerminal, IconX } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
@@ -154,10 +155,17 @@ export function TaskRow({
           ? LIVE_MSG
           : 'Run now';
   // Publish is offered only where the server accepts it: a task in review,
-  // with somewhere to push from.
+  // with somewhere to push from, whose review/checks are not still open
+  // (docs/publish.md § The verify gate).
+  const publishGate = publishGateReason(task);
   const publishLabel = !task.repoId
     ? 'Assign a repo before publishing this task'
-    : 'Publish — commit and push this work in the agent\'s own terminal';
+    : publishGate
+      ? `Publish — ${publishGate}`
+      : publishCaution(task)
+        ? `Publish anyway (asks first) — ${publishCaution(task)}`
+        : 'Publish — commit and push this work in the agent\'s own terminal';
+  const canPublish = markDone && !!task.repoId && !publishGate;
   const readyLabel = markDone
     ? 'Mark done'
     : !task.repoId
@@ -184,10 +192,14 @@ export function TaskRow({
   // reason in a tooltip is exactly what a phone cannot read.
   const openTerm = () => run && onOpenTerminal(run.id);
   const doRun = (e: MouseEvent | null) => act(e, () => api.taskAction(task.id, 'run-now'));
-  const doPublish = (e: MouseEvent | null) => act(e, () => api.taskAction(task.id, 'publish'));
+  const doPublish = (e: MouseEvent | null) => {
+    e?.stopPropagation();
+    if (!confirmPublish(task)) return;
+    void act(e, () => api.taskAction(task.id, 'publish'));
+  };
   const runnable: TaskStatus[] = ['draft', 'queued', 'failed', 'cancelled'];
   const primary: 'terminal' | 'run' | 'publish' | null =
-    task.status === 'review' && task.repoId
+    publishIsPrimary(task)
       ? 'publish'
       : runnable.includes(task.status) && canRun
         ? 'run'
@@ -286,9 +298,9 @@ export function TaskRow({
                 <SheetAction
                   icon={<IconPublish />}
                   label="Publish"
-                  hint={task.repoId ? "Commit and push this work in the agent's own terminal" : publishLabel}
-                  tone="primary"
-                  disabled={busy || !task.repoId}
+                  hint={publishIsPrimary(task) ? "Commit and push this work in the agent's own terminal" : publishLabel}
+                  tone={publishIsPrimary(task) ? 'primary' : undefined}
+                  disabled={busy || !canPublish}
                   onClick={fromSheet(() => void doPublish(null))}
                 />
               )}
@@ -390,8 +402,8 @@ export function TaskRow({
         {markDone && (
           <QuickBtn
             label={publishLabel}
-            disabled={busy || !task.repoId}
-            onClick={(e) => act(e, () => api.taskAction(task.id, 'publish'))}
+            disabled={busy || !canPublish}
+            onClick={(e) => doPublish(e)}
           >
             <IconPublish />
           </QuickBtn>

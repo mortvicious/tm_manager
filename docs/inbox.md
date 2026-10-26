@@ -25,7 +25,7 @@ The items appear in this order. A task appears once, under its first kind.
 |---|---|---|---|---|
 | 1 | `question` | a task with a pending agent question (`tm_questions`), one item per task | answer inline (`QuestionForm`), `o` | ❓ Answer |
 | 2 | `attention` | a `running` task whose live, non-idle run is flagged needs-attention (a dialog in a hidden terminal) | `t` terminal, `o` | ✖ Kill |
-| 3 | `review` | a task in `review` whose automatic verify round is **settled** (not `verifyOpen`) | `a` mark done, `o` | ✅ Done · 🚀 Publish |
+| 3 | `review` | a task in `review` whose automatic verify round is **settled** (not `verifyOpen`) | `p` publish, `d` mark done, `f` send findings back (flagged only), `o` | ✅ Done · 🚀 Publish |
 | 4 | `failed` | a task that failed in the last `INBOX_FAILED_DAYS` (7) | `r` retry, `p` resume (limit-stopped only), `o` | 🔁 Retry |
 | 5 | `blocked` | a blocked split parent, with its subtasks settled / failed | `a` unblock, `o` | ⛔ Unblock |
 | 6 | `proposal` | a pending analysis proposal (rewrite, split, new task, options) | `a` accept, `x` reject, `o` | ✅ Accept (only without options) · ✖ Reject |
@@ -57,8 +57,8 @@ Rows with an `unblocks` count above 0 show **frees n**. Ties break oldest first,
 since what has waited longest goes first.
 
 Review has one more tiebreak: a **ready** review comes first. Ready means
-`landingReason` holds (checks green or none, review clean or none), so `a`
-lands it with nothing left to read.
+`landingReason` holds (checks green or none, review clean or none), so `p`
+publishes it with nothing left to read.
 
 ### What a review row shows
 
@@ -97,16 +97,25 @@ as buttons that show their key.
 | key | does |
 |---|---|
 | `j` / `↓`, `k` / `↑` | move |
-| `a` | mark done (review), unblock (blocked), accept (proposal without options), approve (feature plan) |
+| `p` | publish (review): primary only when the item is ready. Over a flagged review or red checks it reads **Publish anyway** and asks first, restating the verdict (`docs/publish.md` § The verify gate) |
+| `d` | mark done (review): closes the task **without pushing** |
+| `f` | send findings back (flagged review): `POST /apply-review`, the same session fixes the blocker/major items. It is the primary on a flagged item |
+| `a` | unblock (blocked), accept (proposal without options), approve (feature plan) |
 | `r` | retry (failed): `POST /retry`, so the fresh agent gets the `## Previous attempt` block (design.md § Retry with context) |
-| `p` | resume (failed, limit-stopped only): `POST /proceed`, the task's own session (§ Retry or Resume) |
+| `p` (failed) | resume (limit-stopped only): `POST /proceed`, the task's own session (§ Retry or Resume) |
 | `x` | reject (proposal) |
 | `t` | open the terminal (needs attention) |
 | `o` / Enter | open the task panel, or the plan for a feature |
 
 - **When a decision removes its item, the selection stays on the same
   position.** The next item is then under the cursor, so a run of
-  `a a a r a` clears a morning.
+  `p d p r a` clears a morning.
+- **A key never fires twice by accident.** Auto-repeat (`e.repeat`) is
+  ignored. After an act its key is dead for 600 ms (`ACT_COOLDOWN_MS`), unless
+  you move the cursor with `j`/`k` or the mouse. Holding `d`, or pressing
+  `d d`, does not also close the next item.
+- **On a review item the primary is never Mark done.** Ready → Publish;
+  flagged → Send findings back; red checks or no clean verdict → Open.
 - **Keys are ignored** while you type in a field, inside a terminal, or while
   any dialog, sheet, task panel or the search popover is open.
 - **Enter is ignored** on a focused button, because there it is that button's

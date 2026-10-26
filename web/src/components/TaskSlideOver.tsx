@@ -11,12 +11,15 @@ import {
   groupLabel,
   imagePreviewType,
   isExternalTask,
+  publishCaution,
+  publishGateReason,
   type EffortLevel,
   type LandingTier,
   type Proposal,
   type Task,
 } from '@tm/shared';
 import { api } from '../api.ts';
+import { confirmPublish, publishIsPrimary } from '../publish.ts';
 import { useApp } from '../state.tsx';
 import { DispatchStrip } from './DispatchStrip.tsx';
 import { GroupPicker, type GroupChoicePlace } from './GroupPicker.tsx';
@@ -65,10 +68,15 @@ interface PanelAction {
  * session the terminal outranks starting anything new, which the server would
  * refuse anyway (the `hasLiveSession()` guard).
  */
-const mobilePrimary = (live: boolean) =>
-  live
-    ? ['publish', 'complete', 'release', 'unblock', 'terminal', 'run-now', 'enqueue']
-    : ['publish', 'complete', 'release', 'unblock', 'run-now', 'enqueue', 'terminal'];
+const mobilePrimary = (live: boolean, publishHeld: boolean) =>
+  // A review whose verdict is open, flagged or red (docs/publish.md § The verify
+  // gate) leads with its terminal — Publish moves to ⋯, and Mark done never
+  // takes the primary slot over a verdict nobody accepted.
+  publishHeld
+    ? ['terminal', 'complete', 'release', 'unblock', 'run-now', 'enqueue']
+    : live
+      ? ['publish', 'complete', 'release', 'unblock', 'terminal', 'run-now', 'enqueue']
+      : ['publish', 'complete', 'release', 'unblock', 'run-now', 'enqueue', 'terminal'];
 const MOBILE_BAR_MAX = 3;
 /** Same words as the board row (TaskRow), for the same server refusal. */
 const LIVE_MSG = 'Previous session is still live — open its terminal or kill it first';
@@ -473,6 +481,7 @@ export function TaskSlideOver({
   const reviewBusy =
     (task.reviewState !== null && REVIEW_BUSY_STATES.includes(task.reviewState)) ||
     (task.status === 'review' && task.checkState !== null && CHECK_BUSY_STATES.includes(task.checkState));
+  const publishGate = publishGateReason(task);
   const actions: PanelAction[] = [];
   const running = task.status === 'running' || task.status === 'waiting';
   // the client mirror of the server's hasLiveSession() guard (see TaskRow):
@@ -556,15 +565,24 @@ export function TaskSlideOver({
     });
   }
   if (task.status === 'review') {
+    const caution = publishCaution(task);
     actions.push({
       id: 'publish',
-      label: 'Publish',
+      label: caution ? 'Publish anyway' : 'Publish',
+      short: 'Publish',
       icon: <IconPublish />,
-      cls: 'primary',
-      title: resumeSession
-        ? `Commit and push this work in session ${resumeSession.slice(0, 8)} — the same terminal the agent worked in`
-        : 'Commit and push this work (no agent session left to reopen, so the server does it directly)',
-      onClick: () => action('publish'),
+      cls: publishIsPrimary(task) ? 'primary' : undefined,
+      disabled: !!publishGate,
+      title: publishGate
+        ? `Publish waits: ${publishGate}`
+        : `${caution ? `${caution} — asks first. ` : ''}${
+            resumeSession
+              ? `Commit and push this work in session ${resumeSession.slice(0, 8)} — the same terminal the agent worked in`
+              : 'Commit and push this work (no agent session left to reopen, so the server does it directly)'
+          }`,
+      onClick: () => {
+        if (confirmPublish(task)) void action('publish');
+      },
     });
     actions.push({ id: 'complete', label: 'Mark done', title: 'Close the task without publishing', onClick: () => action('complete') });
   }
@@ -655,7 +673,8 @@ export function TaskSlideOver({
 
   // Phones: the bar takes the best few non-destructive actions, the sheet the rest.
   // disabled actions stay in the sheet, where their reason is printed
-  const barIds = mobilePrimary(liveSession)
+  const publishHeld = task.status === 'review' && !publishIsPrimary(task);
+  const barIds = mobilePrimary(liveSession, publishHeld)
     .filter((id) => actions.some((a) => a.id === id && !a.destructive && !a.disabled))
     .slice(0, MOBILE_BAR_MAX);
   const bar = barIds.map((id) => actions.find((a) => a.id === id)!);
@@ -749,7 +768,7 @@ export function TaskSlideOver({
       {bar.map((a, i) => (
         <button
           key={a.id}
-          className={`btn${i === 0 ? ' primary' : ''}`}
+          className={`btn${i === 0 && !(publishHeld && a.id === 'complete') ? ' primary' : ''}`}
           disabled={a.disabled}
           onClick={a.onClick}
         >

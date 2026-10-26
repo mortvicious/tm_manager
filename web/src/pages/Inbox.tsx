@@ -35,8 +35,9 @@ export function InboxPage({ onOpenTask, onOpenTerminal }: InboxNav) {
       </h1>
       {!mobile && items.length > 0 && (
         <div className="inbox-keys">
-          <kbd>j</kbd>/<kbd>k</kbd> move · <kbd>a</kbd> done / approve / unblock · <kbd>r</kbd> retry · <kbd>p</kbd> resume · <kbd>x</kbd>{' '}
-          reject · <kbd>t</kbd> terminal · <kbd>o</kbd> open
+          <kbd>j</kbd>/<kbd>k</kbd> move · <kbd>p</kbd> publish / resume · <kbd>d</kbd> mark done ·{' '}
+          <kbd>f</kbd> send findings back · <kbd>a</kbd> approve / unblock · <kbd>r</kbd> retry · <kbd>x</kbd> reject ·{' '}
+          <kbd>t</kbd> terminal · <kbd>o</kbd> open
         </div>
       )}
       {mobile ? (
@@ -50,6 +51,9 @@ export function InboxPage({ onOpenTask, onOpenTerminal }: InboxNav) {
     </div>
   );
 }
+
+/** How long an act's key stays dead after it fired (docs/inbox.md § Keys). */
+const ACT_COOLDOWN_MS = 600;
 
 /** Keys are ignored while typing, in a terminal, or with any dialog/panel open over the page. */
 function keyIsOurs(e: KeyboardEvent): boolean {
@@ -85,6 +89,14 @@ function DeskList({ items, nav }: { items: InboxItem[]; nav: InboxNav }) {
   const state = useRef({ items, index, sel, actsFor, run });
   state.current = { items, index, sel, actsFor, run };
   useEffect(() => {
+    // A decision moves the cursor onto the NEXT item (same position), so a
+    // held key or a double press would decide that one too. Auto-repeat is
+    // ignored outright, and after an act its key is dead for ACT_COOLDOWN_MS
+    // or until the cursor is moved on purpose (j/k, the mouse).
+    let cooldown: { key: string; until: number } | null = null;
+    const onMove = () => {
+      cooldown = null;
+    };
     const onKey = (e: KeyboardEvent) => {
       if (!keyIsOurs(e)) return;
       const { items, index, sel, actsFor, run } = state.current;
@@ -92,6 +104,7 @@ function DeskList({ items, nav }: { items: InboxItem[]; nav: InboxNav }) {
       if (k === 'j' || k === 'ArrowDown' || k === 'k' || k === 'ArrowUp') {
         if (!items.length) return;
         e.preventDefault();
+        cooldown = null;
         const next = Math.max(0, Math.min(items.length - 1, index + (k === 'j' || k === 'ArrowDown' ? 1 : -1)));
         setSelKey(items[next].key);
         return;
@@ -100,10 +113,16 @@ function DeskList({ items, nav }: { items: InboxItem[]; nav: InboxNav }) {
       const act = actsFor(sel).find((a) => a.key === k);
       if (!act) return;
       e.preventDefault();
+      if (e.repeat || (cooldown?.key === k && Date.now() < cooldown.until)) return;
+      cooldown = { key: k, until: Date.now() + ACT_COOLDOWN_MS };
       void run(sel.key, act);
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('mousemove', onMove);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('mousemove', onMove);
+    };
   }, []);
 
   if (!items.length) return <div className="inbox-empty">Nothing is waiting on you.</div>;

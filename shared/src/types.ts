@@ -853,6 +853,53 @@ export function verifyOpen(t: Pick<Task, 'status' | 'reviewState' | 'checkState'
   return (!!t.reviewState && REVIEW_BUSY_STATES.includes(t.reviewState)) || (!!t.checkState && CHECK_BUSY_STATES.includes(t.checkState));
 }
 
+/**
+ * Why Publish is refused right now (docs/publish.md § The verify gate): the
+ * automatic review round or the repo checks are still open, so no verdict
+ * exists yet. `Orchestrator.publish()` answers 409 with it for every caller
+ * (web, Telegram, the API); the SPA takes Publish out of the primary slot on
+ * the same test. Null = no gate.
+ */
+export function publishGateReason(t: Pick<Task, 'status' | 'reviewState' | 'checkState'>): string | null {
+  if (!verifyOpen(t)) return null;
+  const checks = !!t.checkState && CHECK_BUSY_STATES.includes(t.checkState);
+  return checks
+    ? 'the repo checks are still due or running — publish once they give a verdict'
+    : 'the automatic review is still open — publish once it gives a verdict';
+}
+
+/**
+ * The SETTLED verdict a human publishes over (docs/publish.md § The verify
+ * gate): a flagged or failed review, red checks or checks with no verdict, in
+ * words for the confirm ("review flagged 2 blockers, 1 major · checks red:
+ * lint"). Null when the verdict is clean, off, or still open (that is
+ * `publishGateReason`'s). Never consulted by auto-publish, which only runs on
+ * a clean `landingReason`.
+ */
+export function publishCaution(
+  t: Pick<Task, 'status' | 'reviewState' | 'checkState' | 'checkResults' | 'reviewRounds'>,
+): string | null {
+  if (verifyOpen(t)) return null;
+  const parts: string[] = [];
+  if (t.checkState === 'red' || t.checkState === 'error') {
+    const names = t.checkResults.filter((c) => c.outcome === t.checkState).map((c) => c.name);
+    const what = t.checkState === 'red' ? 'checks red' : 'checks gave no verdict';
+    parts.push(names.length ? `${what}: ${names.join(', ')}` : what);
+  }
+  if (t.reviewState === 'flagged') {
+    const last = t.reviewRounds[t.reviewRounds.length - 1];
+    const n = (s: ReviewFinding['severity']) => last?.findings.filter((f) => f.severity === s).length ?? 0;
+    const counts = [
+      n('blocker') && `${n('blocker')} blocker${n('blocker') === 1 ? '' : 's'}`,
+      n('major') && `${n('major')} major`,
+    ].filter(Boolean);
+    parts.push(counts.length ? `review flagged ${counts.join(', ')}` : 'review flagged issues');
+  } else if (t.reviewState === 'error') {
+    parts.push('the review could not run');
+  }
+  return parts.length ? parts.join(' · ') : null;
+}
+
 /** The task a run's cost belongs to: its own task, or the task an aux review/compact session was about. */
 export function runTaskId(r: Pick<Run, 'taskId' | 'kind' | 'subjectId'>): string | null {
   if (r.taskId) return r.taskId;

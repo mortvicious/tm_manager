@@ -1,5 +1,6 @@
 import {
   REVIEW_BUSY_STATES,
+  publishGateReason,
   REVIEW_NOW_FROM,
   TERMINAL_TASK_STATUSES,
   buildInbox,
@@ -127,7 +128,8 @@ export function taskActionKeyboard(t: Task): InlineKeyboardMarkup | undefined {
     b.push({ text, callback_data: encodeAction({ kind, id: t.id } as ButtonAction) });
   if (t.status === 'review') {
     add('✅ Done', 'task.done');
-    add('🚀 Publish', 'task.publish');
+    // refused while the review/checks are open (docs/publish.md § The verify gate)
+    if (!publishGateReason(t)) add('🚀 Publish', 'task.publish');
     add('💬 Proceed', 'task.proceed');
   }
   if (t.status === 'blocked') add('⛔ Unblock', 'task.unblock');

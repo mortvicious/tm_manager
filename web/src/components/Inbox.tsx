@@ -1,9 +1,10 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { buildInbox, type DiffStat, type InboxItem, type InboxKind, type Task } from '@tm/shared';
+import { buildInbox, publishCaution, type DiffStat, type InboxItem, type InboxKind, type Task } from '@tm/shared';
 import { api } from '../api.ts';
+import { confirmPublish } from '../publish.ts';
 import { useApp } from '../state.tsx';
-import { IconCheck, IconInbox, IconMore, IconPlay, IconRefresh, IconTerminal, IconX } from './Icons.tsx';
+import { IconAnalyze, IconCheck, IconInbox, IconMore, IconPlay, IconPublish, IconRefresh, IconTerminal, IconX } from './Icons.tsx';
 import { QuestionForm } from './QuestionModal.tsx';
 import { reviewHeadline } from './ReviewPanel.tsx';
 import { TaskAttemptsChip, TaskCostChip } from './RunMeta.tsx';
@@ -107,11 +108,15 @@ export function limitStopped(t: Task): boolean {
 
 /** A keyboard-reachable decision on an item: the key is its desktop shortcut. */
 export interface InboxAct {
-  key: 'a' | 'r' | 'p' | 'x' | 'o' | 't';
+  key: 'a' | 'd' | 'f' | 'r' | 'p' | 'x' | 'o' | 't';
   label: string;
   hint?: string;
   tone?: 'primary' | 'danger';
   disabled?: boolean;
+  /** the sheet's icon, when the key's default (`ACT_ICON`) is not this act's */
+  icon?: ReactNode;
+  /** asked before anything runs; false = the human backed out, nothing happens */
+  confirm?: () => boolean;
   /** resolves when done; throws with the server's refusal */
   run: () => Promise<unknown> | void;
 }
@@ -143,17 +148,45 @@ export function useInboxActs(nav: InboxNav) {
             },
             ...open(item.task),
           ];
-        case 'review':
-          return [
-            {
-              key: 'a',
-              label: 'Mark done',
-              hint: item.ready ?? 'accept the change as it stands',
-              tone: 'primary',
-              run: () => then(api.taskAction(item.task.id, 'complete')),
-            },
-            ...open(item.task),
-          ];
+        case 'review': {
+          // Publish ships; Mark done closes WITHOUT pushing (docs/inbox.md §
+          // Acting). Publish leads only over a clean verdict (`ready`); over a
+          // flagged review the lead is sending the findings back, over red
+          // checks it is Open — never Mark done, which would bury the work.
+          const t = item.task;
+          const caution = publishCaution(t);
+          const flagged = t.reviewState === 'flagged';
+          const publish: InboxAct = {
+            key: 'p',
+            label: caution ? 'Publish anyway' : 'Publish',
+            hint: caution ? `${caution} — asks first` : 'commit and push',
+            tone: item.ready ? 'primary' : undefined,
+            disabled: !t.repoId,
+            icon: <IconPublish />,
+            confirm: () => confirmPublish(t),
+            run: () => then(api.taskAction(t.id, 'publish')),
+          };
+          const done: InboxAct = {
+            key: 'd',
+            label: 'Mark done',
+            hint: 'closes without pushing',
+            run: () => then(api.taskAction(t.id, 'complete')),
+          };
+          const fixes: InboxAct[] = flagged
+            ? [
+                {
+                  key: 'f',
+                  label: 'Send findings back',
+                  hint: 'the same session applies the blocker/major fixes',
+                  tone: 'primary',
+                  icon: <IconAnalyze />,
+                  run: () => then(api.applyReview(t.id)),
+                },
+              ]
+            : [];
+          const opener = open(t).map((a): InboxAct => (item.ready || flagged ? a : { ...a, tone: 'primary' }));
+          return [...fixes, publish, done, ...opener];
+        }
         case 'failed': {
           // Retry = a fresh agent; Resume = the same session. A turn the
           // ACCOUNT stopped (docs/wake.md) is the one Resume exists for, so it
@@ -225,6 +258,7 @@ export function useActRunner() {
   const run = useCallback(
     async (itemKey: string, act: InboxAct, onDone?: () => void) => {
       if (act.disabled || busy) return;
+      if (act.confirm && !act.confirm()) return;
       setBusy(itemKey);
       setErr(null);
       try {
@@ -482,6 +516,8 @@ export function InboxRows({ items, onPick }: { items: InboxItem[]; onPick: (i: I
 
 const ACT_ICON: Record<InboxAct['key'], ReactNode> = {
   a: <IconCheck />,
+  d: <IconCheck />,
+  f: <IconAnalyze />,
   r: <IconRefresh />,
   p: <IconPlay />,
   x: <IconX />,
@@ -504,7 +540,7 @@ export function InboxItemSheet({ item, nav, onClose }: { item: InboxItem; nav: I
         {actsFor(item).map((a) => (
           <SheetAction
             key={a.key}
-            icon={ACT_ICON[a.key]}
+            icon={a.icon ?? ACT_ICON[a.key]}
             label={a.label}
             hint={a.hint}
             tone={a.tone}
