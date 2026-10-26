@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { compareClaimOrder, type Run } from '@tm/shared';
+import { compareClaimOrder, contextPctOf, type Run } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { toastError } from '../toast.ts';
@@ -83,7 +83,7 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
                     <Elapsed since={r.startedAt} />
                     {r.stats && (
                       <span className="mono muted" style={{ marginLeft: 8 }}>
-                        ${r.stats.costUsd.toFixed(3)} · ctx {Math.round(r.stats.contextPct)}%
+                        ${r.stats.costUsd.toFixed(3)} · ctx {Math.round(contextPctOf(r.stats, r.model))}%
                       </span>
                     )}
                   </td>
@@ -116,7 +116,7 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
                 <span className="title">{runTitle(r, tasks)}</span>
                 {r.stats && (
                   <span className="mono muted">
-                    ${r.stats.costUsd.toFixed(3)} · ctx {Math.round(r.stats.contextPct)}%
+                    ${r.stats.costUsd.toFixed(3)} · ctx {Math.round(contextPctOf(r.stats, r.model))}%
                   </span>
                 )}
                 <button

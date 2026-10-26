@@ -230,8 +230,10 @@ sessions, so the answer cannot be "start fresh sooner".
 `Orchestrator.resumeHandoff`, called from `startWorker` — **only** when an idle
 session is about to be resumed, never mid-run. The measure is the previous run's
 last-turn context read straight from its transcript: `RunStats.contextTokens`,
-the raw number behind `contextPct` (which divides by a fixed 200k and clamps at
-100, so it reads "100%" for every session this decision is ever about).
+the raw number behind `contextPct`. Until 2026-10-26 the percentage divided by
+a fixed 200k and clamped at 100, so it read "100%" for every session this
+decision is ever about; it now divides by the model's own window (§ Cost
+accounting), but the cap stays a token count either way.
 
 Under the cap, nothing changes. Over it, in order of preference:
 
@@ -366,8 +368,9 @@ drops further.
   lingers into a cache expiry.
 - The two kinds that `--resume` (chat turns, compaction) did so under `-p` as
   well, one resume per turn, and still do exactly that.
-- A chat turn's cost is the transcript delta over the previous turn's totals
-  (`statsBaseline`), which is what `-p`'s `total_cost_usd` reported.
+- A chat turn's cost is what the transcript recorded during the turn (its run's
+  time window, § Cost accounting; the `statsBaseline` subtraction before
+  2026-10-26), which is what `-p`'s `total_cost_usd` reported.
 
 **Two accounting differences, both visible now.**
 - Every aux session is a `tm_runs` row with transcript stats, so the dashboard's
@@ -393,7 +396,8 @@ row: `tm_tasks.cost_usd` (migration 33) is rewritten by `updateRun` whenever a
 run's stats are written — one `UPDATE … SET cost_usd = (SELECT SUM …)` over
 `tm_runs.cost_usd`, the `stats.costUsd` figure lifted out of the JSON so both
 dialects sum it with one statement (`storage/cost-sql.ts`). Resumed runs already
-report only their own delta (`netStats`), so the sum never double counts.
+report only their own window (`summarizeRun`, § Cost accounting), so the sum
+never double counts.
 Existing rows were backfilled in JS inside the migration's transaction. Every
 stats writer (the 20s live refresh, the Stop/SessionEnd hooks, exit, an aux
 session's finish) then re-broadcasts the task, so the card's `Σ $x.xx` chip and
@@ -463,6 +467,88 @@ At or OVER the cap refuses. It returns `{ ok: true }` or
   same-repo gate, its repo — and now lands it and clears the fuse's flag; and
   the usage-limit parker, which skipped any flagged run and so never parked an
   over-time turn the 5h window then cut short.
+
+## Cost accounting: what a run is charged (2026-10-26)
+
+`RunStats` is parsed from the session's transcripts by `summarizeTranscript`
+(`claude/stats.ts`); `costUsd` is an ESTIMATE at list prices, and it feeds
+every chip, `Task.costUsd`, the fuses and the anomaly alerts. Three gaps were
+closed together (autonomy-round analysis 663c5006, feasibility § 1). Together
+they raise every cost roll-up by about 30%. Measured over 30 days and 474
+sessions: about $4.0k of subagent spend and about $1.45k of 1h cache writes
+were missing, against $18.4k recorded.
+
+**Subagents are counted.** The CLI writes a subagent's conversation to its OWN
+file, never to the parent's: `<project>/<sessionId>/subagents/agent-<id>.jsonl`
+(+ `agent-<id>.meta.json`: `agentType`, `toolUseId`, `spawnDepth`). Nested
+subagents land in the same flat folder. Every line is `isSidechain: true`. The
+old parser read only `<sessionId>.jsonl`, so its `isSidechain` filter never
+saw a sidechain line, and 249 of 474 sessions had uncounted subagents (run
+5559a62e recorded $32.56; with its Explore subagent and the 1h price it is
+$49.08). `RunStats.subagentCostUsd` is the subagents' part. It is already
+inside `costUsd`, and it is absent on rows summarised before. Subagent lines
+never touch `contextTokens`, `contextPct` or `lastAssistantText`: those
+describe the main chain's last turn.
+
+**Every message is priced at its own model.** `message.model` sets the price,
+falling back to the run's model for `<synthetic>` and lines without one,
+because a subagent runs opus, fable, sonnet or haiku whatever its parent is.
+A resume that switches model is priced correctly on both sides as well.
+
+**Cache writes are priced by TTL.** A 5-minute write is 1.25× input and a
+1-hour write is 2× input. They are split on
+`usage.cache_creation.ephemeral_1h_input_tokens` / `…_5m_…`. Worker sessions
+write only 1h cache (113.6M tokens in 30 days, none at 5m) and subagents only
+5m. A line without the split is billed at the 5m rate, as before.
+
+**A message is counted once, at its largest reading.** One API message spans
+several transcript lines, each repeating its usage, so they are deduped by
+`message.id`. The repeats are not identical, though: `output_tokens` grows
+across a streamed message's lines (482 of 6,965 repeats, never shrinking). The
+old first-line rule therefore undercounted output, so each field now keeps its
+maximum. `usage.ts`'s 5h/7d estimate had the same bug and the same blind spot
+for subagent files. Both are fixed there too.
+
+**A run is charged by TIME, not by subtraction.** `summarizeRun` counts the
+messages stamped inside the run's `startedAt..endedAt` window (open while it is
+live), across the main and subagent files. The old approach subtracted
+`statsBaseline` from the whole session. That is now only the fallback for a row
+with no `startedAt`, and the baseline is still captured at resume. Subtraction
+would have been wrong after this change. Every baseline written before it
+excludes subagents and is priced at the old cache rate, so a resumed run
+re-summarised afterwards would have absorbed the whole session's earlier
+subagent spend plus a repricing delta. A window does neither. It is exact
+because runs on one session never overlap in time (a resume never shares a
+session id with a live process). On 40 resumed runs the window reproduced the
+subtraction's token counts exactly.
+
+**Parsed files are cached** by path on mtime+size (≤ 400 files, least recently
+used out). The 20 s live refresh re-summarises every running run, and a
+finished subagent file never changes again. A cache hit costs about 1 ms
+against 20–90 ms for a parse.
+
+**Context share is per model.** `contextWindowFor(model)` (shared, a prefix
+table like `priceFor`) returns 200k for `claude-haiku-4-5` and 1M for
+everything else in `MODEL_OPTIONS`: Fable 5.x, Opus 5.x and Sonnet 5 run a 1M
+window by default. `contextPctOf(stats, model, window?)` recomputes the share
+from `contextTokens` wherever a row has it (rows before that field return the
+stored, 200k-clamped figure). Its readers are the run chips (`RunMeta`, `Queue`),
+the Telegram board, the Dashboard's average/max context and the
+**`context-high` anomaly** (>80%). The anomaly fired on 334 of 453 worker runs
+in 30 days against the 200k divisor; against the model's window it would have
+fired on none, because the largest sessions reach about 500k. The `window`
+argument is for an autocompact window, once one is configured (the separate
+"cap context growth" task): divide by that, as the CLI's own status line does.
+No such setting exists yet. A `<synthetic>` message (the CLI's own error or
+limit notice, with all-zero usage) no longer counts as the last turn. Before,
+a session that ended on one read as `contextTokens: 0`, which let the resume
+gate wave a 400k resume through.
+
+**Not backfilled.** Run rows summarised before this change keep their old
+`costUsd`. The CLI deletes transcripts after about 30 days anyway, and a
+re-summarise rewrites history that the day fuse and past reports already read.
+A run is re-priced only when something summarises it again: the live refresh,
+a hook, or exit.
 
 ## Re-measuring after a change here
 

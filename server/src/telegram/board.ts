@@ -5,6 +5,7 @@ import {
   TERMINAL_TASK_STATUSES,
   buildInbox,
   customQueueHoldsRepo,
+  contextPctOf,
   customQueueWaiting,
   matchTaskPreset,
   isExternalTask,
@@ -469,7 +470,7 @@ function activityLine(a: RunActivity | undefined, max: number): string | null {
 function statsLine(r: Run): string {
   const parts = [`⏱ ${formatElapsed(r.startedAt)}`];
   if (r.stats) {
-    parts.push(`ctx ${Math.round(r.stats.contextPct)}%`, `$${r.stats.costUsd.toFixed(2)}`);
+    parts.push(`ctx ${Math.round(contextPctOf(r.stats, r.model))}%`, `$${r.stats.costUsd.toFixed(2)}`);
   }
   return parts.join(' · ');
 }

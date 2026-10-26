@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { holdsRepoForClaim, type Anomaly, type AuditEvent, type StatsOverview } from '@tm/shared';
+import { contextPctOf, holdsRepoForClaim, type Anomaly, type AuditEvent, type StatsOverview } from '@tm/shared';
 import { budgetAllows } from '../budget.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
@@ -102,9 +102,10 @@ export function registerStatsRoutes(
       totals.costUsd += cost;
       totals.tokens += tokens;
       if (run.stats) {
-        ctxSum += run.stats.contextPct;
+        const ctxPct = contextPctOf(run.stats, run.model);
+        ctxSum += ctxPct;
         ctxN++;
-        totals.maxCtxPct = Math.max(totals.maxCtxPct, run.stats.contextPct);
+        totals.maxCtxPct = Math.max(totals.maxCtxPct, ctxPct);
       }
       const day = perDayMap.get(dayKey(run.startedAt));
       if (day) {
@@ -211,11 +212,14 @@ export function registerStatsRoutes(
         }
       }
       if (!recentOrLive(run)) continue;
-      if ((run.stats?.contextPct ?? 0) > 80) {
+      // Against the model's own window (1M for all but haiku), not the old
+      // fixed 200k that put 74% of runs over the line.
+      const ctxPct = contextPctOf(run.stats, run.model);
+      if (ctxPct > 80) {
         anomalies.push({
           severity: 'warn',
           kind: 'context-high',
-          message: `context window ${Math.round(run.stats!.contextPct)}% full — agent quality degrades near the limit`,
+          message: `context window ${Math.round(ctxPct)}% full — agent quality degrades near the limit`,
           runId: run.id,
           taskId: run.taskId ?? undefined,
         });

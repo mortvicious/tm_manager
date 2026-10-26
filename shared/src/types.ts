@@ -213,6 +213,50 @@ export const MODEL_OPTIONS = [
 ];
 
 /**
+ * Context window of a model, by prefix like the server's `priceFor`. Every
+ * current model but Haiku 4.5 runs a 1M window by default (the CLI's model
+ * config docs; autocompact near 967k); Haiku 4.5 keeps 200k. An unknown id
+ * gets 1M, the window of everything this app offers (`MODEL_OPTIONS`). When
+ * an autocompact window is configured for the session, pass it to
+ * `contextPctOf` instead — the CLI's own status line divides by that.
+ */
+const CONTEXT_WINDOWS: [prefix: string, tokens: number][] = [
+  ['claude-haiku-4-5', 200_000],
+  ['claude-opus-5', 1_000_000],
+  ['claude-fable-5', 1_000_000],
+  ['claude-sonnet-5', 1_000_000],
+];
+export const DEFAULT_CONTEXT_WINDOW = 1_000_000;
+
+export function contextWindowFor(model: string | null | undefined): number {
+  if (model) {
+    for (const [prefix, tokens] of CONTEXT_WINDOWS) {
+      if (model.startsWith(prefix)) return tokens;
+    }
+  }
+  return DEFAULT_CONTEXT_WINDOW;
+}
+
+/**
+ * The run's context share, 0..100, for display and the `context-high`
+ * anomaly: recomputed from `contextTokens` against the model's window
+ * whenever the row has the raw figure (rows before it carry only the old
+ * 200k-clamped `contextPct`, returned as stored).
+ */
+export function contextPctOf(
+  stats: Pick<RunStats, 'contextPct' | 'contextTokens'> | null | undefined,
+  model: string | null | undefined,
+  window?: number,
+): number {
+  if (!stats) return 0;
+  if (typeof stats.contextTokens === 'number' && stats.contextTokens > 0) {
+    const w = window && window > 0 ? window : contextWindowFor(model);
+    return Math.min(100, Math.round((stats.contextTokens / w) * 1000) / 10);
+  }
+  return stats.contextPct ?? 0;
+}
+
+/**
  * A task whose `model` names the OpenAI Codex CLI instead of a Claude model —
  * `buildWorkerInvocation` (server/src/claude/worker.ts) branches on this to
  * spawn `codex exec` instead of `claude`. Any `codex...` id counts, so a task
@@ -1093,17 +1137,27 @@ export interface RunStats {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   costUsd: number;
-  /** share of the model's context window used by the last turn, 0..100 */
+  /**
+   * share of the model's context window used by the last turn, 0..100. Rows
+   * written before the per-model window divided by a fixed 200k and clamp at
+   * 100 — display through `contextPctOf`, which recomputes from
+   * `contextTokens` where the row has it.
+   */
   contextPct: number;
   /**
    * Raw last-turn context total in tokens (input + cache read + cache write +
-   * output of the last main-chain message). `contextPct` divides this by a
-   * fixed 200k and clamps at 100, which pins every real worker session — they
-   * run on a 1M window and reach 400–500k — at "100%". The resume gate
+   * output of the last main-chain message), unclamped. The resume gate
    * (`agent.resumeContextCap`, docs/token-budget.md) needs the number, not the
-   * clamp. Absent on run rows written before this field existed; read `?? 0`.
+   * percentage. Absent on run rows written before this field existed; read
+   * `?? 0`.
    */
   contextTokens: number;
+  /**
+   * The part of `costUsd` spent by the session's subagents (their own
+   * transcripts under `<session>/subagents/`), already included in `costUsd`.
+   * Absent on rows summarised before subagents were counted.
+   */
+  subagentCostUsd?: number;
 }
 
 export interface Run {

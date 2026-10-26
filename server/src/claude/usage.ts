@@ -3,10 +3,12 @@ import path from 'node:path';
 import readline from 'node:readline';
 import type { UsageSnapshot, UsageWindow } from '@tm/shared';
 import { liveWindow, readAccountUsage, type AccountWindow } from './account-usage.ts';
+import { subagentTranscripts } from './stats.ts';
 import type { Storage } from '../storage/types.ts';
 
 // Estimates subscription usage from local claude session transcripts:
-// tokens recorded in ~/.claude/projects/**/*.jsonl, summed over the three
+// tokens recorded in ~/.claude/projects/*/*.jsonl and each session's
+// <session>/subagents/*.jsonl, summed over the three
 // windows the subscription actually meters — trailing 5h, trailing 7d, and
 // trailing 7d restricted to fable-family models. The CLI exposes no official
 // account-usage API, so these are ESTIMATES; each window is measured against a
@@ -51,9 +53,11 @@ async function bucketsForFile(fp: string, cutoff: number, fallbackTs: number): P
   try {
     const rl = readline.createInterface({ input: fs.createReadStream(fp), crlfDelay: Infinity });
     // One API message spans multiple transcript lines (thinking/text/tool_use
-    // blocks), each repeating the SAME usage object — count each id once
-    // or the estimate inflates 2-4x (review F1).
-    const seen = new Set<string>();
+    // blocks), each repeating its usage — count each id once or the estimate
+    // inflates 2-4x (review F1). The repeats are not identical: output_tokens
+    // grows across a streamed message's lines, so a repeat that reads higher
+    // adds its difference to the bucket the message was first counted in.
+    const seen = new Map<string, { bucket: Bucket; tokens: number; fable: boolean }>();
     for await (const line of rl) {
       if (!line.includes('"usage"')) continue;
       try {
@@ -63,24 +67,32 @@ async function bucketsForFile(fp: string, cutoff: number, fallbackTs: number): P
         const u = j.message?.usage;
         if (!u) continue;
         const msgId: string | undefined = j.message?.id ?? j.requestId;
-        if (msgId) {
-          if (seen.has(msgId)) continue;
-          seen.add(msgId);
-        }
         // NOTE: input_tokens is exclusive of cache reads/writes (verified),
         // so input+output undercounts limit-weighted consumption — the
         // tunable budgets absorb the calibration.
         const tokens = (u.output_tokens ?? 0) + (u.input_tokens ?? 0);
+        const prev = msgId ? seen.get(msgId) : undefined;
+        if (prev) {
+          if (tokens > prev.tokens) {
+            prev.bucket[1] += tokens - prev.tokens;
+            if (prev.fable) prev.bucket[2] += tokens - prev.tokens;
+            prev.tokens = tokens;
+          }
+          continue;
+        }
         if (!tokens) continue;
         const model: string = typeof j.message?.model === 'string' ? j.message.model : '';
+        const fable = FABLE_RE.test(model);
         const minute = Math.floor(ts / MINUTE_MS);
-        const b = byMinute.get(minute);
+        let b = byMinute.get(minute);
         if (b) {
           b[1] += tokens;
-          if (FABLE_RE.test(model)) b[2] += tokens;
+          if (fable) b[2] += tokens;
         } else {
-          byMinute.set(minute, [minute, tokens, FABLE_RE.test(model) ? tokens : 0]);
+          b = [minute, tokens, fable ? tokens : 0];
+          byMinute.set(minute, b);
         }
+        if (msgId) seen.set(msgId, { bucket: b, tokens, fable });
       } catch {
         // partial/corrupt line
       }
@@ -111,7 +123,12 @@ async function scanTranscripts(): Promise<UsageEstimate> {
     const full = path.join(projectsDir, dir);
     let files: string[] = [];
     try {
-      files = fs.readdirSync(full).filter((f) => f.endsWith('.jsonl'));
+      // Each session's subagents write their own transcripts under
+      // <session>/subagents/ — the same tokens against the same account.
+      files = fs
+        .readdirSync(full)
+        .filter((f) => f.endsWith('.jsonl'))
+        .flatMap((f) => [f, ...subagentTranscripts(path.join(full, f)).map((s) => path.relative(full, s))]);
     } catch {
       continue;
     }

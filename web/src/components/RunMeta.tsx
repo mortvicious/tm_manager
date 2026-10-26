@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { Run } from '@tm/shared';
+import { contextPctOf, type Run } from '@tm/shared';
 
 export function Elapsed({ since, until }: { since: string; until?: string | null }) {
   const [, tick] = useState(0);
@@ -64,7 +64,7 @@ export function RunStatsChips({ run }: { run: Run }) {
             {Math.round((s.inputTokens + s.outputTokens) / 1000)}k tok
           </span>
           <span className="chip" title="share of the model's context window used">
-            ctx {Math.round(s.contextPct)}%
+            ctx {Math.round(contextPctOf(s, run.model))}%
           </span>
         </>
       )}
