@@ -543,7 +543,7 @@ export function registerInternalRoutes(
     const { id } = req.params as { id: string };
     const prompt = (req.body as { prompt?: unknown } | null)?.prompt;
     if (typeof prompt === 'string' && prompt.trimStart().startsWith('/')) return { ok: true };
-    await orchestrator.promptInLiveSession(id);
+    await orchestrator.promptInLiveSession(id, prompt);
     return { ok: true };
   });
 
@@ -556,6 +556,9 @@ export function registerInternalRoutes(
     // park keeps the session NOT idle, so without this its ~60 s idle notice
     // passed every filter below — 83% of all flags. Unknown/missing → flag.
     const notification = readNotification(req.body);
+    // The CLI's own usage-limit auto-continue reports here (docs/wake.md §
+    // The CLI continues first): not a prompt, but the wake path's evidence.
+    if (notification.type?.startsWith('quota_auto_resume_')) await orchestrator.cliQuotaNotice(id, notification.type);
     if (isNonPromptNotification(notification.type)) return { ok: true };
     // Completed-idle sessions fire ~60s idle-prompt notifications forever —
     // those are noise, not "needs attention" (user report + review M3).

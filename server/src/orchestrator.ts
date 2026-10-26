@@ -83,6 +83,8 @@ import {
   assessLimitStall,
   resolveWakeAt,
   type AccountView,
+  rateLimitIsWindow,
+  type CliRateLimit,
   type StallVerdict,
 } from './claude/limit.ts';
 import { needsFallbackModel, sessionUsagePct } from './claude/usage.ts';
@@ -202,6 +204,48 @@ type PublishPlan =
  * one and a stuck one goes quiet immediately.
  */
 const STALL_QUIET_MS = 2 * 60_000;
+/**
+ * How long after a StopFailure `rate_limit` the transcript may still be
+ * written (the CLI records the refusal itself) before growth means the
+ * session moved on and the code is history (docs/wake.md).
+ */
+const RATE_LIMIT_SETTLE_MS = 30_000;
+/**
+ * Automatic wake-ups in a row, with no turn landing and no human action in
+ * between, before the next park hands the task to the human instead. A weekly
+ * limit's banner names a DATE the 5h clock cannot read, so without a cap it
+ * would be woken into the same refusal every five hours for days.
+ */
+const WAKE_STREAK_CAP = 3;
+/**
+ * The CLI's own auto-continue (`autoContinueAtUsageLimit`, default on since
+ * 2.1.234) re-prompts a live interactive session at the reset plus a random
+ * 30–90 s. A live session the CLI will continue is left to it (docs/wake.md §
+ * The CLI continues first); the server takes over only if nothing moved by
+ * the reset + the jitter + this slack.
+ */
+const CLI_CONTINUE_JITTER_MS = 90_000;
+const CLI_CONTINUE_SLACK_MS = 3 * 60_000;
+/** The fixed text of the CLI's continuation prompt (2.1.280 bundle). */
+const CLI_CONTINUE_PROMPT = 'Your claude.ai usage limit has reset.';
+
+/** A live session left to the CLI's own auto-continue, by run id. */
+interface CliWait {
+  taskId: string;
+  /** when the StopFailure `rate_limit` arrived (ms) */
+  codeAt: number;
+  /** after this, a session that has not moved is the server's again (ms) */
+  deadline: number;
+  /** the CLI said it will not continue (`quota_auto_resume_stale|_disabled`) */
+  abandoned: string | null;
+  /** set by `settleCliWaits` when the server takes the session back */
+  takeover: boolean;
+}
+
+/** Whether a submitted prompt is the CLI's own continuation after a usage limit. */
+export function isCliAutoContinuePrompt(prompt: unknown): boolean {
+  return typeof prompt === 'string' && prompt.trimStart().startsWith(CLI_CONTINUE_PROMPT);
+}
 
 /** What the resume gate decided for one spawn (docs/token-budget.md § The fourth). */
 /** One turn's automatic resumes after transient API errors (docs/design.md § Transient API errors). */
@@ -431,6 +475,16 @@ export class Orchestrator implements OrchestratorApi {
   private shellWaitHandler: ShellWaitHandler | null = null;
   /** runs whose rejected banner has already been audited once (see below) */
   private readonly stallSkipsAudited = new Set<string>();
+  /**
+   * The CLI's StopFailure `rate_limit` per run (docs/wake.md): the evidence
+   * that replaces the banner position test and the account veto. Read through
+   * `rateLimitStop()`, dropped at run end.
+   */
+  private readonly rateLimitStops = new Map<string, CliRateLimit>();
+  /** runs whose stall was already decided (parked or handed to the human) — never re-assessed */
+  private readonly stallSettled = new Set<string>();
+  /** live sessions left to the CLI's own auto-continue (see `CliWait`) */
+  private readonly cliWaits = new Map<string, CliWait>();
   /**
    * Transient-error resumes (docs/design.md § Transient API errors), by TASK:
    * the count belongs to the turn, and a `--resume` fallback continues that
@@ -758,6 +812,11 @@ export class Orchestrator implements OrchestratorApi {
     verdict: Extract<StallVerdict, { stalled: true }>,
     settings: AppSettings,
   ): Promise<void> {
+    const wakes = await this.consecutiveWakes(task.id);
+    if (wakes >= WAKE_STREAK_CAP) {
+      await this.handOffWake(task, verdict, wakes);
+      return;
+    }
     // The account's own `resets_at` is the better clock when the CLI printed a
     // banner with no time in it (or one we could not place in this window).
     const wakeAt = resolveWakeAt(verdict.notice, verdict.accountResetsAt, settings['agent.autoWakeGraceSec']);
@@ -776,10 +835,213 @@ export class Orchestrator implements OrchestratorApi {
         statedResetsAt: verdict.notice.resetsAt,
         accountResetsAt: verdict.accountResetsAt,
         accountPct: verdict.accountPct,
+        basis: verdict.basis,
         evidence: verdict.notice.evidence,
+        wakesSoFar: wakes,
       },
     });
     broadcast({ type: 'task.updated', task: patched });
+  }
+
+  /**
+   * Automatic wake-ups since the task last made progress of its own: `resumed`
+   * rows newer than its newest transition by anyone but the machine itself — a
+   * Stop hook landing (`hook`), a human's Proceed/Retry, a Telegram press. The
+   * waker's own resume is a `system` transition and the stall's landing is
+   * too, so a wake that walks straight back into the limit never resets it.
+   */
+  private async consecutiveWakes(taskId: string): Promise<number> {
+    const transitions = await this.storage.listEvents({ taskId, kind: 'task.transition', limit: 500 });
+    const progress = transitions.find((e) => e.actor !== 'system' && e.actor !== 'orchestrator');
+    const wakes = await this.storage.listEvents({ taskId, kind: 'task.wake', limit: 500, since: progress?.at });
+    // The CLI's own continuation is a wake too: it walks into the same window.
+    return wakes.filter(
+      (e) => (e.data?.action === 'resumed' || e.data?.action === 'cli-resumed') && (!progress || e.at > progress.at),
+    ).length;
+  }
+
+  /**
+   * The streak cap: the limit came back after `WAKE_STREAK_CAP` wake-ups in a
+   * row, which is what a weekly limit (or a reset time nobody can read) looks
+   * like from here. No `wake_at`; the reason goes in `error`, where the task
+   * panel and the inbox show it, and the session stays resumable by hand.
+   */
+  private async handOffWake(task: Task, verdict: Extract<StallVerdict, { stalled: true }>, wakes: number): Promise<void> {
+    const patched = await this.storage.updateTask(task.id, {
+      error:
+        `the usage limit stopped this task again after ${wakes} automatic wake-ups in a row — ` +
+        'likely the weekly limit, or a reset this server cannot read — so it is not woken again; ' +
+        'Proceed resumes this session once the limit has reset',
+    });
+    await this.storage.appendEvent({
+      kind: 'task.wake',
+      actor: 'system',
+      taskId: task.id,
+      repoId: task.repoId,
+      data: {
+        action: 'handed-off',
+        reason: 'wake-cap',
+        wakes,
+        status: (patched ?? task).status,
+        basis: verdict.basis,
+        statedResetsAt: verdict.notice.resetsAt,
+        evidence: verdict.notice.evidence,
+      },
+    });
+    if (patched) broadcast({ type: 'task.updated', task: patched });
+  }
+
+  /**
+   * The CLI continues first (docs/wake.md): a live session that got the
+   * `rate_limit` code with a stated reset is NOT killed — the CLI's own
+   * auto-continue re-prompts it 30–90 s after the reset, in the same PTY, and
+   * killing it is the one thing that cancels that. The task keeps its status;
+   * `wake_at` says when the continuation is expected, and the sweep takes the
+   * session back (`settleCliWaits`) if nothing has moved by the deadline.
+   */
+  private async leaveToCli(
+    task: Task,
+    run: Run,
+    verdict: Extract<StallVerdict, { stalled: true }>,
+    settings: AppSettings,
+  ): Promise<void> {
+    const codeAt = Date.parse(this.rateLimitStops.get(run.id)?.at ?? '') || Date.now();
+    const expected = Date.parse(resolveWakeAt(verdict.notice, null, 0)) + CLI_CONTINUE_JITTER_MS;
+    const deadline = expected + Math.max(CLI_CONTINUE_SLACK_MS, settings['agent.autoWakeGraceSec'] * 1000);
+    const wakeAt = new Date(expected).toISOString();
+    this.cliWaits.set(run.id, { taskId: task.id, codeAt, deadline, abandoned: null, takeover: false });
+    const patched = await this.storage.updateTask(task.id, { wakeAt });
+    await this.storage.appendEvent({
+      kind: 'task.wake',
+      actor: 'system',
+      taskId: task.id,
+      runId: run.id,
+      repoId: task.repoId,
+      data: {
+        action: 'left-to-cli',
+        wakeAt,
+        deadline: new Date(deadline).toISOString(),
+        status: task.status,
+        statedResetsAt: verdict.notice.resetsAt,
+        basis: verdict.basis,
+        evidence: verdict.notice.evidence,
+      },
+    });
+    if (patched) broadcast({ type: 'task.updated', task: patched });
+  }
+
+  /** The CLI wait on a task's live session, if any. */
+  private cliWaitFor(taskId: string): CliWait | null {
+    for (const w of this.cliWaits.values()) if (w.taskId === taskId) return w;
+    return null;
+  }
+
+  /**
+   * Each pass, before the stall sweep: a session left to the CLI either moved
+   * (its transcript grew past the refusal — the continuation ran), or the CLI
+   * said it will not continue, or the deadline passed with nothing moving.
+   * The first is recorded and the mark cleared; the other two set `takeover`,
+   * and the sweep below then ends and parks it the server's way.
+   */
+  private async settleCliWaits(now: number): Promise<void> {
+    for (const [runId, w] of [...this.cliWaits]) {
+      const run = await this.storage.getRun(runId);
+      const s = this.sessions.get(runId);
+      // The run is over: handleExit or a human owns the landing, and a
+      // `wake_at` left on a review/failed row is the server's wake now.
+      if (!run || run.status !== 'running' || !s || s.exit !== null) {
+        this.cliWaits.delete(runId);
+        continue;
+      }
+      if (this.transcriptMovedSince(run, w.codeAt)) {
+        await this.cliContinued(runId, 'transcript');
+        continue;
+      }
+      if (w.abandoned || now >= w.deadline) w.takeover = true;
+    }
+  }
+
+  /** The transcript grew past `atMs` + the settle slack. */
+  private transcriptMovedSince(run: Pick<Run, 'transcriptPath'>, atMs: number): boolean {
+    if (!run.transcriptPath) return false;
+    try {
+      return fs.statSync(run.transcriptPath).mtimeMs > atMs + RATE_LIMIT_SETTLE_MS;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The CLI continued a session after a usage limit — seen as its
+   * continuation prompt (UserPromptSubmit), its `quota_auto_resume_fired`
+   * notification, or the transcript moving. Recorded once (the first signal
+   * consumes the wait); the pending mark is cleared, because the session is
+   * already doing what the wake would have done.
+   */
+  async cliContinued(runId: string, via: 'prompt' | 'notification' | 'transcript'): Promise<void> {
+    const w = this.cliWaits.get(runId);
+    this.cliWaits.delete(runId);
+    this.rateLimitStops.delete(runId);
+    const run = await this.storage.getRun(runId);
+    if (!run?.taskId || run.mode !== 'worker') return;
+    const task = await this.storage.getTask(run.taskId);
+    if (!task) return;
+    // Without a wait this is the CLI acting on a session the server did not
+    // leave to it; record it only when there is something to settle.
+    if (!w && !task.wakeAt) return;
+    if (task.wakeAt) await this.clearWake(task.id);
+    await this.storage.appendEvent({
+      kind: 'task.wake',
+      actor: 'system',
+      taskId: task.id,
+      runId,
+      repoId: task.repoId,
+      data: { action: 'cli-resumed', via, status: task.status },
+    });
+  }
+
+  /**
+   * The CLI's own `quota_auto_resume_*` notifications (Notification hook): `fired`
+   * is a continuation; `stale` (the machine slept through the reset — the CLI
+   * then waits for Enter) and `disabled` (setting/flag off, reset moved past
+   * 24 h, its re-arm cap) mean it will NOT continue, so the next sweep takes
+   * the session back instead of waiting out the deadline.
+   */
+  async cliQuotaNotice(runId: string, type: string): Promise<void> {
+    if (type === 'quota_auto_resume_fired') return this.cliContinued(runId, 'notification');
+    const w = this.cliWaits.get(runId);
+    if (!w || w.abandoned) return;
+    w.abandoned = type;
+    await this.storage.appendEvent({
+      kind: 'task.wake',
+      actor: 'system',
+      taskId: w.taskId,
+      runId,
+      data: { action: 'cli-abandoned', type },
+    });
+  }
+
+  /**
+   * A run's StopFailure `rate_limit`, while it still describes the session:
+   * once the transcript grows past the refusal (a human typed into it, a turn
+   * ran and landed) it is history, and the banner rules apply again.
+   */
+  private rateLimitStop(
+    run: Pick<Run, 'id' | 'transcriptPath'>,
+    stop = this.rateLimitStops.get(run.id),
+  ): CliRateLimit | null {
+    if (!stop) return null;
+    if (run.transcriptPath) {
+      try {
+        if (fs.statSync(run.transcriptPath).mtimeMs > Date.parse(stop.at) + RATE_LIMIT_SETTLE_MS) {
+          this.rateLimitStops.delete(run.id);
+          return null;
+        }
+      } catch {
+        // no transcript to read: the code stands
+      }
+    }
+    return stop;
   }
 
   /**
@@ -833,6 +1095,7 @@ export class Orchestrator implements OrchestratorApi {
    */
   private async parkStalledSessions(settings: AppSettings): Promise<void> {
     const now = Date.now();
+    await this.settleCliWaits(now);
     // Driven from the RUNS, not the tasks: a stall by definition still holds a
     // live PTY, and live PTYs are capped at MAX_LIVE_SESSIONS. Sweeping tasks
     // instead would mean re-reading every `failed` row the database has ever
@@ -840,6 +1103,7 @@ export class Orchestrator implements OrchestratorApi {
     const live = await this.storage.listRuns({ status: 'running', mode: 'worker' });
     for (const run of live) {
       if (!run.taskId || !this.sessions.get(run.id)) continue;
+      if (this.stallSettled.has(run.id)) continue;
       // A publish turn is settled against git by settlePublish(), and
       // `proceed()` would resume it with the wrong instruction entirely.
       if (this.publishRuns.has(run.id)) continue;
@@ -852,7 +1116,11 @@ export class Orchestrator implements OrchestratorApi {
       // over-time turn the account then cut short must still be parked.
       if (this.promptAttention(run)) continue;
       const task = await this.storage.getTask(run.taskId);
-      if (!task || task.wakeAt) continue;
+      // Left to the CLI: its own `wake_at` is not "already parked" — the
+      // takeover below is what this sweep still owes it.
+      const cliWait = this.cliWaits.get(run.id);
+      if (cliWait && !cliWait.takeover) continue;
+      if (!task || (task.wakeAt && !cliWait)) continue;
       if (task.status !== 'running' && !WAKE_RESUMABLE_STATUSES.includes(task.status)) continue;
       // A task inside the resume gate or a fired dispatch turn is `running`
       // with a NEWER turn on the way — this session is not the live one.
@@ -865,14 +1133,31 @@ export class Orchestrator implements OrchestratorApi {
       if (live && this.transcriptQuietMs(run, now) < STALL_QUIET_MS) continue;
       // Acting on a live task means KILLING its PTY, so the banner has to be
       // the last thing that terminal printed — not merely on the last
-      // screenful, which a previewed file could be.
+      // screenful, which a previewed file could be. The CLI's own
+      // `rate_limit` code, when this run got one, replaces that test and the
+      // account veto (decisions.md 2026-10-26).
       const verdict = assessLimitStall(this.sessionTail(run.id), this.accountWindow(), now, {
         maxCharsAfter: live ? LIVE_TAIL_STRICT_CHARS : undefined,
+        cliRateLimit: this.rateLimitStop(run),
       });
       if (!verdict.stalled) {
+        if (cliWait) this.cliWaits.delete(run.id);
         await this.auditStallSkip(task, verdict, run.id);
         continue;
       }
+      // The CLI continues a live session itself at the stated reset; killing
+      // the PTY here is what would cancel that. Not after a takeover, and not
+      // at the streak cap (the session is the human's then).
+      if (
+        !cliWait &&
+        verdict.basis === 'cli-code' &&
+        verdict.notice.resetsAt &&
+        (await this.consecutiveWakes(task.id)) < WAKE_STREAK_CAP
+      ) {
+        await this.leaveToCli(task, run, verdict, settings);
+        continue;
+      }
+      if (cliWait) this.cliWaits.delete(run.id);
       // A live stall must be ENDED, not parked in place: nothing resumes a
       // `running` task. Killing its PTY is safe precisely because the session
       // is resumable from disk — that is what the wake-up then does.
@@ -882,6 +1167,10 @@ export class Orchestrator implements OrchestratorApi {
         if (!parked) continue;
       }
       this.stallSkipsAudited.delete(run.id);
+      this.rateLimitStops.delete(run.id);
+      // A review/failed task keeps its live PTY, so the sweep would see this
+      // run again — and a handed-off one has no `wake_at` to skip it by.
+      this.stallSettled.add(run.id);
       await this.parkForUsageLimit(parked, verdict, settings);
     }
   }
@@ -931,6 +1220,10 @@ export class Orchestrator implements OrchestratorApi {
         this.wakeDueAt.set(taskId, at);
         continue;
       }
+      // The CLI is continuing that session itself; the sweep takes it back
+      // if it does not (settleCliWaits), and a `running` row must not lose
+      // its mark to the status test below meanwhile.
+      if (this.cliWaitFor(taskId)) continue;
       if (!WAKE_RESUMABLE_STATUSES.includes(task.status)) {
         await this.clearWake(taskId);
         continue;
@@ -3211,6 +3504,11 @@ export class Orchestrator implements OrchestratorApi {
     if (!task || (task.status !== 'running' && task.status !== 'waiting')) return;
 
     const cls = classifyStopFailure(code);
+    const message =
+      typeof b.last_assistant_message === 'string' && b.last_assistant_message.trim()
+        ? b.last_assistant_message.trim().slice(0, 300)
+        : null;
+    const window = cls === 'usage-limit' && rateLimitIsWindow(message, details);
     const prev = this.transientRetries.get(task.id);
     const used = prev?.attempts ?? 0;
     const action =
@@ -3227,9 +3525,14 @@ export class Orchestrator implements OrchestratorApi {
       runId,
       taskId: task.id,
       repoId: task.repoId,
-      data: { code, details, action, resumesUsed: used },
+      data: { code, details, action, resumesUsed: used, ...(cls === 'usage-limit' ? { message, window } : {}) },
     });
-    if (action === 'left-to-wake') return;
+    if (action === 'left-to-wake') {
+      // The evidence the wake path weighs above the banner (docs/wake.md) —
+      // unless the message says this `rate_limit` is not the usage window.
+      if (window) this.rateLimitStops.set(runId, { at: new Date().toISOString(), details, message });
+      return;
+    }
     if (action === 'failed' || action === 'exhausted') {
       await this.failTurn(task.id, runId, stopFailureError(code, details, action === 'exhausted' ? 'exhausted' : 'fatal', used));
       return;
@@ -3432,6 +3735,10 @@ export class Orchestrator implements OrchestratorApi {
     // Consumed here whatever happens next: this run is over either way.
     const wasPublish = this.publishRuns.delete(runId);
     this.stallSkipsAudited.delete(runId);
+    this.stallSettled.delete(runId);
+    const rateLimit = this.rateLimitStops.get(runId);
+    this.rateLimitStops.delete(runId);
+    this.cliWaits.delete(runId);
     this.forgetAttention(runId);
     this.childrenInFlight.delete(runId);
     this.dropWait(runId);
@@ -3549,7 +3856,9 @@ export class Orchestrator implements OrchestratorApi {
         // captured at exit: by now the session may already have been disposed.
         const settings = await this.storage.getSettings();
         if (settings['agent.autoWake']) {
-          const verdict = assessLimitStall(tail, this.accountWindow());
+          const verdict = assessLimitStall(tail, this.accountWindow(), Date.now(), {
+            cliRateLimit: rateLimit ? this.rateLimitStop(run, rateLimit) : null,
+          });
           if (verdict.stalled) await this.parkForUsageLimit(task, verdict, settings);
           else await this.auditStallSkip(task, verdict);
         }
@@ -4923,7 +5232,11 @@ export class Orchestrator implements OrchestratorApi {
    * they are, exactly as a follow-up leaves them; the diff hash decides at
    * that Stop whether anything is re-reviewed.
    */
-  async promptInLiveSession(runId: string): Promise<boolean> {
+  async promptInLiveSession(runId: string, prompt?: unknown): Promise<boolean> {
+    // The CLI's own continuation after a usage limit (docs/wake.md): not a
+    // human at the terminal, so the move below is the machine's.
+    const cli = isCliAutoContinuePrompt(prompt);
+    if (cli) await this.cliContinued(runId, 'prompt');
     if (!this.sessions.isIdle(runId) || this.sessions.get(runId)?.exit !== null) return false;
     const run = await this.storage.getRun(runId);
     if (!run?.taskId || run.mode !== 'worker' || run.status !== 'running') return false;
@@ -4934,8 +5247,8 @@ export class Orchestrator implements OrchestratorApi {
     // read synchronously right before the conditional write: a Review now
     // takes this lock before it marks the row `pending`
     if (this.pendingReviews.has(cur.id) || !this.sessions.isIdle(runId)) return false;
-    const task = await this.storage.transitionTask(cur.id, ['review'], 'running', 'human', {}, {
-      reason: 'prompt in live session',
+    const task = await this.storage.transitionTask(cur.id, ['review'], 'running', cli ? 'system' : 'human', {}, {
+      reason: cli ? 'cli auto-continue after usage limit' : 'prompt in live session',
       runId,
     });
     if (!task) return false;

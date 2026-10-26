@@ -96,8 +96,44 @@ export type StallSkip =
   | 'no-account-data';
 
 export type StallVerdict =
-  | { stalled: true; notice: LimitNotice; accountPct: number; accountResetsAt: string | null }
+  | {
+      stalled: true;
+      notice: LimitNotice;
+      /** null when the CLI's own code decided and the account had no reading */
+      accountPct: number | null;
+      accountResetsAt: string | null;
+      /** what proved it: banner + account (the old path), or the CLI's StopFailure code */
+      basis: 'banner' | 'cli-code';
+    }
   | { stalled: false; sawBanner: boolean; reason: StallSkip };
+
+/**
+ * The CLI's own word that the API refused the turn on the usage window: the
+ * StopFailure hook's `error: 'rate_limit'` (claude/transient.ts), with its
+ * `error_details`. Unlike terminal bytes it is not something a repo file, a
+ * `cat` or a Write preview can produce.
+ */
+export interface CliRateLimit {
+  /** when the hook fired, ISO */
+  at: string;
+  details: string | null;
+  /** the payload's `last_assistant_message` — for a plan limit, the banner text itself */
+  message: string | null;
+}
+
+/**
+ * `rate_limit` is not ONLY the usage window: measured in the 2.1.280 bundle,
+ * a server-side 429 ("Request rejected (429)") and "Usage credits required for
+ * 1M context" report the same code. Neither reopens at a reset, so neither is
+ * parked. A deny-list on purpose: an unknown message is still the window,
+ * which is what the code says.
+ */
+const NOT_A_WINDOW: RegExp[] = [/\brequest rejected\s*\(429\)/i, /\busage credits required\b/i];
+
+export function rateLimitIsWindow(message: string | null | undefined, details?: string | null): boolean {
+  const text = `${message ?? ''}\n${details ?? ''}`;
+  return !NOT_A_WINDOW.some((re) => re.test(text));
+}
 
 /**
  * Phrases that mean "this turn stopped because the account is out", each
@@ -109,7 +145,10 @@ const LIMIT_PATTERNS: RegExp[] = [
   /\b(?:claude\s+(?:ai\s+)?)?usage\s+limit\s+reached\b/i,
   /\b\d+\s*-?\s*hour\s+limit\s+reached\b/i,
   /\bweekly\s+limit\s+reached\b/i,
-  /\byou(?:'ve| have)\s+(?:reached|hit)\s+your\s+(?:usage|rate)\s+limit\b/i,
+  // `You've hit your session limit · resets 3pm (Europe/Berlin)` — the CLI's
+  // banner since ~2.1.2xx (`uh()` in the 2.1.280 bundle: session / weekly /
+  // Opus / Sonnet / Fable / usage limit); "5-hour limit" no longer appears.
+  /\byou(?:'ve| have)\s+(?:reached|hit)\s+your\s+(?:[a-z0-9.-]+\s+){0,2}limit\b/i,
   /"type"\s*:\s*"rate_limit_error"/i,
 ];
 
@@ -216,18 +255,26 @@ export function parseLimitNotice(raw: string | null | undefined, now = Date.now(
   // Search for the reset time near the notice, not across the whole buffer —
   // an unrelated "resets" line elsewhere must not become this one's deadline.
   const near = text.slice(hit.index, hit.index + 400);
+  return { resetsAt: statedResetAt(near, now), evidence, charsAfter };
+}
 
-  const epoch = EPOCH_RE.exec(near);
+/**
+ * The reset instant a short piece of text states — the machine-readable epoch
+ * form first, then a clock time — or null when it states none this window
+ * can mean. Callers hand it the text NEAR a notice (or the StopFailure's own
+ * `error_details`), never a whole buffer.
+ */
+export function statedResetAt(near: string | null | undefined, now = Date.now()): string | null {
+  if (!near) return null;
+  const text = stripAnsi(near);
+  const epoch = EPOCH_RE.exec(text);
   if (epoch) {
     const n = Number(epoch[1]);
     const ms = n > 1e12 ? n : n * 1000;
     // Trust it only if it describes a window that is actually ahead of us.
-    if (ms > now - PAST_SLACK_MS && ms <= now + WINDOW_MS + PAST_SLACK_MS) {
-      return { resetsAt: new Date(ms).toISOString(), evidence, charsAfter };
-    }
+    if (ms > now - PAST_SLACK_MS && ms <= now + WINDOW_MS + PAST_SLACK_MS) return new Date(ms).toISOString();
   }
-
-  const clock = CLOCK_RE.exec(near);
+  const clock = CLOCK_RE.exec(text);
   if (clock) {
     const t = resolveClock(
       Number(clock[1]),
@@ -236,9 +283,9 @@ export function parseLimitNotice(raw: string | null | undefined, now = Date.now(
       !!clock[4],
       now,
     );
-    if (t != null) return { resetsAt: new Date(t).toISOString(), evidence, charsAfter };
+    if (t != null) return new Date(t).toISOString();
   }
-  return { resetsAt: null, evidence, charsAfter };
+  return null;
 }
 
 /**
@@ -260,19 +307,50 @@ export function parseLimitNotice(raw: string | null | undefined, now = Date.now(
  *     `ACCOUNT_EXHAUSTED_PCT`. This is the corroboration that cannot be forged
  *     by anything a repo contains.
  *
- * With no usable account reading the answer is no. The CLI's cache is only
- * refreshed by interactive sessions, but a worker IS one, so a real refusal
- * arrives with a fresh figure; refusing to guess when it is missing costs an
- * automatic resume the human can still trigger by hand, while guessing costs
- * money on a session nobody wanted reopened.
+ * With no usable account reading the answer is no — for a banner. (The old
+ * premise, "a worker is interactive, so a real refusal arrives with a fresh
+ * figure", is false: the CLI writes that cache only on the `/usage` panel's
+ * fetch, which workers never open, so there is usually no reading at all —
+ * decisions.md 2026-10-26.)
+ *
+ * **`opts.cliRateLimit` replaces both tests.** The CLI's own StopFailure code
+ * `rate_limit` cannot be forged by anything a repo contains, so with it the
+ * position test and the account veto are not asked; the permission-prompt
+ * test still is (it only ever refuses). The reset time comes from the code's
+ * `error_details` or `last_assistant_message` (the banner text, for a plan
+ * limit), else from a banner in the last screenful; the caller then adds the
+ * account's clock and, with neither, a whole window.
  */
 export function assessLimitStall(
   tail: string | null | undefined,
   account: AccountView | null,
   now = Date.now(),
-  opts: { maxCharsAfter?: number } = {},
+  opts: { maxCharsAfter?: number; cliRateLimit?: CliRateLimit | null } = {},
 ): StallVerdict {
   const notice = parseLimitNotice(tail, now);
+  const code = opts.cliRateLimit;
+  if (code) {
+    if (looksLikePermissionPrompt(tail)) return { stalled: false, sawBanner: true, reason: 'awaiting-permission' };
+    // A banner far up the scrollback may be an earlier window's; only the
+    // last screenful's can be this refusal's.
+    const banner = notice && notice.charsAfter <= LIVE_TAIL_CHARS ? notice : null;
+    const resetsAt =
+      statedResetAt(code.details, now) ?? statedResetAt(code.message, now) ?? banner?.resetsAt ?? null;
+    const what = code.details ?? code.message;
+    const said = what ? `StopFailure rate_limit: ${what}` : 'StopFailure rate_limit';
+    return {
+      stalled: true,
+      notice: {
+        resetsAt,
+        // the banner line is usually the message itself; say it once
+        evidence: (banner && !what?.includes(banner.evidence) ? `${said} | ${banner.evidence}` : said).slice(0, 300),
+        charsAfter: banner?.charsAfter ?? 0,
+      },
+      accountPct: account?.percent ?? null,
+      accountResetsAt: account?.resetsAt ?? null,
+      basis: 'cli-code',
+    };
+  }
   if (!notice) return { stalled: false, sawBanner: false, reason: 'no-banner' };
   const window = opts.maxCharsAfter ?? LIVE_TAIL_CHARS;
   if (notice.charsAfter > window) return { stalled: false, sawBanner: true, reason: 'banner-not-live' };
@@ -284,7 +362,7 @@ export function assessLimitStall(
   if (account.percent < ACCOUNT_EXHAUSTED_PCT) {
     return { stalled: false, sawBanner: true, reason: 'account-not-exhausted' };
   }
-  return { stalled: true, notice, accountPct: account.percent, accountResetsAt: account.resetsAt };
+  return { stalled: true, notice, accountPct: account.percent, accountResetsAt: account.resetsAt, basis: 'banner' };
 }
 
 /**
