@@ -5,14 +5,18 @@ import { useApp } from '../state.tsx';
 import { IconExternal, IconPlus, IconShell, IconX } from '../components/Icons.tsx';
 import { useIsMobile } from '../components/Layout.tsx';
 import { ShellPane } from '../components/ShellPane.tsx';
+import { BackgroundShellList } from '../components/BackgroundShells.tsx';
 
 /** Preferences, not state: which repo and layout the page was last left on. */
 const REPO_KEY = 'tm.terminals.repo';
 const LAYOUT_KEY = 'tm.terminals.layout';
+const VIEW_KEY = 'tm.terminals.view';
 /** How many shells one click may open. */
 const MAX_PER_CLICK = 4;
 
 type LayoutMode = 'tabs' | 'grid';
+/** your own login shells, or the agents' background shells (docs/terminals.md § Background shells) */
+type View = 'mine' | 'agents';
 
 const readPref = (key: string): string | null => {
   try {
@@ -34,8 +38,16 @@ const writePref = (key: string, value: string) => {
  * terminals in its directory as you need, close them when done. Nothing here
  * involves claude — these are the user's own login shells.
  */
-export function TerminalsPage({ onOpenTerminal }: { onOpenTerminal: (runId: string) => void }) {
-  const { repos, shells } = useApp();
+export function TerminalsPage({
+  onOpenTerminal,
+  onOpenTask,
+}: {
+  onOpenTerminal: (runId: string) => void;
+  onOpenTask: (id: string) => void;
+}) {
+  const { repos, shells, backgroundShells } = useApp();
+  const [view, setView] = useState<View>(() => (readPref(VIEW_KEY) === 'agents' ? 'agents' : 'mine'));
+  const agentRunning = backgroundShells.filter((s) => s.state === 'running').length;
   const mobile = useIsMobile();
   const [repoPref, setRepoPref] = useState<string | null>(() => readPref(REPO_KEY));
   const [layout, setLayout] = useState<LayoutMode>(() => (readPref(LAYOUT_KEY) === 'grid' ? 'grid' : 'tabs'));
@@ -75,6 +87,11 @@ export function TerminalsPage({ onOpenTerminal }: { onOpenTerminal: (runId: stri
     setErr(null);
   };
 
+  const pickView = (v: View) => {
+    setView(v);
+    writePref(VIEW_KEY, v);
+  };
+
   const pickLayout = (m: LayoutMode) => {
     setLayout(m);
     writePref(LAYOUT_KEY, m);
@@ -107,10 +124,29 @@ export function TerminalsPage({ onOpenTerminal }: { onOpenTerminal: (runId: stri
     }
   };
 
-  if (repos.length === 0) {
+  const viewSwitch = (
+    <div className="shell-view">
+      <span className="seg" role="group" aria-label="Show">
+        <button className={`btn${view === 'mine' ? ' primary' : ''}`} aria-pressed={view === 'mine'} onClick={() => pickView('mine')}>
+          Terminals{shells.length ? ` ${shells.length}` : ''}
+        </button>
+        <button
+          className={`btn${view === 'agents' ? ' primary' : ''}`}
+          aria-pressed={view === 'agents'}
+          title="Background shells the agents started"
+          onClick={() => pickView('agents')}
+        >
+          Agent shells{agentRunning ? ` ${agentRunning}` : ''}
+        </button>
+      </span>
+    </div>
+  );
+
+  if (repos.length === 0 && view === 'mine') {
     return (
       <div>
         <h1 className="page-title">Terminal</h1>
+        {viewSwitch}
         <div className="empty panel">
           <div className="big">No repos yet</div>
           Register a repo on the Repos page — a terminal opens in its directory.
@@ -141,99 +177,105 @@ export function TerminalsPage({ onOpenTerminal }: { onOpenTerminal: (runId: stri
   return (
     <div className="shells-page">
       <h1 className="page-title">Terminal</h1>
+      {viewSwitch}
 
-      <div className="shell-bar">
-        <select
-          className="field shell-repo"
-          value={repoId ?? ''}
-          aria-label="Repository"
-          onChange={(e) => pickRepo(e.target.value)}
-        >
-          {repos.map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.name}
-              {perRepo.get(r.id) ? ` (${perRepo.get(r.id)})` : ''}
-            </option>
-          ))}
-        </select>
-        <select
-          className="field shell-count"
-          value={count}
-          aria-label="How many terminals to open"
-          disabled={free <= 0}
-          onChange={(e) => setCount(Number(e.target.value))}
-        >
-          {Array.from({ length: maxCount }, (_, i) => i + 1).map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
-          ))}
-        </select>
-        <button className="btn primary" disabled={busy || free <= 0 || !repoId} onClick={() => void open()}>
-          <IconPlus /> {count === 1 ? 'New terminal' : `Open ${count} terminals`}
-        </button>
-        <span className="shell-cap mono" title="Open terminals across all repos, live or exited">
-          {shells.length}/{MAX_SHELL_SESSIONS} open
-        </span>
-        <span style={{ flex: 1 }} />
-        {!mobile && (
-          <div className="shell-layout" role="group" aria-label="Layout">
-            {(['tabs', 'grid'] as const).map((m) => (
-              <button key={m} className={`btn ghost${layout === m ? ' on' : ''}`} aria-pressed={layout === m} onClick={() => pickLayout(m)}>
-                {m}
-              </button>
+      {view === 'agents' && <BackgroundShellList onOpenTask={onOpenTask} />}
+
+      {/* Hidden, not unmounted: every login-shell pane keeps its socket. */}
+      <div className="shells-mine" hidden={view !== 'mine'}>
+        <div className="shell-bar">
+          <select
+            className="field shell-repo"
+            value={repoId ?? ''}
+            aria-label="Repository"
+            onChange={(e) => pickRepo(e.target.value)}
+          >
+            {repos.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+                {perRepo.get(r.id) ? ` (${perRepo.get(r.id)})` : ''}
+              </option>
             ))}
-          </div>
-        )}
-      </div>
-      {err && <div className="shell-err">{err}</div>}
-
-      {repoShells.length === 0 ? (
-        <div className="empty panel">
-          <div className="big">
-            <IconShell /> No terminals in this repo
-          </div>
-          A terminal is your own login shell, opened in the repo's directory — not an agent.
-        </div>
-      ) : (
-        <>
-          <div className="shell-tabs">{repoShells.map((s) => tab(s, true))}</div>
-          {mobile ? (
-            <div className="shell-hint">Tap a terminal to open it.</div>
-          ) : (
-            <div className={`shell-panes ${layout}`}>
-              {/* Every pane stays mounted in tab mode (hidden, socket open), so
-                  switching tabs is instant and never replays the scrollback. */}
-              {repoShells.map((s) => (
-                <div key={s.id} className={`shell-pane${layout === 'tabs' && s.id !== active?.id ? ' hidden' : ''}`}>
-                  <div className="shell-pane-head mono">
-                    <span className={`cmd-dot${s.status === 'running' ? ' live' : ''}`} aria-hidden="true" />
-                    <span>{s.title}</span>
-                    <span className="shell-pane-cwd">{s.cwd}</span>
-                    <span style={{ flex: 1 }} />
-                    <button className="btn ghost" title="Open in the terminal drawer" onClick={() => onOpenTerminal(s.id)}>
-                      <IconExternal />
-                    </button>
-                    {layout === 'grid' && (
-                      <button className="btn ghost" title={`Close ${s.title}`} onClick={() => void close(s)}>
-                        <IconX />
-                      </button>
-                    )}
-                  </div>
-                  <ShellPane shellId={s.id} focus={layout === 'tabs' && s.id === active?.id} />
-                </div>
+          </select>
+          <select
+            className="field shell-count"
+            value={count}
+            aria-label="How many terminals to open"
+            disabled={free <= 0}
+            onChange={(e) => setCount(Number(e.target.value))}
+          >
+            {Array.from({ length: maxCount }, (_, i) => i + 1).map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+          <button className="btn primary" disabled={busy || free <= 0 || !repoId} onClick={() => void open()}>
+            <IconPlus /> {count === 1 ? 'New terminal' : `Open ${count} terminals`}
+          </button>
+          <span className="shell-cap mono" title="Open terminals across all repos, live or exited">
+            {shells.length}/{MAX_SHELL_SESSIONS} open
+          </span>
+          <span style={{ flex: 1 }} />
+          {!mobile && (
+            <div className="shell-layout" role="group" aria-label="Layout">
+              {(['tabs', 'grid'] as const).map((m) => (
+                <button key={m} className={`btn ghost${layout === m ? ' on' : ''}`} aria-pressed={layout === m} onClick={() => pickLayout(m)}>
+                  {m}
+                </button>
               ))}
             </div>
           )}
-        </>
-      )}
-
-      {orphans.length > 0 && (
-        <div className="shell-orphans">
-          <span className="label">repo removed</span>
-          <div className="shell-tabs">{orphans.map((s) => tab(s, false))}</div>
         </div>
-      )}
+        {err && <div className="shell-err">{err}</div>}
+
+        {repoShells.length === 0 ? (
+          <div className="empty panel">
+            <div className="big">
+              <IconShell /> No terminals in this repo
+            </div>
+            A terminal is your own login shell, opened in the repo's directory — not an agent.
+          </div>
+        ) : (
+          <>
+            <div className="shell-tabs">{repoShells.map((s) => tab(s, true))}</div>
+            {mobile ? (
+              <div className="shell-hint">Tap a terminal to open it.</div>
+            ) : (
+              <div className={`shell-panes ${layout}`}>
+                {/* Every pane stays mounted in tab mode (hidden, socket open), so
+                    switching tabs is instant and never replays the scrollback. */}
+                {repoShells.map((s) => (
+                  <div key={s.id} className={`shell-pane${layout === 'tabs' && s.id !== active?.id ? ' hidden' : ''}`}>
+                    <div className="shell-pane-head mono">
+                      <span className={`cmd-dot${s.status === 'running' ? ' live' : ''}`} aria-hidden="true" />
+                      <span>{s.title}</span>
+                      <span className="shell-pane-cwd">{s.cwd}</span>
+                      <span style={{ flex: 1 }} />
+                      <button className="btn ghost" title="Open in the terminal drawer" onClick={() => onOpenTerminal(s.id)}>
+                        <IconExternal />
+                      </button>
+                      {layout === 'grid' && (
+                        <button className="btn ghost" title={`Close ${s.title}`} onClick={() => void close(s)}>
+                          <IconX />
+                        </button>
+                      )}
+                    </div>
+                    <ShellPane shellId={s.id} focus={layout === 'tabs' && s.id === active?.id} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {orphans.length > 0 && (
+          <div className="shell-orphans">
+            <span className="label">repo removed</span>
+            <div className="shell-tabs">{orphans.map((s) => tab(s, false))}</div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -440,9 +440,18 @@ export function registerInternalRoutes(
     return true;
   };
 
+  // The payload's background shells feed the /terminals list (docs/terminals.md
+  // § Background shells) — also for an idle session's Stop, which settleStop
+  // drops: its shells are just as alive. Off the hook's path: it probes ps.
+  const recordShells = (id: string, body: unknown) => {
+    orchestrator.backgroundShells
+      .record(id, body)
+      .catch((e) => console.warn('[background-shells] record failed:', e instanceof Error ? e.message : e));
+  };
   app.post('/api/internal/runs/:id/stop', async (req) => {
     const { id } = req.params as { id: string };
     if (await auxHook(id, 'stop', req.body)) return { ok: true };
+    recordShells(id, req.body);
     return settleStop(id, req.body, null);
   });
   // StopFailure — the API ended the turn (`model_not_found`, overloaded,
@@ -475,6 +484,7 @@ export function registerInternalRoutes(
   app.post('/api/internal/runs/:id/subagent-stop', async (req) => {
     const { id } = req.params as { id: string };
     const body = (req.body ?? {}) as { agent_id?: unknown };
+    recordShells(id, req.body);
     await orchestrator.subagentStopped(
       id,
       typeof body.agent_id === 'string' && body.agent_id ? body.agent_id : null,

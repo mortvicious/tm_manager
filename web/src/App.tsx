@@ -60,7 +60,7 @@ export function App() {
         <Route path="/features/:id" element={<FeaturePage onOpenTask={setOpenTask} />} />
         <Route path="/reports" element={<ReportsPage />} />
         <Route path="/shared" element={<SharedPage onOpenTask={setOpenTask} />} />
-        <Route path="/terminals" element={<TerminalsPage onOpenTerminal={openTerm} />} />
+        <Route path="/terminals" element={<TerminalsPage onOpenTerminal={openTerm} onOpenTask={setOpenTask} />} />
         <Route path="/repos" element={<ReposPage onOpenTerminal={openTerm} />} />
         <Route path="/config" element={<ConfigPage />} />
         <Route path="/handbook" element={<HandbookPage />} />

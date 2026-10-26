@@ -43,6 +43,7 @@ import { Sheet, SheetAction } from './Sheet.tsx';
 import { toastError } from '../toast.ts';
 import { useArm } from '../arm.ts';
 import { exitGhost } from '../motion.ts';
+import { BackgroundShellList } from './BackgroundShells.tsx';
 
 /**
  * One button of the panel's action set. Desktop draws the whole list as one
@@ -1304,6 +1305,9 @@ export function TaskSlideOver({
           ))}
         </div>
       )}
+
+      {/* the agent's background shells (docs/terminals.md § Background shells); renders nothing when none */}
+      <BackgroundShellList taskId={task.id} />
 
       {(task.status !== 'draft' || latestRun) && (
         <div className="so-followup">

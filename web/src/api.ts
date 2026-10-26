@@ -1,4 +1,7 @@
 import type {
+  BackgroundShell,
+  BackgroundShellKillResult,
+  BackgroundShellOutput,
   Anomaly,
   AppSettings,
   AuditEvent,
@@ -257,6 +260,16 @@ export const api = {
   listShells: () => req<ShellSession[]>('GET', '/api/shells'),
   openShells: (repoId: string, count = 1) => req<ShellSession[]>('POST', '/api/shells', { repoId, count }),
   closeShell: (id: string) => req<{ ok: true }>('DELETE', `/api/shells/${id}`),
+  listBackgroundShells: () => req<BackgroundShell[]>('GET', '/api/background-shells'),
+  backgroundShellOutput: (runId: string, shellId: string, from?: number) =>
+    req<BackgroundShellOutput>(
+      'GET',
+      `/api/background-shells/${encodeURIComponent(runId)}/${encodeURIComponent(shellId)}/output${from === undefined ? '' : `?from=${from}`}`,
+    ),
+  killBackgroundShell: (runId: string, shellId: string) =>
+    req<BackgroundShellKillResult>('POST', `/api/background-shells/${encodeURIComponent(runId)}/${encodeURIComponent(shellId)}/kill`),
+  killAllBackgroundShells: (taskId?: string) =>
+    req<BackgroundShellKillResult>('POST', '/api/background-shells/kill-all', taskId ? { taskId } : {}),
 
   listTasks: () => req<Task[]>('GET', '/api/tasks').then((l) => l.map(normalizeTask)),
   createTask: (b: TaskWrite & { title: string }) =>

@@ -7229,3 +7229,191 @@ button.explain-tap:active {
 .shell-orphans {
   margin-top: var(--tm-space-5);
 }
+
+/* ---- Agents' background shells (docs/terminals.md § Background shells) ---- */
+.shell-view {
+  margin-bottom: var(--tm-space-3);
+}
+
+.bgsh {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+}
+
+.bgsh.in-task {
+  margin-top: var(--tm-space-5);
+}
+
+.bgsh-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  min-height: 32px;
+}
+
+.bgsh-head .section-head {
+  margin: 0;
+}
+
+.bgsh-count {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+.bgsh-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+}
+
+.bgsh-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  min-width: 0;
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-raised);
+}
+
+.bgsh-row.on {
+  border-color: var(--tm-accent);
+}
+
+.bgsh-main {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  min-width: 0;
+}
+
+.bgsh-cmd {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tm-text-sm);
+  color: var(--tm-text);
+}
+
+.bgsh-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+}
+
+.bgsh-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-1) var(--tm-space-2);
+}
+
+/* inline text, so a wrapped line never strands a separator */
+.bgsh-meta {
+  flex: 1 1 240px;
+  min-width: 0;
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+}
+
+.bgsh-actions {
+  display: flex;
+  gap: var(--tm-space-1);
+  margin-left: auto;
+}
+
+.bgsh-sep {
+  color: var(--tm-text-faint);
+}
+
+.bgsh-task {
+  display: inline;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--tm-accent);
+  cursor: pointer;
+  text-align: left;
+}
+
+.bgsh-task:hover {
+  text-decoration: underline;
+}
+
+.chip.bgsh-holds {
+  color: var(--tm-status-attention);
+  border-color: currentColor;
+}
+
+.chip.bgsh-state.s-running {
+  color: var(--tm-status-running);
+}
+
+.chip.bgsh-state.s-killed {
+  color: var(--tm-status-failed);
+}
+
+.bgsh-out {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  margin-top: var(--tm-space-1);
+}
+
+.bgsh-out-meta {
+  display: flex;
+  gap: var(--tm-space-2);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+.bgsh-live {
+  color: var(--tm-status-running);
+}
+
+.bgsh-err {
+  color: var(--tm-status-failed);
+}
+
+.bgsh-pre {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-terminal-bg);
+  color: var(--tm-terminal-text);
+  font-size: var(--tm-text-xs);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* in a sheet the library's scroller scrolls — never a nested one */
+.bgsh-out.in-sheet .bgsh-pre {
+  max-height: none;
+  overflow: visible;
+  min-height: 50vh;
+}
+
+.bgsh-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding-bottom: var(--tm-space-2);
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.bgsh-sheet-head .btn {
+  min-width: var(--tm-tap);
+  min-height: var(--tm-tap);
+  justify-content: center;
+}

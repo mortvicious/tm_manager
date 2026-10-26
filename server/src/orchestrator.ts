@@ -75,6 +75,7 @@ import { aux } from './claude/aux.ts';
 import { headAt, readHeadBase, reviewWorkerChange, workerDiff, type ChangeScope } from './claude/review.ts';
 import { summarizeRun, summarizeTranscript, type TranscriptSummary } from './claude/stats.ts';
 import { killBackgroundShells, shellEntries } from './claude/shells.ts';
+import { BackgroundShells } from './claude/background-shells.ts';
 import { liveWindow, readAccountUsage } from './claude/account-usage.ts';
 import {
   LIVE_TAIL_STRICT_CHARS,
@@ -428,6 +429,8 @@ export class Orchestrator implements OrchestratorApi {
    * without one gets a service of its own over the same storage.
    */
   readonly questions: QuestionService;
+  /** Agents' background shells, listed/watched/killed from /terminals (docs/terminals.md § Background shells). */
+  readonly backgroundShells: BackgroundShells;
 
   constructor(
     private storage: Storage,
@@ -436,6 +439,10 @@ export class Orchestrator implements OrchestratorApi {
     questions?: QuestionService,
   ) {
     this.questions = questions ?? new QuestionService(storage);
+    this.backgroundShells = new BackgroundShells(storage, sessions, {
+      holdsWait: (runId, shellId, now, shellWaitMs) => this.shellHoldsWait(runId, shellId, now, shellWaitMs),
+      afterKill: (runId, shellIds, actor) => this.shellsKilled(runId, shellIds, actor),
+    });
     this.sessions.onExit((info) => {
       // The terminal's own bytes are the ONLY place a usage-limit banner
       // appears — the CLI prints it as chrome, never as an assistant message,
@@ -3080,6 +3087,7 @@ export class Orchestrator implements OrchestratorApi {
     this.dropWait(runId);
     this.shellsSeen.delete(runId);
     this.ignoredShells.delete(runId);
+    this.backgroundShells.forgetRun(runId);
     // Nothing will collect an answer for this run any more — stop asking the
     // human (docs/questions.md). Before the row is touched, so a consumer that
     // reacts to `run.exited` never sees a live question under a dead run.
@@ -4329,6 +4337,7 @@ export class Orchestrator implements OrchestratorApi {
     const entry = { taskId, snapshot, at: Date.now(), timer: null as NodeJS.Timeout | null, replay };
     this.waitingRuns.set(runId, entry);
     if (shellDeadline !== null) this.armShellWait(runId, entry, shellDeadline);
+    void this.backgroundShells.publish(); // `holdsWait` reads the park
   }
 
   /**
@@ -4430,12 +4439,44 @@ export class Orchestrator implements OrchestratorApi {
       shells.map((s) => s.command),
     );
     await handler(runId, w.replay, w.at, { actor, killed });
+    void this.backgroundShells.refresh();
     const task = await this.storage.getTask(taskId);
     if (!task) return { error: 'task not found', code: 404 };
     if (task.status === 'waiting') {
       return { error: 'the turn could not land — the session is showing a prompt or went back to work', code: 409 };
     }
     return { task };
+  }
+
+  /**
+   * Does background shell `shellId` count toward this run's park right now?
+   * The same test `waitDecision` applies: listed running by the Stop that
+   * parked it, not ignored, and inside its `agent.shellWaitMinutes` budget
+   * from the first Stop that listed it. Only a park held by a shell timer.
+   */
+  private shellHoldsWait(runId: string, shellId: string, now: number, shellWaitMs: number): boolean {
+    const w = this.waitingRuns.get(runId);
+    if (!w?.timer || this.ignoredShells.get(runId)?.has(shellId)) return false;
+    const seen = this.shellsSeen.get(runId)?.get(shellId);
+    if (seen === undefined || seen + shellWaitMs <= now) return false;
+    return shellEntries(w.replay).some((e) => e.id === shellId);
+  }
+
+  /**
+   * A human killed background shells of this run (`BackgroundShells.kill`).
+   * They never hold its park again, and a park shells hold is re-evaluated at
+   * once through the shell-wait replay — the path the timer and Stop waiting
+   * take — so the turn lands when nothing else counts (audited `task.waiting
+   * { expired: 'human' }`), and the same park goes on, re-timed, when another
+   * shell or a subagent still does.
+   */
+  private async shellsKilled(runId: string, shellIds: string[], actor: string): Promise<void> {
+    this.ignoreShells(runId, shellIds);
+    const w = this.waitingRuns.get(runId);
+    const handler = this.shellWaitHandler;
+    if (!w?.timer || !handler) return;
+    await handler(runId, w.replay, w.at, { actor, killed: shellIds.length });
+    broadcast({ type: 'orchestrator.status', status: await this.status() });
   }
 
   /** When this run's current park began, or null when it is not parked. */
@@ -4449,6 +4490,7 @@ export class Orchestrator implements OrchestratorApi {
     if (!w) return;
     if (w.timer) clearTimeout(w.timer);
     this.waitingRuns.delete(runId);
+    void this.backgroundShells.publish(); // `holdsWait` reads the park
   }
 
   /**

@@ -97,6 +97,94 @@ Events on `/ws/events`: `shell.session {session}` (open/exit) and
 One PTY has one size: a shell shown in a pane and in the drawer at once takes the
 size of whichever resized last, as any multi-viewer session does.
 
+## Background shells (agents', 2026-10-26)
+
+The page's **Terminals | Agent shells** switch (remembered per device,
+`tm.terminals.view`) shows a second list: the background shells the AGENTS
+started — `run_in_background` Bash, or a foreground command the CLI moved to the
+background after its Bash timeout. Before this they were visible only as
+`type: 'shell'` entries in hook payloads and could hold a task in `waiting`
+(`docs/design.md` § Waiting) with no way to find or stop them except typing into
+the agent's session. The task panel shows the same list for its own task
+(*Background shells*, only when there are some).
+
+**What the CLI tells us (measured, CLI 2.1.280).**
+- Stop and SubagentStop payloads carry `background_tasks: [{ id, type: 'shell',
+  status, command, description }]` — no pid, no path, and only at the end of a
+  turn.
+- The launching Bash call's `tool_result` line in the transcript carries
+  `toolUseResult.backgroundTaskId` (= that id), a `timestamp`,
+  `timedOutAfterMs` when the CLI auto-backgrounded it, and the text "Output is
+  being written to: `<tmp>/claude-<uid>/<cwd slug>/<sessionId>/tasks/<id>.output`".
+- The process is a DIRECT child of the worker's `claude` pid, leads its own
+  process group, runs `<shell> -c … eval '<command>' …`, and has its stdout and
+  stderr open on that same `.output` file (`lsof -d 1`). That file is what ties
+  a process to an id exactly; two shells may run the same command.
+
+**Model (`server/src/claude/background-shells.ts`, `Orchestrator.backgroundShells`).**
+In memory, per live worker run, like `ShellRunner`. Every Stop/SubagentStop of a
+worker run (`recordShells` in `routes/internal.ts`, before the idle-session
+guard, since an idle session's shells are just as alive) upserts the run's
+shell entries; the transcript is read once per shell for the launch time and
+the reported output path (`shellDetails`). A sweep every 5 s, only while a
+listed shell may be running, scans `ps` for each run's claude pid
+(`shellProcesses`: direct child, group leader, `eval '` argv, stdout via
+`lsof`) to fill the pid and to notice a shell that exited between turns. A
+shell launched by a subagent is not in the run's transcript; its output path
+comes from the process's own stdout when that is exactly `…/tasks/<id>.output`.
+The run's entries go when it exits (`handleExit` → `forgetRun`); at most 20
+per run, finished ones dropped first. A change is broadcast as
+`{ type: 'background-shells', shells }` over `/ws/events`.
+
+Each `BackgroundShell` (shared): task (title links to the task panel), repo,
+command + description, `state` (`running|exited|killed` — the server's own
+observation; `cliStatus` is what the CLI last said), start time (`startedKnown`
+false → "≥ first listed"), elapsed, pid, and `holdsWait` — the shell counts
+toward the task's park right now (same test as `waitDecision`: listed by the
+parking Stop, not ignored, inside `agent.shellWaitMinutes`).
+
+**Watch** (`GET /api/background-shells/:runId/:shellId/output?from=<byte>`):
+read-only, polled once a second while the shell runs (one last read after).
+Only the path the CLI reported for THAT run's shell is ever opened — never one
+from the request — and it must still end in `/tasks/<id>.output` and be a
+regular file (`lstat`, so not a link). First read: the last 64 KiB from a line
+boundary; then forward in ≤256 KiB slices that never split a UTF-8 sequence; a
+file that shrank sets `reset`. The viewer strips ANSI and lets `\r` overwrite
+its line (progress bars), keeps the last 400k characters, and sticks to the
+bottom unless scrolled up. Desktop: inline under the row. Phone: a tall
+`<Sheet>` whose own scroller scrolls (no nested scroller).
+
+**Kill** (`POST /api/background-shells/:runId/:shellId/kill`, and
+`POST /api/background-shells/kill-all` with optional `{ taskId }`, both
+`Origin`-required, each arm-confirmed in the UI): the pid is re-resolved from a
+FRESH scan at kill time — never from the request or an earlier sweep — and its
+whole process group gets SIGTERM, so the shell's own children (`npx`, `find`)
+go too. Matching by stdout file is exact; without lsof only a unique `eval`
+command match counts (ambiguous → nothing). Agent PTYs, repo commands and login
+shells are children of the API process, never of a claude pid, so no kill can
+reach them; nor can an MCP server or any other child of claude (it fails the
+group-leader/`eval` tests). Asking the session to stop the shell (typing into
+the PTY) was rejected: the agent is often mid-turn, and a typed instruction is
+a turn of its own. Each kill is a `shell.killed` audit row (actor `human`,
+`shellId`, `command`, `pid`). Then the run's park re-evaluates
+(`Orchestrator.shellsKilled`): the killed ids join `ignoredShells`, and a park
+held by shells is replayed through the shell-wait handler — the timer's and
+Stop waiting's path — so the task lands (`task.waiting { expired: 'human' }`)
+when nothing else counts, and the same park goes on, re-timed, when another
+shell or a subagent still holds it. The CLI notices the exit by itself and
+tells the agent the next time the session runs.
+
+**Verification (2026-10-26).** A harness drove `BackgroundShells` + the routes
+(`app.inject`) against a fake claude process with two real detached shells
+running the SAME command plus a plain child: distinct pids via lsof, launch
+time (incl. an auto-backgrounded one) and output path from a transcript, reads
+from the tail and from an offset, 404 for unknown ids, 403 without Origin, kill
+one → only that group died, the "claude" and the other shell alive, audit row
+and park hook called, 409 on a second kill, kill-all → the other shell gone and
+the plain child spared. `shellDetails` checked on real CLI transcripts. The
+page and task panel were screenshotted with Playwright (scratch build, stubbed
+API) at 1440 px and 393 px, Classic and Glass, light and dark.
+
 ## Security
 
 A shell is remote code execution by design, exactly like repo commands and the

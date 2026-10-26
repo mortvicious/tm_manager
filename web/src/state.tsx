@@ -14,6 +14,7 @@ import type {
   ChatMessage,
   CommandRun,
   ShellSession,
+  BackgroundShell,
   Dispatch,
   Question,
   Feature,
@@ -71,6 +72,8 @@ interface AppState {
   commandRuns: CommandRun[];
   /** open plain shells, every repo (docs/terminals.md) */
   shells: ShellSession[];
+  /** agents' background shells of live worker runs (docs/terminals.md § Background shells) */
+  backgroundShells: BackgroundShell[];
   /** live audit events received this session (cap 200, newest last) */
   auditEvents: AuditEvent[];
   orch: OrchestratorStatus;
@@ -125,6 +128,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [commands, setCommands] = useState<RepoCommand[]>([]);
   const [commandRuns, setCommandRuns] = useState<CommandRun[]>([]);
   const [shells, setShells] = useState<ShellSession[]>([]);
+  const [backgroundShells, setBackgroundShells] = useState<BackgroundShell[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [orch, setOrch] = useState<OrchestratorStatus>({ enabled: false, running: 0, concurrency: 2, aux: 0, shellWaits: [] });
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -159,6 +163,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api.listCommands().then(setCommands).catch(() => {});
     api.listCommandRuns().then(setCommandRuns).catch(() => {});
     api.listShells().then(setShells).catch(() => {});
+    api.listBackgroundShells().then(setBackgroundShells).catch(() => {});
     api.orchestrator().then(setOrch).catch(() => {});
     api.getConfig().then(setSettings).catch(() => {});
   }, []);
@@ -451,6 +456,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           case 'shell.closed':
             setShells((cur) => cur.filter((s) => s.id !== e.id));
             break;
+          case 'background-shells':
+            setBackgroundShells(e.shells);
+            break;
           case 'orchestrator.status':
             setOrch(e.status);
             break;
@@ -511,6 +519,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         commands,
         commandRuns,
         shells,
+        backgroundShells,
         auditEvents,
         orch,
         settings,

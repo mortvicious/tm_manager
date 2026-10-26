@@ -1678,6 +1678,7 @@ export type AuditKind =
   | 'command.changed'
   | 'command.run'
   | 'shell.session'
+  | 'shell.killed'
   | 'config.changed'
   | 'orchestrator.toggle'
   | 'schedule.overflow-claim'
@@ -1911,6 +1912,54 @@ export interface OrchestratorStatus {
    * memory, so a server predating it omits it.
    */
   shellWaits?: string[];
+}
+
+/**
+ * An agent's background shell (docs/terminals.md § Background shells): a
+ * `type: 'shell'` entry of a live worker run's latest Stop/SubagentStop
+ * `background_tasks`, kept in memory until the run ends and broadcast as
+ * `background-shells`. `state` is the server's own observation of the
+ * process (a sweep every few seconds while one may be running); `cliStatus`
+ * is what the CLI last said, at the end of a turn.
+ */
+export interface BackgroundShell {
+  runId: string;
+  taskId: string;
+  taskTitle: string;
+  repoId: string;
+  /** the CLI's id (`background_tasks[].id`, the Bash result's `backgroundTaskId`) */
+  shellId: string;
+  command: string;
+  description: string | null;
+  cliStatus: string;
+  state: 'running' | 'exited' | 'killed';
+  pid: number | null;
+  /** launch time from the transcript; when `startedKnown` is false, when a Stop first listed it */
+  startedAt: string;
+  startedKnown: boolean;
+  /** it currently counts toward the task's `waiting` park (docs/design.md § Waiting) */
+  holdsWait: boolean;
+  /** the CLI reported an output file for it — the viewer can open it */
+  hasOutput: boolean;
+}
+
+/** One read of a background shell's output file (`GET …/output?from=`). */
+export interface BackgroundShellOutput {
+  text: string;
+  /** byte offset `text` starts at */
+  from: number;
+  /** byte offset to ask for next */
+  next: number;
+  /** the file's size at the read */
+  size: number;
+  /** the file shrank under the reader: drop what was shown and start over */
+  reset: boolean;
+}
+
+/** `POST …/kill` and `POST /api/background-shells/kill-all`. */
+export interface BackgroundShellKillResult {
+  killed: { runId: string; shellId: string }[];
+  missed: { runId: string; shellId: string; reason: string }[];
 }
 
 /**
@@ -2174,6 +2223,7 @@ export type ServerEvent =
   | { type: 'space.deleted'; spaceId: string }
   | { type: 'shared-note.updated'; note: SharedNote }
   | { type: 'shared-note.deleted'; noteId: string }
+  | { type: 'background-shells'; shells: BackgroundShell[] }
   | { type: 'orchestrator.status'; status: OrchestratorStatus };
 
 /**
