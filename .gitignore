@@ -4,6 +4,9 @@ node_modules/
 server/data/
 
 web/dist/
+# rebuild & restart's staging and swap-out dirs (docs/host.md § Rebuild & restart)
+web/dist.next/
+web/dist.prev/
 
 *.log
 .DS_Store

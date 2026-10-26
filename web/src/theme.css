@@ -2693,6 +2693,60 @@ button.badge.badge-link:hover {
   color: var(--tm-status-review);
 }
 
+/* Rebuild & restart (Layout.tsx RebuildButton, docs/host.md): armed asks
+   like Pause all; a failure opens its error and the build log's tail */
+.btn.rebuild-btn.armed {
+  color: var(--tm-status-review);
+}
+
+.btn.rebuild-flag {
+  font-size: var(--tm-text-sm);
+}
+
+.cmd-pop.rebuild-pop {
+  width: 520px;
+}
+
+.rebuild-report {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2);
+}
+
+.rebuild-report p {
+  margin: 0;
+}
+
+.rebuild-report .warn-text {
+  font-size: var(--tm-text-sm);
+}
+
+.rebuild-note {
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-sm);
+}
+
+.rebuild-log {
+  margin: 0;
+  max-height: 40vh;
+  overflow: auto;
+  padding: var(--tm-space-2);
+  background: var(--tm-bg-inset);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.rebuild-acts {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--tm-space-2);
+}
+
 /* the phone header's queue state (Layout.tsx RunCount): a dot, not a control */
 .queue-dot {
   display: inline-block;

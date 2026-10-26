@@ -23,6 +23,8 @@ export interface Toast {
   action?: { label: string; run: () => void };
   /** an info toast replaces the one with the same key: only the latest move is undoable */
   key?: string;
+  /** stays until acted on or dismissed (a new build waiting for a reload) */
+  sticky?: boolean;
 }
 
 /** errors are read, not glanced at: long enough for a two-line 409 reason */
@@ -71,6 +73,19 @@ export function toastUndo(key: string, text: string, run: () => void): void {
   toasts = [
     ...toasts.filter((t) => t.key !== key),
     { id: nextId++, text, title: null, seq: 0, tone: 'info' as const, key, action: { label: 'Undo', run } },
+  ].slice(-MAX);
+  emit();
+}
+
+/**
+ * Something the human should act on when it suits them, not within a timer:
+ * a new build is being served and this tab still runs the old one. Keyed like
+ * toastUndo, so a second notice replaces the first.
+ */
+export function toastSticky(key: string, text: string, action: { label: string; run: () => void }): void {
+  toasts = [
+    ...toasts.filter((t) => t.key !== key),
+    { id: nextId++, text, title: null, seq: 0, tone: 'info' as const, key, action, sticky: true },
   ].slice(-MAX);
   emit();
 }

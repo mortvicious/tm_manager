@@ -6,7 +6,8 @@ import { toggleScheme, useLook } from '../appearance.ts';
 import type { InboxReturn, ReturnTo } from '../returnTo.ts';
 import { useApp } from '../state.tsx';
 import { useArm } from '../arm.ts';
-import { toastError } from '../toast.ts';
+import { toastError, toastSticky } from '../toast.ts';
+import { BUILD_ID, dismissRebuildFailure, rebuildRunning, startRebuild, useRebuild } from '../rebuild.ts';
 import { CommandsLauncher } from './Commands.tsx';
 import { EmulatorLauncher } from './Emulator.tsx';
 import { Sheet } from './Sheet.tsx';
@@ -315,6 +316,8 @@ function ServerControl() {
   const { stopped, canStart, blocked, busyAgents, auxLive, downReason, startTitle, starting, err, setErr, start } =
     useServerStart();
   const [restarting, setRestarting] = useState(false);
+  const { job: followed } = useRebuild();
+  const rebuilding = rebuildRunning(followed ?? host?.rebuild);
   const uptime = (() => {
     if (!bootedAt) return '';
     const s = Math.max(0, Math.floor((Date.now() - new Date(bootedAt).getTime()) / 1000));
@@ -357,7 +360,7 @@ function ServerControl() {
     }, 8000);
   };
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+    <span style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
       <span
         className="runcount"
         title={
@@ -406,12 +409,13 @@ function ServerControl() {
                 ? `Restart the task-manager server (${live} running command(s) will be stopped)`
                 : 'Restart the task-manager server'
           }
-          disabled={restarting || blocked}
+          disabled={restarting || blocked || rebuilding}
           onClick={restart}
         >
           {restarting ? 'Restarting…' : blocked ? 'Agents working' : 'Restart server'}
         </button>
       )}
+      <RebuildButton blocked={blocked} busyAgents={busyAgents} />
       {err && (
         <span className="warn-text mono" title={err} style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {err}
@@ -419,6 +423,153 @@ function ServerControl() {
       )}
     </span>
   );
+}
+
+const REBUILD_STEP: Record<string, string> = {
+  building: 'Building…',
+  typechecking: 'Typechecking…',
+  restarting: 'Restarting…',
+  done: 'Reloading…',
+};
+
+/**
+ * Rebuild & restart (docs/host.md § Rebuild & restart): build the SPA, restart
+ * the API onto new server code, reload this window — one press-twice button
+ * beside Restart server. The front door runs the job (it outlives the API), so
+ * the button is absent without one, or with one that predates the route. It
+ * has the restart's own precondition — no agent working — and nudges Pause all
+ * first, which is what keeps one from starting mid-build.
+ */
+function RebuildButton({ blocked, busyAgents }: { blocked: boolean; busyAgents: number }) {
+  const { host, orch } = useApp();
+  const { job: followed, mine, dismissed } = useRebuild();
+  const mobile = useIsMobile();
+  const arm = useArm();
+  const [pressing, setPressing] = useState(false);
+  const [open, setOpen] = useState(false);
+  if (!host?.rebuild) return null;
+  const job = followed ?? host.rebuild;
+  const running = rebuildRunning(job) || (mine && job.state === 'done');
+  const failed = job.state === 'failed' && job.finishedAt !== dismissed;
+  const stale = !!host.host.stale;
+  const paused = !!orch.paused;
+  const armed = arm.armed === 'rebuild';
+  const again = mobile ? 'tap' : 'click';
+  const press = async () => {
+    if (pressing || running || blocked || !arm.press('rebuild')) return;
+    setPressing(true);
+    try {
+      await startRebuild();
+    } catch (e) {
+      toastError(e, 'Rebuild & restart');
+    } finally {
+      setPressing(false);
+    }
+  };
+  const what = host.host.dev
+    ? 'dev mode: no build (Vite serves source) — typecheck, restart the API, reload this window'
+    : 'build the web app (swapped in only when it succeeds), typecheck, restart the API onto the new server code, reload this window';
+  const title = blocked
+    ? `${busyAgents} agent(s) are working — Pause all first: it suspends them so each resumes in its own session on Continue.`
+    : running
+      ? (job.step ?? 'Rebuild & restart running')
+      : `Rebuild & restart — ${what}. Pause state survives the restart; press Continue yourself.${paused ? '' : ' Tip: Pause all first, or the queue may start an agent mid-build and the restart will be refused.'}`;
+  const details = (
+    <div className="rebuild-report">
+      {failed && (
+        <>
+          <p className="warn-text">{job.error}</p>
+          {job.logTail && <pre className="rebuild-log mono">{job.logTail}</pre>}
+        </>
+      )}
+      {stale && (
+        <p className="rebuild-note">
+          The front door (server/src/host.ts) changed since it started. Rebuild & restart cannot reload the process
+          running it — stop and re-run <span className="mono">npm start</span> to load those changes.
+        </p>
+      )}
+      <div className="rebuild-acts">
+        {failed && (
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => {
+              dismissRebuildFailure(job.finishedAt);
+              setOpen(false);
+            }}
+          >
+            Dismiss
+          </button>
+        )}
+        <button type="button" className="btn ghost" onClick={() => setOpen(false)}>
+          Close
+        </button>
+      </div>
+    </div>
+  );
+  return (
+    <span className="cmd-wrap rebuild-wrap">
+      <button
+        type="button"
+        className={`btn ghost rebuild-btn${armed ? ' armed' : ''}`}
+        title={title}
+        disabled={pressing || running || blocked}
+        onClick={press}
+      >
+        {running
+          ? (REBUILD_STEP[job.state] ?? 'Working…')
+          : pressing
+            ? 'Starting…'
+            : armed
+              ? `Rebuild${paused ? '' : ' (not paused)'}? ${again} again`
+              : blocked
+                ? 'Pause all first'
+                : 'Rebuild & restart'}
+      </button>
+      {(failed || stale) && !running && (
+        <button
+          type="button"
+          className="btn ghost warn-text rebuild-flag"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          title={failed ? (job.error ?? 'Rebuild failed') : 'The front door needs a full restart to load its own changes'}
+          onClick={() => setOpen((v) => !v)}
+        >
+          {failed ? 'Rebuild failed' : 'Front door stale'}
+        </button>
+      )}
+      {open &&
+        (mobile ? (
+          <Sheet label={failed ? 'Rebuild failed' : 'Front door stale'} onClose={() => setOpen(false)} zIndex={38}>
+            {details}
+          </Sheet>
+        ) : (
+          <div className="cmd-pop rebuild-pop" role="dialog" aria-label="Rebuild & restart">
+            {details}
+          </div>
+        ))}
+    </span>
+  );
+}
+
+/**
+ * Another tab (or the CLI) rebuilt: the front door now serves a build this
+ * page is not running. Read after every reconnect, when the header re-asks the
+ * front door. Never reloads under the human — a sticky toast offers it. The
+ * tab that pressed the button reloads by itself (src/rebuild.ts).
+ */
+function NewBuildWatcher() {
+  const { host } = useApp();
+  const { mine } = useRebuild();
+  const served = host?.host.buildId ?? null;
+  useEffect(() => {
+    if (!served || BUILD_ID === 'dev' || served === BUILD_ID || mine) return;
+    toastSticky('new-build', 'A new version of the task manager is being served.', {
+      label: 'Reload',
+      run: () => location.reload(),
+    });
+  }, [served, mine]);
+  return null;
 }
 
 /** after a dropped socket, how long before the phone says so: a server restart
@@ -836,6 +987,7 @@ export function Layout({
           </>
         )}
       </header>
+      <NewBuildWatcher />
       <main className="main" ref={mainRef}>
         {mobile && <OfflineBanner />}
         {children}

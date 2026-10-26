@@ -36,6 +36,7 @@
     "start": "tsx server/src/host.ts",
     "start:api": "tsx server/src/index.ts",
     "start:lan": "TM_LAN=1 tsx server/src/host.ts",
+    "rebuild:restart": "tsx scripts/rebuild-restart.mjs",
     "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit"
   },
   "devDependencies": {

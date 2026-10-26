@@ -16,6 +16,7 @@ import type {
   Feature,
   FeaturePlan,
   HostStatus,
+  RebuildJob,
   OrchestratorStatus,
   Proposal,
   Repo,
@@ -173,6 +174,10 @@ export const api = {
   hostStart: () => req<HostStatus & { ok: boolean; already?: boolean; error?: string }>('POST', '/host/start', {}),
   hostStop: (force = false) => req<HostStatus & { ok: boolean }>('POST', '/host/stop', { force }),
   hostRestart: (force = false) => req<HostStatus & { ok: boolean }>('POST', '/host/restart', { force }),
+  // Rebuild & restart (docs/host.md § Rebuild & restart): 202 with the job, 409
+  // `in_progress` / `not_quiet`; the job is then followed on the GET.
+  hostRebuild: (force = false) => req<HostStatus & { ok: boolean }>('POST', '/host/rebuild-restart', { force }),
+  hostRebuildJob: () => req<RebuildJob>('GET', '/host/rebuild-restart'),
 
   listRepos: () => req<Repo[]>('GET', '/api/repos'),
   createRepo: (b: { name?: string; path: string; role?: string | null; previewUrl?: string | null }) =>

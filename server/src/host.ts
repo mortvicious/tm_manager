@@ -26,9 +26,10 @@ import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
-import type { HostStatus } from '@tm/shared';
+import type { HostStatus, RebuildJob } from '@tm/shared';
 import { loadBootConfig, serverRoot } from './config.ts';
 import { isAllowedHost, isAllowedOriginHost, lanAddresses, setLanEnabled } from './net.ts';
+import { buildSpa, hostFingerprint, readBuildId, swapDist, typecheck, webDist } from './rebuild.ts';
 import { checkRemote, looksProxied, mintHostToken, stripTailscaleHeaders } from './remote.ts';
 
 const cfg = loadBootConfig();
@@ -39,7 +40,6 @@ const HOST_PORT = cfg.host.port;
 const API_ORIGIN = `127.0.0.1:${API_PORT}`;
 /** What an admitted remote request's Origin becomes before the API judges it (see admitRemote). */
 const LOOPBACK_ORIGIN = `http://127.0.0.1:${HOST_PORT}`;
-const webDist = path.resolve(serverRoot, '../web/dist');
 const serverEntry = path.join(serverRoot, 'src/index.ts');
 /** `npm run dev` — the child is `tsx watch`, so a server edit still hot-reloads. */
 const dev = process.env.TM_DEV === '1';
@@ -438,6 +438,157 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse): void 
   sendFile(res, indexFile); // SPA fallback — client-side routes are not files
 }
 
+// -------------------------------------------------------- rebuild & restart
+
+// docs/host.md § Rebuild & restart. The job runs HERE, in the front door's
+// lifetime, because the API is the thing it restarts. The steps themselves are
+// rebuild.ts (shared with scripts/rebuild-restart.mjs); this is the sequencing.
+
+/** host.ts and its imports as this process booted them (see hostFingerprint). */
+const bootFingerprint = hostFingerprint();
+let staleSeen = false;
+/** Re-hashed per status read (five small files), and sticky once true. */
+function hostStale(): boolean {
+  if (!staleSeen && hostFingerprint() !== bootFingerprint) staleSeen = true;
+  return staleSeen;
+}
+
+const idleJob = (): RebuildJob => ({
+  state: 'idle',
+  startedAt: null,
+  finishedAt: null,
+  step: null,
+  error: null,
+  reason: null,
+  logTail: '',
+  buildId: null,
+  hostStale: false,
+  dev,
+  bootedBefore: null,
+  bootedAfter: null,
+});
+
+let job: RebuildJob = idleJob();
+/** between the press and the job's first state: see the route */
+let jobClaimed = false;
+/** the vite / tsc process the job is waiting on, killed on shutdown */
+let jobChild: ChildProcess | null = null;
+const setJobChild = (c: ChildProcess | null) => (jobChild = c);
+const REBOOT_TIMEOUT_MS = 60_000;
+
+const jobRunning = () => job.state === 'building' || job.state === 'typechecking' || job.state === 'restarting';
+
+function jobStep(state: RebuildJob['state'], step: string): void {
+  job = { ...job, state, step };
+  console.log(`[host] rebuild: ${step}`);
+}
+
+function jobEnd(state: 'done' | 'failed', patch: Partial<RebuildJob>): void {
+  job = { ...job, ...patch, state, finishedAt: new Date().toISOString(), hostStale: hostStale() };
+  console.log(`[host] rebuild ${state}${job.error ? `: ${job.error}` : ''}`);
+  if (job.hostStale) console.log('[host] host.ts changed since this front door booted — restart `npm start` to load it');
+}
+
+/** Poll until the API answers with a bootedAt that is not `before`. */
+async function waitNewBoot(before: string | null, timeoutMs: number): Promise<string | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await pollHealth();
+    if (api.up && api.bootedAt && api.bootedAt !== before) return api.bootedAt;
+    await sleep(500);
+  }
+  return null;
+}
+
+function startRebuild(force: boolean, check: boolean): void {
+  job = {
+    ...idleJob(),
+    state: !dev ? 'building' : check ? 'typechecking' : 'restarting',
+    startedAt: new Date().toISOString(),
+  };
+  void runRebuild(force, check).catch((e) => jobEnd('failed', { error: (e as Error).message, reason: 'error' }));
+}
+
+async function runRebuild(force: boolean, check: boolean): Promise<void> {
+  // 1. Build into dist.next and swap. Dev has nothing to build: Vite serves
+  //    source, and the reload picks it up.
+  if (!dev) {
+    jobStep('building', 'Building the web app…');
+    const b = await buildSpa(setJobChild);
+    if (!b.ok) {
+      return jobEnd('failed', {
+        error: `${b.error} — nothing was restarted; the current page is still served`,
+        reason: 'build',
+        logTail: b.tail,
+      });
+    }
+    swapDist();
+    job = { ...job, buildId: b.buildId, logTail: b.tail };
+    console.log(`[host] rebuild: web/dist is now build ${b.buildId ?? '(no id)'}`);
+  }
+
+  // 2. Typecheck (fast-fail): refuse a restart into a server that does not
+  //    compile. The new dist stays — it is already served, and harmless.
+  if (check) {
+    jobStep('typechecking', 'Typechecking…');
+    const t = await typecheck(setJobChild);
+    if (!t.ok) {
+      return jobEnd('failed', {
+        error: `${t.error} — the API was NOT restarted${dev ? '' : ' (the new web build is already served)'}`,
+        reason: 'typecheck',
+        logTail: t.tail,
+      });
+    }
+  }
+
+  // 3. The build took a while; an agent may have started since the press.
+  const blocked = await restartBlocked(force);
+  if (blocked) {
+    return jobEnd('failed', {
+      error: `${String(blocked.error ?? 'agents are working')} The API was NOT restarted.`,
+      reason: 'not_quiet',
+      logTail: '',
+    });
+  }
+
+  // 4. Restart and wait for a NEW bootedAt — up is not enough, the old one was up.
+  jobStep('restarting', 'Restarting the API…');
+  await pollHealth();
+  const before = api.up ? api.bootedAt : null;
+  job = { ...job, bootedBefore: before };
+  if (api.up && !api.managed) {
+    // Adopted, not ours to respawn: it detaches its own replacement.
+    const r = await askApiToRestart(force);
+    if (r.status !== 200) {
+      let msg = `the API refused the restart (${r.status})`;
+      try {
+        msg = JSON.parse(r.body)?.error ?? msg;
+      } catch {
+        /* keep the status */
+      }
+      return jobEnd('failed', { error: msg, reason: 'restart', logTail: '' });
+    }
+  } else {
+    await stopApi();
+    api.desired = 'up';
+    backoffMs = 500;
+    await waitPortFree(5000);
+    spawnApi();
+  }
+  const after = await waitNewBoot(before, REBOOT_TIMEOUT_MS);
+  if (!after) {
+    return jobEnd('failed', {
+      error:
+        'the API did not come back within 60 s — the front door keeps respawning it with backoff; check its terminal output (a broken server file is the usual cause)',
+      reason: 'timeout',
+      // the build's log says nothing about this; the API's own output is in
+      // this process's terminal (stdio is inherited)
+      logTail: '',
+    });
+  }
+  jobEnd('done', { step: 'Done', bootedAfter: after });
+}
+
 // ------------------------------------------------------------- control API
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
@@ -479,7 +630,15 @@ function status(): HostStatus {
       lastExit: api.lastExit,
       lastError: api.lastError,
     },
-    host: { port: HOST_PORT, dev, spaBuilt: fs.existsSync(path.join(webDist, 'index.html')) },
+    host: {
+      port: HOST_PORT,
+      dev,
+      spaBuilt: fs.existsSync(path.join(webDist, 'index.html')),
+      // dev: the page is Vite's, whatever an old `npm run build` left in dist
+      buildId: dev ? null : readBuildId(),
+      stale: hostStale(),
+    },
+    rebuild: { ...job, hostStale: job.hostStale || hostStale() },
   };
 }
 
@@ -556,6 +715,9 @@ async function control(req: http.IncomingMessage, res: http.ServerResponse, rout
     await pollHealth();
     return json(res, 200, status());
   }
+  if (route === '/host/rebuild-restart' && req.method === 'GET') {
+    return json(res, 200, status().rebuild);
+  }
   if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
 
   let body: any;
@@ -565,6 +727,30 @@ async function control(req: http.IncomingMessage, res: http.ServerResponse, rout
     return json(res, 400, { error: (e as Error).message });
   }
   const force = body?.force === true;
+
+  // The job stops and starts the API itself; a second hand on that switch
+  // mid-job would leave its wait for a new bootedAt reading the wrong process.
+  if ((route === '/host/stop' || route === '/host/restart') && jobRunning()) {
+    return json(res, 409, { error: 'a rebuild & restart is running — wait for it', reason: 'in_progress', ...status() });
+  }
+
+  if (route === '/host/rebuild-restart') {
+    // Checked and taken synchronously: two presses must not both pass the
+    // guard's await below and start two builds into one dist.next.
+    if (jobRunning() || jobClaimed) {
+      return json(res, 409, { error: 'a rebuild & restart is already running', reason: 'in_progress', ...status() });
+    }
+    jobClaimed = true;
+    try {
+      await pollHealth();
+      const blocked = await restartBlocked(force);
+      if (blocked) return json(res, 409, { ...blocked, reason: 'not_quiet', ...status() });
+      startRebuild(force, body?.typecheck !== false);
+    } finally {
+      jobClaimed = false;
+    }
+    return json(res, 202, { ok: true, ...status() });
+  }
 
   if (route === '/host/start') {
     await pollHealth();
@@ -706,6 +892,7 @@ const shutdown = async () => {
   // The child is detached (see killTree) so it does NOT die with us. Ctrl-C in
   // this terminal has to mean "stop the whole thing", or the next boot meets an
   // orphan already holding the API port.
+  if (jobChild) jobChild.kill('SIGKILL');
   await stopApi();
   server.close();
   remoteServer?.close();

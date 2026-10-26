@@ -143,6 +143,11 @@ process comes up paused. Boot recovery treats anything it finds cut as owed
 Continue cleared the flag but before every owed turn started, boot finishes the
 job (`resumePaused` when unpaused rows still carry a marker).
 
+**Rebuild & restart** (`docs/host.md` § Rebuild & restart) is the one-press
+form of this when the update is to the task manager itself: it builds the SPA,
+restarts the API once quiet, and reloads the window — onto a page that still
+reads paused, with the same markers. Continue stays yours to press.
+
 ## Surfaces
 
 - **SPA**: a `⏸ Pause all` button beside the queue switch in the desktop

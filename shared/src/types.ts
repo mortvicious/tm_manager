@@ -2294,7 +2294,48 @@ export interface HostStatus {
     lastExit: { code: number | null; signal: string | null; at: string } | null;
     lastError: string | null;
   };
-  host: { port: number; dev: boolean; spaBuilt: boolean };
+  host: {
+    port: number;
+    dev: boolean;
+    spaBuilt: boolean;
+    /** `web/dist/build.json`'s id — what a page loaded NOW would run; null when
+     *  unbuilt, or in dev where Vite serves source (absent on an older host). */
+    buildId?: string | null;
+    /** host.ts (or a module it imports) changed since this front door booted:
+     *  Rebuild & restart cannot reload it, a full `npm start` restart can. */
+    stale?: boolean;
+  };
+  /** The Rebuild & restart job (absent on a front door that predates it). */
+  rebuild?: RebuildJob;
+}
+
+/**
+ * Rebuild & restart (docs/host.md § Rebuild & restart): one job at a time in
+ * the FRONT DOOR's lifetime — it outlives the API it restarts.
+ */
+export type RebuildState = 'idle' | 'building' | 'typechecking' | 'restarting' | 'done' | 'failed';
+
+export interface RebuildJob {
+  state: RebuildState;
+  startedAt: string | null;
+  finishedAt: string | null;
+  /** human words for where it is ("Building the web app…") */
+  step: string | null;
+  error: string | null;
+  /** machine reason on a refusal or failure: `not_quiet` when an agent started
+   *  mid-job, `build`, `typecheck`, `restart`, `timeout` */
+  reason: string | null;
+  /** last lines of the failing (or last) step's output */
+  logTail: string;
+  /** the id of the build this job produced (null in dev or before the build) */
+  buildId: string | null;
+  /** host.ts changed since the front door booted — needs a full restart */
+  hostStale: boolean;
+  /** dev mode: no build, Vite serves source */
+  dev: boolean;
+  /** the API's bootedAt before and after the restart */
+  bootedBefore: string | null;
+  bootedAfter: string | null;
 }
 
 // ---- Web Push (docs/push.md) ----

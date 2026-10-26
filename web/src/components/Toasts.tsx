@@ -34,10 +34,10 @@ function ToastItem({ toast }: { toast: Toast }) {
   // read, and a long 409 reason should not vanish mid-sentence.
   const [held, setHeld] = useState(false);
   useEffect(() => {
-    if (held) return;
+    if (held || toast.sticky) return;
     const t = setTimeout(() => dismissToast(toast.id), toast.tone === 'info' ? UNDO_MS : TOAST_MS);
     return () => clearTimeout(t);
-  }, [toast.id, toast.seq, held]);
+  }, [toast.id, toast.seq, held, toast.sticky]);
   return (
     <div
       className={`toast${toast.tone === 'info' ? ' info' : ''}`}
