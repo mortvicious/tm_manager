@@ -256,7 +256,8 @@ export function registerStatsRoutes(
     }
 
     const queuedSinceMs = 30 * 60_000;
-    const settingsEnabled = settings['orchestrator.enabled'];
+    // a paused machine (docs/pause.md) holds every queued task on purpose
+    const settingsEnabled = settings['orchestrator.enabled'] && !settings['orchestrator.paused'];
     // A queued task waiting on its repo (same-repo exclusivity, docs/queue.md)
     // or on the day budget is held on purpose — not starved.
     const heldRepos = new Set(tasks.filter((x) => x.repoId && holdsRepoForClaim(x)).map((x) => x.repoId));

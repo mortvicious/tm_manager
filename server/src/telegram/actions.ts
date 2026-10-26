@@ -184,6 +184,27 @@ export async function setQueueEnabled(deps: ActionDeps, enabled: boolean, actor:
 }
 
 /**
+ * POST /api/orchestrator/pause|continue (docs/pause.md): the same two calls,
+ * in-process. Pause suspends live turns so their own sessions resume on
+ * Continue — nothing is cancelled.
+ */
+export async function setPaused(deps: ActionDeps, paused: boolean, actor: string): Promise<ActionOutcome> {
+  const before = await deps.orchestrator.status();
+  if (paused) {
+    const { suspended } = await deps.orchestrator.pauseAll(actor);
+    const n = suspended.length;
+    return done(
+      `${before.paused ? 'Already paused' : 'Paused'} — nothing automatic starts.` +
+        (n ? ` ${n} live turn(s) suspended; Continue resumes each in its own session.` : '') +
+        ' Safe to /restart once nothing is working.',
+    );
+  }
+  if (!before.paused) return done('Not paused.');
+  const { resumed } = await deps.orchestrator.continueAll(actor);
+  return done(`Continued — automatic work is back on.${resumed.length ? ` Resuming ${resumed.length} task(s) in their own sessions.` : ''}`);
+}
+
+/**
  * The /feature intake: create the feature and immediately start the
  * analysis, because on a phone the two are never separate acts. Mirrors
  * POST /api/features + POST /api/features/:id/analyze, including the

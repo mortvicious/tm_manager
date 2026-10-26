@@ -23,6 +23,8 @@ export interface BadgeInput {
   checkState?: CheckState | null;
   /** a loop task's state (docs/loops.md): between iterations it is `running` with no session */
   loopState?: LoopState | null;
+  /** Pause all suspended this task's turn; Continue resumes it (docs/pause.md) */
+  paused?: boolean;
 }
 
 export interface BadgeReading extends Explanation {
@@ -64,7 +66,7 @@ const PLAIN: Record<TaskStatus, { what: string; todo?: string }> = {
  * One switch for the badge, its tooltip, its phone sheet and the task sheet's
  * "what's happening" strip, so the three can never disagree.
  */
-export function badgeReading({ status, attention, question, reviewState, checkState, loopState }: BadgeInput): BadgeReading {
+export function badgeReading({ status, attention, question, reviewState, checkState, loopState, paused }: BadgeInput): BadgeReading {
   const r = (label: string, c: string, what: string, todo?: string, reviewer?: boolean): BadgeReading => ({
     label,
     cls: c,
@@ -81,6 +83,13 @@ export function badgeReading({ status, attention, question, reviewState, checkSt
       's-attention',
       'The agent is stopped at a prompt in its terminal (a permission dialog, usually) and cannot go on by itself.',
       'Open the terminal and answer the prompt.',
+    );
+  if (paused && (status === 'review' || status === 'failed'))
+    return r(
+      'paused',
+      's-waiting',
+      'Pause all suspended this task mid-turn. Its own session is kept and picks up exactly where it stopped.',
+      'Nothing to do — Continue (header) resumes it. Proceed or Follow up resumes just this one now.',
     );
   if (status === 'review' && (checkState === 'pending' || checkState === 'running'))
     return r('checking', 's-checking', 'The server is running the repo checks on this change.', 'Nothing to do yet — the review follows.');

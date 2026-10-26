@@ -30,6 +30,7 @@ import {
   reviewTask,
   runNowTask,
   setQueueEnabled,
+  setPaused,
   unblockTask,
   undoTask,
   type ActionOutcome,
@@ -590,6 +591,20 @@ export const COMMANDS: BotCommand[] = [
     description: 'Stop picking tasks (live sessions keep running)',
     async handler(ctx) {
       return say(await setQueueEnabled(deps(ctx), false, ctx.actor));
+    },
+  },
+  {
+    command: 'pause',
+    description: '⏸ Pause all — suspend live turns, start nothing (resumable)',
+    async handler(ctx) {
+      return say(await setPaused(deps(ctx), true, ctx.actor));
+    },
+  },
+  {
+    command: 'continue',
+    description: '▶️ Continue after Pause all — resume suspended turns',
+    async handler(ctx) {
+      return say(await setPaused(deps(ctx), false, ctx.actor));
     },
   },
   {

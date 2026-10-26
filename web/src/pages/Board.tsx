@@ -1252,6 +1252,7 @@ export function BoardPage({
           reviewState={t.reviewState}
           checkState={t.checkState}
           loopState={t.loopState}
+          paused={!!t.pausedTurn}
           explain={!selecting}
           onOpenReviewer={(() => {
             const rv = liveReviewRun(runs, t.id);

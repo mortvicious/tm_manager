@@ -461,7 +461,7 @@ export interface Storage {
     from: TaskStatus[],
     to: TaskStatus,
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'autoLandedAt' | 'loopState'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'pausedTurn' | 'autoLandedAt' | 'loopState'>>,
     /** merged into the `task.transition` audit row's data (e.g. a landing's reason) */
     audit?: Record<string, unknown>,
   ): Promise<Task | null>;

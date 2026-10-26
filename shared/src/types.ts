@@ -758,6 +758,15 @@ export interface Task {
    */
   queueHeldAt: string | null;
   /**
+   * The turn "Pause all" owes this task (docs/pause.md): set when a pause
+   * suspended its live turn (or deferred an automatic one), and read by
+   * Continue, which resumes the task's OWN claude session. A marked task holds
+   * its repo (queue-sql `heldBy` / `REPO_EXCLUSIVE_GATE`), and every status
+   * transition clears it — a human who moved the task took it over.
+   * null = nothing owed.
+   */
+  pausedTurn: PausedTurn | null;
+  /**
    * ISO time the human hid this task (docs/design.md § Hidden tasks): the
    * board leaves it out of every section but its own dimmed "Hidden" one, and
    * the Telegram Drafts tab skips it. Board-only — no claim reads it. Refused
@@ -836,8 +845,10 @@ export interface Task {
  * split parent waits on children that live in that same repo. JS twin of
  * `REPO_EXCLUSIVE_GATE` in server/src/storage/queue-sql.ts — edit together.
  */
-export function holdsRepoForClaim(t: Pick<Task, 'status' | 'reviewState' | 'checkState'>): boolean {
+export function holdsRepoForClaim(t: Pick<Task, 'status' | 'reviewState' | 'checkState' | 'pausedTurn'>): boolean {
   if (t.status === 'running' || t.status === 'waiting') return true;
+  // a turn Pause all owes this task (docs/pause.md) — Continue resumes it here
+  if (t.pausedTurn) return true;
   return verifyOpen(t);
 }
 
@@ -917,8 +928,9 @@ export const CUSTOM_QUEUE_IN_FLIGHT_STATUSES: readonly TaskStatus[] = ['running'
  * stopping the queue. JS twin of `CUSTOM_QUEUE_HELD_BY` in
  * server/src/storage/queue-sql.ts — edit together.
  */
-export function customQueueHoldsRepo(t: Pick<Task, 'status' | 'reviewState' | 'checkState'>): boolean {
+export function customQueueHoldsRepo(t: Pick<Task, 'status' | 'reviewState' | 'checkState' | 'pausedTurn'>): boolean {
   if (CUSTOM_QUEUE_IN_FLIGHT_STATUSES.includes(t.status)) return true;
+  if (t.pausedTurn) return true; // Continue owes it a turn here (docs/pause.md)
   return verifyOpen(t);
 }
 
@@ -1298,9 +1310,32 @@ export interface Proposal {
 /** What a click outside the terminal drawer does. */
 export type TerminalClickOutside = 'close' | 'compact' | 'nothing';
 
+/**
+ * What Continue does for a task Pause all touched (docs/pause.md):
+ *  - `resume`  — its turn was cut short (or never spawned): reopen its own
+ *    session with `message` (a follow-up that never reached the agent) or,
+ *    without one, the "you were paused, carry on" proceed.
+ *  - `publish` — its publish turn was cut short: Publish again (git decides).
+ *  - `land`    — its landing tier would have auto-published: re-run it.
+ */
+export interface PausedTurn {
+  at: string;
+  kind: 'resume' | 'publish' | 'land';
+  message?: string | null;
+  purpose?: 'work' | 'publish';
+  /** the publish was the auto-publish tier's (re-issued as the orchestrator) */
+  auto?: boolean;
+}
+
 // Runtime-tunable settings stored in tm_config (JSON values under these keys).
 export interface AppSettings {
   'orchestrator.enabled': boolean;
+  /**
+   * Pause all (docs/pause.md): nothing automatic starts and live worker turns
+   * are suspended until Continue. Machine state like `orchestrator.enabled` —
+   * changed only through /api/orchestrator/pause|continue, never PUT /api/config.
+   */
+  'orchestrator.paused': boolean;
   'orchestrator.concurrency': number;
   /** WORKER model — the heavy implementation work (user policy 2026-08-24: opus) */
   'agent.model': string;
@@ -1473,6 +1508,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   'orchestrator.enabled': false,
+  'orchestrator.paused': false,
   'orchestrator.concurrency': 2,
   // Role split (user policy 2026-08-24): opus does the heavy work, fable
   // tells it what to do and reviews.
@@ -1681,6 +1717,8 @@ export type AuditKind =
   | 'shell.killed'
   | 'config.changed'
   | 'orchestrator.toggle'
+  /** Pause all on/off, and the turns it suspended (docs/pause.md) */
+  | 'orchestrator.pause'
   | 'schedule.overflow-claim'
   | 'schedule.spawn-fail'
   | 'boot.recovery'
@@ -1716,6 +1754,8 @@ export type AuditKind =
   | 'chat.turn'
   /** a turn parked on the 5h usage window, or resumed when it reopened (docs/wake.md) */
   | 'task.wake'
+  /** Continue resumed (or could not resume) a turn Pause all owed (docs/pause.md) */
+  | 'task.paused'
   /** a turn ended with the agent's own background children still running, or that wait ended (docs/design.md § Waiting) */
   | 'task.waiting'
   /** a worker's AskUserQuestion reached the human / was answered / expired (docs/questions.md) */
@@ -1893,6 +1933,13 @@ export type TerminalClientMsg =
 // /ws/events
 export interface OrchestratorStatus {
   enabled: boolean;
+  /**
+   * Pause all is on (docs/pause.md): nothing automatic starts, live turns were
+   * suspended. A server predating it omits it.
+   */
+  paused?: boolean;
+  /** tasks Continue will resume (`Task.pausedTurn` set) */
+  pausedTasks?: number;
   /** live non-idle worker PTYs — the concurrency numerator */
   running: number;
   concurrency: number;
@@ -2460,7 +2507,8 @@ export function buildInbox(input: InboxInput): InboxItem[] {
   // review — a ready one (one keystroke lands it) ahead of one that needs reading
   taskKind(
     'review',
-    (t) => t.status === 'review' && !verifyOpen(t),
+    // a task Pause all suspended is not waiting on the human (docs/pause.md)
+    (t) => t.status === 'review' && !verifyOpen(t) && !t.pausedTurn,
     (t) => ({ ready: landingReason(t) }),
     (t) => landingReason(t) !== null,
   );

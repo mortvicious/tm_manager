@@ -2682,6 +2682,17 @@ button.badge.badge-link:hover {
   color: var(--tm-status-review);
 }
 
+/* Pause all (Layout.tsx PauseButton, docs/pause.md): paused reads in the
+   review colour so a held machine is visible at a glance; armed asks */
+.btn.pause-all.paused {
+  color: var(--tm-status-review);
+  border-color: var(--tm-status-review);
+}
+
+.btn.pause-all.armed {
+  color: var(--tm-status-review);
+}
+
 /* the phone header's queue state (Layout.tsx RunCount): a dot, not a control */
 .queue-dot {
   display: inline-block;

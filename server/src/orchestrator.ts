@@ -18,6 +18,7 @@ import {
   type LoopIteration,
   type LoopState,
   type LandingTier,
+  type PausedTurn,
   type Repo,
   type ReviewRound,
   type ReviewState,
@@ -156,6 +157,19 @@ const PUBLISH_RUN_LABEL = 'publish';
  * apart from 'system' so the audit log tells a landing from a sweep.
  */
 const LANDING_ACTOR = 'orchestrator';
+
+/**
+ * Actors that are a person (web, Telegram). While Pause all is on
+ * (docs/pause.md) nothing automatic starts a turn; a human click still does.
+ */
+const HUMAN_ACTORS = new Set(['human', 'telegram']);
+
+/** What Continue types into a session Pause all cut short mid-turn (docs/pause.md). */
+const PAUSE_PROCEED =
+  'Proceed — continue from exactly where you left off. Your previous turn was interrupted because the' +
+  ' task manager was paused ("Pause all", e.g. for a server restart), not because the work was finished.' +
+  ' Re-check the current state of the work (files, git, anything you were running) before assuming' +
+  ' anything, then carry on.';
 
 /**
  * Tasks whose work has not been approved yet (docs/queue.md § Stacked tasks):
@@ -305,6 +319,12 @@ export class Orchestrator implements OrchestratorApi {
    * only: a restart is refused while the publish turn works.
    */
   private readonly autoPublishing = new Set<string>();
+  /**
+   * Continue's resumes still on their way to a PTY (docs/pause.md): counted
+   * by `activeWorkers()` like a fired dispatch turn, so the claim loop that
+   * Continue wakes cannot fill the slots they are about to take.
+   */
+  private readonly pauseResumesInFlight = new Map<string, string | null>();
   /** single-flight guard for dispatch delivery (docs/dispatch.md) — the route
    *  and the scheduler may both ask for a sweep at once. */
   private deliveringDispatches = false;
@@ -707,7 +727,8 @@ export class Orchestrator implements OrchestratorApi {
       const settings = await this.storage.getSettings();
       if (!settings['agent.autoWake']) return;
       await this.parkStalledSessions(settings);
-      await this.wakeDue(settings);
+      // paused: the marks stay and the wakes fire after Continue (docs/pause.md)
+      if (!settings['orchestrator.paused']) await this.wakeDue(settings);
     } catch (err) {
       console.error('orchestrator wake sweep error:', err);
     } finally {
@@ -1080,6 +1101,10 @@ export class Orchestrator implements OrchestratorApi {
     // before its process actually dies; a crash in that window leaves a live
     // claude pid under a non-running row (review M8).
     const all = await this.storage.listRuns();
+    // Pause all survives the restart it was pressed for (docs/pause.md): a
+    // turn this boot finds cut is owed to Continue rather than failed, and no
+    // verify round is re-run until Continue.
+    const paused = await this.isPaused();
     // No hook survives a restart: a question still pending was being waited
     // on by a process this boot is about to kill (or that died with the last
     // one), so it can never be collected — expire it before the human answers
@@ -1112,7 +1137,15 @@ export class Orchestrator implements OrchestratorApi {
           needsAttention: false,
           endedAt: new Date().toISOString(),
         });
-        if (run.taskId && run.mode === 'worker') {
+        if (run.taskId && run.mode === 'worker' && paused) {
+          const at = new Date().toISOString();
+          const moved = await this.storage.transitionTask(run.taskId, ['running', 'waiting'], 'review', 'system', {
+            error: null,
+            reviewState: null,
+            pausedTurn: run.label === PUBLISH_RUN_LABEL ? { at, kind: 'publish' } : { at, kind: 'resume' },
+          });
+          if (moved) broadcast({ type: 'task.updated', task: moved });
+        } else if (run.taskId && run.mode === 'worker') {
           // Conditional: an idle-completed run's task sits in review — must
           // not be clobbered to failed (review M8).
           const task = await this.storage.transitionTask(run.taskId, ['running', 'waiting'], 'failed', 'system', {
@@ -1163,10 +1196,18 @@ export class Orchestrator implements OrchestratorApi {
       // Never ran at all, and there is nothing to review.
       const everRan = runs.some((r) => r.mode === 'worker');
       const to = everRan ? 'review' : 'failed';
-      const moved = await this.storage.transitionTask(task.id, ['running', 'waiting'], to, 'system', {
-        error: 'server stopped before this task had a live agent — nothing was running at boot',
-        reviewState: null,
-      });
+      const moved = await this.storage.transitionTask(
+        task.id,
+        ['running', 'waiting'],
+        to,
+        'system',
+        everRan && paused
+          ? { error: null, reviewState: null, pausedTurn: { at: new Date().toISOString(), kind: 'resume' } }
+          : {
+              error: 'server stopped before this task had a live agent — nothing was running at boot',
+              reviewState: null,
+            },
+      );
       if (moved) {
         stranded.push(task.id);
         broadcast({ type: 'task.updated', task: moved });
@@ -1193,7 +1234,7 @@ export class Orchestrator implements OrchestratorApi {
     for (const task of await this.storage.listTasks()) {
       if (REVIEW_NOW_FROM.includes(task.status)) {
         if (task.reviewState === 'pending' || task.reviewState === 'reviewing') {
-          void this.reviewCompletedRun(task.id, true);
+          if (!paused) void this.reviewCompletedRun(task.id, true); // paused: Continue re-runs it
         } else if (task.reviewState === 'fixing') {
           await this.setReviewState(task.id, settledReviewState(task.reviewRounds));
         }
@@ -1205,9 +1246,12 @@ export class Orchestrator implements OrchestratorApi {
       // is simply joined). Elsewhere the mark is stale.
       if (task.checkState && CHECK_BUSY_STATES.includes(task.checkState)) {
         if (task.status !== 'review') await this.setCheckState(task.id, null);
-        else if (!this.pendingReviews.has(task.id)) void this.reviewCompletedRun(task.id);
+        else if (!paused && !this.pendingReviews.has(task.id)) void this.reviewCompletedRun(task.id);
       }
     }
+    // Continue was pressed and the process died before every owed turn
+    // started: the flag is already off, so finish what it began.
+    if (!paused && (await this.pausedTasks()).length) await this.resumePaused();
     if (orphans.length || stranded.length) {
       await this.storage.appendEvent({
         kind: 'boot.recovery',
@@ -1225,6 +1269,8 @@ export class Orchestrator implements OrchestratorApi {
     const settings = await this.storage.getSettings();
     return {
       enabled: settings['orchestrator.enabled'],
+      paused: settings['orchestrator.paused'],
+      pausedTasks: (await this.pausedTasks()).length,
       // live non-idle sessions — DB run rows stay 'running' while a completed
       // session idles, which would overstate the count (review M2)
       running: this.sessions.liveCount(),
@@ -1244,6 +1290,211 @@ export class Orchestrator implements OrchestratorApi {
     if (enabled) this.maybeSchedule();
   }
 
+  // ---- Pause all (docs/pause.md) ----
+
+  /** Pause all is on. The setting row is the truth — it survives a restart. */
+  async isPaused(settings?: AppSettings): Promise<boolean> {
+    return (settings ?? (await this.storage.getSettings()))['orchestrator.paused'] === true;
+  }
+
+  /** Tasks Continue owes a turn, oldest marker first. */
+  private async pausedTasks(): Promise<Task[]> {
+    const rows = [
+      ...(await this.storage.listTasks({ status: 'review' })),
+      ...(await this.storage.listTasks({ status: 'failed' })),
+    ];
+    return rows.filter((t) => t.pausedTurn).sort((a, b) => a.pausedTurn!.at.localeCompare(b.pausedTurn!.at));
+  }
+
+  /**
+   * Pause all: the flag FIRST (every gate reads it, so nothing new starts from
+   * here on), then every live worker turn is suspended in a way its own
+   * session can resume — see `suspendTask`. In-flight compactions and review
+   * rounds are stopped too, so the restart guard reaches zero; their tasks
+   * keep what Continue needs. Two sweeps: a gate's abort branch and a turn
+   * that passed its pause check just before the flag settle in between.
+   * Idempotent: pressing it again only sweeps again.
+   */
+  async pauseAll(actor = 'human'): Promise<{ suspended: string[] }> {
+    const already = await this.isPaused();
+    await this.storage.setSetting('orchestrator.paused', true);
+    if (!already) await this.storage.appendEvent({ kind: 'orchestrator.pause', actor, data: { paused: true } });
+    broadcast({ type: 'orchestrator.status', status: await this.status() });
+    const suspended = new Set<string>();
+    await this.suspendSweep(actor, suspended);
+    const deadline = Date.now() + 15_000;
+    while ((this.gatesInFlight.size > 0 || this.dispatchTurnsInFlight.size > 0) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await this.suspendSweep(actor, suspended);
+    if (suspended.size) {
+      await this.storage.appendEvent({
+        kind: 'orchestrator.pause',
+        actor,
+        data: { paused: true, suspended: [...suspended] },
+      });
+    }
+    broadcast({ type: 'orchestrator.status', status: await this.status() });
+    return { suspended: [...suspended] };
+  }
+
+  private async suspendSweep(actor: string, out: Set<string>): Promise<void> {
+    // A review round in flight: stopped; `runReviewRound` sees the pause and
+    // leaves the row `pending` (nothing recorded), so Continue re-runs it.
+    for (const run of await this.storage.listRuns({ status: 'running', mode: 'aux' })) {
+      if (run.kind === 'review') aux().abort(run.id);
+    }
+    // A resume gate mid-compaction: its abort branch parks the task with the
+    // turn it was about to start (`pauseParkGate`).
+    for (const taskId of [...this.gatesInFlight]) abortCompaction(taskId);
+    // A transient back-off whose terminal already died (the task sits in
+    // review/failed waiting for the `--resume`): owed that resume.
+    for (const taskId of [...this.transientRetries.keys()]) {
+      const t = await this.storage.getTask(taskId);
+      if (t && (t.status === 'review' || t.status === 'failed')) {
+        this.dropTransient(taskId);
+        if (!t.pausedTurn && (await this.markPaused(taskId, { kind: 'resume' }))) out.add(taskId);
+      }
+    }
+    for (const status of ['running', 'waiting'] as const) {
+      for (const task of await this.storage.listTasks({ status })) {
+        if (await this.suspendTask(task, actor)) out.add(task.id);
+      }
+    }
+  }
+
+  /** Write a marker on a task that is already at rest (review/failed). */
+  private async markPaused(taskId: string, turn: Omit<PausedTurn, 'at'>): Promise<boolean> {
+    const row = await this.storage.updateTask(taskId, { pausedTurn: { at: new Date().toISOString(), ...turn } });
+    if (row) broadcast({ type: 'task.updated', task: row });
+    return !!row;
+  }
+
+  /**
+   * Suspend one working task the way the wake path ends a stall
+   * (`endStalledRun`): its live run marked `killed` FIRST — which is what makes
+   * `handleExit` leave the task alone — then the PTY killed, then the task
+   * moved to `review` (the status a resume accepts) carrying the marker that
+   * Continue reads. The session is on disk, so `--resume` picks it up exactly
+   * there. A loop between iterations has no session and is left as it is (its
+   * pump is paused); a task with no live PTY yet is a spawn in flight, which
+   * its own pause check or the second sweep catches.
+   */
+  private async suspendTask(task: Task, actor: string): Promise<boolean> {
+    if (task.status !== 'running' && task.status !== 'waiting') return false;
+    if (task.kind === 'loop' && (task.loopState === 'checking' || task.loopState === 'next')) return false;
+    if (this.gatesInFlight.has(task.id)) return false;
+    const live = (await this.storage.listRuns({ taskId: task.id })).filter((r) => {
+      if (r.mode !== 'worker' || r.status !== 'running') return false;
+      const s = this.sessions.get(r.id);
+      return s !== undefined && s.exit === null;
+    });
+    if (!live.length) return false;
+    const publishing = live.some((r) => this.publishRuns.has(r.id));
+    this.dropTransient(task.id);
+    for (const run of live) {
+      await this.storage.updateRun(run.id, { status: 'killed', endedAt: new Date().toISOString() });
+      this.sessions.kill(run.id);
+      await this.storage.appendEvent({
+        kind: 'run.killed',
+        actor,
+        runId: run.id,
+        taskId: task.id,
+        data: { reason: 'paused' },
+      });
+    }
+    const pausedTurn: PausedTurn = publishing
+      ? { at: new Date().toISOString(), kind: 'publish', auto: this.autoPublishing.has(task.id) }
+      : { at: new Date().toISOString(), kind: 'resume' };
+    const moved = await this.storage.transitionTask(
+      task.id,
+      ['running', 'waiting'],
+      'review',
+      actor,
+      { error: null, pausedTurn },
+      { reason: 'pause all' },
+    );
+    if (moved) broadcast({ type: 'task.updated', task: moved });
+    return !!moved;
+  }
+
+  /**
+   * Continue: the flag off, then every task Pause all owes a turn gets it —
+   * in its OWN session — then the verify rounds the pause held, then the
+   * queues. The marked tasks hold their repos (queue-sql `heldBy` /
+   * `REPO_EXCLUSIVE_GATE`) until their resume moves them to `running`, so the
+   * claim loop woken here cannot start another task on top of them.
+   */
+  async continueAll(actor = 'human'): Promise<{ resumed: string[] }> {
+    const was = await this.isPaused();
+    await this.storage.setSetting('orchestrator.paused', false);
+    if (was) await this.storage.appendEvent({ kind: 'orchestrator.pause', actor, data: { paused: false } });
+    const resumed = await this.resumePaused();
+    await this.resumeVerifyRounds();
+    broadcast({ type: 'orchestrator.status', status: await this.status() });
+    this.maybeSchedule();
+    return { resumed };
+  }
+
+  private async resumePaused(): Promise<string[]> {
+    const owed = await this.pausedTasks();
+    for (const t of owed) {
+      this.pauseResumesInFlight.set(t.id, t.repoId);
+      void this.resumeOne(t)
+        .catch((err) => console.error('pause: resume failed:', err))
+        .finally(() => this.pauseResumesInFlight.delete(t.id));
+    }
+    return owed.map((t) => t.id);
+  }
+
+  private async resumeOne(t: Task): Promise<void> {
+    const turn = t.pausedTurn!;
+    let res: ActionResult | null = null;
+    if (turn.kind === 'land') await this.landIfClean(t.id);
+    else if (turn.kind === 'publish') res = await this.publish(t.id, turn.auto ? LANDING_ACTOR : 'system');
+    else if (turn.message) res = await this.followUp(t.id, turn.message, 'system', 'auto', turn.purpose ?? 'work');
+    else res = await this.proceed(t.id, PAUSE_PROCEED, 'system');
+    // A resume that started moved the task, which released the marker. One
+    // that did not (no session left on disk, a human took the task) must not
+    // keep holding the repo: released here, the reason on the row.
+    const cur = await this.storage.getTask(t.id);
+    // Paused again while this was on its way: the refusal was the pause's,
+    // and the marker is still owed to the next Continue.
+    if (cur?.pausedTurn && (await this.isPaused())) return;
+    if (cur?.pausedTurn) {
+      const row = await this.storage.updateTask(t.id, {
+        pausedTurn: null,
+        ...(res && 'error' in res ? { error: `Continue could not resume this task: ${res.error}` } : {}),
+      });
+      if (row) broadcast({ type: 'task.updated', task: row });
+    }
+    await this.storage.appendEvent({
+      kind: 'task.paused',
+      actor: 'system',
+      taskId: t.id,
+      repoId: t.repoId,
+      data: { action: 'resumed', kind: turn.kind, ...(res && 'error' in res ? { error: res.error.slice(0, 300) } : {}) },
+    });
+  }
+
+  /**
+   * Verify rounds a pause held (or a restart cut): `review` rows still
+   * `pending|reviewing` or with checks `pending|running` are re-run — the same
+   * rule boot recovery applies. A task Continue is resuming is skipped: its
+   * own Stop will mark the round again.
+   */
+  private async resumeVerifyRounds(): Promise<void> {
+    for (const status of REVIEW_NOW_FROM) {
+      for (const task of await this.storage.listTasks({ status })) {
+        if (task.pausedTurn || this.pauseResumesInFlight.has(task.id) || this.pendingReviews.has(task.id)) continue;
+        if (task.reviewState === 'pending' || task.reviewState === 'reviewing') void this.reviewCompletedRun(task.id, true);
+        else if (status === 'review' && task.checkState && CHECK_BUSY_STATES.includes(task.checkState)) {
+          void this.reviewCompletedRun(task.id);
+        }
+      }
+    }
+  }
+
   /** Claim queued tasks while below the concurrency cap (event-driven, single-flight). */
   maybeSchedule(): void {
     if (this.scheduling) {
@@ -1257,6 +1508,9 @@ export class Orchestrator implements OrchestratorApi {
         do {
           this.rescheduleRequested = false;
           const settings = await this.storage.getSettings();
+          // Pause all (docs/pause.md): no claim, no pump, no dispatch
+          // delivery — every source of a new turn on this pass is held.
+          if (settings['orchestrator.paused']) return;
           const cap = settings['orchestrator.concurrency'];
           // `budget.dayUsd` (docs/token-budget.md § Fuses): past today's cap
           // nothing new is CLAIMED — custom queue, global or overflow. Turns
@@ -1324,7 +1578,7 @@ export class Orchestrator implements OrchestratorApi {
    * A task can be in both sets, so they are unioned rather than added.
    */
   private activeWorkers(): number {
-    const pending = new Set([...this.gatesInFlight, ...this.dispatchTurnsInFlight.keys()]);
+    const pending = new Set([...this.gatesInFlight, ...this.dispatchTurnsInFlight.keys(), ...this.pauseResumesInFlight.keys()]);
     return this.sessions.liveCount() + pending.size;
   }
 
@@ -1497,6 +1751,10 @@ export class Orchestrator implements OrchestratorApi {
     // Repos out of this pass: held across a follow-on gap, busy, or just
     // claimed (its member is `running` now, so the SQL would skip it anyway).
     const skip = await this.customQueueHeldRepos();
+    // Continue's resumes (docs/pause.md) hold their repos until the PTY is
+    // live — `repoBusy` sees it from then on; a compaction gate on the way
+    // would otherwise let a same-repo member start on top of the work.
+    for (const repoId of this.pauseResumesInFlight.values()) if (repoId) skip.add(repoId);
     while (this.activeWorkers() < cap && this.sessions.totalLiveCount() < MAX_LIVE_SESSIONS) {
       const head = await this.storage.peekCustomQueue([...skip]);
       if (!head?.repoId) return;
@@ -1996,6 +2254,46 @@ export class Orchestrator implements OrchestratorApi {
     });
   }
 
+  /**
+   * The marker for a turn Pause all stopped before it spawned. A dispatch
+   * turn gets none: its messages stay pending and are delivered again after
+   * Continue (a marker would deliver them twice).
+   */
+  private pauseOwed(followUp: string | undefined, purpose: 'work' | 'publish', actor?: string): PausedTurn | null {
+    const at = new Date().toISOString();
+    if (purpose === 'publish') return { at, kind: 'publish', auto: actor === LANDING_ACTOR };
+    if (actor === 'dispatch') return null;
+    return { at, kind: 'resume', message: followUp ?? null, purpose };
+  }
+
+  private async pauseUnspawned(
+    task: Task,
+    repoId: string,
+    followUp: string | undefined,
+    resumeFrom: Run | null,
+    purpose: 'work' | 'publish',
+    actor?: string,
+  ): Promise<void> {
+    let moved: Task | null = null;
+    if (followUp || resumeFrom || purpose === 'publish') {
+      const owed = this.pauseOwed(followUp, purpose, actor);
+      moved = await this.storage.transitionTask(task.id, ['running'], 'review', 'orchestrator', {
+        error: null,
+        ...(owed ? { pausedTurn: owed } : {}),
+      });
+    } else if (!(task.kind === 'loop' && task.loopState === 'next')) {
+      moved = await this.storage.transitionTask(task.id, ['running'], 'queued', 'orchestrator', { error: null });
+    }
+    if (moved) broadcast({ type: 'task.updated', task: moved });
+    await this.storage.appendEvent({
+      kind: 'schedule.spawn-fail',
+      actor: 'orchestrator',
+      taskId: task.id,
+      repoId,
+      data: { reason: 'paused', to: moved?.status ?? task.status },
+    });
+  }
+
   private async startWorker(
     // Reassigned once, after the resume gate: a compaction can take minutes,
     // and the row must be re-read before anything is spawned against it.
@@ -2003,6 +2301,8 @@ export class Orchestrator implements OrchestratorApi {
     followUp?: string,
     resumeFrom?: Run | null,
     purpose: 'work' | 'publish' = 'work',
+    // who asked for this turn; undefined = an automatic start (claim, pump)
+    actor?: string,
   ): Promise<boolean> {
     // Any turn the transient-error path did not start ends that path: a human
     // Proceed during the back-off, a fresh claim (docs/design.md § Transient
@@ -2085,9 +2385,18 @@ export class Orchestrator implements OrchestratorApi {
         // failure to record this is not a reason to throw out of startWorker,
         // and `recoverOnBoot` sweeps exactly this state on the way back up.
         try {
-          const reverted = await this.storage.transitionTask(task.id, ['running'], 'review', 'orchestrator', {
-            error: 'stopped while compacting the previous session before resuming it — follow up again to retry',
-          });
+          // Stopped by Pause all (docs/pause.md): the turn it was about to
+          // start is what Continue owes — message kept, never lost.
+          const owed = (await this.isPaused()) ? this.pauseOwed(followUp, purpose, actor) : null;
+          const reverted = await this.storage.transitionTask(
+            task.id,
+            ['running'],
+            'review',
+            'orchestrator',
+            owed
+              ? { error: null, pausedTurn: owed }
+              : { error: 'stopped while compacting the previous session before resuming it — follow up again to retry' },
+          );
           if (reverted) broadcast({ type: 'task.updated', task: reverted });
           await this.storage.appendEvent({
             kind: 'schedule.spawn-fail',
@@ -2121,6 +2430,15 @@ export class Orchestrator implements OrchestratorApi {
       this.gatesInFlight.delete(task.id);
     }
     task = still;
+    // Pause all (docs/pause.md): an automatic turn that got this far after
+    // the flag went up is not spawned. A resume is parked with the turn it
+    // carried (Continue delivers it); a fresh claim goes back to `queued`,
+    // keeping its place and its custom-queue mark; a loop's next iteration
+    // stays `running`+`next` for its pump.
+    if (!(actor && HUMAN_ACTORS.has(actor)) && (await this.isPaused())) {
+      await this.pauseUnspawned(task, repo.id, followUp, resumeFrom ?? null, purpose, actor);
+      return false;
+    }
     // A loop task's fresh start with no instruction of its own IS an
     // iteration (docs/loops.md): numbered and stepped to `iterating` here,
     // the one funnel every start goes through (claim, Run now, Retry, the
@@ -2340,6 +2658,12 @@ export class Orchestrator implements OrchestratorApi {
     const cur = await this.storage.getTask(taskId);
     if (!cur) return { error: 'task not found', code: 404 };
     if (!cur.repoId) return { error: 'assign a repo first', code: 409 };
+    // Pause all (docs/pause.md): the backstop for any automatic turn whose
+    // caller did not defer it itself. Nothing is moved; the caller keeps its
+    // own refusal path (a dispatch stays pending, and so on).
+    if (!HUMAN_ACTORS.has(actor) && (await this.isPaused())) {
+      return { error: 'the task manager is paused — Continue to resume automatic work', code: 409 };
+    }
 
     const runs = await this.storage.listRuns({ taskId });
     const liveRun = runs.find((r) => {
@@ -2418,7 +2742,7 @@ export class Orchestrator implements OrchestratorApi {
     });
     // The `fyi` backlog is drained by startWorker, which every spawn goes
     // through — see pendingFyiDispatches().
-    const ok = await this.startWorker(task, message, resumeFrom, purpose);
+    const ok = await this.startWorker(task, message, resumeFrom, purpose, actor);
     if (!ok) {
       const latest = await this.storage.getTask(taskId);
       return { error: latest?.error ?? 'failed to start worker', code: 500 };
@@ -2691,7 +3015,7 @@ export class Orchestrator implements OrchestratorApi {
       });
     }
     broadcast({ type: 'task.updated', task });
-    const ok = await this.startWorker(task);
+    const ok = await this.startWorker(task, undefined, undefined, 'work', actor);
     if (!ok) {
       const latest = await this.storage.getTask(taskId);
       return { error: latest?.error ?? 'failed to start worker', code: 500 };
@@ -2942,6 +3266,7 @@ export class Orchestrator implements OrchestratorApi {
   /** The back-off ran out: resume the turn, unless the world moved on meanwhile. */
   private async fireTransient(taskId: string, entry: TransientRetry): Promise<void> {
     if (this.transientRetries.get(taskId) !== entry) return;
+    if (await this.isPaused()) return this.pauseTransient(taskId, entry);
     const giveUp = async (reason: string) => {
       this.dropTransient(taskId);
       await this.auditTransient(taskId, entry, { action: 'skipped', reason });
@@ -2997,6 +3322,22 @@ export class Orchestrator implements OrchestratorApi {
     await this.resumeTransient(taskId, entry, 'session-gone');
   }
 
+  /**
+   * Pause all reached a transient back-off (docs/pause.md): the turn is owed
+   * to Continue instead — suspended if its terminal is still in the turn,
+   * marked if the terminal already died and the task sits in review/failed.
+   */
+  private async pauseTransient(taskId: string, entry: TransientRetry): Promise<void> {
+    this.dropTransient(taskId);
+    await this.auditTransient(taskId, entry, { action: 'skipped', reason: 'paused' });
+    const task = await this.storage.getTask(taskId);
+    if (!task) return;
+    if (task.status === 'running' || task.status === 'waiting') await this.suspendTask(task, 'system');
+    else if ((task.status === 'review' || task.status === 'failed') && !task.pausedTurn) {
+      await this.markPaused(taskId, { kind: 'resume' });
+    }
+  }
+
   /** `continue` was typed: if the transcript did not move, it never submitted — resume instead. */
   private async checkTypedResume(taskId: string, entry: TransientRetry, before: number | null): Promise<void> {
     // A new StopFailure (a new entry), a Stop (dropped) or a human now owns it.
@@ -3014,6 +3355,7 @@ export class Orchestrator implements OrchestratorApi {
 
   /** The `--resume` delivery: the same claude session in a new process, via followUp. */
   private async resumeTransient(taskId: string, entry: TransientRetry, why: string): Promise<void> {
+    if (await this.isPaused()) return this.pauseTransient(taskId, entry);
     // A publish turn stays one: git, not the exit, decides how it lands.
     const purpose = this.publishRuns.has(entry.runId) ? 'publish' : 'work';
     const s = this.sessions.get(entry.runId);
@@ -3270,6 +3612,10 @@ export class Orchestrator implements OrchestratorApi {
       };
     }
     if (!(await this.storage.getRepo(task.repoId))) return { error: 'repo not found', code: 409 };
+    // A reviewer is an automatic session the pause holds (docs/pause.md).
+    if (await this.isPaused()) {
+      return { error: 'the task manager is paused — Continue first, then review', code: 409 };
+    }
     // Synchronous from the lock check to its registration: two presses cannot
     // both get past here.
     if (this.pendingReviews.has(taskId)) return { error: 'review already in progress', code: 409 };
@@ -3313,10 +3659,14 @@ export class Orchestrator implements OrchestratorApi {
     try {
       for (let pass = 0; ; pass++) {
         this.reviewRecheck.delete(taskId);
+        // Pause all (docs/pause.md): no check or review session starts. The
+        // row keeps `pending`, which is what Continue (or boot) re-runs.
+        if (await this.isPaused()) return this.deferLanding(taskId);
         // Checks come first (docs/checks.md): cheap and deterministic, so a
         // reviewer never spends a session on a change that does not build.
         // False = no review this pass (a fix turn was sent, or red landed).
         const review = await this.runCheckStage(taskId);
+        if (await this.isPaused()) return this.deferLanding(taskId);
         // only the first pass is the forced one; a recheck is a Stop's pass
         if (review) await this.runReviewRound(taskId, forced && pass === 0);
         if (!this.reviewRecheck.has(taskId)) {
@@ -3347,6 +3697,20 @@ export class Orchestrator implements OrchestratorApi {
     } finally {
       this.reviewRecheck.delete(taskId);
     }
+  }
+
+  /**
+   * A verify pass the pause cut (docs/pause.md). Continue re-runs an OPEN
+   * round itself (`resumeVerifyRounds`), and that round ends in the landing;
+   * a settled one would never be looked at again, so a task whose tier lands
+   * on its own is marked `land` for Continue to run `landIfClean`.
+   */
+  private async deferLanding(taskId: string): Promise<void> {
+    const task = await this.storage.getTask(taskId);
+    if (!task || task.status !== 'review' || task.pausedTurn || verifyOpen(task) || !task.repoId) return;
+    const repo = await this.storage.getRepo(task.repoId);
+    if (!repo || effectiveLanding(task, repo) === 'supervised' || !landingReason(task)) return;
+    await this.markPaused(taskId, { kind: 'land' });
   }
 
   /**
@@ -3387,6 +3751,12 @@ export class Orchestrator implements OrchestratorApi {
       broadcast({ type: 'task.updated', task: done });
       await this.closeTaskSessions(taskId, LANDING_ACTOR);
       await this.resolveCompletion(done, LANDING_ACTOR);
+      return;
+    }
+    // Pause all (docs/pause.md): the publish turn is owed to Continue, which
+    // runs this landing again (budget and verdict re-read then).
+    if (await this.isPaused()) {
+      await this.markPaused(taskId, { kind: 'land' });
       return;
     }
     const verdict = await this.budgetAllows(task, 'auto-publish');
@@ -3540,6 +3910,15 @@ export class Orchestrator implements OrchestratorApi {
         overBudget = verdict;
         canLoop = false;
       }
+    }
+    // Pause all (docs/pause.md) landed while the reviewer ran — usually by
+    // stopping it. A round that was cut short, or whose findings would now go
+    // back to the worker, is not recorded: the row returns to `pending` and
+    // Continue reviews again (the hash was never written, so that is a real
+    // round). A clean or minors-only verdict needs no turn and is kept.
+    if ((result.error || canLoop) && (await this.isPaused())) {
+      await this.setReviewState(taskId, 'pending');
+      return;
     }
     const round: ReviewRound = {
       round: task.reviewRounds.length + 1,
@@ -3742,6 +4121,12 @@ export class Orchestrator implements OrchestratorApi {
     if (verdict !== 'red') {
       this.checkLoops.delete(taskId);
       return true;
+    }
+    if (!stop && (await this.isPaused())) {
+      // Pause all (docs/pause.md): no fix turn now. The checks are due again,
+      // and Continue re-runs them before typing the failure in.
+      await this.setCheckState(taskId, 'pending');
+      return false;
     }
     if (!stop) {
       this.checkLoops.set(taskId, { round: round + 1, hash: change.hash });

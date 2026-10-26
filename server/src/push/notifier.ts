@@ -193,7 +193,8 @@ export class PushNotifier {
       case 'review':
         // one verdict per change: wait for the review to settle, then speak
         // ...and for the repo checks before it (docs/checks.md)
-        if (unsettled(t.reviewState) || checking(t.checkState)) break;
+        // A turn Pause all suspended is not ready for anyone (docs/pause.md).
+        if (unsettled(t.reviewState) || checking(t.checkState) || t.pausedTurn) break;
         if (moved || (reviewMoved && unsettled(prevReview)) || (checkMoved && checking(prevCheck))) {
           this.mark(t.id, (p) => (p.review = true));
         }
@@ -284,7 +285,7 @@ export class PushNotifier {
         );
       }
     }
-    if (p.review && task.status === 'review' && !unsettled(task.reviewState) && !checking(task.checkState)) {
+    if (p.review && task.status === 'review' && !unsettled(task.reviewState) && !checking(task.checkState) && !task.pausedTurn) {
       const verdict = [checkClause(task), reviewClause(task)].filter(Boolean).join(' · ') || null;
       const body = [verdict, task.error ? `⚠ ${task.error}` : (reviewerSummary ?? task.resultSummary)]
         .filter(Boolean)

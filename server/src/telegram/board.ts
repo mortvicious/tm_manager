@@ -680,6 +680,7 @@ export async function renderBoard(deps: BoardDeps, want: BoardState): Promise<Re
     const st = await deps.orchestrator.status();
     head.push(
       `workers ${st.running}/${st.concurrency} · queue ${st.enabled ? 'on' : 'off'}` +
+        (st.paused ? ` · ⏸ paused${st.pausedTasks ? ` (${st.pausedTasks} to resume)` : ''}` : '') +
         (st.aux ? ` · ${st.aux} aux` : ''),
     );
   }

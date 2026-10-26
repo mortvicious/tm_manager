@@ -29,7 +29,10 @@ export function customQueueBlocker(task: Task, tasks: Task[], runs: Run[] = []):
   if (!task.repoId) return undefined;
   const sameRepo = (o: Task) => o.id !== task.id && o.repoId === task.repoId;
   const member = tasks.find((o) => sameRepo(o) && !!o.customQueueAt && customQueueHoldsRepo(o));
-  if (member || !task.createdByRun) return member;
+  if (member) return member;
+  // a task Pause all owes a turn holds its repo for every member (docs/pause.md)
+  const owed = tasks.find((o) => sameRepo(o) && !!o.pausedTurn);
+  if (owed || !task.createdByRun) return owed;
   const filerId = runs.find((r) => r.id === task.createdByRun)?.taskId;
   const filer = filerId
     ? tasks.find((o) => o.id === filerId && sameRepo(o) && (o.status === 'failed' || customQueueHoldsRepo(o)))

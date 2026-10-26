@@ -409,7 +409,8 @@ export class TelegramNotifier {
         // change instead of one ping per bounce. The settling update is a
         // review-state move on an unchanged status, hence the second arm.
         // Repo checks (docs/checks.md) come first and are waited for the same way.
-        if (unsettled(t.reviewState) || checking(t.checkState)) break;
+        // A turn Pause all suspended is not ready for anyone (docs/pause.md).
+        if (unsettled(t.reviewState) || checking(t.checkState) || t.pausedTurn) break;
         if (moved || (reviewMoved && unsettled(prevReview)) || (checkMoved && checking(prevCheck))) {
           this.mark(t.id, (p) => (p.review = true));
         }
@@ -470,7 +471,7 @@ export class TelegramNotifier {
     // Re-checked against the row: a review that went back into a fix round
     // (running again) or is still being reviewed (the reviewer started after
     // the mark) flushes into nothing — its settling update will mark again.
-    if (n.review && p.review && task.status === 'review' && !unsettled(task.reviewState) && !checking(task.checkState)) {
+    if (n.review && p.review && task.status === 'review' && !unsettled(task.reviewState) && !checking(task.checkState) && !task.pausedTurn) {
       const verdict = [checkClause(task), reviewClause(task)].filter(Boolean).join(' · ');
       lines.push(`📋 ${title} is in <b>review</b>${verdict ? ` · ${escapeHtml(verdict)}` : ''}.`);
       const last = task.reviewRounds[task.reviewRounds.length - 1];

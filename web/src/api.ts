@@ -386,6 +386,6 @@ export const api = {
   statsOverview: (days: number) => req<StatsOverview>('GET', `/api/stats/overview?days=${days}`),
   anomalies: () => req<Anomaly[]>('GET', '/api/stats/anomalies'),
   events: (limit = 50) => req<AuditEvent[]>('GET', `/api/events?limit=${limit}`),
-  orchestratorAction: (a: 'start' | 'stop' | 'stop-and-kill') =>
+  orchestratorAction: (a: 'start' | 'stop' | 'stop-and-kill' | 'pause' | 'continue') =>
     req<{ enabled: boolean }>('POST', `/api/orchestrator/${a}`),
 };

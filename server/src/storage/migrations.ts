@@ -658,6 +658,13 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
     // the agent create/file routes; null on every other task.
     statements: [`ALTER TABLE tm_tasks ADD COLUMN brief TEXT`],
   },
+  {
+    id: 40,
+    // Pause all (docs/pause.md): the turn Continue owes this task, as JSON
+    // (`PausedTurn`), null = nothing owed. Holds the task's repo in the claim
+    // gates (queue-sql.ts) and is cleared by every status transition.
+    statements: [`ALTER TABLE tm_tasks ADD COLUMN paused_turn TEXT`],
+  },
 ];
 
 /** The migration whose rows each driver backfills in JS once it is applied. */

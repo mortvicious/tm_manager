@@ -12,7 +12,8 @@
  * round still open (review_state pending/reviewing/fixing — its findings are
  * about to be typed back into a session in this checkout) or its repo checks
  * still due or running (check_state pending/running, docs/checks.md — they
- * read this checkout).
+ * read this checkout), or owed a turn by Pause all (`paused_turn`,
+ * docs/pause.md — Continue resumes it in this checkout).
  *
  * Finished work that merely sits in `review` for the human does NOT hold it
  * (decisions.md 2026-09-28, "Review no longer holds the custom queue"): the
@@ -24,6 +25,7 @@
  */
 const heldBy = (a: string) =>
   `(${a}.status IN ('running', 'waiting', 'blocked')
+      OR ${a}.paused_turn IS NOT NULL
       OR (${a}.status = 'review' AND (${a}.review_state IN ('pending', 'reviewing', 'fixing')
                                        OR ${a}.check_state IN ('pending', 'running'))))`;
 
@@ -42,10 +44,15 @@ const heldBy = (a: string) =>
  *    may have left its edits behind, and a retry or cancel resolves it.
  *  - for ANY task in the repo, member or not, that holds it by the same
  *    `heldBy` test (a global-queue filer's open review round included).
+ * And for any task in its repo, member or not, that Pause all owes a turn
+ * (`paused_turn`, docs/pause.md): Continue resumes it in this checkout.
  * The caller interpolates the gate; expects the candidate row aliased `t`.
  */
 export const CUSTOM_QUEUE_HEAD_WHERE = `t.status = 'queued' AND t.repo_id IS NOT NULL AND t.custom_queue_at IS NOT NULL
   AND t.queue_held_at IS NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM tm_tasks p WHERE p.repo_id = t.repo_id AND p.id <> t.id AND p.paused_turn IS NOT NULL
+  )
   AND NOT EXISTS (
     SELECT 1 FROM tm_tasks o
     WHERE o.repo_id = t.repo_id AND o.id <> t.id AND o.custom_queue_at IS NOT NULL
@@ -99,7 +106,8 @@ export const skipRepos = (n: number) =>
  * covers a turn inside the resume gate with no PTY yet) or in `review` with an
  * automatic review round open (the reviewer is reading that checkout, and its
  * findings are about to be typed back into a session there) or its repo checks
- * due/running (docs/checks.md — they read that checkout too). `blocked` is
+ * due/running (docs/checks.md — they read that checkout too), or owed a turn
+ * by Pause all (`paused_turn`, docs/pause.md). `blocked` is
  * deliberately absent, unlike `heldBy`: a split parent waits on children in
  * its own repo, and holding the repo for it would deadlock them.
  * JS twin: `holdsRepoForClaim` in shared/src/types.ts — edit together.
@@ -107,5 +115,6 @@ export const skipRepos = (n: number) =>
 export const REPO_EXCLUSIVE_GATE = `NOT EXISTS (SELECT 1 FROM tm_tasks x
     WHERE x.repo_id = t.repo_id AND x.id <> t.id
       AND (x.status IN ('running', 'waiting')
+           OR x.paused_turn IS NOT NULL
            OR (x.status = 'review' AND (x.review_state IN ('pending', 'reviewing', 'fixing')
                                          OR x.check_state IN ('pending', 'running')))))`;

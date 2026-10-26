@@ -922,6 +922,7 @@ export function TaskSlideOver({
         reviewState={task.reviewState}
         checkState={task.checkState}
         loopState={task.loopState}
+        paused={!!task.pausedTurn}
         onOpenReviewer={reviewerRun ? () => onOpenTerminal(reviewerRun.id) : undefined}
       />
       {/* phones: the title stays in view while the body scrolls under it */}
@@ -1001,6 +1002,7 @@ export function TaskSlideOver({
           reviewState={task.reviewState}
           checkState={task.checkState}
           loopState={task.loopState}
+          paused={!!task.pausedTurn}
         />
       )}
       <GroupPath task={task} tasks={tasks} onOpen={onOpenTask} />

@@ -116,6 +116,61 @@ function OrchestratorSwitch() {
   );
 }
 
+/**
+ * Pause all / Continue (docs/pause.md): the safe stop before a restart. Pause
+ * suspends every live agent turn so its OWN session resumes on Continue, and
+ * holds every automatic start (both queues, loops, wake-ups, dispatches,
+ * review/check rounds) — nothing is cancelled. Both directions take a second
+ * press: pause ends live terminals, continue spends money again.
+ */
+function PauseButton() {
+  const { orch, setOrch } = useApp();
+  const mobile = useIsMobile();
+  const [busy, setBusy] = useState(false);
+  const arm = useArm();
+  const paused = !!orch.paused;
+  const verb = paused ? 'continue' : 'pause';
+  const armed = arm.armed === verb;
+  const owed = orch.pausedTasks ?? 0;
+  const press = async () => {
+    if (busy || !arm.press(verb)) return;
+    setBusy(true);
+    try {
+      await api.orchestratorAction(verb);
+      setOrch(await api.orchestrator());
+    } catch (e) {
+      toastError(e, paused ? 'Continue' : 'Pause all');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const again = mobile ? 'tap' : 'click';
+  return (
+    <button
+      type="button"
+      className={`btn ghost pause-all${paused ? ' paused' : ''}${armed ? ' armed' : ''}`}
+      aria-pressed={paused}
+      disabled={busy}
+      title={
+        paused
+          ? `Paused — nothing automatic starts.${owed ? ` Continue resumes ${owed} suspended task(s) in their own sessions,` : ' Continue'} then the queues pick up where they were.`
+          : 'Pause all — suspend every live agent turn (resumable in its own session) and start nothing until Continue. Nothing is cancelled; safe before a server restart.'
+      }
+      onClick={press}
+    >
+      {busy
+        ? paused
+          ? 'Continuing…'
+          : 'Pausing…'
+        : armed
+          ? `${paused ? 'Continue' : 'Pause all'}? ${again} again`
+          : paused
+            ? `▶ Continue${owed ? ` (${owed})` : ''}`
+            : '⏸ Pause all'}
+    </button>
+  );
+}
+
 /** 1_234_567 -> "1.2M"; keeps the tooltip readable without a formatter dep. */
 function fmtTokens(n: number) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -346,7 +401,7 @@ function ServerControl() {
           className="btn ghost"
           title={
             blocked
-              ? `${busyAgents} agent(s) are working (${orch.running} worker session(s), ${auxLive} aux session(s)) — restarting would kill them and fail their tasks. Stop them first.`
+              ? `${busyAgents} agent(s) are working (${orch.running} worker session(s), ${auxLive} aux session(s)) — restarting would kill them and fail their tasks. Pause all first: it suspends them so each resumes in its own session on Continue.`
               : live > 0
                 ? `Restart the task-manager server (${live} running command(s) will be stopped)`
                 : 'Restart the task-manager server'
@@ -600,6 +655,7 @@ function MoreSheet({ onClose, onOpenTerminal }: { onClose: () => void; onOpenTer
       </div>
       <div className="sheet-tools">
         <OrchestratorSwitch />
+        <PauseButton />
         <UsagePill />
         <ServerControl />
         <div className="sheet-tool-row">
@@ -756,6 +812,7 @@ export function Layout({
           </span>
         )}
         {!mobile && <OrchestratorSwitch />}
+        {!mobile && <PauseButton />}
         <RunCount state={mobile} />
         {/* A phone's bar has no question chip: the Inbox chip stands in for it,
             shown only while something is urgent (the Inbox tab has the count). */}

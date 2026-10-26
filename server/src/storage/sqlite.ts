@@ -508,7 +508,7 @@ export class SqliteStorage implements Storage {
     const isRoot = place.groupId === id;
     this.db
       .prepare(
-        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, landing=?, auto_landed_at=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, review_diff_hash=?, review_state=?, review_rounds=?, wake_at=?, error=?, updated_at=?, review_model=?, review_effort=?, base_sha=?, base_ref=?, base_at=?, queue_held_at=?, acceptance=?, checks=?, check_state=?, check_results=?, check_diff_hash=?, loop_goal=?, loop_max_iterations=?, loop_budget_usd=?, loop_iteration=?, loop_state=?, loop_history=?, hidden_at=? WHERE id=?`,
+        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, landing=?, auto_landed_at=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, review_diff_hash=?, review_state=?, review_rounds=?, wake_at=?, error=?, updated_at=?, review_model=?, review_effort=?, base_sha=?, base_ref=?, base_at=?, queue_held_at=?, acceptance=?, checks=?, check_state=?, check_results=?, check_diff_hash=?, loop_goal=?, loop_max_iterations=?, loop_budget_usd=?, loop_iteration=?, loop_state=?, loop_history=?, hidden_at=?, paused_turn=? WHERE id=?`,
       )
       .run(
         next.title,
@@ -558,6 +558,7 @@ export class SqliteStorage implements Storage {
         next.loopState ?? null,
         JSON.stringify(next.loopHistory ?? []),
         next.hiddenAt ?? null,
+        next.pausedTurn ? JSON.stringify(next.pausedTurn) : null,
         id,
       );
     return rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
@@ -735,7 +736,7 @@ export class SqliteStorage implements Storage {
     from: Task['status'][],
     to: Task['status'],
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'autoLandedAt' | 'loopState'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'pausedTurn' | 'autoLandedAt' | 'loopState'>>,
     audit?: Record<string, unknown>,
   ): Promise<Task | null> {
     // Conditional single-statement transition — immune to check-then-set races
@@ -776,6 +777,15 @@ export class SqliteStorage implements Storage {
       vals.push(patch.queueHeldAt ?? null);
     } else {
       sets.push('queue_held_at = NULL');
+    }
+    // A Pause-all marker (docs/pause.md) is owed to the turn that was cut
+    // short: any other move means a human (or Continue itself) took the task
+    // over, so it is released unless the transition is the one setting it.
+    if (patch && 'pausedTurn' in patch) {
+      sets.push('paused_turn = ?');
+      vals.push(patch.pausedTurn ? JSON.stringify(patch.pausedTurn) : null);
+    } else {
+      sets.push('paused_turn = NULL');
     }
     // Hiding (docs/design.md § Hidden tasks) is for a task at rest: any status
     // change makes it visible again, so a hidden task can never be working.
