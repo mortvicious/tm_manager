@@ -20,6 +20,7 @@ import {
   type LandingTier,
   type PausedTurn,
   type Repo,
+  type ReviewFinding,
   type ReviewRound,
   type ReviewState,
   type Run,
@@ -73,7 +74,7 @@ import {
   type PublishCheck,
 } from './git.ts';
 import { aux } from './claude/aux.ts';
-import { headAt, readHeadBase, reviewWorkerChange, workerDiff, type ChangeScope } from './claude/review.ts';
+import { fileDigests, headAt, readHeadBase, reviewWorkerChange, workerDiff, type ChangeScope } from './claude/review.ts';
 import { summarizeRun, summarizeTranscript, type TranscriptSummary } from './claude/stats.ts';
 import { killBackgroundShells, shellEntries } from './claude/shells.ts';
 import { BackgroundShells } from './claude/background-shells.ts';
@@ -294,8 +295,23 @@ export function settledReviewState(rounds: ReviewRound[]): ReviewState {
   const last = rounds[rounds.length - 1];
   if (!last) return 'skipped';
   if (last.error) return 'error';
-  return last.findings.some((f) => f.severity === 'blocker' || f.severity === 'major') ? 'flagged' : 'passed';
+  return last.findings.some(isActionable) ? 'flagged' : 'passed';
 }
+
+/** What gates a review and goes back to the worker: blocker/major. A minor never does. */
+function isActionable(f: ReviewFinding): boolean {
+  return f.severity === 'blocker' || f.severity === 'major';
+}
+
+/**
+ * The scope of a review fix turn (docs/design.md § Adversarial review): the
+ * blocker/major findings and nothing else. "Address minors if quick" invited
+ * scope creep, and every extra edit is more diff for the next round to judge.
+ */
+export const REVIEW_FIX_SCOPE = [
+  `Fix only those — no minor polish, refactors or unrelated cleanup, even where the review mentions it.`,
+  `End your turn with a short list of any minor issues you noticed and chose not to touch.`,
+].join('\n');
 
 export class Orchestrator implements OrchestratorApi {
   private scheduling = false;
@@ -3298,7 +3314,8 @@ export class Orchestrator implements OrchestratorApi {
     const message = task.reviewSummary
       ? [
           `A prior adversarial review of your change to this task found the issues below. Apply the fixes`,
-          `for the blocker/major items (and quick minors), verify, then finish. Your fix will be re-reviewed.`,
+          `for the blocker/major items only, verify, then finish. Your fix will be re-reviewed.`,
+          REVIEW_FIX_SCOPE,
           ``,
           task.reviewSummary,
         ].join('\n')
@@ -4215,13 +4232,26 @@ export class Orchestrator implements OrchestratorApi {
 
     const fixRound = this.fixRounds.get(taskId) ?? 0;
     const lastRound = task.reviewRounds[task.reviewRounds.length - 1] ?? null;
+    // A fix round answers the round that sent the worker back, and carries
+    // only that round's blocker/major findings (docs/design.md § Adversarial
+    // review — convergent fix rounds): a minor is never re-sent, so an
+    // unaddressed one cannot ride every later round.
+    const carried = lastRound && !lastRound.error ? lastRound.findings.filter(isActionable) : [];
     const result = await reviewWorkerChange(
       repo,
       task,
       // per-task reviewer wins; null falls back to the global setting
       { model: task.reviewModel ?? settings['review.model'], effort: task.reviewEffort ?? null },
       change,
-      fixRound > 0 && lastRound ? { fixRound, findings: lastRound.findings } : null,
+      fixRound > 0 && lastRound && carried.length
+        ? {
+            fixRound,
+            round: lastRound.round,
+            findings: carried,
+            files: lastRound.files ?? null,
+            commits: lastRound.commits ?? null,
+          }
+        : null,
     );
     if (!result) {
       // nothing survived truncation to judge — settle rather than strand `reviewing`
@@ -4234,7 +4264,7 @@ export class Orchestrator implements OrchestratorApi {
     // an unfixable finding can't loop forever; minor-only or clean lands in
     // the human review queue as before. Decided BEFORE the row is written so
     // the round, the summary and the state land in one broadcast.
-    const actionable = result.findings.filter((f) => f.severity === 'blocker' || f.severity === 'major');
+    const actionable = result.findings.filter(isActionable);
     const maxRounds = settings['review.maxRounds'];
     const current = await this.storage.getTask(taskId);
     let canLoop =
@@ -4274,6 +4304,9 @@ export class Orchestrator implements OrchestratorApi {
       diffHash: hash,
       diffStat: change.stat,
       error: result.error,
+      ...(result.resolutions ? { resolutions: result.resolutions } : {}),
+      files: fileDigests(change.diff),
+      commits: change.commits.map((c) => c.sha),
       requestedBy,
     };
     const state: ReviewState = canLoop
@@ -4314,7 +4347,8 @@ export class Orchestrator implements OrchestratorApi {
       const msg = [
         `Adversarial review (round ${fixRound + 1}) found ${actionable.length} issue(s) to fix before this task is done:`,
         ...actionable.map((f) => `- [${f.severity}] ${f.summary}${f.detail ? ` — ${f.detail}` : ''}`),
-        `Fix the blocker/major items above (address minors if quick), then finish. Your fix will be re-reviewed.`,
+        `Fix the blocker/major items above, then finish. Your fix will be re-reviewed.`,
+        REVIEW_FIX_SCOPE,
       ].join('\n');
       await this.storage.appendEvent({
         kind: 'task.follow-up',

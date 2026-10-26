@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { checkEvidence } from '../checks.ts';
-import type { DiffStat, Repo, ReviewFinding, ReviewVerdict, Task } from '@tm/shared';
+import type { DiffStat, Repo, ReviewFinding, ReviewResolution, ReviewVerdict, Task } from '@tm/shared';
 import {
   READ_ONLY_DISALLOWED,
   READ_ONLY_TOOLS,
@@ -41,6 +41,17 @@ const findingsSchema = z.object({
       }),
     )
     .max(30),
+  // fix rounds only: one entry per numbered earlier finding (docs/design.md § Adversarial review)
+  previous: z
+    .array(
+      z.object({
+        id: z.number().int(),
+        status: z.enum(['resolved', 'unresolved']),
+        note: z.string().nullish(),
+      }),
+    )
+    .max(30)
+    .nullish(),
 });
 
 const JSON_SCHEMA = {
@@ -63,6 +74,21 @@ const JSON_SCHEMA = {
           detail: { type: ['string', 'null'] },
         },
         required: ['severity', 'summary'],
+      },
+    },
+    previous: {
+      type: 'array',
+      maxItems: 30,
+      description:
+        'Fix rounds only: one entry per numbered earlier finding — whether the change as it now stands resolves it.',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          status: { type: 'string', enum: ['resolved', 'unresolved'] },
+          note: { type: ['string', 'null'] },
+        },
+        required: ['id', 'status'],
       },
     },
   },
@@ -302,6 +328,58 @@ export function diffStat(diff: string): DiffStat {
 }
 
 /**
+ * One short digest per file of the reviewed diff, so a fix round can be told
+ * which files moved since the round it answers (docs/design.md § Adversarial
+ * review). A file's digest covers every section the diff has for it — each
+ * commit's and the uncommitted one — so a new fix commit touching it, or an
+ * edit left uncommitted, changes it, and a file the fix never touched keeps
+ * it. `index` lines are left out: the same content shown by `git show` and
+ * by `git diff HEAD` carries different blob ranges.
+ */
+export function fileDigests(diff: string): Record<string, string> {
+  const parts = new Map<string, string[]>();
+  let current: string[] | null = null;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      const m = / b\/(.*)$/.exec(line);
+      const file = m ? m[1] : line;
+      current = parts.get(file) ?? [];
+      parts.set(file, current);
+      current.push('\0');
+      continue;
+    }
+    // this module's own section markers end a file's section
+    if (line.startsWith('### commit ') || /^--- (committed|uncommitted) /.test(line)) {
+      current = null;
+      continue;
+    }
+    if (current && !line.startsWith('index ')) current.push(line);
+  }
+  const out: Record<string, string> = {};
+  for (const [file, lines] of parts) {
+    out[file] = createHash('sha256').update(lines.join('\n')).digest('hex').slice(0, 16);
+  }
+  return out;
+}
+
+/** What a fix round is told about the round it answers. */
+export interface PreviousReview {
+  /** the fix round this review is (1 = the first re-review) */
+  fixRound: number;
+  /** that round's number in `task.reviewRounds` */
+  round: number;
+  /** its BLOCKER/MAJOR findings only — minors are never carried into a fix round */
+  findings: ReviewFinding[];
+  /** its `fileDigests`, null on a round recorded before they were kept */
+  files: Record<string, string> | null;
+  /** the commit shas it saw, null likewise */
+  commits: string[] | null;
+}
+
+/** Minor findings a fix round may add — informational, nobody is asked to fix them. */
+export const FIX_ROUND_MAX_MINORS = 3;
+
+/**
  * The change THIS task made, plus its identity: its commits (by trailer on
  * any ref, else base..HEAD when it worked alone) and whatever is still
  * uncommitted. Hashed BEFORE truncation so two changes that only differ past
@@ -347,19 +425,26 @@ export interface ReviewResult {
   effort: string | null;
   /** why the reviewer produced no verdict of its own (the verdict is then `concerns`) */
   error: string | null;
+  /** fix rounds only: the earlier blocker/major findings, each resolved or not */
+  resolutions: ReviewResolution[] | null;
 }
 
+const findingLine = (f: ReviewFinding): string => `[${f.severity}] ${f.summary}${f.detail ? ` — ${f.detail}` : ''}`;
+
 /**
- * The reviewer's brief. `fixRound` > 0 means the diff already went through a
- * fix round — the previous findings are quoted so the reviewer judges whether
- * they were actually addressed instead of rediscovering them from scratch.
+ * The reviewer's brief. With `previous` this is a fix round, and it converges
+ * (docs/design.md § Adversarial review): only the previous round's
+ * blocker/major findings are quoted, numbered, for a resolved/unresolved
+ * verdict each; `findings` is for NEW issues only, with minors capped; and the
+ * reviewer is told which files and commits changed since that round, over
+ * the full diff, which it still gets because the fix can break earlier code.
  */
 function reviewPrompt(
   repo: Repo,
   task: Task,
   change: WorkerDiff,
   diff: string,
-  previous: { fixRound: number; findings: ReviewFinding[] } | null,
+  previous: PreviousReview | null,
 ): string {
   const lines = [
     `You are an adversarial code reviewer for the repo "${repo.name}". A worker agent implemented the task`,
@@ -383,12 +468,19 @@ function reviewPrompt(
       `that was weakened, skipped or deleted in the diff to turn green is a blocker.`,
     );
   }
-  if (previous && previous.fixRound > 0) {
+  if (previous) {
     lines.push(
-      `\nThis is fix round ${previous.fixRound}: a previous review returned the findings below and the worker`,
-      `was told to fix the blocker/major ones. Judge the change AS IT NOW STANDS — say explicitly whether each`,
-      `earlier finding is resolved, and do not re-list one that is. A finding that is still open stays a finding.`,
-      ...previous.findings.map((f) => `- [${f.severity}] ${f.summary}${f.detail ? ` — ${f.detail}` : ''}`),
+      `\nThis is fix round ${previous.fixRound}. Review round ${previous.round} sent the blocker/major findings below back`,
+      `to the worker, which was told to fix exactly those and nothing else (minor findings are not carried forward):`,
+      ...previous.findings.map((f, i) => `${i + 1}. ${findingLine(f)}`),
+      ``,
+      changedSince(previous, change),
+      `\nJudge the change AS IT NOW STANDS:`,
+      `- "previous": one entry per numbered finding above — {"id": <number>, "status": "resolved" | "unresolved",`,
+      `  "note": one line why}. A numbered finding you do not mark resolved counts as still open.`,
+      `- "findings": NEW issues only — a blocker/major the fix introduced, or one round ${previous.round} missed, plus at`,
+      `  most ${FIX_ROUND_MAX_MINORS} minors (informational: nobody will be asked to fix them). Never re-list a numbered finding`,
+      `  in "findings" — its "previous" entry already says whether it is open.`,
     );
   }
   lines.push(
@@ -411,11 +503,91 @@ function reviewPrompt(
           ? 'found by their `Task: ` trailer'
           : 'base..HEAD: no other task worked in this repo meanwhile'
       }) ---`,
-      ...change.commits.map((c) => `${c.sha.slice(0, 12)} ${c.subject}`),
+      ...change.commits.map(
+        (c) =>
+          `${c.sha.slice(0, 12)} ${c.subject}${
+            previous?.commits && !previous.commits.includes(c.sha) ? `  (new since round ${previous.round})` : ''
+          }`,
+      ),
     );
   }
   lines.push(`\n--- git diff (the task's change) ---\n${diff}`);
   return lines.join('\n');
+}
+
+/**
+ * The fix-round reviewer's map of the delta: which files' diff moved since the
+ * round it answers. A hint over the full diff, never a replacement for it.
+ */
+function changedSince(previous: PreviousReview, change: WorkerDiff): string {
+  if (!previous.files) {
+    return `Which files changed since round ${previous.round} is not known (that round predates the record) — review the whole diff.`;
+  }
+  const now = fileDigests(change.diff);
+  const changed = Object.keys(now).filter((f) => previous.files![f] !== now[f]);
+  const dropped = Object.keys(previous.files).filter((f) => !(f in now));
+  if (!changed.length && !dropped.length) {
+    return `No file's diff changed since round ${previous.round} — only the commit list did. Judge the numbered findings against the diff as it stands.`;
+  }
+  const out = [
+    `Changed since round ${previous.round} (the fix): ${changed.length ? changed.join(', ') : '(no file added or edited)'}.`,
+  ];
+  if (dropped.length) out.push(`No longer part of the change: ${dropped.join(', ')}.`);
+  out.push(
+    `Everything else in the diff below is what round ${previous.round} already reviewed. Focus on the changed files, but the`,
+    `full diff is there on purpose: judge how the fix interacts with the rest of the change.`,
+  );
+  return out.join('\n');
+}
+
+/**
+ * A fix round's findings, merged on the server so the gate cannot be argued
+ * away: every numbered earlier finding the reviewer did not mark resolved is
+ * a finding again (its original severity and text, plus the reviewer's note),
+ * so is one it marked resolved but listed again (the duplicate is dropped), new
+ * blocker/major findings stand, and at most FIX_ROUND_MAX_MINORS minors ride
+ * along. The verdict is derived from the merged list, since that is what the
+ * review state is (`settledReviewState`).
+ */
+function mergeFixRound(
+  previous: PreviousReview,
+  reported: { severity: ReviewFinding['severity']; summary: string; detail?: string | null }[],
+  statuses: { id: number; status: 'resolved' | 'unresolved'; note?: string | null }[] | null | undefined,
+): { findings: ReviewFinding[]; resolutions: ReviewResolution[]; verdict: ReviewVerdict } {
+  const key = (summary: string) => summary.trim().toLowerCase();
+  const relisted = new Set(reported.map((f) => key(f.summary)));
+  const resolutions: ReviewResolution[] = previous.findings.map((f, i) => {
+    const said = statuses?.find((s) => s.id === i + 1);
+    // "resolved" but listed again as a finding contradicts itself: it stays open
+    const again = relisted.has(key(f.summary));
+    return {
+      severity: f.severity === 'blocker' ? 'blocker' : 'major',
+      summary: f.summary,
+      status: said?.status === 'resolved' && !again ? 'resolved' : 'unresolved',
+      note:
+        said?.note?.trim() ||
+        (said ? null : again ? 'listed again as a finding' : 'the reviewer did not say whether this was resolved'),
+    };
+  });
+  const open: ReviewFinding[] = previous.findings
+    .map((f, i) => ({ f, r: resolutions[i] }))
+    .filter(({ r }) => r.status === 'unresolved')
+    .map(({ f, r }) => ({
+      severity: f.severity,
+      summary: f.summary,
+      detail: [f.detail, r.note ? `Still open: ${r.note}` : null].filter(Boolean).join(' — ') || null,
+    }));
+  const earlier = new Set(previous.findings.map((f) => key(f.summary)));
+  const fresh = reported
+    .filter((f) => !earlier.has(key(f.summary)))
+    .map((f) => ({ severity: f.severity, summary: f.summary, detail: f.detail ?? null }));
+  const rank = { blocker: 0, major: 1, minor: 2 } as const;
+  const actionable = fresh.filter((f) => f.severity !== 'minor').sort((a, b) => rank[a.severity] - rank[b.severity]);
+  const minors = fresh.filter((f) => f.severity === 'minor').slice(0, FIX_ROUND_MAX_MINORS);
+  const findings = [...open, ...actionable, ...minors];
+  const verdict: ReviewVerdict =
+    open.length || actionable.length ? 'blocker' : minors.length ? 'concerns' : 'clean';
+  return { findings, resolutions, verdict };
 }
 
 /**
@@ -430,7 +602,7 @@ export async function reviewWorkerChange(
   /** the RESOLVED reviewer: task.reviewModel ?? review.model, task.reviewEffort */
   reviewer: { model: string; effort: string | null },
   change: WorkerDiff,
-  previous: { fixRound: number; findings: ReviewFinding[] } | null = null,
+  previous: PreviousReview | null = null,
 ): Promise<ReviewResult | null> {
   const diff = change.diff.slice(0, 60_000);
   if (!diff.trim()) return null; // no change to review (e.g. read-only task)
@@ -453,6 +625,7 @@ export async function reviewWorkerChange(
     model,
     effort,
     error,
+    resolutions: null,
   });
   if (res.status !== 'ok' || !res.value) {
     // The runner's error is already the cause (StopFailure code + text,
@@ -462,12 +635,26 @@ export async function reviewWorkerChange(
   }
   const parsed = { data: res.value };
 
-  const { verdict, findings } = parsed.data;
   const summary = parsed.data.summary?.trim() || null;
+  const merged = previous ? mergeFixRound(previous, parsed.data.findings, parsed.data.previous) : null;
+  const verdict = merged?.verdict ?? parsed.data.verdict;
+  const findings: ReviewFinding[] =
+    merged?.findings ??
+    parsed.data.findings.map((f) => ({ severity: f.severity, summary: f.summary, detail: f.detail ?? null }));
   const badge = verdict === 'clean' ? '✓ clean' : verdict === 'blocker' ? '⛔ blocker' : '⚠ concerns';
   const lines = [`**Adversarial review** (${model}${effort ? ` ${effort}` : ''}): ${badge}`];
   if (summary) lines.push('', summary, '');
-  if (findings.length === 0) {
+  if (merged && previous) {
+    lines.push(`Findings from round ${previous.round}:`);
+    for (const r of merged.resolutions) {
+      lines.push(
+        `- ${r.status === 'resolved' ? '✓ resolved' : '✗ still open'}: **[${r.severity}]** ${r.summary}${r.note ? ` — ${r.note}` : ''}`,
+      );
+    }
+    const fresh = findings.slice(merged.resolutions.filter((r) => r.status === 'unresolved').length);
+    lines.push('', fresh.length ? 'New findings:' : 'No new issues found.');
+    for (const f of fresh) lines.push(`- **[${f.severity}]** ${f.summary}${f.detail ? ` — ${f.detail}` : ''}`);
+  } else if (findings.length === 0) {
     lines.push('No issues found.');
   } else {
     for (const f of findings) {
@@ -478,9 +665,10 @@ export async function reviewWorkerChange(
     markdown: lines.join('\n'),
     verdict,
     summary,
-    findings: findings.map((f) => ({ severity: f.severity, summary: f.summary, detail: f.detail ?? null })),
+    findings,
     model,
     effort,
     error: null,
+    resolutions: merged?.resolutions ?? null,
   };
 }

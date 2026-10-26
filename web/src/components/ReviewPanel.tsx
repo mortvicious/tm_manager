@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { marked } from 'marked';
-import type { ReviewFinding, ReviewRound, Task } from '@tm/shared';
+import type { ReviewFinding, ReviewResolution, ReviewRound, Task } from '@tm/shared';
 
 /**
  * The adversarial-review section of the task panel (docs/design.md
@@ -124,6 +124,23 @@ function Findings({ findings }: { findings: ReviewFinding[] }) {
   );
 }
 
+/** A fix round's verdict on each blocker/major finding it was sent back over (an open one is in the findings too). */
+function Resolutions({ resolutions }: { resolutions: ReviewResolution[] }) {
+  return (
+    <ul className="review-findings">
+      {resolutions.map((r, i) => (
+        <li key={i} className={r.status === 'resolved' ? 'sev-minor' : `sev-${r.severity}`}>
+          <span className="chip sev">{r.status === 'resolved' ? 'resolved' : 'still open'}</span>
+          <span className="finding-text">
+            {r.summary}
+            {r.note && <span className="muted"> — {r.note}</span>}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function RoundEntry({ r, open, onToggle }: { r: ReviewRound; open: boolean; onToggle: () => void }) {
   const v = verdictLabel(r);
   const when = new Date(r.at);
@@ -151,6 +168,7 @@ function RoundEntry({ r, open, onToggle }: { r: ReviewRound; open: boolean; onTo
         <div className="collapsible-body">
           {r.error && <div className="warn-text">{r.error}</div>}
           {r.summary && <div className="review-summary">{r.summary}</div>}
+          {r.resolutions && r.resolutions.length > 0 && <Resolutions resolutions={r.resolutions} />}
           <Findings findings={r.findings} />
           <div className="mono muted" style={{ marginTop: 'var(--tm-space-2)' }}>
             {when.toLocaleString()}

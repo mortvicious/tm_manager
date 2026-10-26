@@ -67,6 +67,19 @@ export interface ReviewFinding {
   detail: string | null;
 }
 
+/**
+ * A fix round's verdict on one finding the previous round sent back
+ * (docs/design.md § Adversarial review — convergent fix rounds). Only
+ * blocker/major findings are carried into a fix round, so only they get one.
+ */
+export interface ReviewResolution {
+  severity: 'blocker' | 'major';
+  summary: string;
+  /** `unresolved` also when the reviewer did not say — an open finding is never dropped by omission */
+  status: 'resolved' | 'unresolved';
+  note: string | null;
+}
+
 /** Files touched and lines added/removed by a change — counted off the reviewed diff text. */
 export interface DiffStat {
   files: number;
@@ -94,6 +107,12 @@ export interface ReviewRound {
   diffStat?: DiffStat;
   /** set when the reviewer could not run — `verdict` is then `concerns` by convention */
   error: string | null;
+  /** fix rounds only: what became of each blocker/major finding the previous round sent back */
+  resolutions?: ReviewResolution[];
+  /** per-file digest of the reviewed diff (`fileDigests`), so the next round can be told what changed since */
+  files?: Record<string, string>;
+  /** the task's commit shas this round saw, oldest first */
+  commits?: string[];
   /** who asked for this round with "Review now" (`human` | `telegram`); null/absent
    *  for the automatic round after a Stop, and for a requested round that a
    *  restart re-ran (the requester lives in memory only) */
