@@ -1027,6 +1027,14 @@
   background: transparent;
 }
 
+/* the New task foot is a bar: the same material as the task panel's Save bar */
+[data-design='glass'] .new-task-foot {
+  border-top: 0.5px solid var(--tm-border);
+  background: var(--tm-glass-bar);
+  -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+}
+
 [data-design='glass'] .full-sheet-title {
   font-family: var(--tm-font-display);
   font-weight: 700;

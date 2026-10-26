@@ -213,7 +213,8 @@ React 19 cleanup runs before React removes the DOM:
   canvas would come out blank.
 
 Reduce Motion: the global rule in `theme.css` already collapses every duration,
-and `exitGhost` doesn't ghost at all. Reduce Transparency (where the browser
+`--tm-sheet-dur` is zeroed under the same query (the sheet tween is JS, and the
+library drops to 10ms on its own too), and `exitGhost` doesn't ghost at all. Reduce Transparency (where the browser
 reports it) turns every material solid and every blur off, and so does a
 browser with no `backdrop-filter`. Both are token overrides in `theme.css`.
 Small fills (buttons, the tab lens) and the dimming scrim stay translucent; on

@@ -49,13 +49,17 @@
   --tm-font-body: 'Inter', system-ui, sans-serif;
   --tm-font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
-  --tm-text-xs: 0.75rem;
-  --tm-text-sm: 0.8125rem;
-  --tm-text-md: 0.9375rem;
-  --tm-text-lg: 1.125rem;
-  --tm-text-xl: 1.5rem;
-  --tm-text-2xl: 2.125rem;
-  --tm-text-3xl: 3.25rem;
+  /* The unit every text size is a multiple of. 1rem everywhere except a touch
+     device that has Dynamic Type, where it follows iOS Larger Text (see
+     § Dynamic Type below). Never write a raw rem size: multiply this. */
+  --tm-type: 1rem;
+  --tm-text-xs: calc(0.75 * var(--tm-type));
+  --tm-text-sm: calc(0.8125 * var(--tm-type));
+  --tm-text-md: calc(0.9375 * var(--tm-type));
+  --tm-text-lg: calc(1.125 * var(--tm-type));
+  --tm-text-xl: calc(1.5 * var(--tm-type));
+  --tm-text-2xl: calc(2.125 * var(--tm-type));
+  --tm-text-3xl: calc(3.25 * var(--tm-type));
 
   /* ---- space (4px base) ---- */
   --tm-space-1: 4px;
@@ -103,7 +107,7 @@
   --tm-tap-dense: 38px;
   /* iOS zooms into any field it focuses below 16px — this is the floor, not a
      type-scale step, which is why it is its own token. */
-  --tm-text-input: 1rem;
+  --tm-text-input: max(16px, var(--tm-type));
 }
 
 /* ---- semantic: dark (default — this is a terminal tool) ---- */
@@ -242,7 +246,7 @@
   /* the floating tab bar and the transparent top bar */
   --tm-tabbar-h: 62px;
   --tm-head-h: 56px;
-  --tm-text-tab: 0.625rem;
+  --tm-text-tab: calc(0.625 * var(--tm-type));
 }
 
 /* sampled from a damped spring (bounce 0 and 0.3), SwiftUI's own model */
@@ -326,7 +330,9 @@
   --tm-border: rgba(60, 60, 67, 0.2);
   --tm-border-strong: rgba(60, 60, 67, 0.32);
   --tm-text: #000000;
-  --tm-text-muted: rgba(60, 60, 67, 0.7);
+  /* 0.74, not iOS's 0.6: labels and hints sit in it at 12px, and this is
+     the alpha that clears WCAG AA 4.5:1 on #f2f2f7 (4.7:1) */
+  --tm-text-muted: rgba(60, 60, 67, 0.74);
   --tm-text-faint: rgba(60, 60, 67, 0.5);
   --tm-accent: var(--tm-teal-7);
   --tm-accent-strong: var(--tm-teal-6);
@@ -385,13 +391,13 @@
    large title) and the floating tab bar, whose bottom gap overlaps the
    home-indicator inset. Keyed off .app.mobile like Classic's own phone overrides. */
 [data-design='glass'] .app.mobile {
-  --tm-text-xs: 0.75rem;
-  --tm-text-sm: 0.9375rem;
-  --tm-text-md: 1.0625rem;
-  --tm-text-lg: 1.25rem;
-  --tm-text-xl: 1.375rem;
-  --tm-text-2xl: 1.75rem;
-  --tm-text-3xl: 2.125rem;
+  --tm-text-xs: calc(0.75 * var(--tm-type));
+  --tm-text-sm: calc(0.9375 * var(--tm-type));
+  --tm-text-md: calc(1.0625 * var(--tm-type));
+  --tm-text-lg: calc(1.25 * var(--tm-type));
+  --tm-text-xl: calc(1.375 * var(--tm-type));
+  --tm-text-2xl: calc(1.75 * var(--tm-type));
+  --tm-text-3xl: calc(2.125 * var(--tm-type));
   --tm-tabbar-float: max(var(--tm-space-2), calc(env(safe-area-inset-bottom, 0px) - var(--tm-space-3)));
   --tm-tabbar-clear: calc(var(--tm-tabbar-h) + var(--tm-tabbar-float) + var(--tm-space-2));
 }
@@ -417,6 +423,38 @@
     --tm-glass-bar: var(--tm-bg-raised);
     --tm-glass-thick: var(--tm-bg-raised);
     --tm-edge-tint: var(--tm-bg);
+  }
+}
+
+/* Reduce Motion: the sheet tween is JS (components/Sheet.tsx reads this
+   token), so the media query that collapses CSS motion below never reaches
+   it. react-modal-sheet also drops to a 10ms tween on its own (motion's
+   useReducedMotion); zeroing the token keeps the token layer saying the same
+   thing. :root[data-design] outranks the Glass block's own value. */
+@media (prefers-reduced-motion: reduce) {
+  :root,
+  :root[data-design] {
+    --tm-sheet-dur: 0ms;
+  }
+}
+
+/* Dynamic Type (docs/mobile.md § Dynamic Type). `font: -apple-system-body`
+   makes the root font iOS's body size, which follows Settings → Larger Text
+   (17px at the default size). The unit is normalised so the default renders
+   exactly as before (17 → 16px) and scales from there, capped at the largest
+   non-accessibility size (xxxLarge, 23pt), past which dense rows stop fitting a
+   phone. Touch devices only: desktop Safari supports the keyword too and would
+   answer with the Mac's 13px. The input floor stays 16px (--tm-text-input),
+   or a Smaller Text setting would bring back the focus zoom. */
+@supports (font: -apple-system-body) {
+  @media (hover: none) and (pointer: coarse) {
+    html {
+      font: -apple-system-body;
+    }
+
+    :root {
+      --tm-type: min(calc(1rem * 16 / 17), calc(16px * 23 / 17));
+    }
   }
 }
 
@@ -687,7 +725,9 @@ button.field:focus-visible {
   font-size: var(--tm-text-xs);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--tm-text-faint);
+  /* muted, never faint: a label carries meaning at 12px, and faint is
+     ~2.5:1 in light — faint is for decorative glyphs only */
+  color: var(--tm-text-muted);
   margin: 0 0 var(--tm-space-1);
   font-weight: 500;
 }
@@ -1978,7 +2018,8 @@ button.badge.badge-link:hover {
 .task-row .quick {
   padding: var(--tm-space-1);
   border-radius: var(--tm-radius-sm);
-  color: var(--tm-text-faint);
+  /* an action, not decoration: muted keeps the glyph above 3:1 in light */
+  color: var(--tm-text-muted);
 }
 
 .task-row .quick:hover {
@@ -2902,9 +2943,10 @@ table.tbl tr:last-child td {
   padding: 7px 0;
 }
 
-/* sub-label under a control — config rows and form fields both use it */
+/* sub-label under a control — config rows and form fields both use it;
+   muted for contrast like .label, since this line says what a control does */
 .hint {
-  color: var(--tm-text-faint);
+  color: var(--tm-text-muted);
   font-size: var(--tm-text-xs);
 }
 
@@ -3349,7 +3391,7 @@ html.term-resizing-x * {
 .sev {
   flex: none;
   font-family: var(--tm-font-mono);
-  font-size: 0.68rem;
+  font-size: calc(0.68 * var(--tm-type));
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -4508,6 +4550,75 @@ tr.repo-open > td {
     calc(var(--tm-space-6) + env(safe-area-inset-bottom, 0px)) calc(var(--tm-space-3) + env(safe-area-inset-left, 0px));
 }
 
+/* New task on a phone (docs/mobile.md § New task): the fields scroll, On create
+   and Create ride the sheet's bottom edge. The foot carries the home-indicator
+   inset itself, so the body drops its own bottom padding — otherwise the foot
+   would rest above an empty band at the end of the form. */
+.new-task-panel.in-sheet {
+  padding: var(--tm-space-3);
+}
+
+.full-sheet-body:has(> .new-task-foot) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-3);
+  /* a short (folded) form still puts the foot on the bottom edge */
+  min-height: 100%;
+  padding-bottom: 0;
+}
+
+.new-task-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  margin: 0 calc(-1 * (var(--tm-space-3) + env(safe-area-inset-right, 0px))) 0
+    calc(-1 * (var(--tm-space-3) + env(safe-area-inset-left, 0px)));
+  padding: var(--tm-space-2) calc(var(--tm-space-3) + env(safe-area-inset-right, 0px))
+    calc(var(--tm-space-2) + env(safe-area-inset-bottom, 0px)) calc(var(--tm-space-3) + env(safe-area-inset-left, 0px));
+  border-top: 1px solid var(--tm-border);
+  background: var(--tm-bg-raised);
+}
+
+.full-sheet-body > .new-task-foot {
+  margin-top: auto;
+}
+
+/* the fold's one-line summary must not widen the form's grid track */
+.form-grid > .so-settings-toggle {
+  min-width: 0;
+}
+
+.new-task-foot .label {
+  margin: 0;
+}
+
+.new-task-foot .start-row {
+  flex-wrap: nowrap;
+}
+
+.new-task-foot .btn.start-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: var(--tm-tap);
+}
+
+/* three across a 320px phone: the hint gives way, never the button's edge */
+.new-task-foot .btn.start-btn,
+.new-task-foot .start-hint {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-task-foot > .btn.primary {
+  justify-content: center;
+  min-height: var(--tm-tap);
+}
+
 /* ---- task panel wrappers: no-ops on desktop, the hooks phones reorder by ---- */
 
 .so-chips {
@@ -4844,9 +4955,9 @@ button.explain-tap:active {
   --tm-sidebar-w: 0px;
   --tm-tabbar-clear: calc(var(--tm-tabbar-h) + env(safe-area-inset-bottom, 0px));
   /* one step down the type scale — the display sizes were drawn for a desktop */
-  --tm-text-xl: 1.25rem;
-  --tm-text-2xl: 1.625rem;
-  --tm-text-3xl: 2.25rem;
+  --tm-text-xl: calc(1.25 * var(--tm-type));
+  --tm-text-2xl: calc(1.625 * var(--tm-type));
+  --tm-text-3xl: calc(2.25 * var(--tm-type));
   grid-template-columns: 1fr;
   grid-template-rows: auto 1fr;
   grid-template-areas: 'head' 'main';
@@ -5151,6 +5262,15 @@ button.explain-tap:active {
 .term-key:active {
   background: var(--tm-gray-7);
   color: var(--tm-gray-1);
+}
+
+/* Ctrl, Esc and ^C sit past this rule, away from Enter and the digits */
+.term-keys-sep {
+  flex: none;
+  align-self: stretch;
+  width: 1px;
+  margin: var(--tm-space-1) var(--tm-space-1);
+  background: var(--tm-gray-6);
 }
 
 /* Sticky Ctrl needs to be visibly armed — it changes the meaning of the next key. */
@@ -5645,7 +5765,8 @@ button.explain-tap:active {
   white-space: nowrap;
   text-align: right;
   font-size: var(--tm-text-xs);
-  color: var(--tm-text-faint);
+  /* what the fold holds is content, not decoration (contrast, like .label) */
+  color: var(--tm-text-muted);
 }
 
 /* the files list's remove ✕ is a 2px-padded glyph on desktop */
@@ -5880,8 +6001,10 @@ button.explain-tap:active {
   display: flex;
   flex-direction: column;
   /* The log scrolls, the composer stays put — the page itself must not grow
-     with the conversation or the input walks off the bottom of the screen. */
-  height: calc(100vh - var(--tm-space-8));
+     with the conversation or the input walks off the bottom of the screen.
+     --tm-chat-h is `.main`'s visible box (above the keyboard), measured by
+     pages/Chat.tsx; the calc is only the first paint before it. */
+  height: var(--tm-chat-h, calc(100dvh - var(--tm-space-8)));
   min-height: 320px;
   padding: 0;
   overflow: hidden;
@@ -6008,7 +6131,7 @@ button.explain-tap:active {
   border: 1px solid var(--tm-border);
   background: var(--tm-bg-inset);
   outline: none;
-  /* 1rem, so iOS does not zoom the viewport when the field takes focus. */
+  /* the 16px floor (--tm-text-input), so iOS does not zoom the viewport when the field takes focus. */
   font-size: var(--tm-text-input);
   transition: border-color var(--tm-dur-fast) var(--tm-ease-out);
 }
@@ -6029,7 +6152,9 @@ button.explain-tap:active {
   }
 
   .chat-pane {
-    height: calc(100vh - var(--tm-tabbar-h) - var(--tm-space-8));
+    height: var(--tm-chat-h, calc(100dvh - var(--tm-tabbar-clear) - var(--tm-space-8)));
+    /* a keyboard leaves less than the desktop floor; the composer must stay on it */
+    min-height: 200px;
   }
 
   .chat-msg {

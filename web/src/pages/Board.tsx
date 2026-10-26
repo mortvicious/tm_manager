@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   EFFORT_LEVELS,
   MODEL_OPTIONS,
@@ -114,7 +114,26 @@ const START_MODES: { id: StartMode; label: string; hint: string; title: string }
   },
 ];
 
-function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mobile?: boolean }) {
+/** The repo the last task filed from this browser went to (docs/mobile.md § New task). */
+const LAST_REPO_KEY = 'tm.newTask.repo';
+const loadLastRepo = (): string => {
+  try {
+    return localStorage.getItem(LAST_REPO_KEY) ?? '';
+  } catch {
+    return '';
+  }
+};
+
+function NewTaskForm({
+  onCreated,
+  mobile = false,
+  filterRepoId = null,
+}: {
+  onCreated: () => void;
+  mobile?: boolean;
+  /** the board's search narrowed to exactly one repo: the repo a new task most likely means */
+  filterRepoId?: string | null;
+}) {
   const { repos, settings, commands } = useApp();
   const presets = useTaskPresets();
   const templates = settings?.['task.templates'] ?? [];
@@ -142,19 +161,47 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
   const [loopBudget, setLoopBudget] = useState('');
   const reviewOn = reviewIsOn(reviewValueOf(review), settings);
   const [start, setStart] = useState<StartMode>('draft');
+  // phones fold everything after Repo away, like the task panel's Settings
+  const [moreOpen, setMoreOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const { tasks } = useApp();
   const knownCategories = [...new Set(tasks.map((t) => t.category).filter(Boolean))] as string[];
 
+  const checkNames = (repo: string) => commands.filter((c) => c.repoId === repo && c.isCheck).map((c) => c.name);
+  const pickRepo = (id: string) => {
+    setRepoId(id);
+    // check names belong to a repo: another repo starts from "all"
+    // (or from the template's pick, mapped onto THAT repo's checks)
+    setChecks(template && id ? templateChecksFor(template, checkNames(id)) : null);
+    // never leave "Run now" lit on a task that has nowhere to run
+    if (!id) setStart('draft');
+  };
+
+  // An open form with no repo starts from the board's one-repo filter, else
+  // the repo the last task went to — re-picking it every time was the phone's
+  // slowest step. Re-run when the repos arrive (a click can beat the first
+  // load); a repo picked in this kept draft, "none" included, is left alone.
+  const repoTouched = useRef(false);
+  useEffect(() => {
+    if (!open || repoId || repoTouched.current) return;
+    const known = (id: string | null) => !!id && repos.some((r) => r.id === id);
+    const last = loadLastRepo();
+    const next = known(filterRepoId) ? filterRepoId! : known(last) ? last : '';
+    if (next) pickRepo(next);
+    // pickRepo is a fresh closure every render; these are what decide the default
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, repoId, repos, filterRepoId]);
+  const openForm = () => setOpen(true);
+
   // Phones: a compact toolbar button, and the form opens as a full-screen
   // sheet instead of pushing every list down by a screen and a half.
   const opener = mobile ? (
-    <button className="btn primary new-task-btn" aria-expanded={open} onClick={() => setOpen(true)}>
+    <button className="btn primary new-task-btn" aria-expanded={open} onClick={openForm}>
       <IconPlus /> New
     </button>
   ) : (
-    <button className="btn primary" onClick={() => setOpen(true)}>
+    <button className="btn primary" onClick={openForm}>
       + New task
     </button>
   );
@@ -164,7 +211,6 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
   // created and then 409 on the second call, so the control is not offered.
   const canStart = !!repoId;
   const effectiveStart: StartMode = canStart ? start : 'draft';
-  const checkNames = (repo: string) => commands.filter((c) => c.repoId === repo && c.isCheck).map((c) => c.name);
   // the title the pattern makes of what is typed — what Create files
   const finalTitle = applyTitlePattern(template?.title ?? '', title);
 
@@ -229,6 +275,14 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
     }
     // The row exists from here on: clear the fields before anything else can
     // fail, so a second Create cannot file the same task twice.
+    repoTouched.current = false;
+    if (repoId) {
+      try {
+        localStorage.setItem(LAST_REPO_KEY, repoId);
+      } catch {
+        /* private mode: the default just stays the filter's */
+      }
+    }
     setTitle('');
     setDescription('');
     setAcceptance('');
@@ -264,8 +318,47 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
     onCreated();
   };
 
+  const startRow = (
+    <>
+      <label className="label">On create</label>
+      <div className="start-row">
+        {START_MODES.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            className={`btn start-btn${effectiveStart === m.id ? ' on' : ''}`}
+            aria-pressed={effectiveStart === m.id}
+            disabled={m.id !== 'draft' && !canStart}
+            title={m.id !== 'draft' && !canStart ? 'Pick a repo first — a task needs one to run' : m.title}
+            onClick={() => setStart(m.id)}
+          >
+            {m.label}
+            <span className="start-hint">{m.hint}</span>
+          </button>
+        ))}
+      </div>
+    </>
+  );
+  const createBtn = (
+    <button className="btn primary" disabled={busy || !title.trim()} onClick={submit}>
+      {effectiveStart === 'run' ? 'Create & run' : effectiveStart === 'queue' ? 'Create & queue' : 'Create'}
+    </button>
+  );
+  // what the folded options hold, so a template's or preset's fill is not invisible
+  const moreSummary = [
+    category.trim(),
+    isLoop && 'loop',
+    parentId && 'grouped',
+    model || 'auto model',
+    effort || 'default effort',
+    review !== 'default' && `review ${review}`,
+    landing,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
   const form = (
-    <div className="panel new-task-panel" style={{ padding: 14, maxWidth: 640 }}>
+    <div className={`panel new-task-panel${mobile ? ' in-sheet' : ''}`} style={mobile ? undefined : { padding: 14, maxWidth: 640 }}>
       <div className="form-grid">
         {templates.length > 0 && (
           <div className="wide">
@@ -315,12 +408,8 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
             className="field"
             value={repoId}
             onChange={(e) => {
-              setRepoId(e.target.value);
-              // check names belong to a repo: another repo starts from "all"
-              // (or from the template's pick, mapped onto THAT repo's checks)
-              setChecks(template && e.target.value ? templateChecksFor(template, checkNames(e.target.value)) : null);
-              // never leave "Run now" lit on a task that has nowhere to run
-              if (!e.target.value) setStart('draft');
+              repoTouched.current = true;
+              pickRepo(e.target.value);
             }}
           >
             <option value="">— none —</option>
@@ -332,140 +421,142 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
             ))}
           </select>
         </div>
-        <div>
-          <label className="label">Category</label>
-          <input
-            className="field"
-            list="tm-categories"
-            placeholder="UI, Estimator… (optional)"
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-          />
-          <datalist id="tm-categories">
-            {knownCategories.map((c) => (
-              <option key={c} value={c} />
-            ))}
-          </datalist>
-        </div>
-        <div className="wide">
-          <label className="done-check" title="iterate on a goal in fresh agent sessions over a progress ledger until the checks are green and the goal is met (docs/loops.md)">
-            <input type="checkbox" checked={isLoop} onChange={(e) => setIsLoop(e.target.checked)} /> Loop task — iterate
-            toward a goal in fresh sessions
-          </label>
-        </div>
-        {isLoop && (
-          <LoopFields
-            goal={loopGoal}
-            maxIterations={loopMaxIt}
-            budgetUsd={loopBudget}
-            onGoal={setLoopGoal}
-            onMaxIterations={setLoopMaxIt}
-            onBudgetUsd={setLoopBudget}
-          />
+        {mobile && (
+          <button
+            type="button"
+            className="so-settings-toggle wide"
+            aria-expanded={moreOpen}
+            onClick={() => setMoreOpen((v) => !v)}
+          >
+            <span className={`caret ${moreOpen ? '' : 'closed'}`}>
+              <IconChevron />
+            </span>
+            <span className="label">More options</span>
+            <span className="so-settings-sum mono">{moreSummary}</span>
+          </button>
         )}
-        <DoneFields
-          repoId={repoId || null}
-          acceptance={acceptance}
-          checks={checks}
-          onAcceptance={setAcceptance}
-          onChecks={setChecks}
-        />
-        <div className="wide">
-          <label className="label">Group</label>
-          {/* a new row takes the global max key, so any choice lands at the END
-              of its group — "append" and "under the root" are the same write */}
-          <GroupPicker
-            tasks={tasks}
-            repoId={repoId || null}
-            value={parentId || null}
-            onChange={(id) => setParentId(id ?? '')}
-            repoName={(id) => repos.find((r) => r.id === id)?.name}
-          />
-        </div>
-        <div className="wide">
-          <label className="label">Preset</label>
-          <PresetPicker
-            model={model}
-            effort={effort}
-            review={review}
-            onApply={(p) => {
-              setModel(p.model);
-              setEffort(p.effort);
-              setReview(reviewChoiceOf(p.review));
-            }}
-          />
-        </div>
-        <div>
-          <label className="label">Model override</label>
-          <select className="field mono" value={model} onChange={(e) => setModel(e.target.value)}>
-            <option value="">auto (router)</option>
-            {/* a preset can set a model the list does not offer (codex-free, a custom preset's id) */}
-            {(model && !MODEL_OPTIONS.includes(model) ? [model, ...MODEL_OPTIONS] : MODEL_OPTIONS).map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="label">Effort override</label>
-          <select className="field mono" value={effort} onChange={(e) => setEffort(e.target.value)}>
-            <option value="">default (config)</option>
-            {EFFORT_LEVELS.map((l) => (
-              <option key={l} value={l}>
-                {l}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="label">Adversarial review</label>
-          <select className="field" value={review} onChange={(e) => setReview(e.target.value as ReviewChoice)}>
-            <option value="default">default (config)</option>
-            <option value="on">review this</option>
-            <option value="off">skip (small task)</option>
-          </select>
-        </div>
-        {reviewOn && (
-          <ReviewerFields
-            model={reviewModel}
-            effort={reviewEffort}
-            onModel={setReviewModel}
-            onEffort={setReviewEffort}
-            settings={settings}
-          />
+        {(!mobile || moreOpen) && (
+          <>
+            <div>
+              <label className="label">Category</label>
+              <input
+                className="field"
+                list="tm-categories"
+                placeholder="UI, Estimator… (optional)"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+              />
+              <datalist id="tm-categories">
+                {knownCategories.map((c) => (
+                  <option key={c} value={c} />
+                ))}
+              </datalist>
+            </div>
+            <div className="wide">
+              <label className="done-check" title="iterate on a goal in fresh agent sessions over a progress ledger until the checks are green and the goal is met (docs/loops.md)">
+                <input type="checkbox" checked={isLoop} onChange={(e) => setIsLoop(e.target.checked)} /> Loop task — iterate
+                toward a goal in fresh sessions
+              </label>
+            </div>
+            {isLoop && (
+              <LoopFields
+                goal={loopGoal}
+                maxIterations={loopMaxIt}
+                budgetUsd={loopBudget}
+                onGoal={setLoopGoal}
+                onMaxIterations={setLoopMaxIt}
+                onBudgetUsd={setLoopBudget}
+              />
+            )}
+            <DoneFields
+              repoId={repoId || null}
+              acceptance={acceptance}
+              checks={checks}
+              onAcceptance={setAcceptance}
+              onChecks={setChecks}
+            />
+            <div className="wide">
+              <label className="label">Group</label>
+              {/* a new row takes the global max key, so any choice lands at the END
+                  of its group — "append" and "under the root" are the same write */}
+              <GroupPicker
+                tasks={tasks}
+                repoId={repoId || null}
+                value={parentId || null}
+                onChange={(id) => setParentId(id ?? '')}
+                repoName={(id) => repos.find((r) => r.id === id)?.name}
+              />
+            </div>
+            <div className="wide">
+              <label className="label">Preset</label>
+              <PresetPicker
+                model={model}
+                effort={effort}
+                review={review}
+                onApply={(p) => {
+                  setModel(p.model);
+                  setEffort(p.effort);
+                  setReview(reviewChoiceOf(p.review));
+                }}
+              />
+            </div>
+            <div>
+              <label className="label">Model override</label>
+              <select className="field mono" value={model} onChange={(e) => setModel(e.target.value)}>
+                <option value="">auto (router)</option>
+                {/* a preset can set a model the list does not offer (codex-free, a custom preset's id) */}
+                {(model && !MODEL_OPTIONS.includes(model) ? [model, ...MODEL_OPTIONS] : MODEL_OPTIONS).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Effort override</label>
+              <select className="field mono" value={effort} onChange={(e) => setEffort(e.target.value)}>
+                <option value="">default (config)</option>
+                {EFFORT_LEVELS.map((l) => (
+                  <option key={l} value={l}>
+                    {l}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Adversarial review</label>
+              <select className="field" value={review} onChange={(e) => setReview(e.target.value as ReviewChoice)}>
+                <option value="default">default (config)</option>
+                <option value="on">review this</option>
+                <option value="off">skip (small task)</option>
+              </select>
+            </div>
+            {reviewOn && (
+              <ReviewerFields
+                model={reviewModel}
+                effort={reviewEffort}
+                onModel={setReviewModel}
+                onEffort={setReviewEffort}
+                settings={settings}
+              />
+            )}
+            {/* a task made here is the human's own (source manual) — never external */}
+            <LandingPicker value={landing} onChange={setLanding} repo={repos.find((r) => r.id === repoId)} external={false} />
+          </>
         )}
-        {/* a task made here is the human's own (source manual) — never external */}
-        <LandingPicker value={landing} onChange={setLanding} repo={repos.find((r) => r.id === repoId)} external={false} />
-        <div className="wide">
-          <label className="label">On create</label>
-          <div className="start-row">
-            {START_MODES.map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                className={`btn start-btn${effectiveStart === m.id ? ' on' : ''}`}
-                aria-pressed={effectiveStart === m.id}
-                disabled={m.id !== 'draft' && !canStart}
-                title={m.id !== 'draft' && !canStart ? 'Pick a repo first — a task needs one to run' : m.title}
-                onClick={() => setStart(m.id)}
-              >
-                {m.label}
-                <span className="start-hint">{m.hint}</span>
-              </button>
-            ))}
+        {!mobile && <div className="wide">{startRow}</div>}
+      </div>
+      {!mobile && (
+        <>
+          {err && <div className="warn-text" style={{ marginTop: 8 }}>{err}</div>}
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            {createBtn}
+            <button className="btn" onClick={() => setOpen(false)}>
+              Cancel
+            </button>
           </div>
-        </div>
-      </div>
-      {err && <div className="warn-text" style={{ marginTop: 8 }}>{err}</div>}
-      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-        <button className="btn primary" disabled={busy || !title.trim()} onClick={submit}>
-          {effectiveStart === 'run' ? 'Create & run' : effectiveStart === 'queue' ? 'Create & queue' : 'Create'}
-        </button>
-        <button className="btn" onClick={() => setOpen(false)}>
-          Cancel
-        </button>
-      </div>
+        </>
+      )}
     </div>
   );
   if (!mobile) return form;
@@ -474,6 +565,14 @@ function NewTaskForm({ onCreated, mobile = false }: { onCreated: () => void; mob
       {opener}
       <FullSheet label="New task" title="New task" onClose={() => setOpen(false)}>
         {form}
+        {/* On create + Create ride the bottom edge from anywhere in the form;
+            the sheet's × is the cancel */}
+        <div className="new-task-foot">
+          {startRow}
+          {!canStart && <div className="hint">Queue and Run now need a repo.</div>}
+          {err && <div className="warn-text">{err}</div>}
+          {createBtn}
+        </div>
       </FullSheet>
     </>
   );
@@ -745,7 +844,10 @@ export function BoardPage({
   const tokens = useMemo(() => prefs.tokens.filter((t) => tokenLive(t, searchCtx)), [prefs.tokens, searchCtx]);
   const searching = isSearching(tokens, searchText);
   // a phone narrowed to one repo does not need that repo's name on every row
-  const oneRepo = tokens.filter((t) => t.kind === 'repo').length === 1;
+  const repoTokens = tokens.filter((t) => t.kind === 'repo');
+  const oneRepo = repoTokens.length === 1;
+  // the repo a new task defaults to when the board is narrowed to one
+  const filterRepoId = oneRepo && repoTokens[0].value !== 'none' ? repoTokens[0].value : null;
   const filtered = useMemo(() => {
     const match = compileQuery(tokens, searchText, searchCtx, haystacks);
     return tasks.filter(match);
@@ -1330,7 +1432,7 @@ export function BoardPage({
           <div className="board-toolbar">
             {trigger}
             {selectToggle}
-            <NewTaskForm onCreated={refresh} mobile />
+            <NewTaskForm onCreated={refresh} mobile filterRepoId={filterRepoId} />
           </div>
           {chips}
         </>
@@ -1372,7 +1474,7 @@ export function BoardPage({
           onOpenTask={onOpenTask}
         />
       )}
-      {!mobile && <NewTaskForm onCreated={refresh} />}
+      {!mobile && <NewTaskForm onCreated={refresh} filterRepoId={filterRepoId} />}
       <DragGhost drag={drag} tasks={tasks} />
       {/* An empty list before the first successful load means "never heard
           from the server", not "no tasks" (docs/mobile.md § Server offline). */}

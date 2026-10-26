@@ -38,18 +38,26 @@ const withCtrl = (d: string): string => {
  * without opening the keyboard at all.
  */
 const KEY_ROW: { label: string; seq: string; title: string }[] = [
-  { label: 'Esc', seq: '\x1b', title: 'Escape — interrupt the agent' },
   { label: '\u23ce', seq: '\r', title: 'Enter — submit, or confirm the highlighted choice' },
-  { label: '\u2191', seq: '\x1b[A', title: 'Up' },
-  { label: '\u2193', seq: '\x1b[B', title: 'Down' },
   { label: '1', seq: '1', title: 'Pick option 1' },
   { label: '2', seq: '2', title: 'Pick option 2' },
   { label: '3', seq: '3', title: 'Pick option 3' },
-  { label: 'Tab', seq: '\t', title: 'Tab — accept the completion' },
-  { label: '\u21e7Tab', seq: '\x1b[Z', title: 'Shift+Tab — cycle the permission mode' },
-  { label: '^C', seq: '\x03', title: 'Ctrl-C — clear the input (twice exits)' },
+  { label: '\u2191', seq: '\x1b[A', title: 'Up' },
+  { label: '\u2193', seq: '\x1b[B', title: 'Down' },
   { label: '\u2190', seq: '\x1b[D', title: 'Left' },
   { label: '\u2192', seq: '\x1b[C', title: 'Right' },
+  { label: 'Tab', seq: '\t', title: 'Tab — accept the completion' },
+  { label: '\u21e7Tab', seq: '\x1b[Z', title: 'Shift+Tab — cycle the permission mode' },
+];
+
+/**
+ * The keys that stop or undo something, behind a separator at the far end of
+ * the row (with Ctrl, which makes the next key one of them): a thumb aiming at
+ * Enter must never land on "interrupt the agent".
+ */
+const STOP_KEYS: { label: string; seq: string; title: string }[] = [
+  { label: 'Esc', seq: '\x1b', title: 'Escape — interrupt the agent' },
+  { label: '^C', seq: '\x03', title: 'Ctrl-C — clear the input (twice exits)' },
 ];
 
 /** Phones pick their own terminal font size (A−/A+), remembered per browser. */
@@ -664,19 +672,6 @@ export function TerminalDrawer({
            terminal, next to the thumb and the keyboard, and scrolls sideways so
            a narrow phone clips nothing. */
         <div className="term-keys" role="group" aria-label="Terminal keys">
-          <button
-            type="button"
-            className={`term-key ${ctrl ? 'on' : ''}`}
-            title="Ctrl — applies to the next key, then clears"
-            aria-pressed={ctrl}
-            onMouseDown={holdFocus}
-            onClick={() => {
-              setCtrlOn(!ctrlRef.current);
-              keepFocus();
-            }}
-          >
-            Ctrl
-          </button>
           {KEY_ROW.map((k) => (
             <button
               type="button"
@@ -700,6 +695,33 @@ export function TerminalDrawer({
           >
             <IconArrowDown />
           </button>
+          <span className="term-keys-sep" aria-hidden="true" />
+          <button
+            type="button"
+            className={`term-key ${ctrl ? 'on' : ''}`}
+            title="Ctrl — applies to the next key, then clears"
+            aria-pressed={ctrl}
+            onMouseDown={holdFocus}
+            onClick={() => {
+              setCtrlOn(!ctrlRef.current);
+              keepFocus();
+            }}
+          >
+            Ctrl
+          </button>
+          {STOP_KEYS.map((k) => (
+            <button
+              type="button"
+              key={k.label}
+              className="term-key"
+              title={k.title}
+              aria-label={k.title}
+              onMouseDown={holdFocus}
+              onClick={() => pressKey(k.seq)}
+            >
+              {k.label}
+            </button>
+          ))}
         </div>
       )}
       {mobile && (

@@ -117,6 +117,7 @@ export function ChatPage() {
   const [err, setErr] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const paneRef = useRef<HTMLDivElement | null>(null);
 
   const chat = chats.find((c) => c.id === id) ?? null;
   const messages = id ? chatMessages[id] : undefined;
@@ -133,6 +134,52 @@ export function ChatPage() {
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
   }, [messages?.length, chat?.status]);
+
+  // The pane is exactly the box `.main` shows — measured, because the header,
+  // the safe-area top and the tab bar are not in any viewport unit — and, with a
+  // phone keyboard up, only the part of it above the keys: iOS covers the
+  // layout viewport instead of resizing it, so only `visualViewport` knows
+  // (docs/chat.md § Layout). The CSS height stays as the first-paint fallback.
+  useEffect(() => {
+    const pane = paneRef.current;
+    const main = pane?.closest<HTMLElement>('.main');
+    if (!pane || !main) return;
+    const vv = window.visualViewport;
+    let raf = 0;
+    const apply = () => {
+      raf = 0;
+      const css = getComputedStyle(main);
+      const box = main.getBoundingClientRect();
+      const top = Math.max(box.top + parseFloat(css.paddingTop), vv?.offsetTop ?? 0);
+      let bottom = box.bottom - parseFloat(css.paddingBottom);
+      // the keyboard (visual viewport shorter than the layout one): the tab bar is under it
+      const covered = vv ? vv.offsetTop + vv.height < window.innerHeight - 1 : false;
+      if (vv && covered) bottom = Math.min(bottom, vv.offsetTop + vv.height - 8);
+      pane.style.setProperty('--tm-chat-h', `${Math.round(bottom - top)}px`);
+      // typing in it: keep the whole pane in that box, so the composer sits on the keys
+      if (covered && pane.contains(document.activeElement)) {
+        const off = pane.getBoundingClientRect().top - top;
+        if (Math.abs(off) > 1) main.scrollTop += off;
+      }
+    };
+    const schedule = () => {
+      if (!raf) raf = requestAnimationFrame(apply);
+    };
+    apply();
+    const ro = new ResizeObserver(schedule);
+    ro.observe(main);
+    vv?.addEventListener('resize', schedule);
+    vv?.addEventListener('scroll', schedule);
+    window.addEventListener('resize', schedule);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      vv?.removeEventListener('resize', schedule);
+      vv?.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+      pane.style.removeProperty('--tm-chat-h');
+    };
+  }, []);
 
   const send = useCallback(async () => {
     const body = text.trim();
@@ -211,7 +258,7 @@ export function ChatPage() {
         )}
       </div>
 
-      <div className="chat-pane panel">
+      <div className="chat-pane panel" ref={paneRef}>
         {!chat ? (
           <div className="empty">
             {id ? 'That chat is gone.' : 'Pick a conversation, or open a new one.'}

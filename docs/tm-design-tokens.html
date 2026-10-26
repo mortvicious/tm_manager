@@ -59,13 +59,16 @@
   --tm-font-body: "Inter", system-ui, sans-serif;
   --tm-font-mono: "JetBrains Mono", ui-monospace, monospace;
 
-  --tm-text-xs:  0.75rem;
-  --tm-text-sm:  0.8125rem;
-  --tm-text-md:  0.9375rem;
-  --tm-text-lg:  1.125rem;
-  --tm-text-xl:  1.5rem;
-  --tm-text-2xl: 2.125rem;
-  --tm-text-3xl: 3.25rem;
+  /* the unit: 1rem, or iOS Dynamic Type's body size normalised to 16px on a
+     touch device (theme.css § Dynamic Type) */
+  --tm-type: 1rem;
+  --tm-text-xs:  calc(0.75 * var(--tm-type));
+  --tm-text-sm:  calc(0.8125 * var(--tm-type));
+  --tm-text-md:  calc(0.9375 * var(--tm-type));
+  --tm-text-lg:  calc(1.125 * var(--tm-type));
+  --tm-text-xl:  calc(1.5 * var(--tm-type));
+  --tm-text-2xl: calc(2.125 * var(--tm-type));
+  --tm-text-3xl: calc(3.25 * var(--tm-type));
 
   /* ---- space (4px base) ---- */
   --tm-space-1: 4px;
@@ -217,7 +220,7 @@
   /* the floating tab bar and the transparent top bar */
   --tm-tabbar-h: 62px;
   --tm-head-h: 56px;
-  --tm-text-tab: 0.625rem;
+  --tm-text-tab: calc(0.625 * var(--tm-type));
 }
 
 /* sampled from a damped spring (bounce 0 and 0.3), SwiftUI's own model */
@@ -301,7 +304,7 @@
   --tm-border: rgba(60, 60, 67, 0.2);
   --tm-border-strong: rgba(60, 60, 67, 0.32);
   --tm-text: #000000;
-  --tm-text-muted: rgba(60, 60, 67, 0.7);
+  --tm-text-muted: rgba(60, 60, 67, 0.74);
   --tm-text-faint: rgba(60, 60, 67, 0.5);
   --tm-accent: var(--tm-teal-7);
   --tm-accent-strong: var(--tm-teal-6);
@@ -360,13 +363,13 @@
    large title) and the floating tab bar, whose bottom gap overlaps the
    home-indicator inset. Keyed off .app.mobile like Classic's own phone overrides. */
 [data-design='glass'] .app.mobile {
-  --tm-text-xs: 0.75rem;
-  --tm-text-sm: 0.9375rem;
-  --tm-text-md: 1.0625rem;
-  --tm-text-lg: 1.25rem;
-  --tm-text-xl: 1.375rem;
-  --tm-text-2xl: 1.75rem;
-  --tm-text-3xl: 2.125rem;
+  --tm-text-xs: calc(0.75 * var(--tm-type));
+  --tm-text-sm: calc(0.9375 * var(--tm-type));
+  --tm-text-md: calc(1.0625 * var(--tm-type));
+  --tm-text-lg: calc(1.25 * var(--tm-type));
+  --tm-text-xl: calc(1.375 * var(--tm-type));
+  --tm-text-2xl: calc(1.75 * var(--tm-type));
+  --tm-text-3xl: calc(2.125 * var(--tm-type));
   --tm-tabbar-float: max(var(--tm-space-2), calc(env(safe-area-inset-bottom, 0px) - var(--tm-space-3)));
   --tm-tabbar-clear: calc(var(--tm-tabbar-h) + var(--tm-tabbar-float) + var(--tm-space-2));
 }

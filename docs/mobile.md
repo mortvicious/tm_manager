@@ -151,7 +151,7 @@ Three new entries in the `:root` app-layout block:
 --tm-tabbar-h: 56px;
 --tm-tabbar-clear: 0px;   /* .app.mobile raises it to h + safe-area-inset-bottom */
 --tm-tap: 44px;  --tm-tap-dense: 38px;
---tm-text-input: 1rem;    /* iOS zooms a focused field under 16px and never zooms back */
+--tm-text-input: max(16px, var(--tm-type));  /* iOS zooms a focused field under 16px and never zooms back */
 ```
 
 `--tm-tabbar-clear` is the whole mechanism: `.main`'s bottom padding and
@@ -163,6 +163,43 @@ that token.
 
 The mobile type scale is a step down of the same tokens (`--tm-text-xl` and up),
 not a new set of sizes.
+
+### Dynamic Type
+
+Every text size is a multiple of one unit, `--tm-type` (`--tm-text-sm:
+calc(0.8125 * var(--tm-type))`, and so on, in every token block). It is `1rem`
+everywhere except on a touch device that has the WebKit keyword:
+
+```css
+@supports (font: -apple-system-body) {
+  @media (hover: none) and (pointer: coarse) {
+    html { font: -apple-system-body; }   /* follows Settings → Larger Text */
+    :root { --tm-type: min(calc(1rem * 16 / 17), calc(16px * 23 / 17)); }
+  }
+}
+```
+
+iOS's body size is 17px at the default setting, so `16 / 17` keeps the default
+rendering exactly as it was and scales from there. The cap is xxxLarge (23pt,
+×1.35). The accessibility sizes (up to 53pt) would push the dense board rows
+and the key row past a phone's width. The touch gate exists because desktop
+Safari supports the keyword too, and it answers with the Mac's 13px. Headless
+WebKit on a Mac matches the gate when given touch and also reports 13px, so
+the harness shows small text there. Chromium does not support the keyword and
+renders 16px. The input floor stays at 16px on purpose. Under a Smaller Text
+setting, `--tm-type` alone would bring back the focus zoom. Rule: never write
+a raw `rem` font size. Multiply `--tm-type`. Unverified on a device: the 17px
+default is iOS's documented body size, not a measurement from this phone.
+
+### Contrast
+
+`.label`, `.hint`, the board row's quick-action glyphs and the folded-settings
+summary use `--tm-text-muted`, never `--tm-text-faint`. Faint measured 2.5:1 in
+Classic light and 2.7:1 in Glass light, which is under WCAG AA for 12px text.
+Faint stays for decoration only. Muted is 4.7:1 in Classic light on the page
+(4.9:1 on a panel). Glass light's muted moved from 0.7 to 0.74 alpha, which
+gives 4.7:1 on `#f2f2f7`, where 0.7 had 4.2:1. Both dark schemes were already
+above 6:1.
 
 ### Patterns
 
@@ -405,6 +442,14 @@ component.
   screen with the task panel or the drawer. On a phone the Inbox chip stands
   in for the question chip — the bar holds four capsules.
 
+
+**Reduce Motion.** The sheet tween is JS, so the CSS media query that collapses
+every other duration never reaches it. react-modal-sheet already drops to a
+10ms linear tween under `prefers-reduced-motion` (motion's `useReducedMotion`),
+and `theme.css` also zeroes `--tm-sheet-dur` in that query (`:root,
+:root[data-design]`, which outranks Glass's own value), so the token layer says
+the same thing as the library. `exitGhost` skips its ghost there as well.
+
 ## Board
 
 **Select mode** (`docs/inbox.md` § Bulk actions): the toolbar's **Select**
@@ -438,9 +483,27 @@ phone, before the first task.
   as absent at render time (`tokenLive` in `boardSearch.ts`) rather than
   silently emptying the board behind a chip naming nothing. The checks wait for
   data, because an empty list at boot means "not loaded yet".
-- **New task** is a `FullSheet` (a full-height sheet) holding the unchanged form.
-  It no longer pushes every list down by a screen and a half. Closing it keeps
-  what was typed.
+- **New task** is a `FullSheet` (a full-height sheet). It no longer pushes every
+  list down by a screen and a half. Closing it keeps what was typed. The phone
+  form is built for quick capture:
+  - Title, description and Repo are always shown. Everything after Repo
+    (category, loop, definition of done, group, preset, model, effort, review,
+    reviewer, landing) sits in a **More options** fold. The fold uses the task
+    panel's Settings toggle, and its summary names what it holds (e.g. `auto
+    model · default effort`, plus the category, `loop`, `grouped`, the review
+    choice or the landing tier when set), so a template's or preset's fill is
+    never invisible.
+  - **On create** and **Create** are a foot (`.new-task-foot`) pinned to the
+    sheet's bottom edge, both with the form scrolled and with it short. The foot
+    carries the home-indicator inset. The sheet's × is the cancel. "Queue and
+    Run now need a repo" is printed while they are disabled, because a phone
+    cannot hover for the tooltip.
+  - **The repo is defaulted** when the form opens with none picked: first the
+    board's search narrowed to exactly one repo, else the repo the last task
+    from this browser went to (`tm.newTask.repo`, written on a successful
+    create). It re-applies when the repos arrive, because a tap can beat the
+    first load. A repo picked in the kept draft, "none" included, is left alone.
+    Desktop gets the same default but keeps the unfolded form.
 
 **Rows** (`TaskRow`, `.task-row.m`: its own JSX branch, because the actions
 differ, not only their layout). A 3×3 grid:
@@ -583,7 +646,7 @@ over the tab bar and the header), laid out top to bottom:
 ```
 [name] [live] [A−] [A+] [⌄] [✕]
 [ xterm ................................ ]
-[Ctrl Esc ⏎ ↑ ↓ 1 2 3 Tab ⇧Tab ^C ← → ⤓]
+[⏎ 1 2 3 ↑ ↓ ← → Tab ⇧Tab ⤓ │ Ctrl Esc ^C]
 [ Message…                        ] [➤]
 ```
 
@@ -615,6 +678,16 @@ over the tab bar and the header), laid out top to bottom:
   meant to answer with one tap. Sticky Ctrl still focuses xterm (the key it
   modifies comes from the keyboard) unless the compose box has focus. ⤓ jumps
   to the live end of the scrollback.
+- **Order: steering first, stopping last** (UX review #25). Enter and 1/2/3 lead
+  the row. Esc ("interrupt the agent"), ^C and the sticky Ctrl that makes the
+  next key a control key sit after a separator at the far end (`STOP_KEYS`). A
+  thumb aiming at Enter cannot land on them, and on a 390px phone they are
+  scrolled to rather than in reach by accident.
+- **A tap that catches a fling only stops it** (`termTouchScroll.ts`). A touch
+  that lands while the scrollback is still coasting and stays a tap is
+  `preventDefault`ed at `touchend`. No synthetic click, no focus, no keyboard.
+  A native scroller behaves the same way. A tap on a still terminal still
+  focuses it and raises the keyboard.
 - **Terminal scrolling** (`components/termTouchScroll.ts`). xterm 6 replaced
   its native-overflow viewport with VS Code's scrollable element, which listens
   to `wheel` only, so a finger dragged over the terminal scrolled nothing. A
@@ -661,7 +734,9 @@ compact/breakpoint/run change. The reasoning is in `docs/decisions.md`,
 - A phone in **landscape** is ≥768px wide and therefore gets the desktop layout.
   That is legible (the sidebar fits 390px of height) but it is not designed for;
   a short-viewport pass is filed separately.
-- The key row covers Ctrl, Esc, Enter, the arrows, 1/2/3, Tab, Shift+Tab and ^C.
+- The key row covers Enter, 1/2/3, the arrows, Tab, Shift+Tab, then (past a
+  separator, at the far end) Ctrl, Esc and ^C. Esc interrupts the agent, so it
+  is never next to Enter (UX review #25).
   Ctrl-with-a-symbol, function keys and Alt still have no key.
 - Reordering on a phone is still the drag grip, which does work on touch
   (pointer events). There is no "move up/down" action in the row sheet.
@@ -673,6 +748,31 @@ compact/breakpoint/run change. The reasoning is in `docs/decisions.md`,
   longer to ingest could still see the Enter arrive early.
 
 ## Verification
+
+**New task foot, contrast, Dynamic Type, chat pane (2026-10-26, UX review
+#15/#16/#25/#26/#27/#28)**: Playwright at 393×852 and 320×640 (touch, iPhone
+UA) and 1440×900, against the scratch build served over the live front door's
+origin. API GETs were passed through, every write aborted, and the service
+worker was blocked (`serviceWorkers: 'block'`, or its requests skip the
+routing). Questions were stubbed empty so a live agent's question did not
+cover the page. Classic and Glass, light and dark:
+
+- New task opened with the last-used repo selected (`tm.newTask.repo`) on the
+  phone and on desktop, with More options folded (summary `auto model · default
+  effort`). The foot's bottom was at 852 both with the form at its top and with
+  the sheet scrolled a third of the way, so it is pinned in both cases. At 320px
+  the three start buttons fit (scrollWidth = clientWidth) and the fold no longer
+  widens the grid. Desktop has no foot and no fold.
+- `.label` computed to muted in every scheme. Classic light `rgb(107,113,120)`
+  is 4.7:1 on `#fafafa`. Glass light `rgba(60,60,67,.74)` is 4.7:1 on `#f2f2f7`.
+- `--tm-type` computed to 16px in Chromium (which does not support the
+  keyword). In headless WebKit on a Mac it was 12.2px, because the Mac answers
+  `-apple-system-body` with 13px. iOS answers 17px at the default size, giving
+  16px. That has not been seen on a device.
+- Chat pane height equalled `.main`'s visible box: 697/697 Classic phone,
+  678/678 Glass phone, 764/764 and 768/768 desktop, with no page scroll. The
+  keyboard path (`visualViewport` shrink) cannot be driven headless and is
+  unverified on a device.
 
 **Tab bar, verdict chips, tap to explain (2026-10-26, UX review #12/#8/#9/#23/#24)**:
 Playwright (`playwright-core` 1.63.0, chromium-1243) at 393×852 and 320×640

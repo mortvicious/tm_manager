@@ -173,6 +173,23 @@ FK-less, like `tm_events` and `tm_dispatches`; `deleteChat` removes both in one 
 
 `finishChatTurn` writes `session_id = COALESCE(?, session_id)`: a failed turn — or one whose envelope carried no id — must not erase the id the conversation is on. The session id is kept even from a failure, because claude has already created that session and dropping it would silently start a second conversation inside one chat.
 
+## Layout
+
+The browser pane (`.chat-pane`) is a column whose log scrolls while the
+composer stays put. Its height is **measured, not taken from the viewport**
+(`pages/Chat.tsx`, published as `--tm-chat-h`). It is the box `.main` shows
+(its height less its padding, which already pays the header, the safe area and
+the tab bar), and the CSS `100dvh` calc is only the first paint. With a phone
+keyboard up, the bottom is `visualViewport`'s bottom instead, because iOS covers
+the layout viewport rather than resizing it. While the composer has focus,
+`.main` is scrolled so the pane's top meets the visible top, which puts the
+composer right on the keys. A `ResizeObserver` on `.main` plus the visual
+viewport's and the window's resize/scroll events re-measure, one rAF per burst.
+The old `calc(100vh - tabbar - space-8)` ignored the header and the safe-area
+top, and in standalone it also ignored the keyboard (UX review #28). The phone
+floor is 200px rather than the desktop's 320px, so a keyboard never pushes the
+composer under itself.
+
 ## What it is not
 
 - **Not an agent.** It has no task, no run row, no review round, no publish turn. If a chat turns up something worth doing, file a task.

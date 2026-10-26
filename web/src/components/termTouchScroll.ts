@@ -17,8 +17,9 @@ import type { Terminal } from '@xterm/xterm';
  *
  * A tap stays a tap: nothing is prevented until the finger has moved past
  * `SLOP`, so tapping still focuses the terminal and raises the keyboard. A
- * flick keeps coasting and decays, like a native scroller. Two fingers are
- * left alone (pinch zoom belongs to the browser).
+ * flick keeps coasting and decays, like a native scroller — and, like one, a
+ * tap that lands while it is still coasting only stops it: no focus, no
+ * keyboard. Two fingers are left alone (pinch zoom belongs to the browser).
  */
 const SLOP = 8; // px before a touch counts as a drag
 const FRICTION = 0.95; // per 16ms frame
@@ -31,6 +32,8 @@ export function attachTouchScroll(term: Terminal, host: HTMLElement): () => void
   let velocity = 0; // px/ms, positive = finger moving down
   let dragging = false;
   let tracking = false;
+  // this touch landed on a coasting fling: if it stays a tap, it only stopped it
+  let caught = false;
   let carry = 0; // sub-line remainder, in px
   let raf = 0;
 
@@ -83,6 +86,7 @@ export function attachTouchScroll(term: Terminal, host: HTMLElement): () => void
   };
 
   const onStart = (e: TouchEvent) => {
+    caught = raf !== 0;
     stopFling();
     if (e.touches.length !== 1) {
       tracking = false;
@@ -119,7 +123,13 @@ export function attachTouchScroll(term: Terminal, host: HTMLElement): () => void
   const onEnd = (e: TouchEvent) => {
     if (!tracking) return;
     tracking = false;
-    if (!dragging) return;
+    if (!dragging) {
+      // a tap that caught a fling: no synthetic click, so no focus and no keyboard
+      if (caught && e.cancelable) e.preventDefault();
+      caught = false;
+      return;
+    }
+    caught = false;
     dragging = false;
     // the drag was a scroll, not a tap: no synthetic click/focus afterwards
     if (e.cancelable) e.preventDefault();
