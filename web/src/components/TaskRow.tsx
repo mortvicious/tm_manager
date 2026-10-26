@@ -179,10 +179,11 @@ export function TaskRow({
   const openTerm = () => run && onOpenTerminal(run.id);
   const doRun = (e: MouseEvent | null) => act(e, () => api.taskAction(task.id, 'run-now'));
   const doPublish = (e: MouseEvent | null) => act(e, () => api.taskAction(task.id, 'publish'));
+  const doDone = (e: MouseEvent | null) => act(e, () => api.taskAction(task.id, 'complete'));
   const runnable: TaskStatus[] = ['draft', 'queued', 'failed', 'cancelled'];
-  const primary: 'terminal' | 'run' | 'publish' | null =
-    task.status === 'review' && task.repoId
-      ? 'publish'
+  const primary: 'terminal' | 'run' | 'done' | null =
+    markDone
+      ? 'done'
       : runnable.includes(task.status) && canRun
         ? 'run'
         : run && (live || !runnable.includes(task.status))
@@ -238,9 +239,9 @@ export function TaskRow({
               <IconPlay />
             </QuickBtn>
           )}
-          {primary === 'publish' && (
-            <QuickBtn label={publishLabel} className="primary-act" disabled={busy} onClick={(e) => doPublish(e)}>
-              <IconPublish />
+          {primary === 'done' && (
+            <QuickBtn label="Mark done" className="primary-act" disabled={busy} onClick={(e) => doDone(e)}>
+              <IconCheck />
             </QuickBtn>
           )}
           <QuickBtn
@@ -276,10 +277,19 @@ export function TaskRow({
               />
               {markDone && (
                 <SheetAction
+                  icon={<IconCheck />}
+                  label="Done"
+                  hint="Mark done — close the task without publishing"
+                  tone="primary"
+                  disabled={busy}
+                  onClick={fromSheet(() => void doDone(null))}
+                />
+              )}
+              {markDone && (
+                <SheetAction
                   icon={<IconPublish />}
                   label="Publish"
                   hint={task.repoId ? "Commit and push this work in the agent's own terminal" : publishLabel}
-                  tone="primary"
                   disabled={busy || !task.repoId}
                   onClick={fromSheet(() => void doPublish(null))}
                 />
@@ -291,13 +301,15 @@ export function TaskRow({
                 disabled={busy || !canRun}
                 onClick={fromSheet(() => void doRun(null))}
               />
-              <SheetAction
-                icon={<IconCheck />}
-                label={markDone ? 'Mark done' : 'Mark as ready'}
-                hint={markDone ? 'Close the task without publishing' : readyLabel}
-                disabled={busy || !canReady}
-                onClick={fromSheet(() => void act(null, () => api.taskAction(task.id, markDone ? 'complete' : 'enqueue')))}
-              />
+              {!markDone && (
+                <SheetAction
+                  icon={<IconCheck />}
+                  label="Mark as ready"
+                  hint={readyLabel}
+                  disabled={busy || !canReady}
+                  onClick={fromSheet(() => void act(null, () => api.taskAction(task.id, 'enqueue')))}
+                />
+              )}
               <SheetAction
                 icon={inQueue ? <IconX /> : <IconQueue />}
                 label={inQueue ? 'Remove from queue' : 'Add to queue'}
@@ -370,15 +382,6 @@ export function TaskRow({
         >
           {inQueue ? <IconX /> : <IconQueue />}
         </QuickBtn>
-        {markDone && (
-          <QuickBtn
-            label={publishLabel}
-            disabled={busy || !task.repoId}
-            onClick={(e) => act(e, () => api.taskAction(task.id, 'publish'))}
-          >
-            <IconPublish />
-          </QuickBtn>
-        )}
         <QuickBtn
           label={runLabel}
           disabled={busy || !canRun}

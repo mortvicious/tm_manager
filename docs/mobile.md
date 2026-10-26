@@ -286,12 +286,12 @@ differ, not only their layout). A 3×3 grid:
 [grip] [row error, when there is one               ]
 ```
 
-- **One primary action, chosen by status.** Review → Publish; a startable task
+- **One primary action, chosen by status.** Review → Done (Mark done); a startable task
   (draft/queued/failed/cancelled, no live session) → Run now; otherwise the
   terminal, if there is a session. When nothing applies there is no button. A
   disabled primary is never shown: its reason would sit in a tooltip.
-- **`⋯` opens the row's sheet** with every row action: terminal, Publish (review),
-  Run now, Mark done / Mark as ready, Add to / Remove from queue, and Open
+- **`⋯` opens the row's sheet** with every row action: terminal, Done then Publish
+  (review), Run now, Mark as ready (not review), Add to / Remove from queue, and Open
   details. They use the same guards and the same wording as the desktop icons.
 - **Two tags, then `+n`.** `rowChips` builds one list in the desktop order.
   Phones rank it `repo, dispatch, group, category, feature, auto-publish, agent,
@@ -332,7 +332,8 @@ to close; × animates out the same way.
   from ONE `PanelAction[]` list that the desktop row renders too, in the same
   order and with the same classes, so what a status offers cannot drift between
   the two. The bar picks by `mobilePrimary(live)`:
-  `publish, complete, release, unblock, run-now, enqueue, terminal`. With a live
+  `complete, publish, release, unblock, run-now, enqueue, terminal` — on a review
+  task Done comes first and is the primary button, Publish sits beside it. With a live
   session the terminal moves ahead of run-now/enqueue, which the server would
   refuse anyway. Disabled actions never go in the bar.
 - **The `⋯` sheet** lists the rest: available first, then the refused ones with

@@ -16,7 +16,7 @@ import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { DispatchStrip } from './DispatchStrip.tsx';
 import { GroupPicker, type GroupChoicePlace } from './GroupPicker.tsx';
-import { IconAnalyze, IconChevron, IconMore, IconPlay, IconPublish, IconQueue, IconTerminal, IconX } from './Icons.tsx';
+import { IconAnalyze, IconCheck, IconChevron, IconMore, IconPlay, IconPublish, IconQueue, IconTerminal, IconX } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
 import { Markdown } from './Markdown.tsx';
 import { PresetPicker, reviewChoiceOf, reviewValueOf, type ReviewChoice } from './PresetPicker.tsx';
@@ -58,8 +58,8 @@ interface PanelAction {
  */
 const mobilePrimary = (live: boolean) =>
   live
-    ? ['publish', 'complete', 'release', 'unblock', 'terminal', 'run-now', 'enqueue']
-    : ['publish', 'complete', 'release', 'unblock', 'run-now', 'enqueue', 'terminal'];
+    ? ['complete', 'publish', 'release', 'unblock', 'terminal', 'run-now', 'enqueue']
+    : ['complete', 'publish', 'release', 'unblock', 'run-now', 'enqueue', 'terminal'];
 const MOBILE_BAR_MAX = 3;
 /** Same words as the board row (TaskRow), for the same server refusal. */
 const LIVE_MSG = 'Previous session is still live — open its terminal or kill it first';
@@ -506,18 +506,18 @@ export function TaskSlideOver({
       onClick: () => action('cancel'),
     });
   }
+  // Done is the review task's primary action; Publish stays beside it.
   if (task.status === 'review') {
+    actions.push({ id: 'complete', label: 'Done', icon: <IconCheck />, cls: 'primary', title: 'Mark done — close the task without publishing', onClick: () => action('complete') });
     actions.push({
       id: 'publish',
       label: 'Publish',
       icon: <IconPublish />,
-      cls: 'primary',
       title: resumeSession
         ? `Commit and push this work in session ${resumeSession.slice(0, 8)} — the same terminal the agent worked in`
         : 'Commit and push this work (no agent session left to reopen, so the server does it directly)',
       onClick: () => action('publish'),
     });
-    actions.push({ id: 'complete', label: 'Mark done', title: 'Close the task without publishing', onClick: () => action('complete') });
   }
   // "Review now" (docs/design.md § Adversarial review): runs the reviewer itself, fresh verdict
   if (task.repoId && REVIEW_NOW_FROM.includes(task.status)) {
