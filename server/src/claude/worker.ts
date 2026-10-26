@@ -538,6 +538,9 @@ export function buildWorkerInvocation(opts: {
       SessionEnd: [
         { hooks: [{ type: 'command', command: hookCurl('/api/internal/runs/$TM_RUN_ID/session-end') }] },
       ],
+      // No `matcher` on purpose: the route drops non-prompt kinds by a
+      // DENY-list (claude/notification.ts); an allow-list here would silently
+      // swallow a future real prompt type — the deadlock this hook prevents.
       Notification: [
         { hooks: [{ type: 'command', command: hookCurl('/api/internal/runs/$TM_RUN_ID/needs-attention') }] },
       ],

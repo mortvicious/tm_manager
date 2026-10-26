@@ -5,6 +5,7 @@ import { broadcast } from '../events.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 import type { Storage } from '../storage/types.ts';
 import { summarizeRun, summarizeTranscript } from './stats.ts';
+import { isIdleNotification, isNonPromptNotification, readNotification } from './notification.ts';
 
 /**
  * Every claude this server spawns that is NOT a task's worker — adversarial
@@ -342,14 +343,17 @@ export class AuxRunner {
     }
 
     if (event === 'notification') {
-      // The CLI's ~60s "waiting for your input" is not a prompt anybody has
-      // to answer — it means the session went quiet. For a compaction that is
-      // the end of the road (the boundary either landed or it never will).
-      const msg = typeof b.message === 'string' ? b.message : '';
-      if (/waiting for your input/i.test(msg)) {
+      // The CLI's ~60s idle notice (`idle_prompt`) is not a prompt anybody
+      // has to answer — it means the session went quiet. For a compaction that
+      // is the end of the road (the boundary either landed or it never will).
+      // The type decides; the text only when the payload carries no type.
+      const notification = readNotification(b);
+      if (isIdleNotification(notification)) {
         if (live.spec.completion === 'compact') await this.failUnlessCompacted(live, 'compaction went idle');
         return;
       }
+      // The other non-prompt kinds (auth, quota, completion notes) flag nothing.
+      if (isNonPromptNotification(notification.type)) return;
       const run = await this.storage.getRun(runId);
       if (run && run.status === 'running' && !run.needsAttention) {
         const updated = await this.storage.updateRun(runId, { needsAttention: true });

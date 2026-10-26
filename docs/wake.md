@@ -184,6 +184,13 @@ waiting for, and `handleExit` would clear the flag on the way out, so nobody
 would even know it had been asked (adversarial review R2). The prompt test in
 `assessLimitStall()` covers the window before the Notification hook has landed.
 
+That makes a FALSE flag expensive: it blocks the wake as surely as a real
+prompt. The flag is therefore raised only for a prompt — the CLI's idle notice
+(`idle_prompt`, which used to fire 60 s into every `waiting` park) and the other
+non-prompt notification types are dropped at the route by their
+`notification_type` (`docs/design.md` § Completion detection, decisions.md
+2026-10-26).
+
 Also skipped: publish runs (settled against git), tasks inside the resume gate
 or a fired dispatch turn, and any run that is no longer its task's newest — all
 of them have a different turn on the way.

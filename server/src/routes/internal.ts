@@ -9,6 +9,7 @@ import type { Orchestrator } from '../orchestrator.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 import type { Storage } from '../storage/types.ts';
 import { hookDecision } from '../questions.ts';
+import { attentionData, isNonPromptNotification, readNotification } from '../claude/notification.ts';
 
 // Lifecycle hook callbacks from inside worker claude sessions. The hook curl
 // forwards the hook's stdin JSON (session_id, transcript_path, ...) as body.
@@ -550,6 +551,12 @@ export function registerInternalRoutes(
   app.post('/api/internal/runs/:id/needs-attention', async (req) => {
     const { id } = req.params as { id: string };
     if (await auxHook(id, 'notification', req.body)) return { ok: true };
+    // The CLI's own `notification_type` decides (claude/notification.ts): its
+    // idle notice, auth/quota/completion notes are not a prompt. A `waiting`
+    // park keeps the session NOT idle, so without this its ~60 s idle notice
+    // passed every filter below — 83% of all flags. Unknown/missing → flag.
+    const notification = readNotification(req.body);
+    if (isNonPromptNotification(notification.type)) return { ok: true };
     // Completed-idle sessions fire ~60s idle-prompt notifications forever —
     // those are noise, not "needs attention" (user report + review M3).
     if (sessions.isIdle(id)) return { ok: true };
@@ -570,7 +577,13 @@ export function registerInternalRoutes(
         // the very next transcript line within a second, and the tracker has
         // to know the flag's time to tell "answered" from "still catching up".
         orchestrator.attentionFlagged(id);
-        await storage.appendEvent({ kind: 'run.attention', actor: 'hook', runId: id, taskId: updated.taskId });
+        await storage.appendEvent({
+          kind: 'run.attention',
+          actor: 'hook',
+          runId: id,
+          taskId: updated.taskId,
+          data: attentionData(notification),
+        });
         broadcast({ type: 'run.needs-attention', run: updated });
       }
     }
