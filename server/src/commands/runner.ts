@@ -116,7 +116,7 @@ export class CommandRunner {
     repo: Repo,
     actor: string,
     ownerTaskId: string | null = null,
-    check: { taskId: string } | null = null,
+    check: CheckFor | null = null,
   ): Promise<CommandRun> {
     const existing = this.runningFor(command.id);
     if (existing) {
@@ -159,7 +159,8 @@ export class CommandRunner {
       endedAt: null,
       startedBy: actor,
       ownerTaskId,
-      checkTaskId: check?.taskId ?? null,
+      checkTaskId: check && 'taskId' in check ? check.taskId : null,
+      ...(check && 'baseline' in check ? { checkBaseline: true } : {}),
     };
     this.runs.set(id, run);
     broadcast({ type: 'command.run', run: { ...run } });
@@ -174,7 +175,8 @@ export class CommandRunner {
         cwd,
         pid: run.pid,
         ownerTaskId,
-        ...(check ? { checkTaskId: check.taskId } : {}),
+        ...(check && 'taskId' in check ? { checkTaskId: check.taskId } : {}),
+        ...(check && 'baseline' in check ? { checkBaseline: true } : {}),
       },
     });
     this.trim();
@@ -191,12 +193,16 @@ export class CommandRunner {
    *    first, within the same timeout, because one run per definition holds;
    *  - an unparseable line or a missing binary never produced a process.
    * `abort` is polled while waiting: the task left the state the check was for.
+   * `target` is the task whose change it judges (that task owns the run), or a
+   * BASELINE — one run on the current tree before the check is saved
+   * (docs/checks.md § Baseline), owned by no task and started by `actor`.
    */
   async runCheck(
     command: RepoCommand,
     repo: Repo,
-    taskId: string,
+    target: CheckFor,
     abort?: () => boolean | Promise<boolean>,
+    actor = 'system',
   ): Promise<CheckRun> {
     const timeoutMs = (command.timeoutSec ?? CHECK_DEFAULT_TIMEOUT_SEC) * 1000;
     const t0 = Date.now();
@@ -206,7 +212,7 @@ export class CommandRunner {
     }
     let run: CommandRun;
     try {
-      run = await this.start(command, repo, 'system', taskId, { taskId });
+      run = await this.start(command, repo, actor, 'taskId' in target ? target.taskId : null, target);
     } catch (e) {
       return { runId: null, exit: null, durationMs: 0, tail: '', error: `could not start: ${(e as Error).message}` };
     }
@@ -293,6 +299,9 @@ export class CommandRunner {
     for (const run of finished.slice(MAX_FINISHED)) this.runs.delete(run.id);
   }
 }
+
+/** What a check run is for: a task's change, or a baseline before saving. */
+export type CheckFor = { taskId: string } | { baseline: true };
 
 /** How much of a check's output the worker and the reviewer get. */
 export const CHECK_TAIL_LINES = 80;

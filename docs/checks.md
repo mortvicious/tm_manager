@@ -55,6 +55,122 @@ the check that judges it, and the change was audited as `human`. Without
 
 Plain (non-check) commands are unaffected.
 
+## Suggested checks
+
+The drawer's **Scan scripts** (`GET /api/repos/:id/scripts`, `docs/commands.md`
+§ Scanner) marks the scripts that look like checks (`ScannedScript.suggestedCheck`,
+`commands/scan.ts` `suggestCheck`). Rules only, no AI session:
+
+- **In CI**: a script that a package manager runs in `.github/workflows/*.yml`
+  (`ciScriptNames`). It is a line reader, not a YAML parser. It reads inline
+  and `|`/`>` block `run:` values, splits them on `&&`/`||`/`;`/`|`, and
+  matches `<pm> run <name>`, `<pm> test`/`npm t`, and pnpm/yarn/bun's bare
+  `<pm> <name>`. Built-ins such as `pnpm audit` and `npm ci` are not scripts.
+  A workspace script counts as in CI only when the root has no script of that
+  name.
+- **By name**: `typecheck`, `type-check`, `lint`, `test`, `build`, plus
+  `typecheck:*` / `lint:*`. `test:*` and `build:*` variants are suggested only
+  when CI runs them, because they are usually e2e suites, probes against live
+  services or release builds.
+- **Never**: a service, a `watch`/`debug`/`dev`/`serve`/`open`/`ui` variant, a
+  body with `--inspect` or `--watch`, or npm's placeholder
+  (`echo "Error: no test specified" && exit 1`, which is red forever).
+
+**Side effects are flagged and never pre-selected.** A check runs after every
+worker turn. A rewrite moves the diff hash that the no-progress guard reads,
+and a build overwrites output that something may be serving. The flags are
+(`sideEffectOf`, which also reads the `pre<name>` body because npm runs it
+first):
+
+- `--fix` and `--write` (rewrites files);
+- `-u` / `--update-snapshot(s)` / `--updateSnapshot` (snapshots);
+- builds: a `build`/`build:*` name, or a `vite build`/`next build`/
+  `nest build`/`webpack`/`rollup`/`esbuild`/`tsup`/emitting-`tsc` body. A
+  script named `typecheck` is trusted not to emit.
+
+In this repo `npm run build` writes `web/dist`, which the production front door
+serves. Rebuild & restart builds into `web/dist.next` and swaps for exactly that
+reason, so the flag says so and offers `npm run typecheck` instead. When a safer
+line is known it comes as `instead`: the package's own typecheck for a build,
+and `<pm exec> eslint …` without `--fix` or `prettier --check` for a plain
+lint/format body. The drawer offers it as *use … instead*. A build into a
+scratch outDir is the other honest option, but it is repo-specific, so it is not
+generated.
+
+`preselect` = in CI and no side effect. Those rows come first and get the
+primary button. Others are suggestions a human may still take, and a flagged one
+asks for a confirm first. What the rules gave on the six registered repos
+(2026-10-26):
+
+- task-manager: `typecheck` pre-selected; `build` flagged (served `web/dist`).
+- neko-frontend: `lint`, `typecheck`, `test`, `css:budget` pre-selected;
+  `build` flagged.
+- neko-vite-new: `lint`, `test`, `typecheck:edge` suggested by name; `build`
+  flagged.
+- neko-nest: `test` (`jest`) suggested; `lint` flagged `--fix`, with the plain
+  `eslint` line offered; the 130+ `check:*` probes are not suggested.
+- graphql-lambda-collector: `build` (`tsc`) flagged; the placeholder `test` is
+  skipped.
+- profitbase-exporter: PHP, no `package.json`, so no suggestions.
+
+The scan also fixed a kind guess: a `vitest` body used to read as a `vite` dev
+server (service), and `vite(?![\w-]|\s+build)` now excludes it.
+
+**Not built: an AI suggester** (an aux kind modelled on `claude/analyze.ts`:
+`READ_ONLY_TOOLS` + `acceptJson`). Only a repo with no `package.json` gains
+anything from it (profitbase-exporter, PHP), and for one repo the hand-written
+form is cheaper than a new aux kind with its `RunKind`/`KIND_TITLE`/prompt/
+schema. Revisit when a second such repo appears.
+
+## Baseline
+
+A check that is already red on the current tree sends every task in the repo
+through `checks.maxRounds` fix turns for a failure that is not its own. So
+**saving a suggestion as a check first runs it once, as it stands**: the
+BASELINE (`commands/baseline.ts` `CheckBaselines`).
+
+- `POST /api/commands/baseline` `{ repoId, name, command, cwd?, timeoutSec? }`
+  needs `Origin` (it is part of defining a check). It validates the line and the
+  cwd like a save, and answers **202** at once with a `CheckBaseline`
+  (`status: 'running'`). A check may take its whole timeout, which is longer
+  than any HTTP wait should be. A second press for the same line while one is
+  running gets that run back.
+- It runs through the verify loop's own `CommandRunner.runCheck` with the
+  target `{ baseline: true }` instead of a task id. That means the commands
+  pool, attachable, `CI=1`, the check's timeout, and the same verdict rules
+  (timeout, spawn failure and stop are `error`, never red). The run is tagged
+  `CommandRun.checkBaseline`, owned by no task (`ownerTaskId`/`checkTaskId`
+  null), started by `human`, and named `<name> (baseline)`. It runs under a
+  definition id of its own (the baseline id), so a human's live run of a
+  same-named command is never waited on. Unlike a task's check there is no
+  flaky re-run: a baseline is a reading, and a red one is shown to the human,
+  who can re-run it.
+- `GET /api/commands/baseline/:id` is polled by the drawer (2 s). The result
+  carries `verdict` `green|red|error`, `exit`, `error`, `durationMs`, the
+  output `tail`, `runId`, and the tree it ran on: `branch` and the
+  uncommitted-change count `dirty`. The checkout is shared, so a red on a dirty
+  tree may be another task's half-done work, and the drawer says so. Each
+  finished baseline is a `command.run` audit row `{ action: 'baseline',
+  verdict, … }`. Baselines are in memory (the last 50), like command runs.
+- **The save names its baseline**: `POST /api/commands` takes `baselineId` (and
+  `acceptRed`), only with `isCheck: true` (400 otherwise) and only with `Origin`
+  (403). The baseline must exist (409 `gone`, e.g. after a restart), must be
+  finished (409 `still running`), and must be for exactly this
+  `command`/`cwd`/`timeoutSec` (409). A `red` or `error` verdict without
+  `acceptRed: true` → 409, with the baseline in the body. The `command.changed`
+  audit row records `baseline: { id, verdict, exit, error, accepted }`, so a
+  check saved over a red baseline is visible as such.
+- A save **without** `baselineId` (the hand-written form, flipping a saved
+  command to *check*) is unchanged. The baseline is the suggestion flow's step.
+
+**In the drawer** (`SuggestedChecks` in `components/Commands.tsx`) it is one
+click per check, and nothing is ever saved without it. *Save as check* asks
+first for a flagged row, then runs the baseline (chip `baseline running`, with a
+terminal button). A green baseline is saved at once. A red or no-verdict one
+shows its tail (and the dirty-tree note) with *Re-run* and *Save anyway*, which
+asks again and sends `acceptRed`. A row whose line is already a saved check of
+the repo reads `saved as check`.
+
 ## Per task: acceptance and which checks
 
 | field | column | meaning |

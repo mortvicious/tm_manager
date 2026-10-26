@@ -62,7 +62,8 @@ A command marked **check** (the third value of the kind dropdown, `isCheck` on
 the API) is part of every task's definition of done in that repo: after each
 worker turn the server runs the task's checks here, as ordinary attachable runs
 in this pool (`CommandRunner.runCheck`, tagged `CommandRun.checkTaskId`, shown
-as `check of task <id8>`), and red ones go back to the worker. The full loop is
+as `check of task <id8>`), and red ones go back to the worker. A check's
+baseline runs there too (`CommandRun.checkBaseline`, owned by no task). The full loop is
 `docs/checks.md`. Rules at this layer: a check is a one-shot (`kind: 'task'`;
 service + check is a 400), check names are unique per repo (409 — tasks pick
 checks by name), the timeout is 10–3600 s, and a check runs with `CI=1` so a
@@ -81,8 +82,16 @@ for pnpm, yarn, npm and bun alike. Script names that would need quoting are
 skipped and counted in the returned note.
 
 `kind` is *guessed*: a `dev`/`start`/`serve`/`watch`-shaped name, or a body
-mentioning `nodemon`/`vite`/`next dev`/`--watch`, is a service. It is a guess
-that the dropdown next to every saved command corrects in one click.
+mentioning `nodemon`/`vite` (not `vitest`, not `vite build`)/`next dev`/
+`--watch`, is a service. It is a guess that the dropdown next to every saved
+command corrects in one click.
+
+Each entry also carries `suggestedCheck`: the rule-based check suggestion (in
+CI, or named typecheck/lint/test/build), with side effects (`--fix`, `--write`,
+`-u`, builds into served output) flagged, never pre-selected, and with a safer
+`instead` line when one is known. The drawer lists these under **Suggested
+checks**, and *Save as check* runs a baseline before anything is saved. Both are
+in `docs/checks.md` § Suggested checks / § Baseline.
 
 ## UI
 
@@ -109,10 +118,12 @@ that the dropdown next to every saved command corrects in one click.
 | route | |
 |---|---|
 | `GET /api/commands[?repoId=]` | definitions |
-| `POST /api/commands` | create (validates the command line and the cwd against the repo; `isCheck`, `timeoutSec` — `docs/checks.md`) |
+| `POST /api/commands` | create (validates the command line and the cwd against the repo; `isCheck`, `timeoutSec`, `baselineId` + `acceptRed` — `docs/checks.md`) |
 | `PATCH /api/commands/:id` | edit (the repo is fixed) |
 | `DELETE /api/commands/:id` | delete; a live run detaches |
-| `GET /api/repos/:id/scripts` | scanner |
+| `GET /api/repos/:id/scripts` | scanner (+ `suggestedCheck` per script) |
+| `POST /api/commands/baseline` | a check's baseline: run a line once on the current tree before saving it · Origin · 202 (`docs/checks.md` § Baseline) |
+| `GET /api/commands/baseline/:id` | the baseline's result (polled) · 404 after a restart |
 | `POST /api/commands/:id/run` | start · 409 already running / PTY cap · 400 unrunnable |
 | `GET /api/command-runs` | runs, newest first |
 | `POST /api/command-runs/:runId/stop` | SIGHUP, SIGKILL after 5s |

@@ -30,6 +30,7 @@ import type {
   ReportLanguage,
   ReportRangePreset,
   RepoScripts,
+  CheckBaseline,
   Run,
   RunActivity,
   ShellSession,
@@ -253,8 +254,14 @@ export const api = {
     cwd?: string | null;
     isCheck?: boolean;
     timeoutSec?: number | null;
+    /** docs/checks.md § Baseline: the run this check is saved over, and a yes to a red one */
+    baselineId?: string;
+    acceptRed?: boolean;
   }) =>
     req<RepoCommand>('POST', '/api/commands', b),
+  startBaseline: (b: { repoId: string; name: string; command: string; cwd?: string | null; timeoutSec?: number | null }) =>
+    req<CheckBaseline>('POST', '/api/commands/baseline', b),
+  getBaseline: (id: string) => req<CheckBaseline>('GET', `/api/commands/baseline/${id}`),
   updateCommand: (id: string, b: Partial<Pick<RepoCommand, 'name' | 'command' | 'kind' | 'cwd' | 'sortOrder' | 'isCheck' | 'timeoutSec'>>) =>
     req<RepoCommand>('PATCH', `/api/commands/${id}`, b),
   deleteCommand: (id: string) => req<{ ok: true }>('DELETE', `/api/commands/${id}`),

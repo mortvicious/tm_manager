@@ -40,13 +40,13 @@ export async function runChecks(
   const results: CheckResult[] = [];
   for (const check of checks) {
     if (await abort()) return null;
-    let run = await runner.runCheck(check, repo, taskId, abort);
+    let run = await runner.runCheck(check, repo, { taskId }, abort);
     let retried = false;
     if (run.error === 'aborted') return null;
     if (!run.error && run.exit !== 0) {
       if (await abort()) return null;
       retried = true;
-      run = await runner.runCheck(check, repo, taskId, abort);
+      run = await runner.runCheck(check, repo, { taskId }, abort);
       if (run.error === 'aborted') return null;
     }
     results.push({

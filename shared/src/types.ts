@@ -551,6 +551,25 @@ export interface CommandRun {
   ownerTaskId: string | null;
   /** set when the server ran it as a CHECK of this task's change (docs/checks.md); null otherwise */
   checkTaskId: string | null;
+  /** true when it ran as a check's BASELINE — once on the current tree before
+   *  the check is saved (docs/checks.md § Baseline); owned by no task */
+  checkBaseline?: boolean;
+}
+
+/**
+ * The scanner's rule-based check suggestion (docs/checks.md § Suggested
+ * checks). Nothing is ever saved from it automatically.
+ */
+export interface CheckSuggestion {
+  /** why it is suggested: "in CI", "named test", … */
+  reason: string;
+  /** what the script would change besides giving a verdict (`--fix`, a build
+   *  into served output, …); null = none known. Set ⇒ never pre-selected. */
+  sideEffect: string | null;
+  /** a safer command to use instead, when one is known */
+  instead: string | null;
+  /** in CI and without side effects — the scan list leads with these */
+  preselect: boolean;
 }
 
 /** One `package.json` script the repo scanner found. */
@@ -567,6 +586,37 @@ export interface ScannedScript {
   suggested: string;
   /** guessed from the script name/body — a dev server is a `service` */
   kind: CommandKind;
+  /** set when the script looks like a check (in CI, or named typecheck/lint/test/build) */
+  suggestedCheck: CheckSuggestion | null;
+}
+
+/** A check's baseline: one run on the current tree before it is saved. */
+export type BaselineVerdict = 'green' | 'red' | 'error';
+
+export interface CheckBaseline {
+  id: string;
+  repoId: string;
+  name: string;
+  command: string;
+  /** package dir relative to the repo root ('' = root) */
+  cwd: string;
+  timeoutSec: number | null;
+  status: 'running' | 'done';
+  /** null while running */
+  verdict: BaselineVerdict | null;
+  exit: number | null;
+  /** no verdict: timeout, could not start, stopped */
+  error: string | null;
+  durationMs: number;
+  /** last lines of the output (what a red would hand every task) */
+  tail: string;
+  /** the attachable command run (commands pool); null if it never started */
+  runId: string | null;
+  /** the tree it ran on: branch and uncommitted-change count at start */
+  branch: string | null;
+  dirty: number;
+  startedAt: string;
+  endedAt: string | null;
 }
 
 export interface RepoScripts {

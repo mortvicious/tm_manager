@@ -4034,6 +4034,56 @@ select.field.cmd-script-select {
   flex-wrap: wrap;
 }
 
+/* the scanner's suggested checks (docs/checks.md § Suggested checks) */
+.cmd-suggest {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  padding: var(--tm-space-2);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-inset);
+}
+
+.cmd-suggest-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--tm-space-2);
+  flex-wrap: wrap;
+}
+
+.cmd-suggest-hint {
+  font-size: var(--tm-text-xs);
+}
+
+.cmd-suggest-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  padding: var(--tm-space-1) 0;
+}
+
+.cmd-suggest-row + .cmd-suggest-row {
+  border-top: 1px dashed var(--tm-border);
+}
+
+.cmd-suggest-line {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.cmd-suggest-line .cmd-run-main {
+  min-width: 0;
+}
+
+.btn.ghost.cmd-suggest-instead {
+  padding: 0 4px;
+  font-size: var(--tm-text-xs);
+}
+
 .cmd-form input.field {
   width: auto;
   padding: 5px 8px;

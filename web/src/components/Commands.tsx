@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { CHECK_DEFAULT_TIMEOUT_SEC, CHECK_TIMEOUT_MAX_SEC, CHECK_TIMEOUT_MIN_SEC } from '@tm/shared';
-import type { CommandRun, RepoCommand, ScannedScript } from '@tm/shared';
+import type { CheckBaseline, CommandRun, RepoCommand, ScannedScript } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { fmtAgo, useNow } from './TimeAgo.tsx';
@@ -87,7 +87,9 @@ function RunRow({
           {run.repoName} · {run.command}
           {run.checkTaskId
             ? ` · check of task ${run.checkTaskId.slice(0, 8)}`
-            : run.startedBy && run.startedBy !== 'human'
+            : run.checkBaseline
+              ? ' · check baseline'
+              : run.startedBy && run.startedBy !== 'human'
               ? ` · by ${run.startedBy}`
               : ''}
         </span>
@@ -690,6 +692,8 @@ export function RepoCommandsPanel({
           {scanNote && <span className="muted mono">{scanNote}</span>}
         </div>
 
+        {scripts && <SuggestedChecks repoId={repoId} scripts={scripts} saved={mine} onOpenTerminal={onOpenTerminal} />}
+
         <div className="cmd-form">
           <input className="field" placeholder="name" value={name} onChange={(e) => setName(e.target.value)} />
           <input
@@ -736,3 +740,246 @@ export function RepoCommandsPanel({
 }
 
 const scriptKey = (s: ScannedScript) => `${s.cwd}|${s.name}`;
+
+/** What a scanned script is saved as: a workspace script keeps its package in
+ *  the name, so two `dev` scripts from different packages stay distinguishable. */
+const scannedName = (s: ScannedScript) => (s.cwd ? `${s.packageName.split('/').pop()} · ${s.name}` : s.name);
+
+const BASELINE_POLL_MS = 2000;
+
+/**
+ * The scanner's rule-based check suggestions (docs/checks.md § Suggested
+ * checks). One click per check: "Save as check" runs the BASELINE first — the
+ * command once on the current tree — and a green one is saved at once; a red
+ * or no-verdict one shows its output and is saved only on an explicit "Save
+ * anyway". Nothing is ever saved without that click.
+ */
+function SuggestedChecks({
+  repoId,
+  scripts,
+  saved,
+  onOpenTerminal,
+}: {
+  repoId: string;
+  scripts: ScannedScript[];
+  saved: RepoCommand[];
+  onOpenTerminal?: (runId: string) => void;
+}) {
+  const { commandRuns } = useApp();
+  const [baselines, setBaselines] = useState<Record<string, CheckBaseline>>({});
+  /** rows whose `instead` line replaced the script (the side effect is gone) */
+  const [instead, setInstead] = useState<Record<string, boolean>>({});
+  const [rowErr, setRowErr] = useState<Record<string, string | null>>({});
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
+  /** rows whose green baseline should be saved the moment it lands */
+  const saveOnGreen = useRef(new Set<string>());
+
+  const rows = useMemo(
+    () =>
+      scripts
+        .filter((s) => s.suggestedCheck)
+        .sort((a, b) => Number(b.suggestedCheck!.preselect) - Number(a.suggestedCheck!.preselect)),
+    [scripts],
+  );
+
+  const lineOf = (s: ScannedScript) => (instead[scriptKey(s)] && s.suggestedCheck?.instead ? s.suggestedCheck.instead : s.suggested);
+  const savedAs = (s: ScannedScript) =>
+    saved.find((c) => c.isCheck && c.command === lineOf(s) && (c.cwd ?? '') === s.cwd);
+
+  const setOne = <T,>(set: Dispatch<SetStateAction<Record<string, T>>>, key: string, v: NoInfer<T>) =>
+    set((cur) => ({ ...cur, [key]: v }));
+
+  const save = async (s: ScannedScript, b: CheckBaseline, acceptRed: boolean) => {
+    const key = scriptKey(s);
+    setOne(setBusy, key, true);
+    setOne(setRowErr, key, null);
+    try {
+      await api.createCommand({
+        repoId,
+        name: b.name,
+        command: b.command,
+        kind: 'task',
+        cwd: b.cwd || null,
+        isCheck: true,
+        timeoutSec: b.timeoutSec,
+        baselineId: b.id,
+        ...(acceptRed ? { acceptRed: true } : {}),
+      });
+    } catch (e) {
+      setOne(setRowErr, key, (e as Error).message);
+    } finally {
+      setOne(setBusy, key, false);
+    }
+  };
+
+  // Poll the running baselines; a green one that was asked to save, saves.
+  const runningIds = Object.entries(baselines)
+    .filter(([, b]) => b.status === 'running')
+    .map(([k, b]) => `${k}=${b.id}`)
+    .join(',');
+  useEffect(() => {
+    if (!runningIds) return;
+    const t = setInterval(async () => {
+      for (const pair of runningIds.split(',')) {
+        const [key, id] = pair.split('=');
+        try {
+          const b = await api.getBaseline(id);
+          if (b.status === 'running') continue;
+          setOne(setBaselines, key, b);
+          const s = rows.find((r) => scriptKey(r) === key);
+          if (s && b.verdict === 'green' && saveOnGreen.current.delete(key)) void save(s, b, false);
+        } catch (e) {
+          saveOnGreen.current.delete(key);
+          setOne(setRowErr, key, (e as Error).message);
+          setBaselines((cur) => {
+            const next = { ...cur };
+            delete next[key];
+            return next;
+          });
+        }
+      }
+    }, BASELINE_POLL_MS);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningIds]);
+
+  const runBaseline = async (s: ScannedScript) => {
+    const key = scriptKey(s);
+    const sug = s.suggestedCheck!;
+    if (sug.sideEffect && !instead[key]) {
+      const ok = confirm(
+        `"${s.name}" ${sug.sideEffect}.\n\nA check runs after EVERY agent turn — save it anyway? It runs once now on the current tree first (the baseline).`,
+      );
+      if (!ok) return;
+    }
+    setOne(setBusy, key, true);
+    setOne(setRowErr, key, null);
+    try {
+      const b = await api.startBaseline({ repoId, name: scannedName(s), command: lineOf(s), cwd: s.cwd || null });
+      saveOnGreen.current.add(key);
+      setOne(setBaselines, key, b);
+    } catch (e) {
+      setOne(setRowErr, key, (e as Error).message);
+    } finally {
+      setOne(setBusy, key, false);
+    }
+  };
+
+  const saveAnyway = (s: ScannedScript, b: CheckBaseline) => {
+    const why = b.verdict === 'red' ? `exited ${b.exit}` : `gave no verdict (${b.error})`;
+    const ok = confirm(
+      `The baseline ${why} on the current tree.\n\nSaved like this, every task in this repo gets up to the check fix rounds for a failure that is not its own. Save "${b.name}" as a check anyway?`,
+    );
+    if (ok) void save(s, b, true);
+  };
+
+  if (rows.length === 0) return null;
+  return (
+    <div className="cmd-suggest">
+      <div className="cmd-suggest-head">
+        <span className="cmd-run-name">Suggested checks</span>
+        <span className="muted cmd-suggest-hint">
+          from CI and script names — each runs once on the current tree (baseline) before it is saved
+        </span>
+      </div>
+      {rows.map((s) => {
+        const key = scriptKey(s);
+        const sug = s.suggestedCheck!;
+        const b = baselines[key];
+        const usingInstead = !!instead[key] && !!sug.instead;
+        const done = savedAs(s);
+        const live = b && b.status === 'running' ? commandRuns.find((r) => r.commandId === b.id && r.status === 'running') : null;
+        const termId = live?.id ?? b?.runId ?? null;
+        return (
+          <div className="cmd-suggest-row" key={key}>
+            <div className="cmd-suggest-line">
+              <span className="cmd-run-main">
+                <span className="cmd-run-name">{scannedName(s)}</span>
+                <span className="mono muted cmd-run-sub" title={s.script}>
+                  {lineOf(s)}
+                  {s.cwd ? ` · ${s.cwd}` : ''}
+                </span>
+              </span>
+              <span className="chip">{sug.reason}</span>
+              {b && <BaselineChip b={b} />}
+              {termId && (
+                <button className="btn ghost" title="Open the baseline run's terminal" onClick={() => onOpenTerminal?.(termId)}>
+                  <IconTerminal />
+                </button>
+              )}
+              {done ? (
+                <span className="chip verdict v-clean">saved as check</span>
+              ) : b?.status === 'running' ? (
+                <button className="btn" disabled>
+                  Baseline…
+                </button>
+              ) : b && b.verdict !== 'green' ? (
+                <>
+                  <button className="btn" disabled={busy[key]} onClick={() => runBaseline(s)} title="Run the baseline again">
+                    <IconRefresh /> Re-run
+                  </button>
+                  <button className="btn danger" disabled={busy[key]} onClick={() => saveAnyway(s, b)}>
+                    Save anyway
+                  </button>
+                </>
+              ) : b && b.verdict === 'green' ? (
+                <button className="btn primary" disabled={busy[key]} onClick={() => save(s, b, false)}>
+                  Save as check
+                </button>
+              ) : (
+                <button
+                  className={`btn ${sug.preselect || usingInstead ? 'primary' : ''}`}
+                  disabled={busy[key]}
+                  onClick={() => runBaseline(s)}
+                  title="Runs it once on the current tree; a green baseline is saved as a check"
+                >
+                  Save as check
+                </button>
+              )}
+            </div>
+            {sug.sideEffect && !usingInstead && (
+              <div className="warn-text">
+                {sug.sideEffect}
+                {sug.instead ? ' — ' : ''}
+                {sug.instead && (
+                  <button
+                    className="btn ghost cmd-suggest-instead"
+                    disabled={!!b && b.status === 'running'}
+                    onClick={() => {
+                      setOne(setInstead, key, true);
+                      setBaselines((cur) => {
+                        const next = { ...cur };
+                        delete next[key];
+                        return next;
+                      });
+                    }}
+                  >
+                    use <span className="mono">{sug.instead}</span> instead
+                  </button>
+                )}
+              </div>
+            )}
+            {b?.status === 'done' && b.verdict !== 'green' && (
+              <pre className="check-tail">
+                {b.dirty > 0
+                  ? `ran on ${b.branch ?? 'HEAD'} with ${b.dirty} uncommitted change(s) — another task's work may be the cause\n\n`
+                  : ''}
+                {b.error ? `${b.error}\n` : ''}
+                {b.tail || '(no output)'}
+              </pre>
+            )}
+            {rowErr[key] && <div className="warn-text">{rowErr[key]}</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function BaselineChip({ b }: { b: CheckBaseline }) {
+  if (b.status === 'running') return <span className="chip verdict v-pending">baseline running</span>;
+  const secs = `${Math.max(1, Math.round(b.durationMs / 1000))}s`;
+  if (b.verdict === 'green') return <span className="chip verdict v-clean">baseline green · {secs}</span>;
+  if (b.verdict === 'red') return <span className="chip verdict v-blocker">baseline red · exit {b.exit}</span>;
+  return <span className="chip verdict v-error">baseline: no verdict</span>;
+}
