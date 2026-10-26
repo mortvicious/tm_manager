@@ -34,6 +34,13 @@ const WORKER_TOOLS = [
   'Grep',
   // delegation — the standing rules ask for it, so it must be present
   'Agent',
+  // the todo list: the board's work % reads it (docs/task-progress.md § Todo
+  // list). Current CLIs build it with the task tools and gate TodoWrite off;
+  // TodoWrite stays for an older CLI, where it is the only one there.
+  'TaskCreate',
+  'TaskUpdate',
+  'TaskList',
+  'TaskGet',
   'TodoWrite',
   'WebFetch',
   'WebSearch',

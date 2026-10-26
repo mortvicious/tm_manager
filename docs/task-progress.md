@@ -76,11 +76,19 @@ pre-scans the transcript (its last 64 MiB) for the list before tailing; a list
 last touched before the run started belongs to an earlier turn and is not
 used.
 
-**Measured 2026-10-26: no worker transcript contains either tool.** On CLI
-2.1.280 `TodoWrite` is gone (the name in `WORKER_TOOLS` matches nothing) and
-the task tools are not in `WORKER_TOOLS`, so today every work % comes from
-tokens. Enabling `TaskCreate`/`TaskUpdate` for workers is a separate decision
-(every turn pays for their schemas); the tracker is ready for it.
+**Workers get the task tools** (2026-10-26). Measured first: no worker
+transcript had ever contained either shape. CLI 2.1.280 gates `TodoWrite` off
+(`CLAUDE_CODE_ENABLE_TODO_TOOLS`), so the name in `WORKER_TOOLS` matched
+nothing, while the task tools are on by default (`CLAUDE_CODE_ENABLE_TASKS`)
+but were not listed. `WORKER_TOOLS` now lists `TaskCreate`/`TaskUpdate`/
+`TaskList`/`TaskGet` (and keeps `TodoWrite` for an older CLI). The price is
+their schemas on every worker turn, cached like the rest of the tool block. No
+prompt line asks for a list: the CLI's own system prompt already does, and a
+run without one falls back to tokens. A real `claude -p --tools
+TaskCreate,TaskUpdate,TaskList,TaskGet` session produced exactly the shape
+above (`toolUseResult.task.id`, "Task #1 created successfully: alpha",
+`TaskUpdate {taskId, status}`), and `TodoTracker` read it as 1 done, 1 in
+progress, 2 total.
 
 ## Baseline
 

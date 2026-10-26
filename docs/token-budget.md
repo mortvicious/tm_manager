@@ -43,7 +43,8 @@ and the schema trimming is done by `--tools`.
 `WORKER_TOOLS` keeps shell (`Bash`/`BashOutput`/`KillShell` — also the publish
 turn's only tool), files (`Read`/`Write`/`Edit`/`NotebookEdit`/`Glob`/`Grep`),
 `Agent` (the standing rules ask the worker to delegate, so it must be present),
-`TodoWrite`, `WebFetch`/`WebSearch`, and `Skill`/`ToolSearch` so a project skill
+the todo list (`TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet` on current CLIs,
+`TodoWrite` on older ones — the board's work % reads it, `docs/task-progress.md`), `WebFetch`/`WebSearch`, and `Skill`/`ToolSearch` so a project skill
 or an MCP schema can still be reached on demand. What it drops: interactive-only
 tools (`AskUserQuestion` — nobody is watching a hidden terminal), plan-mode
 tools, artifact/cron/remote-session/workflow tooling, and the rest of the surface

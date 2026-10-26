@@ -6,7 +6,7 @@
   - **Overrun holds** at 95 % of the work band with a muted "longer than usual" — no asymptotic creep, no hiding.
   - **Never backwards** through a per-task floor kept by the SPA (localStorage), void once a newer worker run starts; a fix round's re-check holds the fix band's value. Rejected: deriving "after a fix" from `reviewRounds`, which outlive the chain and would inflate the next one.
   - **No new column or event**: the SPA already holds every run with live stats, so only the baseline is served (`GET /api/progress/baseline`, cached hourly); todo counts ride on `run.activity`.
-  - **Finding**: no worker transcript has a todo tool call — CLI 2.1.280 has no `TodoWrite` and `TaskCreate`/`TaskUpdate` are not in `WORKER_TOOLS`. The tracker reads both shapes; enabling the task tools for workers is left as a separate decision.
+  - **Workers get the task tools** (the user's call, after the finding that no worker transcript had a todo call: CLI 2.1.280 gates `TodoWrite` off and `TaskCreate`/`TaskUpdate` were not in `WORKER_TOOLS`). `WORKER_TOOLS` adds `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet` and keeps `TodoWrite` for older CLIs; the cost is their schemas on every worker turn. No prompt line asks for a list (the CLI's own prompt does). Checked on a real session: the tracker reads its transcript exactly.
   - **Verified**: typecheck, scratch `vite build`, baseline via `app.inject` on a DB copy (matches the spec), a tsx check over 3,840 state combinations, Playwright screenshots (Classic + Glass, desktop + phone).
 
 - **2026-10-26 — Board groups are a coloured rail + a slim caption, not a header band (`docs/grouping.md` § On the Board)**: task 836e86ff ("too bulky, consider something else instead of horizontal line").
