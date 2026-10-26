@@ -245,7 +245,16 @@ export async function createAndAnalyzeFeature(
 export async function publishTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
   const result = await deps.orchestrator.publish(taskId, actor);
   if ('error' in result) return fail(result.error);
+  // observed publish: already on the remote, settled with no turn
+  if (result.task.status === 'published') return done(`Published “${result.task.title}” — its commits were already on the remote.`);
   return done(`Publish turn started for “${result.task.title}” — you'll get the landing status.`);
+}
+
+/** review|done → published for work the agent already pushed (POST /api/tasks/:id/mark-published). */
+export async function markPublishedTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
+  const result = await deps.orchestrator.markPublished(taskId, actor);
+  if ('error' in result) return fail(result.error);
+  return done(`Marked “${result.task.title}” published.`);
 }
 
 /**
@@ -337,6 +346,7 @@ export async function rejectProposal(deps: ActionDeps, proposalId: string, actor
 export type ButtonAction =
   | { kind: 'task.done'; id: string }
   | { kind: 'task.publish'; id: string }
+  | { kind: 'task.markPublished'; id: string }
   | { kind: 'task.proceed'; id: string }
   | { kind: 'task.enqueue'; id: string }
   | { kind: 'task.run'; id: string }
@@ -360,6 +370,7 @@ export type ButtonAction =
 const WIRE: Record<ButtonAction['kind'], string> = {
   'task.done': 't:done',
   'task.publish': 't:pub',
+  'task.markPublished': 't:mpub',
   'task.proceed': 't:go',
   'task.enqueue': 't:enq',
   'task.run': 't:run',
@@ -405,6 +416,8 @@ export function runButtonAction(deps: ActionDeps, a: ButtonAction, actor: string
       return completeTask(deps, a.id, actor);
     case 'task.publish':
       return publishTask(deps, a.id, actor);
+    case 'task.markPublished':
+      return markPublishedTask(deps, a.id, actor);
     case 'task.proceed':
       return proceedTask(deps, a.id, actor);
     case 'task.enqueue':

@@ -264,6 +264,18 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     return result.task;
   });
 
+  // review|done → published for work the agent already pushed (docs/publish.md
+  // § Observed publish). git is read again here; a browser action, so a
+  // worker's curl cannot close its own task as `human`.
+  app.post('/api/tasks/:id/mark-published', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!req.headers.origin) return reply.code(403).send({ error: 'Mark published is a browser action (Origin required)' });
+    if (!app.orchestrator) return reply.code(503).send({ error: 'orchestrator not ready' });
+    const result = await app.orchestrator.markPublished(id, 'human');
+    if ('error' in result) return reply.code(result.code).send({ error: result.error });
+    return result.task;
+  });
+
   // Follow-up: steer a live agent or respawn with the instruction (drawer field).
   app.post('/api/tasks/:id/follow-up', async (req, reply) => {
     const { id } = req.params as { id: string };

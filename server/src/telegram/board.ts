@@ -133,10 +133,12 @@ export function taskActionKeyboard(t: Task, opts: { shellWait?: boolean } = {}):
     b.push({ text, callback_data: encodeAction({ kind, id: t.id } as ButtonAction) });
   if (t.status === 'review') {
     add('✅ Done', 'task.done');
-    // refused while the review/checks are open (docs/publish.md § The verify gate)
-    if (!publishGateReason(t)) add('🚀 Publish', 'task.publish');
+    // refused while the review/checks are open (docs/publish.md § The verify gate);
+    // already pushed by the agent → the approval itself (§ Observed publish)
+    if (!publishGateReason(t)) add(t.shippedSha ? '🚀 Mark published' : '🚀 Publish', t.shippedSha ? 'task.markPublished' : 'task.publish');
     add('💬 Proceed', 'task.proceed');
   }
+  if (t.status === 'done' && t.shippedSha) add('🚀 Mark published', 'task.markPublished');
   if (t.status === 'blocked') add('⛔ Unblock', 'task.unblock');
   // "Review now": hidden while a round is queued/running/being fixed, as the SPA disables it
   if (t.repoId && REVIEW_NOW_FROM.includes(t.status) && !(t.reviewState && REVIEW_BUSY_STATES.includes(t.reviewState))) {

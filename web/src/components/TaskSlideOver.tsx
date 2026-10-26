@@ -20,7 +20,7 @@ import {
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { topmostDialog, useDialogFocus } from '../dialogFocus.ts';
-import { confirmPublish, publishIsPrimary } from '../publish.ts';
+import { confirmMarkPublished, confirmPublish, markPublishedLabel, markPublishedOffered, publishIsPrimary } from '../publish.ts';
 import { useApp } from '../state.tsx';
 import { DispatchStrip } from './DispatchStrip.tsx';
 import { GroupPicker, type GroupChoicePlace } from './GroupPicker.tsx';
@@ -763,7 +763,23 @@ export function TaskSlideOver({
       onClick: () => action('cancel'),
     });
   }
-  if (task.status === 'review') {
+  // Observed publish (docs/publish.md § Observed publish): the agent already
+  // pushed it, so the publish slot records that — no turn, nothing pushed.
+  if (markPublishedOffered(task)) {
+    const caution = publishCaution(task);
+    actions.push({
+      id: 'mark-published',
+      label: caution && task.status === 'review' ? 'Mark published anyway' : 'Mark published',
+      short: 'Published',
+      icon: <IconPublish />,
+      cls: task.status === 'review' && publishIsPrimary(task) ? 'primary' : undefined,
+      title: `${caution && task.status === 'review' ? `${caution} — asks first. ` : ''}${markPublishedLabel(task)}`,
+      onClick: () => {
+        if (task.status !== 'review' || confirmMarkPublished(task)) void action('mark-published');
+      },
+    });
+  }
+  if (task.status === 'review' && !markPublishedOffered(task)) {
     const caution = publishCaution(task);
     actions.push({
       id: 'publish',
@@ -783,6 +799,8 @@ export function TaskSlideOver({
         if (confirmPublish(task)) void action('publish');
       },
     });
+  }
+  if (task.status === 'review') {
     actions.push({ id: 'complete', label: 'Mark done', title: 'Close the task without publishing', onClick: () => action('complete') });
   }
   // "Review now" (docs/design.md § Adversarial review): runs the reviewer itself, fresh verdict
@@ -954,6 +972,15 @@ export function TaskSlideOver({
             title={`landed by the orchestrator ${new Date(task.autoLandedAt).toLocaleString()}: checks green, review clean`}
           >
             auto-landed
+          </span>
+        )}
+        {task.shippedSha && (task.status === 'review' || task.status === 'done') && (
+          <span
+            className="chip"
+            style={{ color: 'var(--tm-status-published)' }}
+            title={`the agent already pushed ${task.shippedSha.slice(0, 8)}${task.shippedAt ? ` (seen ${new Date(task.shippedAt).toLocaleString()})` : ''} — Mark published records it`}
+          >
+            pushed
           </span>
         )}
         {task.createdByRun && (

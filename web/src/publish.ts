@@ -15,6 +15,30 @@ export function publishIsPrimary(task: Task): boolean {
 }
 
 /**
+ * Observed publish (docs/publish.md § Observed publish): the agent already
+ * pushed this task's commits (`shippedSha`, seen when its turn landed), so the
+ * publish slot offers "Mark published" — no turn, git is read again on the
+ * server. Also on `done`, for a task marked done before anyone noticed.
+ */
+export function markPublishedOffered(task: Task): boolean {
+  return !!task.shippedSha && !!task.repoId && (task.status === 'review' || task.status === 'done') && !publishGateReason(task);
+}
+
+export function markPublishedLabel(task: Task): string {
+  return `Mark published — the agent already pushed ${task.shippedSha?.slice(0, 8) ?? 'its commits'}; nothing new is pushed`;
+}
+
+/** Mark published over a flagged review / red checks: the push is done, but say so first. */
+export function confirmMarkPublished(task: Task): boolean {
+  const caution = publishCaution(task);
+  if (!caution) return true;
+  return confirm(
+    `${caution[0].toUpperCase()}${caution.slice(1)} — mark published anyway?\n\n` +
+      `“${task.title}” is already on the remote; this only records it as published.`,
+  );
+}
+
+/**
  * Ask before publishing over a settled non-clean verdict, restating it. True =
  * go ahead (no caution, or the human confirmed). A clean publish never asks.
  */

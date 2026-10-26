@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { z } from 'zod';
 import type { Repo } from '@tm/shared';
 import { READ_ONLY_DISALLOWED, acceptJson, aux, resultInstruction } from './claude/aux.ts';
+import { type ChangeScope, taskCommits } from './claude/review.ts';
 import type { Storage } from './storage/types.ts';
 
 // Repo git operations behind explicit UI buttons. Commit messages are written
@@ -364,4 +365,79 @@ export async function pushUpTo(
   } finally {
     busy.delete(repo.id);
   }
+}
+
+// ---- observed publish (docs/publish.md § Observed publish) ----
+
+export interface ShippedCheck {
+  /** every commit of this task is on a remote, and (as tree owner) nothing is left uncommitted */
+  ok: boolean;
+  /** what is missing; null when ok */
+  reason: string | null;
+  /** the task's newest commit (full sha) — the one `shipped_sha` records */
+  sha: string | null;
+  /** a remote-tracking ref that contains it, for the audit trail */
+  ref: string | null;
+  commits: number;
+  attribution: 'trailer' | 'base' | 'none';
+}
+
+/**
+ * Is THIS task's work on a remote? Task-scoped, unlike `verifyPublished`
+ * (whole tree): a shared checkout always holds someone's uncommitted edits,
+ * which is what failed 7 of 9 publish settles.
+ * - the commits are the reviewer's (`taskCommits`): the `Task:` trailer on any
+ *   ref, else base..HEAD while this task was the repo's only worker;
+ * - each must be reachable from `@{upstream}` or from some remote-tracking ref
+ *   (`--remotes` — several remotes count, e.g. neko's `staging`);
+ * - uncommitted changes count only when `ownsTree` (the newest worker run in
+ *   the repo is this task's), since a later task's edits are not this one's.
+ * No fetch: the agent's own `git push` updates the tracking ref it pushed to,
+ * and a ref pushed from elsewhere only makes this answer `no` until a fetch.
+ */
+export async function taskShipped(repo: Repo, scope: ChangeScope, ownsTree: boolean): Promise<ShippedCheck> {
+  const none = (reason: string, attribution: ShippedCheck['attribution'] = 'none', commits = 0): ShippedCheck => ({
+    ok: false,
+    reason,
+    sha: null,
+    ref: null,
+    commits,
+    attribution,
+  });
+  const isRepo = await run(repo.path, 'git', ['rev-parse', '--git-dir']);
+  if (isRepo.code !== 0) return none('not a git repository');
+  const found = await taskCommits(repo.path, scope);
+  if (!found.commits.length) return none('no commits of its own were found (no `Task:` trailer, and no sole-worker base range)');
+  const shas = found.commits.map((c) => c.sha);
+  const newest = shas[shas.length - 1];
+  const up = await run(repo.path, 'git', ['rev-parse', '--symbolic-full-name', '@{upstream}']);
+  const upstream = up.code === 0 && up.out.startsWith('refs/') ? up.out.split('\n')[0].trim() : null;
+  // Everything reachable from the task's commits but from no remote: any of
+  // OUR shas in that set is unpushed. One walk instead of one per commit.
+  const missing = await run(repo.path, 'git', ['rev-list', ...shas, '--not', '--remotes', ...(upstream ? [upstream] : [])]);
+  if (missing.code !== 0) return none(`git could not walk the task's commits: ${missing.out.slice(0, 200)}`, found.attribution, shas.length);
+  const unpushed = new Set(missing.out.split('\n').map((l) => l.trim()).filter(Boolean));
+  const left = shas.filter((s) => unpushed.has(s));
+  if (left.length) {
+    return {
+      ...none(`${left.length} of ${shas.length} commit(s) of this task are on no remote (first ${left[0].slice(0, 8)})`, found.attribution, shas.length),
+      sha: newest,
+    };
+  }
+  if (ownsTree) {
+    const status = await run(repo.path, 'git', ['status', '--porcelain', '--ignore-submodules=dirty', ...TREE_PATHSPEC]);
+    const dirty = status.code === 0 && status.out ? status.out.split('\n').filter(Boolean).length : 0;
+    if (status.code !== 0) return none('git status failed', found.attribution, shas.length);
+    if (dirty > 0) {
+      return {
+        ...none(`its commits are pushed, but ${dirty} uncommitted change(s) are still in the tree this task owns`, found.attribution, shas.length),
+        sha: newest,
+      };
+    }
+  }
+  const refs = await run(repo.path, 'git', ['for-each-ref', '--contains', newest, '--format=%(refname:short)', 'refs/remotes']);
+  const ref =
+    (refs.code === 0 ? refs.out.split('\n').map((l) => l.trim()).find((l) => l && !l.endsWith('/HEAD')) : undefined) ??
+    (upstream ? upstream.replace(/^refs\/(remotes|heads)\//, '') : null);
+  return { ok: true, reason: null, sha: newest, ref, commits: shas.length, attribution: found.attribution };
 }

@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { buildInbox, publishCaution, type DiffStat, type InboxItem, type InboxKind, type Task } from '@tm/shared';
 import { api } from '../api.ts';
-import { confirmPublish } from '../publish.ts';
+import { confirmMarkPublished, confirmPublish, markPublishedOffered } from '../publish.ts';
 import { useApp } from '../state.tsx';
 import type { ReturnTo } from '../returnTo.ts';
 import { toastError } from '../toast.ts';
@@ -159,16 +159,28 @@ export function useInboxActs(nav: InboxNav) {
           const t = item.task;
           const caution = publishCaution(t);
           const flagged = t.reviewState === 'flagged';
-          const publish: InboxAct = {
-            key: 'p',
-            label: caution ? 'Publish anyway' : 'Publish',
-            hint: caution ? `${caution} — asks first` : 'commit and push',
-            tone: item.ready ? 'primary' : undefined,
-            disabled: !t.repoId,
-            icon: <IconPublish />,
-            confirm: () => confirmPublish(t),
-            run: () => then(api.taskAction(t.id, 'publish')),
-          };
+          // already pushed by the agent → record it (docs/publish.md § Observed publish)
+          const shipped = markPublishedOffered(t);
+          const publish: InboxAct = shipped
+            ? {
+                key: 'p',
+                label: caution ? 'Mark published anyway' : 'Mark published',
+                hint: caution ? `${caution} — asks first` : 'already pushed by the agent',
+                tone: item.ready ? 'primary' : undefined,
+                icon: <IconPublish />,
+                confirm: () => confirmMarkPublished(t),
+                run: () => then(api.taskAction(t.id, 'mark-published')),
+              }
+            : {
+                key: 'p',
+                label: caution ? 'Publish anyway' : 'Publish',
+                hint: caution ? `${caution} — asks first` : 'commit and push',
+                tone: item.ready ? 'primary' : undefined,
+                disabled: !t.repoId,
+                icon: <IconPublish />,
+                confirm: () => confirmPublish(t),
+                run: () => then(api.taskAction(t.id, 'publish')),
+              };
           const done: InboxAct = {
             key: 'd',
             label: 'Mark done',

@@ -123,6 +123,8 @@ export function rowToTask(r: any): Task {
     reviewEffort: r.review_effort ?? null,
     landing: landingTier(r.landing),
     autoLandedAt: r.auto_landed_at ?? null,
+    shippedSha: r.shipped_sha ?? null,
+    shippedAt: r.shipped_at ?? null,
     customQueueAt: r.custom_queue_at ?? null,
     reviewSummary: r.review_summary ?? null,
     reviewDiffHash: r.review_diff_hash ?? null,

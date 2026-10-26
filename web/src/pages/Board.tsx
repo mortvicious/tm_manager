@@ -1142,11 +1142,27 @@ export function BoardPage({
           className="chip chip-done"
           explain={{
             title: 'auto-landed',
-            what: `Landed by the orchestrator (${t.status === 'published' ? 'auto-publish' : 'on-green'}): checks green, review clean — no human click.`,
+            what: `Landed by the orchestrator (${landing === 'auto-publish' ? 'auto-publish' : 'on-green'}): checks green, review clean — no human click.${t.status === 'published' && landing !== 'auto-publish' ? ' The agent had already pushed it, so it landed published.' : ''}`,
           }}
           off={selecting}
         >
           auto-landed
+        </Explainable>,
+      ]);
+    } else if (t.shippedSha && (t.status === 'review' || t.status === 'done')) {
+      // observed publish (docs/publish.md § Observed publish)
+      all.push([
+        'pushed',
+        <Explainable
+          key="pushed"
+          className="chip chip-published"
+          explain={{
+            title: 'pushed',
+            what: `The agent already pushed this task's commits (${t.shippedSha.slice(0, 8)} is on the remote). Mark published records it — nothing new is pushed.`,
+          }}
+          off={selecting}
+        >
+          pushed
         </Explainable>,
       ]);
     } else if (landing !== 'supervised' && t.status !== 'done' && t.status !== 'published' && t.status !== 'cancelled') {

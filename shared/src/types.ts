@@ -876,6 +876,16 @@ export interface Task {
    */
   autoLandedAt: string | null;
   /**
+   * Observed publish (docs/publish.md § Observed publish): the task's newest
+   * commit, seen on a remote (`taskShipped`) when its work turn landed in
+   * `review` — the agent pushed it itself. Offers "Mark published" on a
+   * supervised task; null when not seen. Cleared by any move to a status other
+   * than review/done/published, like `autoLandedAt`.
+   */
+  shippedSha: string | null;
+  /** when `shippedSha` was observed */
+  shippedAt: string | null;
+  /**
    * Membership in the custom queue (docs/queue.md): set when a human clicks
    * "Add to queue", ISO time of that click = FIFO position. The custom queue
    * runs independently of the global `orchestrator.enabled` switch, strictly
@@ -1902,6 +1912,8 @@ export type AuditKind =
   | 'task.follow-up'
   | 'task.dispatch'
   | 'task.publish'
+  /** the agent's own push was seen at a landing (docs/publish.md § Observed publish) */
+  | 'task.shipped'
   | 'task.landing'
   | 'run.reviewed'
   /** the repo checks ran over a task's change, or were skipped with a reason (docs/checks.md) */

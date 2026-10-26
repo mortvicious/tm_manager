@@ -514,7 +514,7 @@ export class SqliteStorage implements Storage {
     const isRoot = place.groupId === id;
     this.db
       .prepare(
-        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, landing=?, auto_landed_at=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, review_diff_hash=?, review_state=?, review_rounds=?, wake_at=?, error=?, updated_at=?, review_model=?, review_effort=?, base_sha=?, base_ref=?, base_at=?, queue_held_at=?, acceptance=?, checks=?, check_state=?, check_results=?, check_diff_hash=?, loop_goal=?, loop_max_iterations=?, loop_budget_usd=?, loop_iteration=?, loop_state=?, loop_history=?, hidden_at=?, paused_turn=? WHERE id=?`,
+        `UPDATE tm_tasks SET title=?, description=?, repo_id=?, parent_id=?, group_id=?, group_path=?, group_name=?, group_color=?, status=?, source=?, source_ref=?, priority=?, model=?, effort=?, category=?, review=?, landing=?, auto_landed_at=?, custom_queue_at=?, feature_id=?, feature_phase=?, result_summary=?, review_summary=?, review_diff_hash=?, review_state=?, review_rounds=?, wake_at=?, error=?, updated_at=?, review_model=?, review_effort=?, base_sha=?, base_ref=?, base_at=?, queue_held_at=?, acceptance=?, checks=?, check_state=?, check_results=?, check_diff_hash=?, loop_goal=?, loop_max_iterations=?, loop_budget_usd=?, loop_iteration=?, loop_state=?, loop_history=?, hidden_at=?, paused_turn=?, shipped_sha=?, shipped_at=? WHERE id=?`,
       )
       .run(
         next.title,
@@ -565,6 +565,8 @@ export class SqliteStorage implements Storage {
         JSON.stringify(next.loopHistory ?? []),
         next.hiddenAt ?? null,
         next.pausedTurn ? JSON.stringify(next.pausedTurn) : null,
+        next.shippedSha ?? null,
+        next.shippedAt ?? null,
         id,
       );
     return rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
@@ -742,7 +744,7 @@ export class SqliteStorage implements Storage {
     from: Task['status'][],
     to: Task['status'],
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'pausedTurn' | 'autoLandedAt' | 'loopState'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'pausedTurn' | 'autoLandedAt' | 'loopState' | 'shippedSha' | 'shippedAt'>>,
     audit?: Record<string, unknown>,
   ): Promise<Task | null> {
     // Conditional single-statement transition — immune to check-then-set races
@@ -808,6 +810,15 @@ export class SqliteStorage implements Storage {
       vals.push(patch.autoLandedAt ?? null);
     } else if (to !== 'done' && to !== 'published') {
       sets.push('auto_landed_at = NULL');
+    }
+    // Observed publish (docs/publish.md § Observed publish): the shipped sha
+    // describes the CURRENT landing too — set by the landing that saw it,
+    // dropped by any move back into work (a follow-up, retry, cancel).
+    if (patch && 'shippedSha' in patch) {
+      sets.push('shipped_sha = ?', 'shipped_at = ?');
+      vals.push(patch.shippedSha ?? null, patch.shippedSha ? (patch.shippedAt ?? new Date().toISOString()) : null);
+    } else if (to !== 'review' && to !== 'done' && to !== 'published') {
+      sets.push('shipped_sha = NULL', 'shipped_at = NULL');
     }
     const placeholders = from.map(() => '?').join(', ');
     return this.inTxn((): Task | null => {

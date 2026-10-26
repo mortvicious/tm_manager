@@ -511,7 +511,7 @@ export class PostgresStorage implements Storage {
     // Only a group ROOT carries the group's name/colour.
     const isRoot = place.groupId === id;
     await c.query(
-      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, landing=$17, custom_queue_at=$18, feature_id=$19, feature_phase=$20, result_summary=$21, review_summary=$22, review_diff_hash=$23, review_state=$24, review_rounds=$25, wake_at=$26, error=$27, updated_at=$28, review_model=$29, review_effort=$30, base_sha=$31, base_ref=$32, base_at=$33, queue_held_at=$34, acceptance=$35, checks=$36, check_state=$37, check_results=$38, check_diff_hash=$39, auto_landed_at=$40, loop_goal=$41, loop_max_iterations=$42, loop_budget_usd=$43, loop_iteration=$44, loop_state=$45, loop_history=$46, hidden_at=$47, paused_turn=$48 WHERE id=$49`,
+      `UPDATE tm_tasks SET title=$1, description=$2, repo_id=$3, parent_id=$4, group_id=$5, group_path=$6, group_name=$7, group_color=$8, status=$9, source=$10, source_ref=$11, priority=$12, model=$13, effort=$14, category=$15, review=$16, landing=$17, custom_queue_at=$18, feature_id=$19, feature_phase=$20, result_summary=$21, review_summary=$22, review_diff_hash=$23, review_state=$24, review_rounds=$25, wake_at=$26, error=$27, updated_at=$28, review_model=$29, review_effort=$30, base_sha=$31, base_ref=$32, base_at=$33, queue_held_at=$34, acceptance=$35, checks=$36, check_state=$37, check_results=$38, check_diff_hash=$39, auto_landed_at=$40, loop_goal=$41, loop_max_iterations=$42, loop_budget_usd=$43, loop_iteration=$44, loop_state=$45, loop_history=$46, hidden_at=$47, paused_turn=$48, shipped_sha=$49, shipped_at=$50 WHERE id=$51`,
       [
         next.title,
         next.description,
@@ -561,6 +561,8 @@ export class PostgresStorage implements Storage {
         JSON.stringify(next.loopHistory ?? []),
         next.hiddenAt ?? null,
         next.pausedTurn ? JSON.stringify(next.pausedTurn) : null,
+        next.shippedSha ?? null,
+        next.shippedAt ?? null,
         id,
       ],
     );
@@ -737,7 +739,7 @@ export class PostgresStorage implements Storage {
     from: Task['status'][],
     to: Task['status'],
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'pausedTurn' | 'autoLandedAt' | 'loopState'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'pausedTurn' | 'autoLandedAt' | 'loopState' | 'shippedSha' | 'shippedAt'>>,
     audit?: Record<string, unknown>,
   ): Promise<Task | null> {
     const sets = ['status = ?', 'updated_at = ?'];
@@ -795,6 +797,15 @@ export class PostgresStorage implements Storage {
       vals.push(patch.autoLandedAt ?? null);
     } else if (to !== 'done' && to !== 'published') {
       sets.push('auto_landed_at = NULL');
+    }
+    // Observed publish (docs/publish.md § Observed publish): the shipped sha
+    // describes the CURRENT landing too — set by the landing that saw it,
+    // dropped by any move back into work (a follow-up, retry, cancel).
+    if (patch && 'shippedSha' in patch) {
+      sets.push('shipped_sha = ?', 'shipped_at = ?');
+      vals.push(patch.shippedSha ?? null, patch.shippedSha ? (patch.shippedAt ?? new Date().toISOString()) : null);
+    } else if (to !== 'review' && to !== 'done' && to !== 'published') {
+      sets.push('shipped_sha = NULL', 'shipped_at = NULL');
     }
     const placeholders = from.map(() => '?').join(', ');
     return this.tx(async (c, sink) => {

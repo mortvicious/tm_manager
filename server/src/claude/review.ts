@@ -240,7 +240,7 @@ function parseLog(out: string | null): { sha: string; parents: string[]; subject
     });
 }
 
-async function taskCommits(
+export async function taskCommits(
   cwd: string,
   scope: ChangeScope,
 ): Promise<{ commits: { sha: string; parents: string[]; subject: string }[]; attribution: CommitAttribution }> {

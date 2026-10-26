@@ -1,7 +1,7 @@
 import { useState, type CSSProperties, type HTMLAttributes, type MouseEvent, type ReactNode, type Ref } from 'react';
 import { publishCaution, publishGateReason, type Task, type TaskStatus } from '@tm/shared';
 import { api } from '../api.ts';
-import { confirmPublish, publishIsPrimary } from '../publish.ts';
+import { confirmMarkPublished, confirmPublish, markPublishedLabel, markPublishedOffered, publishIsPrimary } from '../publish.ts';
 import { useApp } from '../state.tsx';
 import { toastError } from '../toast.ts';
 import { useArm } from '../arm.ts';
@@ -165,7 +165,11 @@ export function TaskRow({
   // with somewhere to push from, whose review/checks are not still open
   // (docs/publish.md § The verify gate).
   const publishGate = publishGateReason(task);
-  const publishLabel = !task.repoId
+  // the agent already pushed it: the slot records that instead (§ Observed publish)
+  const shipped = markPublishedOffered(task);
+  const publishLabel = shipped
+    ? markPublishedLabel(task)
+    : !task.repoId
     ? 'Assign a repo before publishing this task'
     : publishGate
       ? `Publish — ${publishGate}`
@@ -201,6 +205,11 @@ export function TaskRow({
   const doRun = (e: MouseEvent | null) => act(e, () => api.taskAction(task.id, 'run-now'));
   const doPublish = (e: MouseEvent | null) => {
     e?.stopPropagation();
+    if (shipped) {
+      if (!confirmMarkPublished(task)) return;
+      void act(e, () => api.taskAction(task.id, 'mark-published'));
+      return;
+    }
     if (!confirmPublish(task)) return;
     void act(e, () => api.taskAction(task.id, 'publish'));
   };
@@ -299,8 +308,8 @@ export function TaskRow({
               {markDone && (
                 <SheetAction
                   icon={<IconPublish />}
-                  label="Publish"
-                  hint={publishIsPrimary(task) ? "Commit and push this work in the agent's own terminal" : publishLabel}
+                  label={shipped ? 'Mark published' : 'Publish'}
+                  hint={shipped ? publishLabel : publishIsPrimary(task) ? "Commit and push this work in the agent's own terminal" : publishLabel}
                   tone={publishIsPrimary(task) ? 'primary' : undefined}
                   disabled={busy || !canPublish}
                   onClick={fromSheet(() => void doPublish(null))}

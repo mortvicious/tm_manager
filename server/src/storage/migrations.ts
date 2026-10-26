@@ -679,6 +679,14 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
     // off, the default — the behaviour before the column existed.
     statements: [`ALTER TABLE tm_repos ADD COLUMN question_autopilot_minutes INTEGER`],
   },
+  {
+    id: 43,
+    // Observed publish (docs/publish.md § Observed publish): the task's newest
+    // commit, seen on a remote when its work turn landed — what offers "Mark
+    // published" on a supervised task. Cleared by any move off review/done/
+    // published, so it always describes the CURRENT landing.
+    statements: [`ALTER TABLE tm_tasks ADD COLUMN shipped_sha TEXT`, `ALTER TABLE tm_tasks ADD COLUMN shipped_at TEXT`],
+  },
 ];
 
 /** The migration whose rows each driver backfills in JS once it is applied. */

@@ -94,6 +94,8 @@ export function normalizeTask(t: Task): Task {
     ...t,
     landing: t.landing ?? null,
     autoLandedAt: t.autoLandedAt ?? null,
+    shippedSha: t.shippedSha ?? null,
+    shippedAt: t.shippedAt ?? null,
     customQueueAt: t.customQueueAt ?? null,
     hiddenAt: t.hiddenAt ?? null,
     reviewState: t.reviewState ?? null,
@@ -316,6 +318,7 @@ export const api = {
       | 'unblock'
       | 'complete'
       | 'publish'
+      | 'mark-published'
       | 'queue'
       | 'unqueue'
       | 'hide'

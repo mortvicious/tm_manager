@@ -50,6 +50,7 @@ import {
   buildWorkerInvocation,
   commitTrailerRule,
   postCompactRules,
+  shipHeldForReview,
   shipRuleFor,
 } from './claude/worker.ts';
 import {
@@ -74,9 +75,11 @@ import {
   hasTaskCommit,
   publishRepo,
   pushUpTo,
+  taskShipped,
   unpushedCommits,
   verifyPublished,
   type PublishCheck,
+  type ShippedCheck,
 } from './git.ts';
 import { aux } from './claude/aux.ts';
 import { fileDigests, headAt, readHeadBase, reviewWorkerChange, workerDiff, type ChangeScope } from './claude/review.ts';
@@ -2080,6 +2083,97 @@ export class Orchestrator implements OrchestratorApi {
     return newest?.taskId ? this.storage.getTask(newest.taskId) : null;
   }
 
+  /** `taskShipped` for this task: the reviewer's commit attribution, its tree only while it owns it. */
+  private async shippedState(task: Task, repo: Repo): Promise<ShippedCheck> {
+    const owner = await this.treeOwner(repo.id);
+    return taskShipped(repo, await this.changeScope(task, repo), owner?.id === task.id);
+  }
+
+  /**
+   * Observed publish (docs/publish.md § Observed publish): after a work turn's
+   * verify round settles, record whether the agent already pushed the task's
+   * commits (`shipped_sha`), which offers "Mark published". Never while a verify
+   * round is open. A sha seen while the ship gate held means the worker pushed
+   * BEFORE its review: it is reviewed all the same, and the row says so
+   * (`pushedBeforeReview`). Returns null when it did not look.
+   */
+  private async observeShipped(task: Task, repo: Repo): Promise<ShippedCheck | null> {
+    if (task.status !== 'review' || verifyOpen(task)) return null;
+    const shipped = await this.shippedState(task, repo);
+    const sha = shipped.ok ? shipped.sha : null;
+    if (sha === task.shippedSha) return shipped;
+    // Not conditional: re-read so a task that left review in between is left alone.
+    const cur = await this.storage.getTask(task.id);
+    if (cur?.status !== 'review') return shipped;
+    const patched = await this.storage.updateTask(task.id, {
+      shippedSha: sha,
+      shippedAt: sha ? new Date().toISOString() : null,
+    });
+    if (patched) broadcast({ type: 'task.updated', task: patched });
+    if (sha) {
+      const settings = await this.storage.getSettings();
+      await this.storage.appendEvent({
+        kind: 'task.shipped',
+        actor: LANDING_ACTOR,
+        taskId: task.id,
+        repoId: repo.id,
+        data: {
+          sha,
+          ref: shipped.ref,
+          commits: shipped.commits,
+          attribution: shipped.attribution,
+          pushedBeforeReview: shipHeldForReview(task, settings, effectiveLanding(task, repo)),
+          reviewState: task.reviewState,
+        },
+      });
+    }
+    return shipped;
+  }
+
+  /**
+   * "Mark published" (POST /api/tasks/:id/mark-published, Telegram card): the
+   * human's approval of work the agent already pushed. git decides, read now —
+   * the stored `shipped_sha` only offers the button. From `review` (the
+   * supervised landing) or `done` (marked done before anyone noticed); never
+   * while the verify round is open.
+   */
+  async markPublished(taskId: string, actor = 'human'): Promise<ActionResult> {
+    const task = await this.storage.getTask(taskId);
+    if (!task) return { error: 'task not found', code: 404 };
+    if (task.status !== 'review' && task.status !== 'done') {
+      return { error: `cannot mark published from status '${task.status}'`, code: 409 };
+    }
+    const gate = publishGateReason(task);
+    if (gate) return { error: gate, code: 409 };
+    const repo = task.repoId ? await this.storage.getRepo(task.repoId) : null;
+    if (!repo) return { error: 'task has no repo', code: 409 };
+    const shipped = await this.shippedState(task, repo);
+    if (!shipped.ok || !shipped.sha) return { error: `not shipped: ${shipped.reason}`, code: 409 };
+    const updated = await this.storage.transitionTask(
+      taskId,
+      [task.status],
+      'published',
+      actor,
+      { error: null, shippedSha: shipped.sha, shippedAt: task.shippedSha === shipped.sha ? task.shippedAt : null },
+      { observed: true, sha: shipped.sha },
+    );
+    if (!updated) return { error: 'task changed status — check it and try again', code: 409 };
+    broadcast({ type: 'task.updated', task: updated });
+    await this.storage.appendEvent({
+      kind: 'task.publish',
+      actor,
+      taskId,
+      repoId: repo.id,
+      data: { phase: 'published', delivery: 'observed', reason: null, branch: shipped.ref, head: shipped.sha.slice(0, 8) },
+    });
+    if (task.status === 'review') {
+      await this.closeTaskSessions(taskId, actor);
+      // like Mark done: the cascade is the orchestrator's, not the human's
+      await this.resolveCompletion(updated);
+    }
+    return { task: updated };
+  }
+
   /**
    * Publish in order (docs/queue.md § Stacked tasks). Reads the unpushed
    * commits' `Task:` trailers against the repo's UNAPPROVED tasks (review,
@@ -3311,6 +3405,16 @@ export class Orchestrator implements OrchestratorApi {
       data: { phase: 'start' },
     });
 
+    // Observed publish (docs/publish.md § Observed publish): the agent already
+    // pushed this task's commits — no turn, git settles it. The verify gate
+    // above already refused an open round.
+    if ((await this.shippedState(task, repo)).ok) {
+      const settled = await this.settlePublish(taskId, ['review'], actor, 'observed');
+      if (!settled) return { error: 'task left review while publishing — check its status', code: 409 };
+      if (settled.status !== 'published') return { error: settled.error ?? 'publish did not complete', code: 409 };
+      return { task: settled };
+    }
+
     // Publish in order (docs/queue.md § Stacked tasks). A refusal is written
     // on the task because auto-publish discards this result.
     const plan = await this.publishPlan(task, repo);
@@ -3399,7 +3503,14 @@ export class Orchestrator implements OrchestratorApi {
    * commits must be on the remote — the later tasks' work above them, and the
    * tree they own, stay local on purpose.
    */
-  private async publishedCheck(task: Task, repo: Repo): Promise<PublishCheck> {
+  private async publishedCheck(task: Task, repo: Repo): Promise<PublishCheck & { shipped?: ShippedCheck }> {
+    // Task-scoped first (docs/publish.md § Observed publish): this task's
+    // commits on a remote, and its own tree clean — another task's dirty files
+    // in a shared checkout are not this task's to commit.
+    const shipped = await this.shippedState(task, repo);
+    if (shipped.ok) {
+      return { ok: true, reason: null, branch: shipped.ref, head: shipped.sha?.slice(0, 8) ?? null, shipped };
+    }
     const plan = await this.publishPlan(task, repo);
     if (plan.kind !== 'partial') {
       const full = await verifyPublished(repo);
@@ -3417,7 +3528,7 @@ export class Orchestrator implements OrchestratorApi {
     taskId: string,
     from: TaskStatus[],
     actor: string,
-    delivery: 'session' | 'direct' = 'session',
+    delivery: 'session' | 'direct' | 'observed' = 'session',
   ): Promise<Task | null> {
     const task = await this.storage.getTask(taskId);
     if (!task) return null;
@@ -3435,6 +3546,7 @@ export class Orchestrator implements OrchestratorApi {
       {
         error: check.ok ? null : `publish did not complete: ${check.reason}`,
         ...(check.ok && auto ? { autoLandedAt: new Date().toISOString() } : {}),
+        ...(check.ok && 'shipped' in check && check.shipped?.sha ? { shippedSha: check.shipped.sha } : {}),
       },
       auto ? { landing: 'auto-publish' } : undefined,
     );
@@ -4226,7 +4338,10 @@ export class Orchestrator implements OrchestratorApi {
     const task = await this.storage.getTask(taskId);
     if (!task || task.status !== 'review' || task.pausedTurn || verifyOpen(task) || !task.repoId) return;
     const repo = await this.storage.getRepo(task.repoId);
-    if (!repo || effectiveLanding(task, repo) === 'supervised' || !landingReason(task)) return;
+    if (!repo) return;
+    // recording what git shows starts nothing — it is not held by the pause
+    await this.observeShipped(task, repo);
+    if (effectiveLanding(task, repo) === 'supervised' || !landingReason(task)) return;
     await this.markPaused(taskId, { kind: 'land' });
   }
 
@@ -4251,21 +4366,35 @@ export class Orchestrator implements OrchestratorApi {
     if (!task || task.status !== 'review' || !task.repoId) return;
     const repo = await this.storage.getRepo(task.repoId);
     if (!repo) return;
+    // Observed publish: did the agent already push? Recorded for every tier;
+    // supervised stops there (the human approves with "Mark published").
+    const shipped = await this.observeShipped(task, repo);
     const tier: LandingTier = effectiveLanding(task, repo);
     if (tier === 'supervised') return;
     const reason = landingReason(task);
     if (!reason) return;
     if (tier === 'on-green') {
+      // on-green never pushes; when the agent did, the honest status is `published`
+      const sha = shipped?.ok ? shipped.sha : null;
       const done = await this.storage.transitionTask(
         taskId,
         ['review'],
-        'done',
+        sha ? 'published' : 'done',
         LANDING_ACTOR,
-        { autoLandedAt: new Date().toISOString() },
-        { landing: tier, reason },
+        { autoLandedAt: new Date().toISOString(), ...(sha ? { shippedSha: sha } : {}) },
+        { landing: tier, reason, ...(sha ? { observed: true, sha } : {}) },
       );
       if (!done) return; // a human or a newer turn took it in between
       broadcast({ type: 'task.updated', task: done });
+      if (sha) {
+        await this.storage.appendEvent({
+          kind: 'task.publish',
+          actor: LANDING_ACTOR,
+          taskId,
+          repoId: repo.id,
+          data: { phase: 'published', delivery: 'observed', reason: null, branch: shipped?.ref ?? null, head: sha.slice(0, 8) },
+        });
+      }
       await this.closeTaskSessions(taskId, LANDING_ACTOR);
       await this.resolveCompletion(done, LANDING_ACTOR);
       return;

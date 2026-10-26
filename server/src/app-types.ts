@@ -27,6 +27,8 @@ export interface OrchestratorApi {
   /** Commit + push a reviewed task's work, in the agent's own session
    *  (docs/publish.md). */
   publish(taskId: string, actor?: string): Promise<ActionResult>;
+  /** review|done → published for work the agent already pushed (docs/publish.md § Observed publish) */
+  markPublished(taskId: string, actor?: string): Promise<ActionResult>;
   /** Land a finished publish turn on `published` / back on `review`, decided
    *  by git rather than by what the agent reported. */
   settlePublish(
