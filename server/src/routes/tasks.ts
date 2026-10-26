@@ -188,6 +188,8 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     // Children are promoted to roots of their own groups — capture them before
     // the delete so the re-grouped rows can be broadcast afterwards.
     const orphans = (await storage.listTasks({ parentId: id })).map((t) => t.id);
+    // its worktree, branch and PR go with it (docs/parallel.md § Cleanup)
+    if (cur.workdir || cur.branch) await app.orchestrator?.discardWorktree(cur, 'task deleted');
     await storage.deleteTask(id);
     fs.rmSync(path.join(artifactsRoot, id), { recursive: true, force: true });
     await storage.appendEvent({ kind: 'task.deleted', actor: 'human', taskId: id, data: { title: cur.title } });

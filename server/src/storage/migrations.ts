@@ -710,6 +710,29 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `ALTER TABLE tm_commands ADD COLUMN last_run_at TEXT`,
     ],
   },
+  {
+    id: 46,
+    // Parallel same-repo tasks (docs/parallel.md): a repo's parallel cap
+    // (1 = today's exclusivity) and delivery (`direct` = today; `pr` = every
+    // task works in its own server-managed git worktree on `tm/<task8>`, the
+    // server opens a draft PR and lands by local squash + fast-forward push),
+    // the setup command run in a new worktree and the untracked files copied
+    // into it (JSON array, null = the defaults). On the task: the worktree
+    // directory (kept after eviction — the session's cwd, re-created at the
+    // same path), its branch, its PR, and when the directory was evicted.
+    statements: [
+      `ALTER TABLE tm_repos ADD COLUMN parallel INTEGER NOT NULL DEFAULT 1`,
+      `ALTER TABLE tm_repos ADD COLUMN delivery TEXT NOT NULL DEFAULT 'direct'`,
+      `ALTER TABLE tm_repos ADD COLUMN worktree_setup TEXT`,
+      `ALTER TABLE tm_repos ADD COLUMN worktree_copy TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN workdir TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN branch TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN pr_number INTEGER`,
+      `ALTER TABLE tm_tasks ADD COLUMN pr_url TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN pr_state TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN worktree_evicted_at TEXT`,
+    ],
+  },
 ];
 
 /** The migration whose command owners each driver backfills in JS once it is applied. */

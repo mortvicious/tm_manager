@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { contextPctOf, holdsRepoForClaim, type Anomaly, type AuditEvent, type StatsOverview } from '@tm/shared';
+import { contextPctOf, holdsRepoForClaim, repoHasRoom, type Anomaly, type AuditEvent, type StatsOverview, type Task } from '@tm/shared';
 import { budgetAllows } from '../budget.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
@@ -264,7 +264,11 @@ export function registerStatsRoutes(
     const settingsEnabled = settings['orchestrator.enabled'] && !settings['orchestrator.paused'];
     // A queued task waiting on its repo (same-repo exclusivity, docs/queue.md)
     // or on the day budget is held on purpose — not starved.
-    const heldRepos = new Set(tasks.filter((x) => x.repoId && holdsRepoForClaim(x)).map((x) => x.repoId));
+    // Held = no room left under the repo's parallel cap (docs/parallel.md § The gate).
+    const holders = new Map<string, Task[]>();
+    for (const x of tasks) if (x.repoId && holdsRepoForClaim(x)) holders.set(x.repoId, [...(holders.get(x.repoId) ?? []), x]);
+    const repoById = new Map((await storage.listRepos()).map((r) => [r.id, r] as const));
+    const heldRepos = new Set([...holders].filter(([id, hs]) => !repoHasRoom(hs, repoById.get(id))).map(([id]) => id));
     const day = await budgetAllows(storage, null, 'claim', settings);
     if (!day.ok) {
       anomalies.push({ severity: 'critical', kind: 'day-budget', message: day.reason });

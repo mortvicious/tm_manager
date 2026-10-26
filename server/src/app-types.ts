@@ -63,6 +63,8 @@ export interface OrchestratorApi {
   hasLiveSession(taskId: string): Promise<boolean>;
   /** Kill every live session of a task (used when completing it); returns count closed. */
   closeTaskSessions(taskId: string, actor?: string): Promise<number>;
+  /** docs/parallel.md § Cleanup: a deleted/cancelled worktree task's PR, terminals, directory and branches */
+  discardWorktree(task: Task, why: string, deleteBranch?: boolean): Promise<void>;
 }
 
 declare module 'fastify' {

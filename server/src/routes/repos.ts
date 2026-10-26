@@ -2,7 +2,10 @@ import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import {
   LANDING_TIERS,
+  PARALLEL_MAX,
   PUSH_POLICIES,
+  REPO_DELIVERIES,
+  type RepoDelivery,
   QUESTION_AUTOPILOT_MAX_MINUTES,
   QUESTION_AUTOPILOT_MIN_MINUTES,
   type LandingTier,
@@ -12,6 +15,8 @@ import { z } from 'zod';
 import { expandHome } from '../config.ts';
 import { commitRepo, gitStatus, pushRepo } from '../git.ts';
 import { spaceConflictForRepo } from '../spaces/service.ts';
+import { parseCommandLine } from '../commands/parse.ts';
+import { prDeliveryRefusal, worktreeRoot } from '../worktrees.ts';
 import type { Storage } from '../storage/types.ts';
 
 const repoBody = z
@@ -31,8 +36,40 @@ const repoBody = z
       .nullable()
       .optional()
       .transform((v) => (v === 0 ? null : v)),
+    // parallel same-repo tasks (docs/parallel.md): PATCH only — `pr` needs a GitHub origin + gh auth, read at the switch
+    parallel: z.number().int().min(1).max(PARALLEL_MAX).optional(),
+    delivery: z.enum(REPO_DELIVERIES as [RepoDelivery, ...RepoDelivery[]]).optional(),
+    // argv line run in each new worktree ('' / null = none)
+    worktreeSetup: z.string().max(500).nullish(),
+    // ignored files copied into each new worktree (null = the defaults)
+    worktreeCopy: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .max(200)
+          .refine((p) => !p.startsWith('/') && !p.startsWith('~') && !p.split('/').includes('..'), 'copy patterns are repo-relative'),
+      )
+      .max(30)
+      .nullish(),
   })
   .strict();
+
+/**
+ * Parallel tasks and PR delivery (docs/parallel.md) are outward-facing — the
+ * server pushes branches, opens PRs and lands on the default branch — and a
+ * setup command runs in every new worktree, so turning any of them ON is the
+ * dashboard's (Origin), like a landing tier. Turning them off is allowed from
+ * anywhere.
+ */
+export function parallelNeedsBrowser(
+  body: { parallel?: number; delivery?: RepoDelivery; worktreeSetup?: string | null },
+  origin: string | undefined,
+): boolean {
+  if (origin) return false;
+  return (body.parallel ?? 1) > 1 || body.delivery === 'pr' || !!body.worktreeSetup?.trim();
+}
+export const PARALLEL_FROM_BROWSER = 'parallel tasks, PR delivery and the worktree setup command are set from the dashboard';
 
 /**
  * Raising a landing tier lets work reach `done` (or the remote) with no human
@@ -98,6 +135,9 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
 
   app.post('/api/repos', async (req, reply) => {
     const body = repoBody.parse(req.body);
+    if (body.parallel !== undefined || body.delivery !== undefined || body.worktreeSetup != null || body.worktreeCopy != null) {
+      return reply.code(400).send({ error: 'set parallel tasks and delivery on the Repos page once the repo is added' });
+    }
     if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
     if (pushPolicyNeedsBrowser(body.pushPolicy, req.headers.origin)) return reply.code(403).send({ error: PUSH_POLICY_FROM_BROWSER });
     if (autopilotNeedsBrowser(body.questionAutopilotMinutes, req.headers.origin)) {
@@ -113,6 +153,11 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
       return reply.code(400).send({ error: `Path is not an existing directory: ${abs}` });
     }
     const name = body.name?.trim() || abs.split('/').filter(Boolean).pop() || abs;
+    // a task worktree (docs/parallel.md) is the server's, never a repo of its own
+    const repos = await storage.listRepos();
+    if (repos.some((r) => abs === worktreeRoot(r) || abs.startsWith(worktreeRoot(r) + '/'))) {
+      return reply.code(400).send({ error: 'that path is inside a repo\'s task worktrees (<repo>.worktrees) — register the repo itself' });
+    }
     const clash = await spaceConflictForRepo(storage, { name, path: abs });
     if (clash) return reply.code(400).send({ error: clash });
     let previewUrl: string | null;
@@ -153,6 +198,31 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
     if (autopilotNeedsBrowser(body.questionAutopilotMinutes, req.headers.origin)) {
       return reply.code(403).send({ error: AUTOPILOT_FROM_BROWSER });
     }
+    if (parallelNeedsBrowser(body, req.headers.origin)) return reply.code(403).send({ error: PARALLEL_FROM_BROWSER });
+    const current = await storage.getRepo(id);
+    if (!current) return reply.code(404).send({ error: 'repo not found' });
+    // `direct` is always one task at a time; `pr` must be provable before it is written
+    let parallel = body.parallel;
+    const delivery = body.delivery ?? current.delivery;
+    if (delivery === 'direct') {
+      if ((parallel ?? 1) > 1) return reply.code(400).send({ error: 'more than one task at a time needs PR delivery (each task in its own worktree)' });
+      if (body.delivery === 'direct') parallel = 1;
+    }
+    if (body.delivery === 'pr' && current.delivery !== 'pr') {
+      const refusal = await prDeliveryRefusal(current.path);
+      if (refusal) return reply.code(400).send({ error: refusal });
+    }
+    let worktreeSetup: string | null | undefined;
+    if ('worktreeSetup' in body) {
+      worktreeSetup = body.worktreeSetup?.trim() || null;
+      if (worktreeSetup) {
+        try {
+          parseCommandLine(worktreeSetup);
+        } catch (e) {
+          return reply.code(400).send({ error: `setup command: ${(e as Error).message}` });
+        }
+      }
+    }
     let abs: string | undefined;
     if (body.path) {
       try {
@@ -174,8 +244,7 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
         return reply.code(400).send({ error: (e as Error).message });
       }
     }
-    const before =
-      body.landing || body.pushPolicy || body.questionAutopilotMinutes !== undefined ? await storage.getRepo(id) : null;
+    const before = current;
     const repo = await storage.updateRepo(id, {
       name: body.name,
       path: abs,
@@ -184,6 +253,10 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
       landing: body.landing,
       pushPolicy: body.pushPolicy,
       questionAutopilotMinutes: body.questionAutopilotMinutes,
+      parallel,
+      delivery: body.delivery,
+      worktreeSetup,
+      worktreeCopy: 'worktreeCopy' in body ? (body.worktreeCopy ?? null) : undefined,
     });
     if (!repo) return reply.code(404).send({ error: 'repo not found' });
     await storage.appendEvent({
@@ -197,6 +270,10 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
         ...(before && before.questionAutopilotMinutes !== repo.questionAutopilotMinutes
           ? { questionAutopilotMinutes: { from: before.questionAutopilotMinutes, to: repo.questionAutopilotMinutes } }
           : {}),
+        ...(before.parallel !== repo.parallel ? { parallel: { from: before.parallel, to: repo.parallel } } : {}),
+        ...(before.delivery !== repo.delivery ? { delivery: { from: before.delivery, to: repo.delivery } } : {}),
+        ...(before.worktreeSetup !== repo.worktreeSetup ? { worktreeSetup: { from: before.worktreeSetup, to: repo.worktreeSetup } } : {}),
+        ...(JSON.stringify(before.worktreeCopy) !== JSON.stringify(repo.worktreeCopy) ? { worktreeCopy: { from: before.worktreeCopy, to: repo.worktreeCopy } } : {}),
       },
     });
     return repo;

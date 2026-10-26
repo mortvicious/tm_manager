@@ -1,3 +1,4 @@
+import type { WorktreePatch } from './worktree-sql.ts';
 import type { MoveAnchor } from './group.ts';
 import type { PushDevice, PushKind } from '@tm/shared';
 import type {
@@ -108,7 +109,9 @@ export interface NewRepo {
 export type LoopStep = Partial<Pick<Task, 'loopState' | 'loopIteration' | 'loopHistory' | 'checkResults' | 'checkDiffHash'>>;
 
 /** undefined = leave as-is; null clears the column. */
-export type RepoPatch = Partial<Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes'>>;
+export type RepoPatch = Partial<
+  Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes' | 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy'>
+>;
 
 export interface NewCommand {
   repoId: string;
@@ -442,6 +445,13 @@ export interface Storage {
    */
   keepTaskInInbox(id: string, until: string): Promise<Task | null>;
   /**
+   * Parallel same-repo tasks (docs/parallel.md): the task's worktree / branch /
+   * PR columns. Server-owned, written only by `worktrees.ts` and the PR/land
+   * code, deliberately NOT part of `updateTask` (a stale full-row patch must
+   * never forget a worktree). null when the row is gone.
+   */
+  updateTaskWorktree(id: string, patch: WorktreePatch): Promise<Task | null>;
+  /**
    * Loop tasks (docs/loops.md): a CONDITIONAL write of the loop columns (and
    * the latest check results they carry) on a `running` loop task whose
    * `loop_state` is one of `from` (null matches NULL). null when the row did
@@ -712,3 +722,5 @@ export interface Storage {
   /** Drop a `tm_config` row — a key that moved out of the DB (sentry.authToken → data/config.json). */
   deleteSetting(key: string): Promise<void>;
 }
+
+export type { WorktreePatch } from './worktree-sql.ts';

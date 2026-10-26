@@ -225,6 +225,12 @@ export interface ChangeScope {
    * another task's worker has started in this checkout after the window
    */
   includeUncommitted: boolean;
+  /**
+   * a live worktree task (docs/parallel.md): its change is exactly
+   * `baseSha..HEAD` in its own tree — the trailer search over every ref would
+   * also list the pre-rebase copies on `origin/tm/…` and an earlier squash
+   */
+  branchRange?: boolean;
 }
 
 const LOG_FORMAT = '--format=%H%x09%P%x09%s';
@@ -244,6 +250,10 @@ export async function taskCommits(
   cwd: string,
   scope: ChangeScope,
 ): Promise<{ commits: { sha: string; parents: string[]; subject: string }[]; attribution: CommitAttribution }> {
+  if (scope.branchRange && scope.baseSha) {
+    const own = parseLog(await git(cwd, ['log', '--no-merges', '--topo-order', '--reverse', LOG_FORMAT, `${scope.baseSha}..HEAD`]));
+    return own.length ? { commits: own, attribution: 'base' } : { commits: [], attribution: 'none' };
+  }
   // --all covers every ref and every linked worktree's HEAD, so work on a
   // worktree branch counts before it is merged. Merge commits are left out:
   // the commits they bring in are listed themselves, and a merge's own diff

@@ -229,6 +229,8 @@ export function effectiveLanding(
  * never gets `agent-pushes`: it resolves to `repo-rules`, like a landing tier
  * clamps to `supervised`.
  */
+export type PrState = 'draft' | 'open' | 'merged' | 'closed';
+
 export type PushPolicy = 'repo-rules' | 'agent-pushes' | 'publish-turn';
 export const PUSH_POLICIES: PushPolicy[] = ['repo-rules', 'agent-pushes', 'publish-turn'];
 
@@ -536,7 +538,54 @@ export interface Repo {
   pushPolicy: PushPolicy;
   /** question autopilot: minutes a worker's question waits before its Recommended option is picked; null = off (docs/questions.md § Autopilot) */
   questionAutopilotMinutes: number | null;
+  /**
+   * Parallel same-repo tasks (docs/parallel.md): how many of this repo's tasks
+   * may hold it at once, 1..PARALLEL_MAX. Above 1 only with `delivery: 'pr'`
+   * (each task in its own worktree); `direct` always resolves to 1
+   * (`repoParallelCap`).
+   */
+  parallel: number;
+  /** `direct` = today (the agent works in the checkout); `pr` = a worktree + branch per task, draft PR, local squash + ff land */
+  delivery: RepoDelivery;
+  /** argv line run in a new worktree after the dependency clone (e.g. `npm install`); null = none */
+  worktreeSetup: string | null;
+  /** untracked/ignored files copied into a new worktree (basename or path globs); null = WORKTREE_COPY_DEFAULTS */
+  worktreeCopy: string[] | null;
   createdAt: string;
+}
+
+/** docs/parallel.md § Delivery */
+export type RepoDelivery = 'direct' | 'pr';
+export const REPO_DELIVERIES: RepoDelivery[] = ['direct', 'pr'];
+/** the highest per-repo parallel cap (still bounded by `orchestrator.concurrency`) */
+export const PARALLEL_MAX = 3;
+/** the global worker cap's ceiling (decisions.md 2026-10-27: 6-8 agents across repos; the validator already allowed 10) */
+export const CONCURRENCY_MAX = 10;
+export const WORKTREE_COPY_DEFAULTS: readonly string[] = ['.env*', '.claude/settings.local.json'];
+
+/**
+ * How many of a repo's tasks may hold it at once — the SQL gates' cap
+ * (`repoCapSql` in queue-sql.ts) in JS: `parallel` only for a `pr` repo,
+ * whose tasks each work in their own worktree; a `direct` repo is always 1.
+ */
+export function repoParallelCap(repo: Pick<Repo, 'parallel' | 'delivery'> | null | undefined): number {
+  if (!repo || repo.delivery !== 'pr') return 1;
+  return Math.max(1, Math.min(PARALLEL_MAX, Math.floor(repo.parallel) || 1));
+}
+
+/**
+ * Whether one more task may hold a repo whose current holders are `holders`
+ * (the candidate excluded) — the JS twin of `repoHasRoom` in queue-sql.ts.
+ * A holder working in the main checkout (no `workdir`) keeps the repo
+ * exclusive whatever the cap, so a `direct` repo, or a pr repo's task that
+ * started before the switch, behaves exactly as before.
+ */
+export function repoHasRoom(
+  holders: readonly Pick<Task, 'workdir'>[],
+  repo: Pick<Repo, 'parallel' | 'delivery'> | null | undefined,
+): boolean {
+  if (holders.some((h) => !h.workdir)) return false;
+  return holders.length < repoParallelCap(repo);
 }
 
 /**
@@ -900,6 +949,22 @@ export interface Task {
   shippedSha: string | null;
   /** when `shippedSha` was observed */
   shippedAt: string | null;
+  /**
+   * The task's own git worktree (docs/parallel.md), set at its first spawn in
+   * a `delivery: 'pr'` repo — the cwd of every turn, review and check of the
+   * task, kept after an eviction (the directory is re-created at the same
+   * path, so `--resume` still finds the session). null = the repo checkout.
+   */
+  workdir: string | null;
+  /** the worktree's branch, `tm/<task8>` */
+  branch: string | null;
+  /** the server-opened PR (a record, not the merge mechanism) */
+  prNumber: number | null;
+  prUrl: string | null;
+  /** `draft` | `open` | `merged` | `closed`, as last written by the server */
+  prState: PrState | null;
+  /** when the idle sweep removed the worktree directory (branch kept; re-created on the next turn) */
+  worktreeEvictedAt: string | null;
   /**
    * Membership in the custom queue (docs/queue.md): set when a human clicks
    * "Add to queue", ISO time of that click = FIFO position. The custom queue
@@ -1644,6 +1709,12 @@ export interface AppSettings {
    */
   'commands.agentTtlDays': number;
   /**
+   * A worktree task idle this many days in review/failed/done has its
+   * directory evicted (leftovers WIP-committed to its branch, re-created at
+   * the same path on the next turn — docs/parallel.md § Cleanup). 0 = never.
+   */
+  'worktrees.idleEvictDays': number;
+  /**
    * Budget fuses (docs/token-budget.md § Fuses). 0 = off, the default for all three.
    * `budget.taskUsd`: no AUTOMATIC turn (review fix round, dispatch wake, auto
    * wake-up, later check/transient rounds) starts once the task's `costUsd`
@@ -1806,6 +1877,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'anomaly.staleReviewHours': 72,
   'inbox.staleDraftDays': 14,
   'commands.agentTtlDays': 7,
+  'worktrees.idleEvictDays': 3,
   'budget.taskUsd': 0,
   'budget.dayUsd': 0,
   'budget.runMinutes': 0,
@@ -1952,6 +2024,12 @@ export type AuditKind =
   | 'task.publish'
   /** the agent's own push was seen at a landing (docs/publish.md § Observed publish) */
   | 'task.shipped'
+  /** a task worktree was created / re-created / evicted / removed (docs/parallel.md); data `{ action, dir, branch?, … }` */
+  | 'task.worktree'
+  /** the server pushed the task branch / opened, updated or readied its PR (docs/parallel.md § The PR) */
+  | 'task.pr'
+  /** a worktree task's local squash + fast-forward land, or the reason it stopped (docs/parallel.md § Land) */
+  | 'task.land'
   | 'task.landing'
   | 'run.reviewed'
   /** the repo checks ran over a task's change, or were skipped with a reason (docs/checks.md) */
@@ -1980,6 +2058,8 @@ export type AuditKind =
   | 'feature.edited'
   | 'feature.analyzed'
   | 'repo.changed'
+  /** orphan worktree directories / `tm/*` branches removed (docs/parallel.md § Cleanup) */
+  | 'repo.worktrees-pruned'
   | 'command.changed'
   | 'command.run'
   | 'shell.session'

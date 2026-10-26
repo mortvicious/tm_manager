@@ -119,7 +119,7 @@ const CAPS_BLOCK = [
   '## Standing caps (server-injected)',
   '',
   '- Max 3 subagents in this session; avoid parallel agent fan-outs.',
-  '- Orchestrator concurrency stays at 2 — do not raise it.',
+  '- Orchestrator concurrency is the user\'s setting (Config) — never change it.',
   '- Documenting the work in `docs/` is an exit criterion of this task, not an optional extra.',
 ].join('\n');
 

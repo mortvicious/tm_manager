@@ -1,4 +1,4 @@
-import { customQueueHoldsRepo, customQueueWaiting, type Run, type Task } from '@tm/shared';
+import { customQueueHoldsRepo, customQueueWaiting, repoHasRoom, type Repo, type Run, type Task } from '@tm/shared';
 import { useApp } from '../state.tsx';
 import { Explainable } from './Explain.tsx';
 
@@ -25,19 +25,24 @@ export { customQueueWaiting };
  * together. `runs` maps the member's `createdByRun` to its filer; without the
  * run the filer clause is skipped.
  */
-export function customQueueBlocker(task: Task, tasks: Task[], runs: Run[] = []): Task | undefined {
+export function customQueueBlocker(
+  task: Task,
+  tasks: Task[],
+  runs: Run[] = [],
+  repo?: Pick<Repo, 'parallel' | 'delivery'> | null,
+): Task | undefined {
   if (!task.repoId) return undefined;
   const sameRepo = (o: Task) => o.id !== task.id && o.repoId === task.repoId;
-  const member = tasks.find((o) => sameRepo(o) && !!o.customQueueAt && customQueueHoldsRepo(o));
-  if (member) return member;
-  // a task Pause all owes a turn holds its repo for every member (docs/pause.md)
-  const owed = tasks.find((o) => sameRepo(o) && !!o.pausedTurn);
-  if (owed || !task.createdByRun) return owed;
+  // the per-repo cap (docs/parallel.md): holders block only once the repo has no room
+  const full = (holders: Task[]) => (repoHasRoom(holders, repo) ? undefined : holders[0]);
+  // a member that holds the repo, or a task Pause all owes a turn (docs/pause.md)
+  const held = full(tasks.filter((o) => sameRepo(o) && (!!o.pausedTurn || (!!o.customQueueAt && customQueueHoldsRepo(o)))));
+  if (held || !task.createdByRun) return held;
   const filerId = runs.find((r) => r.id === task.createdByRun)?.taskId;
   const filer = filerId
     ? tasks.find((o) => o.id === filerId && sameRepo(o) && (o.status === 'failed' || customQueueHoldsRepo(o)))
     : undefined;
-  return filer ?? tasks.find((o) => sameRepo(o) && customQueueHoldsRepo(o));
+  return filer ?? full(tasks.filter((o) => sameRepo(o) && customQueueHoldsRepo(o)));
 }
 
 /**
@@ -50,7 +55,7 @@ export function customQueueBlocker(task: Task, tasks: Task[], runs: Run[] = []):
  */
 export function QueueMark({ task, tasks, explain = true }: { task: Task; tasks: Task[]; explain?: boolean }) {
   const off = !explain;
-  const { runs } = useApp();
+  const { runs, repos } = useApp();
   if (!task.customQueueAt) {
     // A global-queue task an Undo start put back: same sign, no position.
     return task.status === 'queued' && task.queueHeldAt ? (
@@ -120,7 +125,7 @@ export function QueueMark({ task, tasks, explain = true }: { task: Task; tasks: 
       </Explainable>
     );
   }
-  const blocker = customQueueBlocker(task, tasks, runs);
+  const blocker = customQueueBlocker(task, tasks, runs, repos.find((r) => r.id === task.repoId));
   return (
     <Explainable
       className="chip queue-chip"

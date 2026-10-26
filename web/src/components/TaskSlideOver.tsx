@@ -983,6 +983,25 @@ export function TaskSlideOver({
             pushed
           </span>
         )}
+        {task.branch && (
+          // parallel same-repo tasks (docs/parallel.md): branch + the PR the server keeps as the record
+          <span
+            className="chip"
+            style={task.prState === 'merged' ? { color: 'var(--tm-status-published)' } : undefined}
+            title={`own worktree ${task.workdir ?? ''} on ${task.branch}${task.worktreeEvictedAt && task.status !== 'published' ? ' — folder evicted while idle, re-created on the next turn' : ''}`}
+          >
+            {task.branch}
+            {task.prUrl && (
+              <>
+                {' · '}
+                <a href={task.prUrl} target="_blank" rel="noreferrer">
+                  PR #{task.prNumber}
+                </a>
+                {task.prState && task.prState !== 'open' ? ` ${task.prState}` : ''}
+              </>
+            )}
+          </span>
+        )}
         {task.createdByRun && (
           <span className="chip" title={`filed by agent run ${task.createdByRun.slice(0, 8)} (depth ${task.spawnDepth})`}>
             agent d{task.spawnDepth}

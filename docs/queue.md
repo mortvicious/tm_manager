@@ -251,6 +251,13 @@ claim of one pass already sees the first as `running`; the scheduler is
 single-flight, which is what makes NOT EXISTS sufficient without row locks on
 Postgres.
 
+**Parallel worktrees (2026-10-27, `docs/parallel.md` § The gate).** A repo
+with `delivery: 'pr'` and `parallel` 2–3 admits up to that many holders, as
+long as every holder works in its own worktree: the predicate above is wrapped
+in `repoHasRoom` (SQL and JS twin), which at cap 1 is this NOT EXISTS
+exactly. The custom queue's member and agent-filed clauses take the same
+wrapper; the filer clause does not.
+
 **The overflow claim is NOT exempt** (decided 2026-10-19). Overflow exists to
 beat the concurrency CAP — a live worker polling for a child it filed must not
 deadlock the slots — not to put two agents in one checkout. An agent's

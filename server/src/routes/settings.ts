@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import {
+  CONCURRENCY_MAX,
   CUSTOM_PRESET_ID_RE,
   CUSTOM_PRESET_LABEL_MAX,
   CUSTOM_PRESET_MAX,
@@ -63,7 +64,7 @@ const taskTemplatesSchema = z
 const settingsSchema = z
   .object({
     'orchestrator.enabled': z.boolean(),
-    'orchestrator.concurrency': z.number().int().min(1).max(10),
+    'orchestrator.concurrency': z.number().int().min(1).max(CONCURRENCY_MAX),
     'agent.model': z.string().min(1),
     'agent.effort': z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
     'analysis.model': z.string().min(1),
@@ -86,6 +87,7 @@ const settingsSchema = z
     'anomaly.staleReviewHours': z.number().int().min(1),
     'inbox.staleDraftDays': z.number().int().min(1).max(365),
     'commands.agentTtlDays': z.number().int().min(0).max(365),
+    'worktrees.idleEvictDays': z.number().int().min(0).max(365),
     // Budget fuses (docs/token-budget.md § Fuses): 0 — or null — is off.
     'budget.taskUsd': z.number().min(0).max(10_000).nullable().transform((v) => v ?? 0),
     'budget.dayUsd': z.number().min(0).max(100_000).nullable().transform((v) => v ?? 0),

@@ -18,7 +18,7 @@ import type {
   LandingTier,
   Task,
 } from '@tm/shared';
-import { LANDING_TIERS, PUSH_POLICIES, QUESTION_AUTOPILOT_MAX_MINUTES, QUESTION_AUTOPILOT_MIN_MINUTES } from '@tm/shared';
+import { LANDING_TIERS, PARALLEL_MAX, PUSH_POLICIES, QUESTION_AUTOPILOT_MAX_MINUTES, QUESTION_AUTOPILOT_MIN_MINUTES, REPO_DELIVERIES } from '@tm/shared';
 
 const CHECK_STATES: (CheckState | null)[] = ['pending', 'running', 'green', 'red', 'error'];
 const LOOP_STATES = new Set<string>([
@@ -52,6 +52,18 @@ function autopilotMinutes(v: unknown): number | null {
     : null;
 }
 
+function parallelCap(v: unknown): number {
+  const n = typeof v === 'string' ? Number(v) : v;
+  return typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= PARALLEL_MAX ? n : 1;
+}
+
+const PR_STATES = ['draft', 'open', 'merged', 'closed'];
+
+function stringList(v: unknown): string[] | null {
+  const parsed = safeParse<unknown>(v, null);
+  return Array.isArray(parsed) && parsed.every((x) => typeof x === 'string') ? (parsed as string[]) : null;
+}
+
 function landingTier(v: unknown): LandingTier | null {
   return LANDING_TIERS.includes(v as LandingTier) ? (v as LandingTier) : null;
 }
@@ -69,6 +81,11 @@ export function rowToRepo(r: any): Repo {
     pushPolicy: PUSH_POLICIES.includes(r.push_policy) ? r.push_policy : 'repo-rules',
     // and an out-of-range autopilot value reads as OFF, never as a shorter wait
     questionAutopilotMinutes: autopilotMinutes(r.question_autopilot_minutes),
+    // an out-of-range cap reads as 1 and an unknown delivery as direct — today's behaviour
+    parallel: parallelCap(r.parallel),
+    delivery: REPO_DELIVERIES.includes(r.delivery) ? r.delivery : 'direct',
+    worktreeSetup: r.worktree_setup ?? null,
+    worktreeCopy: stringList(r.worktree_copy),
     createdAt: r.created_at,
   };
 }
@@ -128,6 +145,12 @@ export function rowToTask(r: any): Task {
     autoLandedAt: r.auto_landed_at ?? null,
     shippedSha: r.shipped_sha ?? null,
     shippedAt: r.shipped_at ?? null,
+    workdir: r.workdir ?? null,
+    branch: r.branch ?? null,
+    prNumber: r.pr_number == null ? null : Number(r.pr_number),
+    prUrl: r.pr_url ?? null,
+    prState: PR_STATES.includes(r.pr_state) ? r.pr_state : null,
+    worktreeEvictedAt: r.worktree_evicted_at ?? null,
     customQueueAt: r.custom_queue_at ?? null,
     reviewSummary: r.review_summary ?? null,
     reviewDiffHash: r.review_diff_hash ?? null,

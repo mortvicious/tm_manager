@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { CommandRun, Repo, RepoCommand, Run } from '@tm/shared';
@@ -287,8 +288,13 @@ export function registerAgentCommandRoutes(
     const run = await authRun(req);
     if (!run) return reply.code(403).send({ error: 'forbidden' });
     const body = runBody.parse(req.body ?? {});
-    const repo = run.repoId ? await storage.getRepo(run.repoId) : null;
-    if (!repo) return reply.code(400).send({ error: 'your run has no repo to run a command in' });
+    const checkout = run.repoId ? await storage.getRepo(run.repoId) : null;
+    if (!checkout) return reply.code(400).send({ error: 'your run has no repo to run a command in' });
+    // A worktree task's throwaway server/script runs in ITS worktree, and the
+    // directory rules are judged against that root (docs/parallel.md §
+    // Commands); saved commands stay the shared ones in the checkout.
+    const task = run.taskId ? await storage.getTask(run.taskId) : null;
+    const repo = task?.workdir && fs.existsSync(task.workdir) ? { ...checkout, path: task.workdir } : checkout;
     const cwdRaw = (body.cwd ?? '').trim();
     const text = body.command.trim();
     const vet = vetAgentLine(repo, text, cwdRaw);

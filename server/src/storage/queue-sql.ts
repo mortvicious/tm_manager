@@ -4,6 +4,31 @@
 // queue" and "the custom queue is busy" mean, or SQLite and Postgres would
 // serialize differently.
 
+import { PARALLEL_MAX } from '@tm/shared';
+
+/**
+ * How many tasks may hold a repo at once (docs/parallel.md § The gate), for
+ * the candidate's repo: `parallel` only for a `delivery = 'pr'` repo — each
+ * of its tasks works in its own worktree — else 1. Out-of-range reads as 1,
+ * like `rowToRepo`. JS twin: `repoParallelCap` in shared — edit together.
+ */
+const repoCapSql = (t: string) =>
+  `COALESCE((SELECT CASE WHEN rp.delivery = 'pr' AND rp.parallel BETWEEN 2 AND ${PARALLEL_MAX} THEN rp.parallel ELSE 1 END
+     FROM tm_repos rp WHERE rp.id = ${t}.repo_id), 1)`;
+
+/**
+ * "The candidate `t`'s repo has room for one more holder", where a holder is
+ * another task of the repo matching `holder` (over alias `h`): no holder
+ * works in the MAIN CHECKOUT (`workdir IS NULL` — that tree is one agent's),
+ * and fewer holders than the cap. With cap 1 — every `direct` repo — this is
+ * exactly the old `NOT EXISTS (holder)`. JS twin: `repoHasRoom` in shared.
+ */
+const repoHasRoom = (h: string, holder: string) =>
+  `(NOT EXISTS (SELECT 1 FROM tm_tasks ${h}
+      WHERE ${h}.repo_id = t.repo_id AND ${h}.id <> t.id AND ${h}.workdir IS NULL AND ${holder})
+    AND (SELECT COUNT(*) FROM tm_tasks ${h}
+      WHERE ${h}.repo_id = t.repo_id AND ${h}.id <> t.id AND ${holder}) < ${repoCapSql('t')})`;
+
 /**
  * "This task still holds its repo's place" (docs/queue.md § When the next
  * member starts), over a row aliased `a`: it is working (`running`/`waiting`,
@@ -30,6 +55,11 @@ const heldBy = (a: string) =>
                                        OR ${a}.check_state IN ('pending', 'running'))))`;
 
 /**
+ * Per-repo cap (docs/parallel.md § The gate): every "no other task holds the
+ * repo" clause below is `repoHasRoom` — a `pr` repo with `parallel` N admits
+ * up to N holders, each in its own worktree; the paused-turn and member
+ * clauses count together as one holder set.
+ *
  * Selects the head of the custom queue: the oldest-added queued task that is
  * a member (`custom_queue_at` set), has a repo, is not held by an Undo start
  * (`queue_held_at`, docs/queue.md § Undo start), passes the feature phase
@@ -50,25 +80,14 @@ const heldBy = (a: string) =>
  */
 export const CUSTOM_QUEUE_HEAD_WHERE = `t.status = 'queued' AND t.repo_id IS NOT NULL AND t.custom_queue_at IS NOT NULL
   AND t.queue_held_at IS NULL
-  AND NOT EXISTS (
-    SELECT 1 FROM tm_tasks p WHERE p.repo_id = t.repo_id AND p.id <> t.id AND p.paused_turn IS NOT NULL
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM tm_tasks o
-    WHERE o.repo_id = t.repo_id AND o.id <> t.id AND o.custom_queue_at IS NOT NULL
-      AND ${heldBy('o')}
-  )
+  AND ${repoHasRoom('o', `(o.paused_turn IS NOT NULL OR (o.custom_queue_at IS NOT NULL AND ${heldBy('o')}))`)}
   AND (t.created_by_run IS NULL OR (
     NOT EXISTS (
       SELECT 1 FROM tm_runs r JOIN tm_tasks f ON f.id = r.task_id
       WHERE r.id = t.created_by_run AND f.id <> t.id AND f.repo_id = t.repo_id
         AND (f.status = 'failed' OR ${heldBy('f')})
     )
-    AND NOT EXISTS (
-      SELECT 1 FROM tm_tasks a
-      WHERE a.repo_id = t.repo_id AND a.id <> t.id
-        AND ${heldBy('a')}
-    )
+    AND ${repoHasRoom('a', heldBy('a'))}
   ))`;
 
 export const CUSTOM_QUEUE_HEAD_ORDER = `ORDER BY t.custom_queue_at, t.created_at LIMIT 1`;
@@ -111,10 +130,13 @@ export const skipRepos = (n: number) =>
  * deliberately absent, unlike `heldBy`: a split parent waits on children in
  * its own repo, and holding the repo for it would deadlock them.
  * JS twin: `holdsRepoForClaim` in shared/src/types.ts — edit together.
+ * Per-repo cap (docs/parallel.md § The gate): "no other" is `repoHasRoom` —
+ * fewer holders than the repo's cap, and none in the main checkout.
  */
-export const REPO_EXCLUSIVE_GATE = `NOT EXISTS (SELECT 1 FROM tm_tasks x
-    WHERE x.repo_id = t.repo_id AND x.id <> t.id
-      AND (x.status IN ('running', 'waiting')
+export const REPO_EXCLUSIVE_GATE = repoHasRoom(
+  'x',
+  `(x.status IN ('running', 'waiting')
            OR x.paused_turn IS NOT NULL
            OR (x.status = 'review' AND (x.review_state IN ('pending', 'reviewing', 'fixing')
-                                         OR x.check_state IN ('pending', 'running')))))`;
+                                         OR x.check_state IN ('pending', 'running'))))`,
+);

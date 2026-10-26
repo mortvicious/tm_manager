@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   CHECK_BUSY_STATES,
+  repoHasRoom,
+  repoParallelCap,
   LOOP_CONTINUABLE_STATES,
   effectiveLanding,
   effectivePushPolicy,
@@ -75,6 +77,7 @@ import {
   hasTaskCommit,
   publishRepo,
   pushUpTo,
+  run as execIn,
   taskShipped,
   unpushedCommits,
   verifyPublished,
@@ -129,6 +132,18 @@ import type { Storage } from './storage/types.ts';
 import { QuestionAutopilot } from './questions-autopilot.ts';
 import { QuestionService } from './questions.ts';
 import { describeStopCause, type StopCause } from './stop-cause.ts';
+import {
+  defaultBranch,
+  ensureWorktree,
+  evictWorktree,
+  pruneOrphans,
+  removeWorktree,
+  sessionBelongsTo,
+  taskWorkdir,
+  withRepoLock,
+  type EnsureResult,
+} from './worktrees.ts';
+import { closePr, confirmMerged, fastForwardCheckout, landedCheck, landWorktree, syncPr, type LandResult } from './land.ts';
 
 /** Upper bound on how long a custom-queue hold may outlive its follow-on (docs/queue.md). */
 const CUSTOM_QUEUE_HOLD_TTL_MS = 30 * 60_000;
@@ -170,6 +185,20 @@ const PUBLISH_RUN_LABEL = 'publish';
  * apart from 'system' so the audit log tells a landing from a sweep.
  */
 const LANDING_ACTOR = 'orchestrator';
+
+/** Conflict turns a worktree land may send before it hands the conflict to the human (docs/parallel.md § Conflicts). */
+const CONFLICT_MAX_ROUNDS = 2;
+
+function landConflictMessage(onto: string, files: string[]): string {
+  const [remote, ...rest] = onto.split('/');
+  return [
+    `The server tried to land this task on \`${onto}\` and the rebase conflicts in: ${files.join(', ')}.`,
+    `Other tasks landed there while you worked. In this worktree: \`git fetch ${remote} ${rest.join('/')}\`, then \`git rebase ${onto}\`,`,
+    'resolve every conflict keeping the intent of both sides, `git rebase --continue` until the rebase is done, run the',
+    "repo's checks/tests and fix what the rebase broke, and commit any fix (with this task's trailer). Do not merge the",
+    'default branch in, do not push, do not open a PR. Then stop: the server re-verifies the change and lands it.',
+  ].join(' ');
+}
 
 /**
  * Actors that are a person (web, Telegram). While Pause all is on
@@ -397,6 +426,24 @@ export class Orchestrator implements OrchestratorApi {
    */
   private readonly autoPublishing = new Set<string>();
   /**
+   * Worktree lands (docs/parallel.md § Conflicts): conflict turns sent per
+   * task (bounded by CONFLICT_MAX_ROUNDS, reset by a landed or a fresh
+   * human publish), and who asked for the land that hit the conflict — its
+   * next clean verify round lands again on that request, whatever the tier.
+   * Memory only, like `fixRounds`: a restart costs at most a re-click.
+   */
+  private readonly conflictRounds = new Map<string, number>();
+  /** a land that conflicted re-runs after the resolving turn: who asked, and the message that turn was given */
+  private readonly landAfterConflict = new Map<string, { actor: string; message: string }>();
+  /** a re-land after a conflict round — keeps `conflictRounds` (the bound would reset on every human-asked retry) */
+  private readonly relanding = new Set<string>();
+  /** worktree tasks inside a land (rebase/squash/push): no turn, no eviction meanwhile */
+  private readonly landing = new Set<string>();
+  /** the tree a land's re-check found red: the next land re-checks it even though it did not move */
+  private readonly landRedTree = new Map<string, string>();
+  /** single-flight PR sync per task (two pushes of one branch must not race) */
+  private readonly prSyncs = new Map<string, Promise<unknown>>();
+  /**
    * Continue's resumes still on their way to a PTY (docs/pause.md): counted
    * by `activeWorkers()` like a fired dispatch turn, so the claim loop that
    * Continue wakes cannot fill the slots they are about to take.
@@ -449,6 +496,7 @@ export class Orchestrator implements OrchestratorApi {
   private readonly alerts: AnomalyAlerts;
   /** single-flight for the anomaly/budget sweep */
   private anomalySweeping = false;
+  private worktreeSweeping = false;
   /** the `cost-high` baseline: one 30-day task read, reused for an hour */
   private costBaselineCache: { at: number; tasks: Pick<Task, 'repoId' | 'costUsd'>[] } | null = null;
   /**
@@ -596,6 +644,102 @@ export class Orchestrator implements OrchestratorApi {
     setInterval(() => {
       void this.questionAutopilot.sweep();
     }, 30_000).unref();
+    // Worktree hygiene (docs/parallel.md § Cleanup): landed/cancelled
+    // worktrees removed, idle ones evicted. Disk, not latency — 5 min.
+    setInterval(() => {
+      void this.worktreeSweep();
+    }, 5 * 60_000).unref();
+  }
+
+  // ---- worktrees (docs/parallel.md § Cleanup) ------------------------------
+
+  /**
+   * One pass over every task that has (or had) a worktree:
+   * - `published` → directory and local branch removed (the remote branch
+   *   only once the PR reads merged, or there is none) — the land does this
+   *   itself; the sweep is the catch-all;
+   * - `cancelled` → PR closed, directory and remote branch removed, the
+   *   local branch KEPT (refs only, no disk — a Retry recreates the tree);
+   * - `review`/`failed`/`done` idle `worktrees.idleEvictDays` with no live
+   *   PTY, no open verify round, no paused turn → evicted (WIP commit,
+   *   directory removed, re-created at the same path on the next turn).
+   * At boot also `pruneOrphans` per repo: directories under `<repo>.worktrees`
+   * no task wants, and merged `tm/*` branches no task row names.
+   */
+  private async worktreeSweep(boot = false): Promise<void> {
+    if (this.worktreeSweeping) return;
+    this.worktreeSweeping = true;
+    try {
+      const settings = await this.storage.getSettings();
+      const days = settings['worktrees.idleEvictDays'];
+      const all = await this.storage.listTasks({});
+      const repos = new Map<string, Repo | null>();
+      const repoOf = async (id: string) => {
+        if (!repos.has(id)) repos.set(id, await this.storage.getRepo(id));
+        return repos.get(id) ?? null;
+      };
+      for (const t of all) {
+        if (!t.workdir || t.worktreeEvictedAt || !t.repoId) continue;
+        const repo = await repoOf(t.repoId);
+        if (!repo) continue;
+        if (await this.hasLiveSession(t.id)) continue;
+        if (t.status === 'published') {
+          await removeWorktree(this.storage, repo, t, {
+            deleteBranch: true,
+            deleteRemote: !t.prNumber || t.prState === 'merged',
+            why: 'published',
+          });
+        } else if (t.status === 'cancelled') {
+          await this.discardWorktree(t, 'task cancelled', false);
+        } else if (
+          days > 0 &&
+          (t.status === 'review' || t.status === 'failed' || t.status === 'done') &&
+          !verifyOpen(t) &&
+          !t.pausedTurn &&
+          !this.pendingReviews.has(t.id) &&
+          !this.prSyncs.has(t.id) &&
+          Date.now() - Date.parse(t.updatedAt) > days * 86_400_000
+        ) {
+          if (this.landing.has(t.id)) continue;
+          const evicted = await evictWorktree(this.storage, repo, t, `idle ${days}+ day(s) in ${t.status}`, async (fresh) =>
+            (fresh.status === 'review' || fresh.status === 'failed' || fresh.status === 'done') &&
+            !verifyOpen(fresh) &&
+            !fresh.pausedTurn &&
+            !this.landing.has(fresh.id) &&
+            !this.pendingReviews.has(fresh.id) &&
+            !this.prSyncs.has(fresh.id) &&
+            !this.gatesInFlight.has(fresh.id) &&
+            !(await this.hasLiveSession(fresh.id)) &&
+            // an agent's one-shot server running in the tree
+            !(this.commandRunner?.list() ?? []).some((r) => r.status === 'running' && r.ownerTaskId === fresh.id),
+          );
+          if (!evicted) continue;
+        } else continue;
+        const row = await this.storage.getTask(t.id);
+        if (row) broadcast({ type: 'task.updated', task: row });
+      }
+      if (boot) {
+        // rows re-read inside each repo's lock; only `pr` repos (or ones with worktree tasks)
+        for (const repo of await this.storage.listRepos()) await pruneOrphans(this.storage, repo);
+      }
+    } catch (e) {
+      console.error('worktree sweep failed:', e);
+    } finally {
+      this.worktreeSweeping = false;
+    }
+  }
+
+  /**
+   * A worktree task is cancelled or deleted: its PR closed, its terminals
+   * closed, its directory and remote branch removed; the local branch too
+   * unless `keepBranch` (a cancelled task may be retried).
+   */
+  async discardWorktree(task: Task, why: string, deleteBranch = true): Promise<void> {
+    const repo = task.repoId ? await this.storage.getRepo(task.repoId) : null;
+    if (!repo) return;
+    await this.closeTaskSessions(task.id, 'system').catch(() => 0);
+    await closePr(this.storage, repo, task, why).catch(() => {});
+    await removeWorktree(this.storage, repo, task, { deleteBranch, deleteRemote: !!task.prNumber, why });
   }
 
   // ---- budget fuses (docs/token-budget.md § Fuses) -------------------------
@@ -1385,10 +1529,11 @@ export class Orchestrator implements OrchestratorApi {
       const first = runs[runs.length - 1]; // newest first
       let base: Pick<Task, 'baseSha' | 'baseRef' | 'baseAt'> | null = null;
       if (first) {
-        const sha = await headAt(repo.path, first.startedAt);
+        const sha = await headAt(taskWorkdir(task, repo), first.startedAt);
         if (sha) base = { baseSha: sha, baseRef: null, baseAt: first.startedAt };
       } else if (atSpawn) {
-        const head = await readHeadBase(repo.path);
+        // a worktree task's first HEAD is its fork point off origin/<default> (docs/parallel.md)
+        const head = await readHeadBase(taskWorkdir(task, repo));
         if (head) base = { baseSha: head.sha, baseRef: head.ref, baseAt: new Date().toISOString() };
       }
       if (!base) return task;
@@ -1411,6 +1556,20 @@ export class Orchestrator implements OrchestratorApi {
    */
   private async changeScope(task: Task, repo: Repo): Promise<ChangeScope> {
     const now = new Date().toISOString();
+    if (task.workdir && task.status === 'published') {
+      // landed: the change is the squash commit on the default branch, found by its trailer
+      return { taskId: task.id, baseSha: null, until: now, soleWorker: false, includeUncommitted: false };
+    }
+    if (task.workdir) {
+      // A worktree task (docs/parallel.md) is alone in its tree by
+      // construction: its branch is its change and the tree is its leftovers.
+      // The base is the branch's CURRENT fork point — after a rebase onto a
+      // newer origin/<default>, the stored base would sweep main's commits in.
+      const def = await defaultBranch(taskWorkdir(task, repo));
+      const fork = def ? await execIn(taskWorkdir(task, repo), 'git', ['merge-base', 'HEAD', def.ref]) : null;
+      const baseSha = fork?.code === 0 && fork.out.trim() ? fork.out.trim() : task.baseSha;
+      return { taskId: task.id, baseSha, until: now, soleWorker: !!baseSha, includeUncommitted: true, branchRange: true };
+    }
     let until = now;
     if (task.status !== 'running' && task.status !== 'waiting') {
       const landings = (await this.storage.listEvents({ taskId: task.id, kind: 'task.transition', limit: 2000 }))
@@ -1428,6 +1587,27 @@ export class Orchestrator implements OrchestratorApi {
     // not judge a later task's uncommitted edits as its own.
     const includeUncommitted = !others.some((r) => r.startedAt > until);
     return { taskId: task.id, baseSha: task.baseSha, until, soleWorker, includeUncommitted };
+  }
+
+  /**
+   * The repo as THIS task sees it: `path` is the task's worktree in a `pr`
+   * repo (docs/parallel.md), so every task-scoped git read, reviewer and
+   * check (`workerDiff`, `reviewWorkerChange`, `runChecks`) runs in the
+   * task's own tree with no change of its own. An evicted worktree is
+   * re-created first; null when the repo is gone or that failed.
+   */
+  private async taskRepo(task: Task): Promise<Repo | null> {
+    const repo = task.repoId ? await this.storage.getRepo(task.repoId) : null;
+    // a landed or cancelled task's tree is gone for good — read the checkout, never re-create it
+    if (!repo || !task.workdir || task.status === 'published' || task.status === 'cancelled') return repo;
+    const made = await ensureWorktree(this.storage, repo, task).catch(
+      (e): EnsureResult => ({ ok: false, error: String((e as Error)?.message ?? e) }),
+    );
+    if (!made.ok) {
+      console.error(`task ${task.id}: worktree unavailable: ${made.error}`);
+      return null;
+    }
+    return { ...repo, path: made.cwd };
   }
 
   /** Drops a pending wake-up, in the row and in the map. */
@@ -1643,6 +1823,8 @@ export class Orchestrator implements OrchestratorApi {
           (stranded.length ? `, freed ${stranded.length} task(s) stuck 'running' with no run` : ''),
       );
     }
+    // worktree hygiene, orphans included — after the sweeps above settled who is live
+    void this.worktreeSweep(true);
   }
 
   async status() {
@@ -2075,9 +2257,14 @@ export class Orchestrator implements OrchestratorApi {
   /** The task whose worker ran last in this repo — whose edits the working tree holds. */
   private async treeOwner(repoId: string): Promise<Task | null> {
     const runs = await this.storage.listRuns({ repoId, mode: 'worker' });
+    // A worktree task's turns never touched the checkout (docs/parallel.md).
+    const inWorktree = runs.length
+      ? new Set((await this.storage.listTasks({ repoId })).filter((t) => t.workdir).map((t) => t.id))
+      : new Set<string>();
     let newest: (typeof runs)[number] | null = null;
     for (const r of runs) {
       if (!r.taskId || r.label === PUBLISH_RUN_LABEL) continue; // a publish turn edits nothing
+      if (inWorktree.has(r.taskId)) continue;
       if (!newest || r.startedAt > newest.startedAt) newest = r;
     }
     return newest?.taskId ? this.storage.getTask(newest.taskId) : null;
@@ -2085,6 +2272,9 @@ export class Orchestrator implements OrchestratorApi {
 
   /** `taskShipped` for this task: the reviewer's commit attribution, its tree only while it owns it. */
   private async shippedState(task: Task, repo: Repo): Promise<ShippedCheck> {
+    // a worktree task is shipped when its squash (its trailer) is on origin/<default> —
+    // never because its PR branch is on the remote (docs/parallel.md § Land)
+    if (task.workdir) return landedCheck(repo, task);
     const owner = await this.treeOwner(repo.id);
     return taskShipped(repo, await this.changeScope(task, repo), owner?.id === task.id);
   }
@@ -2270,12 +2460,29 @@ export class Orchestrator implements OrchestratorApi {
     while (this.activeWorkers() < cap && this.sessions.totalLiveCount() < MAX_LIVE_SESSIONS) {
       const head = await this.storage.peekCustomQueue([...skip]);
       if (!head?.repoId) return;
-      skip.add(head.repoId);
-      if (await this.repoBusy(head.repoId)) continue;
-      if (!(await this.handOffCheckout(head.repoId))) continue;
+      const repoId = head.repoId;
+      // A per-repo cap above 1 (docs/parallel.md § The gate) may admit this
+      // repo's next member in the same pass — the claim SQL re-judges it with
+      // the member just claimed counted; a cap of 1 is done with the repo.
+      const repo = await this.storage.getRepo(repoId);
+      if (repoParallelCap(repo) <= 1) skip.add(repoId);
+      if (await this.repoBusy(repoId, head)) {
+        skip.add(repoId);
+        continue;
+      }
+      if (!(await this.handOffCheckout(repoId))) {
+        skip.add(repoId);
+        continue;
+      }
       const task = await this.storage.claimCustomQueuedTask(head.id, 'orchestrator');
-      if (!task) continue; // its repo got held (or the row changed) underneath us
-      await this.startWorker(task);
+      if (!task) {
+        skip.add(repoId); // its repo got held (or the row changed) underneath us
+        continue;
+      }
+      // a refused start (Pause pressed mid-pass, a spawn failure) puts the row
+      // back; at cap > 1 the repo is not in `skip` yet, so the same head would
+      // be peeked and claimed again forever
+      if (!(await this.startWorker(task))) skip.add(repoId);
     }
   }
 
@@ -2294,6 +2501,9 @@ export class Orchestrator implements OrchestratorApi {
         this.customQueueHold.delete(id);
         continue;
       }
+      // A worktree member's follow-on (its publish settle) reads its own tree
+      // only; the repo's cap counts it through the SQL (docs/parallel.md).
+      if (t.workdir) continue;
       if (nowMs - since > CUSTOM_QUEUE_HOLD_TTL_MS) {
         console.warn(`custom queue: hold on task ${id} expired after ${CUSTOM_QUEUE_HOLD_TTL_MS / 60_000} min — releasing`);
         this.customQueueHold.delete(id);
@@ -2371,14 +2581,29 @@ export class Orchestrator implements OrchestratorApi {
     }
   }
 
-  /** Any live non-idle worker session currently editing this repo? */
-  private async repoBusy(repoId: string): Promise<boolean> {
+  /**
+   * Does this repo have no room for `forTask` (null = anyone) among its live
+   * non-idle worker sessions? Today's "any session editing this repo" for a
+   * `direct` repo (cap 1); a `pr` repo admits up to its cap of worktree
+   * sessions, never next to one in the main checkout (`repoHasRoom`, the
+   * twin of the SQL gate — docs/parallel.md § The gate).
+   */
+  private async repoBusy(repoId: string, forTask: Pick<Task, 'id'> | null = null): Promise<boolean> {
     const running = await this.storage.listRuns({ status: 'running', mode: 'worker' });
-    return running.some((r) => {
-      if (r.repoId !== repoId) return false;
+    const live = running.filter((r) => {
+      if (r.repoId !== repoId || (forTask && r.taskId === forTask.id)) return false;
       const s = this.sessions.get(r.id);
       return s !== undefined && s.exit === null && !s.idle;
     });
+    if (!live.length) return false;
+    const repo = await this.storage.getRepo(repoId);
+    if (repoParallelCap(repo) <= 1) return true;
+    const holders = new Map<string, Pick<Task, 'workdir'>>();
+    for (const r of live) {
+      const t = r.taskId ? await this.storage.getTask(r.taskId) : null;
+      holders.set(r.taskId ?? r.id, { workdir: t?.workdir ?? null });
+    }
+    return !repoHasRoom([...holders.values()], repo);
   }
 
   /**
@@ -2485,7 +2710,7 @@ export class Orchestrator implements OrchestratorApi {
         if (busy) continue;
         // Never resume an agent into a repo another agent is actively editing —
         // including by a turn we fired that has not spawned its PTY yet.
-        if (await this.repoBusy(target.repoId)) continue;
+        if (await this.repoBusy(target.repoId, target)) continue;
         if (target.repoId && [...this.dispatchTurnsInFlight.values()].includes(target.repoId)) continue;
         // Delivery starts a real agent turn — it respects worker concurrency.
         // `activeWorkers()` rather than the raw PTY count, so turns already
@@ -2567,12 +2792,29 @@ export class Orchestrator implements OrchestratorApi {
    * on disk, so a deleted/pruned session degrades to a fresh spawn instead of
    * a `claude` that exits immediately and fails the task.
    */
-  private async findResumableRun(taskId: string, repoId: string): Promise<Run | null> {
+  /**
+   * Whether a task's turns run in its own worktree (docs/parallel.md): it has
+   * one already, or its repo delivers by PR and it never had a session — a
+   * task that started in the checkout before the repo switched stays there,
+   * because its `--resume` only works from that cwd.
+   */
+  private async wantsWorktree(task: Task, repo: Repo): Promise<boolean> {
+    if (task.workdir) return true;
+    if (repo.delivery !== 'pr') return false;
+    const runs = await this.storage.listRuns({ taskId: task.id, mode: 'worker' });
+    return !runs.some((r) => !!r.sessionId);
+  }
+
+  private async findResumableRun(taskId: string, repoId: string, workdir: string | null = null): Promise<Run | null> {
     const runs = await this.storage.listRuns({ taskId }); // newest first
     for (const r of runs) {
       if (r.mode !== 'worker' || !r.sessionId) continue;
       if (r.repoId && r.repoId !== repoId) continue;
       if (!r.transcriptPath || !fs.existsSync(r.transcriptPath)) continue;
+      // A worktree task (docs/parallel.md) resumes only a session filed under
+      // its worktree: `claude --resume` looks the id up by cwd, and spawning
+      // from the worktree with a checkout session would be a silent miss.
+      if (workdir && !sessionBelongsTo(r.transcriptPath, workdir)) continue;
       return r;
     }
     return null;
@@ -2765,7 +3007,7 @@ export class Orchestrator implements OrchestratorApi {
     if (!(cap > 0) || ctx <= cap) return { kind: 'resume' };
 
     const result = await compactSession({
-      cwd: repo.path,
+      cwd: taskWorkdir(task, repo),
       sessionId: resumeFrom.sessionId,
       transcriptPath: resumeFrom.transcriptPath,
       model,
@@ -2788,7 +3030,7 @@ export class Orchestrator implements OrchestratorApi {
     if (purpose === 'publish') {
       return { kind: 'resume', detail: { compactError: result.reason ?? 'unknown', cap } };
     }
-    const files = await changedFiles(repo.path).catch(() => [] as string[]);
+    const files = await changedFiles(taskWorkdir(task, repo)).catch(() => [] as string[]);
     return {
       kind: 'fresh',
       previousSummary: freshHandoff({
@@ -2894,6 +3136,23 @@ export class Orchestrator implements OrchestratorApi {
     // Proceed during the back-off, a fresh claim (docs/design.md § Transient
     // API errors). Its own `--resume` keeps the count — two per turn.
     if (!this.transientResuming.has(task.id)) this.dropTransient(task.id);
+    // A land re-armed after a conflict (docs/parallel.md § Conflicts) belongs
+    // to the resolving turn only; a Retry, a human follow-up or any other turn
+    // drops it, so the land never runs later without anyone asking.
+    // The resolving turn's own fix turns (checks, review, transient, wake,
+    // Continue) keep it; a human's different turn or a fresh start drops it.
+    const rearm = this.landAfterConflict.get(task.id);
+    if (rearm && rearm.message !== followUp && (followUp === undefined || HUMAN_ACTORS.has(actor ?? ''))) {
+      this.landAfterConflict.delete(task.id);
+    }
+    // a worktree land is rewriting this task's tree (docs/parallel.md § Land)
+    if (this.landing.has(task.id)) {
+      const back = await this.storage.transitionTask(task.id, ['running'], 'review', 'orchestrator', {
+        error: 'the task is landing — try again once the land finishes',
+      });
+      if (back) broadcast({ type: 'task.updated', task: back });
+      return false;
+    }
     // Claim-loop twin of the runNow guard (review R3b): a task enqueued from
     // review may still have its previous session alive.
     if (await this.hasLiveSession(task.id)) {
@@ -2910,6 +3169,36 @@ export class Orchestrator implements OrchestratorApi {
       });
       if (reverted) broadcast({ type: 'task.updated', task: reverted });
       return false;
+    }
+    // Parallel same-repo tasks (docs/parallel.md): a `pr` repo's task works in
+    // its own worktree, created — or re-created at the same path after an
+    // eviction — HERE, the funnel of every turn, before anything reads the cwd.
+    // Counted as a gate meanwhile (the setup command can take minutes).
+    if (await this.wantsWorktree(task, repo)) {
+      this.gatesInFlight.add(task.id);
+      let made: EnsureResult;
+      try {
+        made = await ensureWorktree(this.storage, repo, task, {
+          logPath: path.join(artifactsRoot, task.id, 'worktree-setup.log'),
+        }).catch((e): EnsureResult => ({ ok: false, error: String((e as Error)?.message ?? e).slice(0, 300) }));
+      } finally {
+        this.gatesInFlight.delete(task.id);
+      }
+      if (!made.ok) {
+        const reverted = await this.storage.transitionTask(task.id, ['running'], 'failed', 'orchestrator', {
+          error: `worktree: ${made.error}`,
+        });
+        if (reverted) broadcast({ type: 'task.updated', task: reverted });
+        await this.storage.appendEvent({
+          kind: 'schedule.spawn-fail',
+          actor: 'orchestrator',
+          taskId: task.id,
+          repoId: repo.id,
+          data: { reason: `worktree: ${made.error}` },
+        });
+        return false;
+      }
+      task = made.task;
     }
     const settings = await this.storage.getSettings();
     const model = await this.resolveModel(task, settings);
@@ -3042,7 +3331,7 @@ export class Orchestrator implements OrchestratorApi {
     // attempt's.
     const retryContext =
       !loopTurn && !followUp && !resumeFrom && purpose === 'work'
-        ? await this.retryContext(task, repo.path).catch((e) => {
+        ? await this.retryContext(task, taskWorkdir(task, repo)).catch((e) => {
             console.error('retry context failed, starting without it:', e);
             return undefined;
           })
@@ -3122,7 +3411,9 @@ export class Orchestrator implements OrchestratorApi {
         runId: run.id,
         cmd: inv.cmd,
         args: inv.args,
-        cwd: repo.path,
+        // the task's own worktree in a `pr` repo (docs/parallel.md) — the
+        // directory its session is filed under, so every later turn resumes there
+        cwd: taskWorkdir(task, repo),
         env: inv.env,
       });
       const withPid = await this.storage.updateRun(run.id, { pid: session.pty.pid });
@@ -3257,6 +3548,8 @@ export class Orchestrator implements OrchestratorApi {
     if (!HUMAN_ACTORS.has(actor) && (await this.isPaused())) {
       return { error: 'the task manager is paused — Continue to resume automatic work', code: 409 };
     }
+    // a worktree land is rebasing/squashing in the task's tree (docs/parallel.md § Land)
+    if (this.landing.has(taskId)) return { error: 'the task is landing — wait for it to finish', code: 409 };
 
     const runs = await this.storage.listRuns({ taskId });
     const liveRun = runs.find((r) => {
@@ -3275,7 +3568,7 @@ export class Orchestrator implements OrchestratorApi {
 
     const settings = await this.storage.getSettings();
     const wantResume = mode === 'resume' || (mode === 'auto' && settings['agent.resumeSessions']);
-    const resumeFrom = wantResume ? await this.findResumableRun(taskId, cur.repoId) : null;
+    const resumeFrom = wantResume ? await this.findResumableRun(taskId, cur.repoId, cur.workdir) : null;
     if (mode === 'resume' && !resumeFrom) {
       return {
         error: 'no resumable agent session for this task — use Run now to start a fresh agent',
@@ -3357,7 +3650,7 @@ export class Orchestrator implements OrchestratorApi {
   async resumableSessionId(taskId: string): Promise<string | null> {
     const task = await this.storage.getTask(taskId);
     if (!task?.repoId) return null;
-    return (await this.findResumableRun(taskId, task.repoId))?.sessionId ?? null;
+    return (await this.findResumableRun(taskId, task.repoId, task.workdir))?.sessionId ?? null;
   }
 
   /** Is this run the publish turn? (Drives the Stop hook's landing status.) */
@@ -3385,7 +3678,9 @@ export class Orchestrator implements OrchestratorApi {
     if (!task.repoId) return { error: 'assign a repo before publishing this task', code: 409 };
     const repo = await this.storage.getRepo(task.repoId);
     if (!repo) return { error: 'task has no repo', code: 409 };
-    if (task.status !== 'review') {
+    // A worktree task (docs/parallel.md § Land) lands from `done` too: on-green
+    // parks it there with the PR ready and the change still on its branch.
+    if (task.status !== 'review' && !(task.workdir && task.status === 'done')) {
       return { error: `cannot publish from status '${task.status}' — publish is offered on a task in review`, code: 409 };
     }
     // Review gates the ship (decisions.md 2026-10-26): nobody — web, Telegram,
@@ -3402,8 +3697,10 @@ export class Orchestrator implements OrchestratorApi {
       actor,
       taskId,
       repoId: repo.id,
-      data: { phase: 'start' },
+      data: { phase: 'start', ...(task.workdir ? { delivery: 'squash' } : {}) },
     });
+    this.landAfterConflict.delete(taskId);
+    if (task.workdir) return this.publishWorktree(task, repo, actor);
 
     // Observed publish (docs/publish.md § Observed publish): the agent already
     // pushed this task's commits — no turn, git settles it. The verify gate
@@ -3430,7 +3727,7 @@ export class Orchestrator implements OrchestratorApi {
       });
       return { error: plan.reason, code: 409 };
     }
-    const resumeFrom = await this.findResumableRun(taskId, task.repoId);
+    const resumeFrom = await this.findResumableRun(taskId, task.repoId, task.workdir);
     if (plan.kind === 'partial') {
       // Its commits are already on the remote: nothing to push, git decides.
       if (!plan.upTo) {
@@ -3511,6 +3808,8 @@ export class Orchestrator implements OrchestratorApi {
     if (shipped.ok) {
       return { ok: true, reason: null, branch: shipped.ref, head: shipped.sha?.slice(0, 8) ?? null, shipped };
     }
+    // a worktree task has no stacked plan and no shared tree: its land is the whole answer
+    if (task.workdir) return { ok: false, reason: shipped.reason, branch: null, head: null };
     const plan = await this.publishPlan(task, repo);
     if (plan.kind !== 'partial') {
       const full = await verifyPublished(repo);
@@ -3524,11 +3823,186 @@ export class Orchestrator implements OrchestratorApi {
     return { ok: true, reason: null, branch: plan.upstream, head: null };
   }
 
+  /**
+   * Publish of a worktree task (docs/parallel.md § Land): no publish turn —
+   * the server rebases, squashes, re-checks if main moved, and fast-forwards
+   * origin/<default>, serialised per repo. A conflict goes back to the
+   * task's own session (`resolveLandConflict`); red checks on the rebased
+   * change re-open the verify loop, whose fix turns are the existing ones.
+   */
+  private async publishWorktree(task: Task, repo: Repo, actor: string): Promise<ActionResult> {
+    const taskId = task.id;
+    const busy = (await this.storage.listRuns({ taskId })).some((r) => {
+      const s = this.sessions.get(r.id);
+      return s !== undefined && s.exit === null && !r.idle;
+    });
+    if (busy) {
+      this.autoPublishing.delete(taskId);
+      return { error: 'the agent session is still working — wait for it to finish, then publish', code: 409 };
+    }
+    // a fresh land asked by a human starts the conflict budget over; a re-land
+    // after a conflict round (whoever asked for it) does not
+    if (!this.relanding.delete(taskId) && actor !== LANDING_ACTOR) this.conflictRounds.delete(taskId);
+    if (this.landing.has(taskId)) return { error: 'the task is already landing', code: 409 };
+    this.landing.add(taskId);
+    // the idle terminal goes first: a prompt typed into it mid-rebase would
+    // start a turn on a tree the land is rewriting. Run marked `killed` BEFORE
+    // the PTY dies (as `endStalledRun` does), so the exit path never cancels
+    // a task a prompt moved to `running` a moment ago.
+    for (const r of await this.storage.listRuns({ taskId })) {
+      const live = this.sessions.get(r.id);
+      if (!live || live.exit !== null) continue;
+      await this.storage.updateRun(r.id, { status: 'killed', endedAt: new Date().toISOString() }).catch(() => null);
+      this.sessions.kill(r.id);
+    }
+    let checkResults: CheckResult[] | null = null;
+    const res: LandResult = await withRepoLock(`land:${repo.id}`, async () => {
+      const view = await this.taskRepo(task);
+      if (!view) return { kind: 'failed', error: 'the task worktree could not be re-created' } as LandResult;
+      // the PR is the record: one that never opened (gh down at every sync) opens now, ready
+      if (!task.prNumber) task = await syncPr(this.storage, repo, task, view.path, true).catch(() => task);
+      const landed = await landWorktree(this.storage, repo, task, view.path, async (cwd) => {
+        const runner = this.commandRunner;
+        const checks = runner ? selectChecks(await this.storage.listCommands(repo.id), task) : [];
+        if (!runner || !checks.length) return null;
+        const ran = await runChecks(runner, { ...repo, path: cwd }, checks, taskId, async () => false);
+        if (!ran) return 'the checks were interrupted';
+        checkResults = ran;
+        const verdict = checksVerdict(ran);
+        return verdict === 'green' ? null : `checks ${verdict} on the change rebased onto the newer default branch`;
+      }, this.landRedTree.get(taskId) ?? null).catch((e): LandResult => ({ kind: 'failed', error: String((e as Error)?.message ?? e).slice(0, 300) }));
+      if (landed.kind === 'landed') await fastForwardCheckout(this.storage, repo, task).catch(() => {});
+      return landed;
+    }).finally(() => this.landing.delete(taskId));
+
+    if (res.kind === 'landed') {
+      this.conflictRounds.delete(taskId);
+      this.landRedTree.delete(taskId);
+      const settled = await this.settlePublish(taskId, [task.status], actor, 'squash');
+      if (!settled) return { error: 'task left review while landing — check its status', code: 409 };
+      if (settled.status !== 'published') return { error: settled.error ?? 'land did not complete', code: 409 };
+      void this.finishWorktreeLand(settled, repo).catch((e) => console.error(`task ${taskId}: post-land cleanup failed:`, e));
+      return { task: settled };
+    }
+    this.autoPublishing.delete(taskId);
+    if (res.kind === 'conflict') return this.resolveLandConflict(task, repo, res, actor);
+    if (res.kind === 'red') {
+      // Back into the verify loop on the rebased change: the check stage runs
+      // the checks in the worktree and sends the fix turn (docs/checks.md).
+      this.landRedTree.set(taskId, res.tree);
+      // a `done` task goes back to review, where the verify loop (and the gate) live
+      if (task.status === 'done') {
+        const back = await this.storage.transitionTask(taskId, ['done'], 'review', actor, undefined, { reason: 'land re-check red' });
+        if (back) broadcast({ type: 'task.updated', task: back });
+      }
+      const patched = await this.storage.updateTask(taskId, {
+        checkState: 'pending',
+        ...(checkResults ? { checkResults } : {}),
+        error: `land held: ${res.detail} — the verify loop runs again`,
+      });
+      if (patched) broadcast({ type: 'task.updated', task: patched });
+      await this.storage.appendEvent({ kind: 'task.land', actor, taskId, repoId: repo.id, data: { phase: 'red', detail: res.detail } });
+      if (patched?.status === 'review') void this.reviewCompletedRun(taskId);
+      return { error: `land held: ${res.detail}`, code: 409 };
+    }
+    const patched = await this.storage.updateTask(taskId, { error: `publish failed: ${res.error}` });
+    if (patched) broadcast({ type: 'task.updated', task: patched });
+    await this.storage.appendEvent({
+      kind: 'task.publish',
+      actor,
+      taskId,
+      repoId: repo.id,
+      data: { phase: 'failed', delivery: 'squash', error: res.error.slice(0, 300) },
+    });
+    return { error: res.error, code: 409 };
+  }
+
+  /**
+   * A worktree land hit a rebase conflict (docs/parallel.md § Conflicts): the
+   * rebase was aborted, and the task's OWN session — resumed in its worktree
+   * — rebases and resolves it, bounded by CONFLICT_MAX_ROUNDS and the budget
+   * fuse. Its Stop runs the ordinary verify round (the diff hash decides
+   * whether review re-runs), and a clean one lands again (`landIfClean`).
+   * Spent → stays where it is with the reason, for the human.
+   */
+  private async resolveLandConflict(task: Task, repo: Repo, c: Extract<LandResult, { kind: 'conflict' }>, actor: string): Promise<ActionResult> {
+    const taskId = task.id;
+    const files = c.files.slice(0, 20);
+    const audit = (data: Record<string, unknown>) =>
+      this.storage.appendEvent({ kind: 'task.land', actor, taskId, repoId: repo.id, data: { phase: 'conflict', onto: c.onto, files, ...data } });
+    const rounds = this.conflictRounds.get(taskId) ?? 0;
+    const hold = async (why: string): Promise<ActionResult> => {
+      const error = `land held: rebasing onto ${c.onto} conflicts in ${files.join(', ')} — ${why}`;
+      const patched = await this.storage.updateTask(taskId, { error });
+      if (patched) broadcast({ type: 'task.updated', task: patched });
+      return { error, code: 409 };
+    };
+    if (rounds >= CONFLICT_MAX_ROUNDS) {
+      await audit({ handedOff: true, rounds });
+      return hold(`the agent's ${rounds} attempt(s) did not resolve it; resolve it in ${task.workdir} (rebase, no push), then publish`);
+    }
+    // the fuse refuses automatic turns only (docs/token-budget.md § Fuses): a human's Publish passes
+    const verdict = HUMAN_ACTORS.has(actor) ? { ok: true as const } : await this.budgetAllows(task, 'conflict-round');
+    if (!verdict.ok) {
+      await this.refuseOverBudget(taskId, 'conflict-round', verdict);
+      await audit({ refused: 'budget' });
+      return { error: verdict.reason, code: 409 };
+    }
+    this.conflictRounds.set(taskId, rounds + 1);
+    const message = landConflictMessage(c.onto, files);
+    this.landAfterConflict.set(taskId, { actor, message });
+    await audit({ round: rounds + 1 });
+    const res = await this.followUp(taskId, message, actor, 'resume');
+    if ('error' in res) {
+      this.landAfterConflict.delete(taskId);
+      await audit({ followUpError: res.error });
+      return hold(`the session could not be resumed (${res.error})`);
+    }
+    return { error: `rebasing onto ${c.onto} conflicts in ${files.join(', ')} — the agent is resolving it, the land runs again once its change is verified`, code: 409 };
+  }
+
+  /** After a land: close the PR's loop (GitHub's merge mark), the terminals, and the worktree. */
+  private async finishWorktreeLand(task: Task, repo: Repo): Promise<void> {
+    await this.closeTaskSessions(task.id, LANDING_ACTOR);
+    // The remote branch goes only once GitHub shows the merge: deleted earlier,
+    // the PR would read "closed", not "merged".
+    const merged = task.prNumber ? await confirmMerged(this.storage, repo, task) : true;
+    const row = (await this.storage.getTask(task.id)) ?? task;
+    await removeWorktree(this.storage, repo, row, { deleteBranch: true, deleteRemote: merged, why: 'landed' });
+    const after = await this.storage.getTask(task.id);
+    if (after) broadcast({ type: 'task.updated', task: after });
+  }
+
+  /**
+   * Keep a worktree task's PR in step (docs/parallel.md § The PR) — a draft
+   * from the first verify round, re-pushed every round, ready once landable.
+   * Single-flight per task, never throws.
+   */
+  private syncTaskPr(taskId: string, ready: boolean): Promise<unknown> {
+    const prev = this.prSyncs.get(taskId) ?? Promise.resolve();
+    const next = prev
+      .then(async () => {
+        const task = await this.storage.getTask(taskId);
+        if (!task?.workdir || !task.branch || !task.repoId) return;
+        if (task.status !== 'review' && task.status !== 'done') return;
+        const repo = await this.storage.getRepo(task.repoId);
+        if (!repo || repo.delivery !== 'pr' || !fs.existsSync(task.workdir)) return;
+        const row = await syncPr(this.storage, repo, task, task.workdir, ready);
+        if (row !== task) broadcast({ type: 'task.updated', task: row });
+      })
+      .catch((e) => console.error(`task ${taskId}: PR sync failed:`, e));
+    this.prSyncs.set(taskId, next);
+    void next.finally(() => {
+      if (this.prSyncs.get(taskId) === next) this.prSyncs.delete(taskId);
+    });
+    return next;
+  }
+
   async settlePublish(
     taskId: string,
     from: TaskStatus[],
     actor: string,
-    delivery: 'session' | 'direct' | 'observed' = 'session',
+    delivery: 'session' | 'direct' | 'observed' | 'squash' = 'session',
   ): Promise<Task | null> {
     const task = await this.storage.getTask(taskId);
     if (!task) return null;
@@ -3643,6 +4117,8 @@ export class Orchestrator implements OrchestratorApi {
     // the minutes, not the correctness.
     abortCompaction(taskId);
     this.dropTransient(taskId); // a pending transient-error resume must not outlive the cancel
+    this.landAfterConflict.delete(taskId);
+    this.conflictRounds.delete(taskId);
     const runs = await this.storage.listRuns({ taskId, status: 'running' });
     for (const run of runs) {
       this.sessions.kill(run.id);
@@ -3749,6 +4225,11 @@ export class Orchestrator implements OrchestratorApi {
 
   /** Completing a task closes its terminals — idle sessions must not pile up
    *  waiting for TTL eviction (user request 2026-08-24). */
+  /** worktree lands in flight (docs/parallel.md § Land) — the restart guard waits for them */
+  landingCount(): number {
+    return this.landing.size;
+  }
+
   async closeTaskSessions(taskId: string, actor = 'human'): Promise<number> {
     const runs = await this.storage.listRuns({ taskId });
     let closed = 0;
@@ -4292,6 +4773,8 @@ export class Orchestrator implements OrchestratorApi {
    * Never throws: it runs off the Stop-hook path with nobody to catch it.
    */
   private async reviewLoop(taskId: string, forced = false): Promise<void> {
+    // a worktree task's branch and draft PR follow every landing (docs/parallel.md § The PR)
+    void this.syncTaskPr(taskId, false);
     try {
       for (let pass = 0; ; pass++) {
         this.reviewRecheck.delete(taskId);
@@ -4373,6 +4856,21 @@ export class Orchestrator implements OrchestratorApi {
     if (!task || task.status !== 'review' || !task.repoId) return;
     const repo = await this.storage.getRepo(task.repoId);
     if (!repo) return;
+    if (task.workdir) {
+      // the PR is marked ready exactly when the row would land (docs/parallel.md § The PR)
+      await this.syncTaskPr(taskId, !verifyOpen(task) && !!landingReason(task));
+      // A land that hit a conflict lands again once the resolving turn's
+      // verify round is clean — for whoever asked, whatever the tier.
+      const askedBy = this.landAfterConflict.get(taskId)?.actor;
+      if (askedBy && !verifyOpen(task) && landingReason(task) && !(await this.isPaused())) {
+        this.landAfterConflict.delete(taskId);
+        await this.storage.appendEvent({ kind: 'task.land', actor: LANDING_ACTOR, taskId, repoId: repo.id, data: { phase: 'retry-after-conflict', askedBy } });
+        this.relanding.add(taskId);
+        await this.publish(taskId, askedBy);
+        this.relanding.delete(taskId);
+        return;
+      }
+    }
     // Observed publish: did the agent already push? Recorded for every tier;
     // supervised stops there (the human approves with "Mark published").
     const shipped = await this.observeShipped(task, repo);
@@ -4383,6 +4881,13 @@ export class Orchestrator implements OrchestratorApi {
     if (tier === 'on-green') {
       // on-green never pushes; when the agent did, the honest status is `published`
       const sha = shipped?.ok ? shipped.sha : null;
+      // A worktree task's change is on its branch, not the default branch:
+      // `done` would let dependents and the next feature phase fork without
+      // it. On-green stops at "PR ready" in review (docs/parallel.md § Land).
+      if (task.workdir && !sha) {
+        await this.storage.appendEvent({ kind: 'task.landing', actor: LANDING_ACTOR, taskId, repoId: repo.id, data: { landing: tier, reason, phase: 'held', why: 'worktree change not landed; publish lands it' } });
+        return;
+      }
       const done = await this.storage.transitionTask(
         taskId,
         ['review'],
@@ -4473,9 +4978,10 @@ export class Orchestrator implements OrchestratorApi {
       if (task.reviewState === 'pending') await this.setReviewState(taskId, null);
       return;
     }
-    const repo = await this.storage.getRepo(task.repoId);
+    // the task's own worktree in a `pr` repo (docs/parallel.md)
+    const repo = await this.taskRepo(task);
     if (!repo) {
-      // repo row deleted under a parked task: nothing can be diffed
+      // repo row deleted under a parked task (or its worktree is unavailable): nothing can be diffed
       if (task.reviewState === 'pending') {
         await this.setReviewState(taskId, task.reviewRounds.length ? settledReviewState(task.reviewRounds) : null);
       }
@@ -4690,7 +5196,8 @@ export class Orchestrator implements OrchestratorApi {
       await this.setCheckState(taskId, null);
       return true;
     }
-    const repo = task.repoId ? await this.storage.getRepo(task.repoId) : null;
+    // checks test the task's own change: they run in its worktree (docs/parallel.md § Commands)
+    const repo = await this.taskRepo(task);
     const runner = this.commandRunner;
     const checks = repo && runner ? selectChecks(await this.storage.listCommands(repo.id), task) : [];
     if (!repo || !runner || !checks.length) {
@@ -4915,7 +5422,8 @@ export class Orchestrator implements OrchestratorApi {
     try {
       task = await this.storage.getTask(taskId);
       if (!task || task.status !== 'running' || task.loopState !== 'checking') return;
-      const repo = task.repoId ? await this.storage.getRepo(task.repoId) : null;
+      // a worktree loop commits, checks and diffs in its own tree (docs/parallel.md)
+      const repo = await this.taskRepo(task);
       if (!repo) {
         await this.endLoop(task, 'error', null, lastText, 'the task has no repo');
         return;
@@ -5600,6 +6108,7 @@ export class Orchestrator implements OrchestratorApi {
     if (latest && latest.id !== runId) return false;
     const cur = await this.storage.getTask(run.taskId);
     if (!cur || cur.status !== 'review' || cur.kind === 'loop' || verifyOpen(cur)) return false;
+    if (this.landing.has(cur.id)) return false; // the land kills this terminal; never a `running` row mid-land
     // read synchronously right before the conditional write: a Review now
     // takes this lock before it marks the row `pending`
     if (this.pendingReviews.has(cur.id) || !this.sessions.isIdle(runId)) return false;

@@ -10,7 +10,7 @@ import type { Storage } from './storage/types.ts';
 
 const COMMIT_MODEL = 'claude-opus-5-5';
 
-function run(cwd: string, cmd: string, args: string[], timeoutMs = 60_000): Promise<{ out: string; code: number }> {
+export function run(cwd: string, cmd: string, args: string[], timeoutMs = 60_000): Promise<{ out: string; code: number }> {
   return new Promise((resolve) => {
     execFile(
       cmd,
@@ -27,7 +27,7 @@ function run(cwd: string, cmd: string, args: string[], timeoutMs = 60_000): Prom
   });
 }
 
-function cleanEnv(): Record<string, string> {
+export function cleanEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined && !k.startsWith('CLAUDE_CODE_') && k !== 'CLAUDECODE') env[k] = v;

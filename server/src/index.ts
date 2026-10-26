@@ -246,7 +246,9 @@ const restartGuard = async () => {
   const services = commandRunner.running().length;
   // Like services: reported so the confirm can say what dies, never blocking.
   const shells = shellRunner.running().length;
-  const blocked = running > 0 || auxLive.length > 0;
+  // a worktree land between its push to the default branch and its settle (docs/parallel.md § Land)
+  const landing = orchestrator.landingCount();
+  const blocked = running > 0 || auxLive.length > 0 || landing > 0;
   // For a drain (docs/host.md § Drain): which live aux sessions a pause does
   // NOT end. A review round and a compaction are the orchestrator's own and
   // finish under the pause with nothing new behind them; chats, reports,
@@ -259,6 +261,7 @@ const restartGuard = async () => {
   const parts = [
     running > 0 ? `${running} agent session(s)` : null,
     auxLive.length > 0 ? `${auxLive.length} aux session(s) (${auxLive.join(', ')})` : null,
+    landing > 0 ? `${landing} worktree land(s)` : null,
   ].filter(Boolean);
   return {
     blocked,
@@ -269,6 +272,7 @@ const restartGuard = async () => {
     notPauseAware,
     services,
     shells,
+    landing,
   };
 };
 const PAUSE_HELD_AUX_KINDS = new Set<string>(['review', 'compact']);

@@ -854,6 +854,12 @@ export async function renderCard(deps: BoardDeps, t: Task, back: BoardState): Pr
         (preset ? ` (${escapeHtml(preset.label)})` : ''),
     );
     if (queue) lines.push(queue);
+    // parallel same-repo tasks (docs/parallel.md): its own branch, and the PR kept as the record
+    if (t.branch)
+      lines.push(
+        `🌿 <code>${escapeHtml(t.branch)}</code>` +
+          (t.prUrl ? ` · <a href="${escapeHtml(t.prUrl)}">PR #${t.prNumber}</a> ${escapeHtml(t.prState ?? 'open')}` : ''),
+      );
     if (t.featureId) lines.push(`🧩 feature <code>${short(t.featureId)}</code> · phase ${(t.featurePhase ?? 0) + 1}`);
     if (t.resultSummary) lines.push(``, `<b>Result</b>`, escapeHtml(clip(t.resultSummary, Math.round(1000 * k))));
     const checks = checkStateLine(t);

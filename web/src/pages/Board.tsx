@@ -1185,6 +1185,28 @@ export function BoardPage({
         </Explainable>,
       ]);
     }
+    // parallel same-repo tasks (docs/parallel.md): the task's branch and its PR record
+    if (t.branch && t.status !== 'draft' && t.status !== 'queued') {
+      const pr = t.prNumber ? `PR #${t.prNumber}${t.prState && t.prState !== 'open' ? ` · ${t.prState}` : ''}` : t.branch;
+      all.push([
+        'pr',
+        <Explainable
+          key="pr"
+          className={`chip ${t.prState === 'merged' ? 'chip-published' : ''}`}
+          explain={{
+            title: pr,
+            what: `Works in its own worktree on ${t.branch}${t.worktreeEvictedAt && t.status !== 'published' ? ' (folder evicted while idle; re-created on its next turn)' : ''}. ${
+              t.prNumber
+                ? `The server keeps PR #${t.prNumber} (${t.prState ?? 'open'}) in step and lands it itself by squash + fast-forward.`
+                : 'A draft PR opens once the branch has a commit of its own.'
+            }`,
+          }}
+          off={selecting}
+        >
+          {pr}
+        </Explainable>,
+      ]);
+    }
     if (pendingOut > 0) {
       all.push([
         'dispatch',

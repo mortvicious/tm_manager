@@ -149,11 +149,36 @@ export const PUBLISH_TURN_RULE = [
 ].join(' ');
 
 /**
- * The one ship rule a worker turn carries, or null for none. The ship gate
- * outranks every policy (a review or the auto-publish tier holds the ship),
- * and the publish turn — the one turn that SHOULD push — gets none of them.
+ * A worktree task's rule (docs/parallel.md): the server pushes its branch,
+ * opens the PR and lands it (local squash + fast-forward), so the agent never
+ * pushes, never opens a PR and never leaves its branch — on every turn,
+ * whatever the repo's CLAUDE.md or push policy say.
  */
-export function shipRule(opts: { taskId: string; shipGate: boolean; pushPolicy: PushPolicy; publishTurn: boolean }): string | null {
+export function worktreeShipRule(branch: string): string {
+  return [
+    "Delivery — this overrides the repo's CLAUDE.md and any other instruction to push, deploy or open a pull request:",
+    `you are in this task's own git worktree on branch \`${branch}\`; other tasks work in parallel in their own worktrees and the main checkout.`,
+    'Work and commit only here, on this branch. Never `git push`, never create a pull request or another branch, never switch branches,',
+    "and never touch the main checkout or another worktree. The server pushes this branch, opens the PR and lands it on the default branch",
+    '(squashed) once the checks and review pass.',
+  ].join(' ');
+}
+
+/**
+ * The one ship rule a worker turn carries, or null for none. A worktree
+ * task's delivery rule outranks everything (the server ships it); then the
+ * ship gate outranks every policy (a review or the auto-publish tier holds
+ * the ship), and the publish turn — the one turn that SHOULD push — gets none
+ * of them.
+ */
+export function shipRule(opts: {
+  taskId: string;
+  shipGate: boolean;
+  pushPolicy: PushPolicy;
+  publishTurn: boolean;
+  worktreeBranch?: string | null;
+}): string | null {
+  if (opts.worktreeBranch) return worktreeShipRule(opts.worktreeBranch);
   if (opts.publishTurn) return null;
   if (opts.shipGate) return SHIP_GATE_RULE;
   if (opts.pushPolicy === 'agent-pushes') return agentPushesRule(opts.taskId);
@@ -278,7 +303,13 @@ export function shipRuleFor(
   pushPolicy: PushPolicy,
   publishTurn: boolean,
 ): string | null {
-  return shipRule({ taskId: task.id, shipGate: shipHeldForReview(task, settings, landing), pushPolicy, publishTurn });
+  return shipRule({
+    taskId: task.id,
+    shipGate: shipHeldForReview(task, settings, landing),
+    pushPolicy,
+    publishTurn,
+    worktreeBranch: task.workdir ? task.branch : null,
+  });
 }
 
 /**
@@ -376,7 +407,13 @@ function buildWorkerPrompt(opts: {
   ];
   // The publish turn is the one turn that SHOULD push — the gate is exactly
   // what it lifts. Without the gate the repo's push policy is the rule.
-  const ship = shipRule({ taskId: task.id, shipGate: opts.shipGate, pushPolicy: opts.pushPolicy, publishTurn: isPublishTurn });
+  const ship = shipRule({
+    taskId: task.id,
+    shipGate: opts.shipGate,
+    pushPolicy: opts.pushPolicy,
+    publishTurn: isPublishTurn,
+    worktreeBranch: task.workdir ? task.branch : null,
+  });
   const reviewed = opts.reviewWillRun && !isPublishTurn;
   return opts.resumeSessionId
     ? [

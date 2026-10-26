@@ -27,6 +27,7 @@ import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
 import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, REPO_EXCLUSIVE_GATE, skipRepos } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
+import { repoParallelParams, worktreePatchSql } from './worktree-sql.ts';
 import { LOOP_LEAVES_RUNNING_SQL, loopStepSets, stepLoopSql } from './loop-sql.ts';
 import {
   MANUAL_CLAIM_ORDER,
@@ -102,6 +103,7 @@ import type {
   NewRun,
   NewTask,
   RepoPatch,
+  WorktreePatch,
   Storage,
   TaskFilter,
 } from './types.ts';
@@ -285,6 +287,10 @@ export class PostgresStorage implements Storage {
       patch.landing ?? cur.landing,
       patch.pushPolicy ?? cur.pushPolicy,
       patch.questionAutopilotMinutes === undefined ? cur.questionAutopilotMinutes : patch.questionAutopilotMinutes,
+      id,
+    ]);
+    await this.q(`UPDATE tm_repos SET parallel = ?, delivery = ?, worktree_setup = ?, worktree_copy = ? WHERE id = ?`, [
+      ...repoParallelParams(cur, patch),
       id,
     ]);
     return this.getRepo(id);
@@ -616,6 +622,14 @@ export class PostgresStorage implements Storage {
       `UPDATE tm_tasks SET inbox_kept_until = ?, updated_at = ? WHERE id = ? AND status = 'draft' RETURNING *`,
       [until, now(), id],
     );
+    return rows[0] ? rowToTask(rows[0]) : null;
+  }
+
+  async updateTaskWorktree(id: string, patch: WorktreePatch): Promise<Task | null> {
+    // Twin of the sqlite driver.
+    const q = worktreePatchSql(id, patch);
+    if (!q) return this.getTask(id);
+    const rows = await this.q(q.sql, q.params);
     return rows[0] ? rowToTask(rows[0]) : null;
   }
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { DEFAULT_SETTINGS, EFFORT_LEVELS, MODEL_OPTIONS, taskPresets, type AppSettings, type SentryTokenStatus } from '@tm/shared';
+import { CONCURRENCY_MAX, DEFAULT_SETTINGS, EFFORT_LEVELS, MODEL_OPTIONS, taskPresets, type AppSettings, type SentryTokenStatus } from '@tm/shared';
 import { api } from '../api.ts';
 import { AppearanceSettings } from '../components/AppearanceSettings.tsx';
 import { PresetEditor } from '../components/PresetEditor.tsx';
@@ -110,14 +110,17 @@ export function ConfigPage() {
         <div className="cfg-row">
           <div>
             <div>Concurrency</div>
-            <div className="hint">max simultaneous worker sessions (2 recommended)</div>
+            <div className="hint">
+              max simultaneous worker sessions across all repos (default 2, up to {CONCURRENCY_MAX}); a repo's own
+              Parallel cap on the Repos page says how many of them may share one repo (docs/parallel.md)
+            </div>
           </div>
           <input
             className="field"
             style={{ width: 80 }}
             type="number"
             min={1}
-            max={10}
+            max={CONCURRENCY_MAX}
             value={cfg['orchestrator.concurrency']}
             onChange={(e) => set('orchestrator.concurrency', Number(e.target.value))}
           />
@@ -868,6 +871,26 @@ export function ConfigPage() {
             style={{ width: 90 }}
             value={cfg['commands.agentTtlDays'] ?? DEFAULT_SETTINGS['commands.agentTtlDays']}
             onChange={(e) => set('commands.agentTtlDays', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Task worktrees: evict idle after (days)</div>
+            <div className="hint">
+              a PR-delivery task idle this long in review/failed/done has its worktree folder removed (leftovers committed
+              to its branch; re-created on its next turn); landed and cancelled tasks lose theirs at once; 0 = never
+              (docs/parallel.md § Cleanup)
+            </div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={0}
+            max={365}
+            step={1}
+            style={{ width: 90 }}
+            value={cfg['worktrees.idleEvictDays'] ?? DEFAULT_SETTINGS['worktrees.idleEvictDays']}
+            onChange={(e) => set('worktrees.idleEvictDays', Number(e.target.value))}
           />
         </div>
       </div>

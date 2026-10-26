@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { LANDING_TIERS, PUSH_POLICIES, type LandingTier, type PushPolicy, type Repo } from '@tm/shared';
+import { LANDING_TIERS, PARALLEL_MAX, PUSH_POLICIES, WORKTREE_COPY_DEFAULTS, type LandingTier, type PushPolicy, type Repo } from '@tm/shared';
 import { api } from '../api.ts';
 import { LANDING_HINT } from '../components/LandingPicker.tsx';
 import { useApp } from '../state.tsx';
@@ -168,6 +168,101 @@ function PushPolicyCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<
           </option>
         ))}
       </select>
+      {err && <span className="warn-text">{err}</span>}
+    </span>
+  );
+}
+
+/**
+ * Parallel tasks + delivery (docs/parallel.md), one select: `direct` = today
+ * (one task at a time, in the checkout); `pr · N` = every task in its own
+ * worktree + branch, a draft PR as the record, landed by local squash +
+ * fast-forward, up to N of the repo's tasks at once (still within the global
+ * concurrency). Switching to pr is refused unless origin is GitHub and `gh`
+ * is logged in. The setup command and copy list apply to each NEW worktree.
+ */
+function ParallelCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [setup, setSetup] = useState(repo.worktreeSetup ?? '');
+  const [copy, setCopy] = useState((repo.worktreeCopy ?? [...WORKTREE_COPY_DEFAULTS]).join(' '));
+  useEffect(() => {
+    if (!open) {
+      setSetup(repo.worktreeSetup ?? '');
+      setCopy((repo.worktreeCopy ?? [...WORKTREE_COPY_DEFAULTS]).join(' '));
+    }
+  }, [repo.worktreeSetup, repo.worktreeCopy, open]);
+  const current = repo.delivery === 'pr' ? `pr:${repo.parallel}` : 'direct';
+  const patch = async (b: Parameters<typeof api.updateRepo>[1]) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.updateRepo(repo.id, b);
+      await onSaved();
+      return true;
+    } catch (e) {
+      setErr((e as Error).message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+  const choose = (v: string) => {
+    if (v === current) return;
+    void patch(v === 'direct' ? { delivery: 'direct', parallel: 1 } : { delivery: 'pr', parallel: Number(v.slice(3)) });
+  };
+  const saveSetup = async () => {
+    const list = copy.split(/\s+/).filter(Boolean);
+    const same = list.join(' ') === [...WORKTREE_COPY_DEFAULTS].join(' ');
+    if (await patch({ worktreeSetup: setup.trim() || null, worktreeCopy: same ? null : list })) setOpen(false);
+  };
+  return (
+    <span className="repo-landing">
+      <select
+        className="field"
+        value={current}
+        disabled={busy}
+        title={
+          repo.delivery === 'pr'
+            ? `Each task works in its own worktree (${shortPath(repo.path)}.worktrees/) on tm/<task>; the server opens a draft PR and lands it by squash + fast-forward. Up to ${repo.parallel} at once.`
+            : 'One task at a time, working in this checkout (today’s behaviour).'
+        }
+        onChange={(e) => choose(e.target.value)}
+      >
+        <option value="direct">direct · 1</option>
+        {Array.from({ length: PARALLEL_MAX }, (_, i) => i + 1).map((n) => (
+          <option key={n} value={`pr:${n}`}>
+            pr · {n}
+          </option>
+        ))}
+      </select>
+      {repo.delivery === 'pr' && (
+        <button type="button" className="btn ghost repo-url-edit" onClick={() => setOpen((o) => !o)} disabled={busy}>
+          {open ? 'close' : repo.worktreeSetup ? `setup: ${repo.worktreeSetup}` : 'worktree setup…'}
+        </button>
+      )}
+      {open && (
+        <span className="repo-landing">
+          <input
+            className="field mono"
+            placeholder="setup command, e.g. npm install"
+            value={setup}
+            onChange={(e) => setSetup(e.target.value)}
+            title="Runs in each new worktree after node_modules are cloned — only when the lockfile differs from the checkout's (or nothing was cloned). No shell."
+          />
+          <input
+            className="field mono"
+            placeholder=".env* .claude/settings.local.json"
+            value={copy}
+            onChange={(e) => setCopy(e.target.value)}
+            title="Ignored files copied into each new worktree (space-separated globs; a pattern without / matches the file name)"
+          />
+          <button type="button" className="btn" onClick={() => void saveSetup()} disabled={busy}>
+            Save
+          </button>
+        </span>
+      )}
       {err && <span className="warn-text">{err}</span>}
     </span>
   );
@@ -424,6 +519,7 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                 <th title="How far this repo's tasks land on their own — a task may override">Landing</th>
                 <th title="What agents are told about git push when no review holds the ship">Push</th>
                 <th title="Minutes a worker's question waits before its Recommended option is picked for you">Autopilot</th>
+                <th title="How many of this repo's tasks may run at once, and how they ship (direct, or worktree + PR)">Parallel</th>
                 <th>Tasks</th>
                 <th>Git</th>
                 <th title="Commands, analysis and repo removal">Actions</th>
@@ -459,6 +555,9 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                       <td data-label="Autopilot">
                         <AutopilotCell repo={r} onSaved={refresh} />
                       </td>
+                      <td data-label="Parallel">
+                        <ParallelCell repo={r} onSaved={refresh} />
+                      </td>
                       <td className="mono" data-label="Tasks">
                         {count(r.id)}
                       </td>
@@ -485,7 +584,7 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                     </tr>
                     {expanded && (
                       <tr className="repo-open">
-                        <td colSpan={8} className="repo-cmd-cell">
+                        <td colSpan={9} className="repo-cmd-cell">
                           <RepoCommandsPanel repoId={r.id} onOpenTerminal={onOpenTerminal} />
                         </td>
                       </tr>

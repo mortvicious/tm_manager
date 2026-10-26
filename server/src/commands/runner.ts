@@ -69,6 +69,22 @@ export class CommandRunner {
     return this.running().find((r) => r.commandId === commandId);
   }
 
+  /**
+   * A check's live run IN ONE DIRECTORY: two worktree tasks of a repo
+   * (docs/parallel.md § Commands) each run the same check on their own tree,
+   * so a check is one-at-a-time per (definition, cwd). In a direct repo every
+   * run has the checkout's cwd, which is exactly `runningFor`.
+   */
+  private runningCheckIn(command: RepoCommand, repo: Repo): CommandRun | undefined {
+    let cwd: string;
+    try {
+      cwd = resolveCommandCwd(repo.path, command.cwd);
+    } catch {
+      return this.runningFor(command.id);
+    }
+    return this.running().find((r) => r.commandId === command.id && r.cwd === cwd);
+  }
+
   /** The newest run of a definition, live or finished — what an agent's logs read. */
   latestFor(commandId: string): CommandRun | undefined {
     return this.list().find((r) => r.commandId === commandId);
@@ -118,7 +134,7 @@ export class CommandRunner {
     ownerTaskId: string | null = null,
     check: CheckFor | null = null,
   ): Promise<CommandRun> {
-    const existing = this.runningFor(command.id);
+    const existing = check ? this.runningCheckIn(command, repo) : this.runningFor(command.id);
     if (existing) {
       const err = new Error(`"${command.name}" is already running`) as Error & { conflict?: true };
       err.conflict = true;
@@ -251,7 +267,7 @@ export class CommandRunner {
   ): Promise<CheckRun> {
     const timeoutMs = (command.timeoutSec ?? CHECK_DEFAULT_TIMEOUT_SEC) * 1000;
     const t0 = Date.now();
-    const busy = this.runningFor(command.id);
+    const busy = this.runningCheckIn(command, repo);
     if (busy && !(await this.waitForExit(busy.id, timeoutMs))) {
       return { runId: null, exit: null, durationMs: 0, tail: '', error: `another run of "${command.name}" is still running` };
     }
