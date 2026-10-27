@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   CHECK_BUSY_STATES,
+  queuePauseHolds,
   repoHasRoom,
   repoParallelCap,
   LOOP_CONTINUABLE_STATES,
@@ -222,6 +223,13 @@ const PAUSE_PROCEED =
   ' task manager was paused ("Pause all", e.g. for a server restart), not because the work was finished.' +
   ' Re-check the current state of the work (files, git, anything you were running) before assuming' +
   ' anything, then carry on.';
+
+/** The same proceed for a turn a repo's custom-queue pause cut (docs/queue.md § Pausing a repo's queue). */
+const QUEUE_PAUSE_PROCEED =
+  'Proceed — continue from exactly where you left off. Your previous turn was interrupted because the' +
+  " human paused this repo's task queue (usually to work in the repo themselves), not because the work" +
+  ' was finished. Files, branches or commits may have changed meanwhile: re-check the current state of' +
+  ' the work (files, git, anything you were running) before assuming anything, then carry on.';
 
 /**
  * Tasks whose work has not been approved yet (docs/queue.md § Stacked tasks):
@@ -1459,6 +1467,9 @@ export class Orchestrator implements OrchestratorApi {
       // queue is deliberately independent of it (docs/queue.md). Either way the
       // mark stays, so the task wakes the moment the switch comes back.
       if (!settings['orchestrator.enabled'] && !task.customQueueAt) continue;
+      // Its repo's queue is paused (docs/queue.md): the mark stays and fires
+      // after that Continue, as after Pause all.
+      if (queuePauseHolds(task, settings['queue.pausedRepos'])) continue;
       if (this.activeWorkers() >= settings['orchestrator.concurrency']) return;
       // budget.taskUsd: a wake-up is an automatic turn. Refused, the mark is
       // cleared (the window reopening changes nothing about the budget) and
@@ -1661,6 +1672,13 @@ export class Orchestrator implements OrchestratorApi {
     // turn this boot finds cut is owed to Continue rather than failed, and no
     // verify round is re-run until Continue.
     const paused = await this.isPaused();
+    // A repo's custom-queue pause survives it too (docs/queue.md § Pausing a
+    // repo's queue): its members are treated the same way, owed to that
+    // repo's Continue.
+    const pausedRepos = (await this.storage.getSettings())['queue.pausedRepos'] ?? [];
+    const owedScope = (t: Task | null): 'all' | 'queue' | null =>
+      paused ? 'all' : t && queuePauseHolds(t, pausedRepos) ? 'queue' : null;
+    const owedTo = (scope: 'all' | 'queue' | null) => (scope === 'queue' ? { scope: 'queue' as const } : {});
     // No hook survives a restart: a question still pending was being waited
     // on by a process this boot is about to kill (or that died with the last
     // one), so it can never be collected — expire it before the human answers
@@ -1701,12 +1719,16 @@ export class Orchestrator implements OrchestratorApi {
           needsAttention: false,
           endedAt: new Date().toISOString(),
         });
-        if (run.taskId && run.mode === 'worker' && paused) {
+        const scope = run.taskId && run.mode === 'worker' ? owedScope(await this.storage.getTask(run.taskId)) : null;
+        if (run.taskId && run.mode === 'worker' && scope) {
           const at = new Date().toISOString();
           const moved = await this.storage.transitionTask(run.taskId, ['running', 'waiting'], 'review', 'system', {
             error: null,
             reviewState: null,
-            pausedTurn: run.label === PUBLISH_RUN_LABEL ? { at, kind: 'publish' } : { at, kind: 'resume' },
+            pausedTurn:
+              run.label === PUBLISH_RUN_LABEL
+                ? { at, kind: 'publish', ...owedTo(scope) }
+                : { at, kind: 'resume', ...owedTo(scope) },
           });
           if (moved) broadcast({ type: 'task.updated', task: moved });
         } else if (run.taskId && run.mode === 'worker') {
@@ -1760,13 +1782,14 @@ export class Orchestrator implements OrchestratorApi {
       // Never ran at all, and there is nothing to review.
       const everRan = runs.some((r) => r.mode === 'worker');
       const to = everRan ? 'review' : 'failed';
+      const scope = owedScope(task);
       const moved = await this.storage.transitionTask(
         task.id,
         ['running', 'waiting'],
         to,
         'system',
-        everRan && paused
-          ? { error: null, reviewState: null, pausedTurn: { at: new Date().toISOString(), kind: 'resume' } }
+        everRan && scope
+          ? { error: null, reviewState: null, pausedTurn: { at: new Date().toISOString(), kind: 'resume', ...owedTo(scope) } }
           : {
               error: 'server stopped before this task had a live agent — nothing was running at boot',
               reviewState: null,
@@ -1798,7 +1821,7 @@ export class Orchestrator implements OrchestratorApi {
     for (const task of await this.storage.listTasks()) {
       if (REVIEW_NOW_FROM.includes(task.status)) {
         if (task.reviewState === 'pending' || task.reviewState === 'reviewing') {
-          if (!paused) void this.reviewCompletedRun(task.id, true); // paused: Continue re-runs it
+          if (!owedScope(task)) void this.reviewCompletedRun(task.id, true); // paused: Continue re-runs it
         } else if (task.reviewState === 'fixing') {
           await this.setReviewState(task.id, settledReviewState(task.reviewRounds));
         }
@@ -1810,7 +1833,7 @@ export class Orchestrator implements OrchestratorApi {
       // is simply joined). Elsewhere the mark is stale.
       if (task.checkState && CHECK_BUSY_STATES.includes(task.checkState)) {
         if (task.status !== 'review') await this.setCheckState(task.id, null);
-        else if (!paused && !this.pendingReviews.has(task.id)) void this.reviewCompletedRun(task.id);
+        else if (!owedScope(task) && !this.pendingReviews.has(task.id)) void this.reviewCompletedRun(task.id);
       }
     }
     // Continue was pressed and the process died before every owed turn
@@ -1842,7 +1865,8 @@ export class Orchestrator implements OrchestratorApi {
     return {
       enabled: settings['orchestrator.enabled'],
       paused: settings['orchestrator.paused'],
-      pausedTasks: (await this.pausedTasks()).length,
+      pausedTasks: (await this.pausedTasks(settings)).length,
+      pausedQueues: settings['queue.pausedRepos'] ?? [],
       // live non-idle sessions — DB run rows stay 'running' while a completed
       // session idles, which would overstate the count (review M2)
       running: this.sessions.liveCount(),
@@ -1869,13 +1893,44 @@ export class Orchestrator implements OrchestratorApi {
     return (settings ?? (await this.storage.getSettings()))['orchestrator.paused'] === true;
   }
 
-  /** Tasks Continue owes a turn, oldest marker first. */
-  private async pausedTasks(): Promise<Task[]> {
+  /**
+   * Whether automatic work on THIS task is held: Pause all, or its repo's
+   * custom-queue pause (docs/queue.md § Pausing a repo's queue —
+   * `queuePauseHolds`). Every per-task pause gate reads this; only the
+   * machine-wide ones (the top of `maybeSchedule`, the wake sweep's switch)
+   * read `isPaused`.
+   */
+  async pausedFor(task: Task | string | null, settings?: AppSettings): Promise<boolean> {
+    return (await this.pauseScopeFor(task, settings)) !== null;
+  }
+
+  /** `all` = Pause all, `queue` = only the task's repo queue pause, null = not paused. */
+  private async pauseScopeFor(task: Task | string | null, settings?: AppSettings): Promise<'all' | 'queue' | null> {
+    const s = settings ?? (await this.storage.getSettings());
+    if (s['orchestrator.paused'] === true) return 'all';
+    const repos = s['queue.pausedRepos'];
+    if (!repos?.length || !task) return null;
+    const t = typeof task === 'string' ? await this.storage.getTask(task) : task;
+    return t && queuePauseHolds(t, repos) ? 'queue' : null;
+  }
+
+  /** `setQueuePaused`'s queue of writes */
+  private queuePauseWrites: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Tasks Continue owes a turn, oldest marker first. A marker held by a repo
+   * queue pause is not Pause all's to resume: left out unless `repoId` asks
+   * for exactly that repo's.
+   */
+  private async pausedTasks(settings?: AppSettings, repoId?: string): Promise<Task[]> {
+    const repos = (settings ?? (await this.storage.getSettings()))['queue.pausedRepos'];
     const rows = [
       ...(await this.storage.listTasks({ status: 'review' })),
       ...(await this.storage.listTasks({ status: 'failed' })),
     ];
-    return rows.filter((t) => t.pausedTurn).sort((a, b) => a.pausedTurn!.at.localeCompare(b.pausedTurn!.at));
+    return rows
+      .filter((t) => t.pausedTurn && (repoId ? t.repoId === repoId : !queuePauseHolds(t, repos)))
+      .sort((a, b) => a.pausedTurn!.at.localeCompare(b.pausedTurn!.at));
   }
 
   /**
@@ -1954,9 +2009,13 @@ export class Orchestrator implements OrchestratorApi {
     }
   }
 
-  /** Write a marker on a task that is already at rest (review/failed). */
+  /**
+   * Write a marker on a task that is already at rest (review/failed). Owed to
+   * its repo queue's Continue when that pause, not Pause all, is the reason.
+   */
   private async markPaused(taskId: string, turn: Omit<PausedTurn, 'at'>): Promise<boolean> {
-    const row = await this.storage.updateTask(taskId, { pausedTurn: { at: new Date().toISOString(), ...turn } });
+    const scope = (await this.pauseScopeFor(taskId)) === 'queue' ? { scope: 'queue' as const } : {};
+    const row = await this.storage.updateTask(taskId, { pausedTurn: { at: new Date().toISOString(), ...turn, ...scope } });
     if (row) broadcast({ type: 'task.updated', task: row });
     return !!row;
   }
@@ -1971,7 +2030,7 @@ export class Orchestrator implements OrchestratorApi {
    * pump is paused); a task with no live PTY yet is a spawn in flight, which
    * its own pause check or the second sweep catches.
    */
-  private async suspendTask(task: Task, actor: string): Promise<boolean> {
+  private async suspendTask(task: Task, actor: string, scope: 'all' | 'queue' = 'all'): Promise<boolean> {
     if (task.status !== 'running' && task.status !== 'waiting') return false;
     if (task.kind === 'loop' && (task.loopState === 'checking' || task.loopState === 'next')) return false;
     if (this.gatesInFlight.has(task.id)) return false;
@@ -1991,19 +2050,20 @@ export class Orchestrator implements OrchestratorApi {
         actor,
         runId: run.id,
         taskId: task.id,
-        data: { reason: 'paused' },
+        data: { reason: scope === 'queue' ? 'queue paused' : 'paused' },
       });
     }
+    const owedTo = scope === 'queue' ? { scope: 'queue' as const } : {};
     const pausedTurn: PausedTurn = publishing
-      ? { at: new Date().toISOString(), kind: 'publish', auto: this.autoPublishing.has(task.id) }
-      : { at: new Date().toISOString(), kind: 'resume' };
+      ? { at: new Date().toISOString(), kind: 'publish', auto: this.autoPublishing.has(task.id), ...owedTo }
+      : { at: new Date().toISOString(), kind: 'resume', ...owedTo };
     const moved = await this.storage.transitionTask(
       task.id,
       ['running', 'waiting'],
       'review',
       actor,
       { error: null, pausedTurn },
-      { reason: 'pause all' },
+      { reason: scope === 'queue' ? 'queue paused' : 'pause all' },
     );
     if (moved) broadcast({ type: 'task.updated', task: moved });
     return !!moved;
@@ -2028,6 +2088,108 @@ export class Orchestrator implements OrchestratorApi {
     return { resumed, waiting };
   }
 
+  // ---- Pausing one repo's custom queue (docs/queue.md § Pausing a repo's queue) ----
+
+  /**
+   * Pause all, scoped to ONE repo's custom queue: the repo goes into
+   * `queue.pausedRepos` FIRST (`pausedFor` reads it, so no member is claimed
+   * and no automatic turn starts on a member from here on), then every live
+   * turn of a member of that queue is suspended exactly as Pause all does —
+   * run killed first, PTY killed, `review` + a `scope: 'queue'` marker — and
+   * the members' compaction gates, transient back-offs and review rounds are
+   * stopped. Tasks of the repo outside the queue, and every other repo, are
+   * not touched. Idempotent: pressing it again only sweeps again.
+   */
+  async pauseQueue(repoId: string, actor = 'human'): Promise<{ suspended: string[]; already: boolean }> {
+    const already = !(await this.setQueuePaused(repoId, true));
+    if (!already) await this.storage.appendEvent({ kind: 'queue.pause', actor, repoId, data: { paused: true } });
+    broadcast({ type: 'orchestrator.status', status: await this.status() });
+    const suspended = new Set<string>();
+    await this.suspendQueueSweep(repoId, actor, suspended);
+    const deadline = Date.now() + 15_000;
+    const inFlight = async () => {
+      for (const id of [...this.gatesInFlight, ...this.dispatchTurnsInFlight.keys()]) {
+        const t = await this.storage.getTask(id);
+        if (t && t.repoId === repoId) return true;
+      }
+      return false;
+    };
+    while ((await inFlight()) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    await this.suspendQueueSweep(repoId, actor, suspended);
+    if (suspended.size) {
+      await this.storage.appendEvent({
+        kind: 'queue.pause',
+        actor,
+        repoId,
+        data: { paused: true, suspended: [...suspended] },
+      });
+    }
+    broadcast({ type: 'orchestrator.status', status: await this.status() });
+    return { suspended: [...suspended], already };
+  }
+
+  /**
+   * Add or remove one repo in `queue.pausedRepos`; true when the list changed.
+   * Serialized, so two presses for different repos cannot lose each other's
+   * write (read-modify-write of one setting row).
+   */
+  private setQueuePaused(repoId: string, paused: boolean): Promise<boolean> {
+    const next = this.queuePauseWrites.then(async () => {
+      const repos = (await this.storage.getSettings())['queue.pausedRepos'] ?? [];
+      if (repos.includes(repoId) === paused) return false;
+      await this.storage.setSetting('queue.pausedRepos', paused ? [...repos, repoId] : repos.filter((r) => r !== repoId));
+      return true;
+    });
+    this.queuePauseWrites = next.catch(() => false);
+    return next;
+  }
+
+  /** `suspendSweep`, limited to the tasks a repo's queue pause holds. */
+  private async suspendQueueSweep(repoId: string, actor: string, out: Set<string>): Promise<void> {
+    const settings = await this.storage.getSettings();
+    const held = async (taskId: string | null): Promise<Task | null> => {
+      const t = taskId ? await this.storage.getTask(taskId) : null;
+      return t && t.repoId === repoId && (await this.pauseScopeFor(t, settings)) ? t : null;
+    };
+    for (const run of await this.storage.listRuns({ status: 'running', mode: 'aux' })) {
+      if (run.kind === 'review' && (await held(run.subjectId))) aux().abort(run.id);
+    }
+    for (const taskId of [...this.gatesInFlight]) if (await held(taskId)) abortCompaction(taskId);
+    for (const taskId of [...this.transientRetries.keys()]) {
+      const t = await held(taskId);
+      if (t && (t.status === 'review' || t.status === 'failed')) {
+        this.dropTransient(taskId);
+        if (!t.pausedTurn && (await this.markPaused(taskId, { kind: 'resume' }))) out.add(taskId);
+      }
+    }
+    for (const status of ['running', 'waiting'] as const) {
+      for (const task of await this.storage.listTasks({ status, repoId })) {
+        if (!(await held(task.id))) continue;
+        if (await this.suspendTask(task, actor, 'queue')) out.add(task.id);
+      }
+    }
+  }
+
+  /**
+   * Continue for one repo's queue: the repo out of `queue.pausedRepos`, then
+   * its owed turns resumed in their own sessions (within the concurrency cap,
+   * like Continue — the rest wait for `maybeSchedule`), the verify rounds the
+   * pause held, then the queues. While Pause all is on, the markers stay owed
+   * to Pause all's Continue (which now sees them).
+   */
+  async continueQueue(repoId: string, actor = 'human'): Promise<{ resumed: string[]; waiting: string[] }> {
+    if (await this.setQueuePaused(repoId, false)) {
+      await this.storage.appendEvent({ kind: 'queue.pause', actor, repoId, data: { paused: false } });
+    }
+    const owed = new Set((await this.pausedTasks(undefined, repoId)).map((t) => t.id));
+    const globallyPaused = await this.isPaused();
+    const resumed = globallyPaused ? [] : (await this.resumePaused()).filter((id) => owed.has(id));
+    if (!globallyPaused) await this.resumeVerifyRounds(repoId);
+    broadcast({ type: 'orchestrator.status', status: await this.status() });
+    this.maybeSchedule();
+    return { resumed, waiting: [...owed].filter((id) => !resumed.includes(id)) };
+  }
+
   /**
    * Start the owed turns, oldest marker first, while a worker slot is free
    * (`orchestrator.concurrency`, the same `activeWorkers()` count the claim
@@ -2037,8 +2199,9 @@ export class Orchestrator implements OrchestratorApi {
    * Returns the ids started on this call.
    */
   private async resumePaused(settings?: AppSettings): Promise<string[]> {
-    const cap = (settings ?? (await this.storage.getSettings()))['orchestrator.concurrency'];
-    const owed = (await this.pausedTasks()).filter((t) => !this.pauseResumesInFlight.has(t.id));
+    const s = settings ?? (await this.storage.getSettings());
+    const cap = s['orchestrator.concurrency'];
+    const owed = (await this.pausedTasks(s)).filter((t) => !this.pauseResumesInFlight.has(t.id));
     const started: Task[] = [];
     for (const t of owed) {
       if (this.activeWorkers() >= cap) break;
@@ -2062,14 +2225,14 @@ export class Orchestrator implements OrchestratorApi {
     if (turn.kind === 'land') await this.landIfClean(t.id);
     else if (turn.kind === 'publish') res = await this.publish(t.id, turn.auto ? LANDING_ACTOR : 'system');
     else if (turn.message) res = await this.followUp(t.id, turn.message, 'system', 'auto', turn.purpose ?? 'work');
-    else res = await this.proceed(t.id, PAUSE_PROCEED, 'system');
+    else res = await this.proceed(t.id, turn.scope === 'queue' ? QUEUE_PAUSE_PROCEED : PAUSE_PROCEED, 'system');
     // A resume that started moved the task, which released the marker. One
     // that did not (no session left on disk, a human took the task) must not
     // keep holding the repo: released here, the reason on the row.
     const cur = await this.storage.getTask(t.id);
     // Paused again while this was on its way: the refusal was the pause's,
     // and the marker is still owed to the next Continue.
-    if (cur?.pausedTurn && (await this.isPaused())) return;
+    if (cur?.pausedTurn && (await this.pausedFor(cur))) return;
     if (cur?.pausedTurn) {
       const row = await this.storage.updateTask(t.id, {
         pausedTurn: null,
@@ -2092,10 +2255,12 @@ export class Orchestrator implements OrchestratorApi {
    * rule boot recovery applies. A task Continue is resuming is skipped: its
    * own Stop will mark the round again.
    */
-  private async resumeVerifyRounds(): Promise<void> {
+  private async resumeVerifyRounds(repoId?: string): Promise<void> {
+    const settings = await this.storage.getSettings();
     for (const status of REVIEW_NOW_FROM) {
-      for (const task of await this.storage.listTasks({ status })) {
+      for (const task of await this.storage.listTasks({ status, ...(repoId ? { repoId } : {}) })) {
         if (task.pausedTurn || this.pauseResumesInFlight.has(task.id) || this.pendingReviews.has(task.id)) continue;
+        if (queuePauseHolds(task, settings['queue.pausedRepos'])) continue; // its repo's Continue re-runs it
         if (task.reviewState === 'pending' || task.reviewState === 'reviewing') void this.reviewCompletedRun(task.id, true);
         else if (status === 'review' && task.checkState && CHECK_BUSY_STATES.includes(task.checkState)) {
           void this.reviewCompletedRun(task.id);
@@ -2467,6 +2632,9 @@ export class Orchestrator implements OrchestratorApi {
     // live — `repoBusy` sees it from then on; a compaction gate on the way
     // would otherwise let a same-repo member start on top of the work.
     for (const repoId of this.pauseResumesInFlight.values()) if (repoId) skip.add(repoId);
+    // Repos whose queue is paused (docs/queue.md § Pausing a repo's queue):
+    // their members keep their places until that repo's Continue.
+    for (const repoId of (await this.storage.getSettings())['queue.pausedRepos'] ?? []) skip.add(repoId);
     while (this.activeWorkers() < cap && this.sessions.totalLiveCount() < MAX_LIVE_SESSIONS) {
       const head = await this.storage.peekCustomQueue([...skip]);
       if (!head?.repoId) return;
@@ -2704,6 +2872,9 @@ export class Orchestrator implements OrchestratorApi {
         // is live and about to be re-invoked by its own subagent, and a resume
         // would kill that session and lose the child's result.
         if (['running', 'waiting', 'queued', 'blocked'].includes(target.status)) continue;
+        // Its repo's queue is paused (docs/queue.md § Pausing a repo's queue):
+        // held, delivered after that Continue.
+        if (queuePauseHolds(target, settings['queue.pausedRepos'])) continue;
         // A turn we already fired for this target has not spawned yet (it may
         // be compacting). Its status is still whatever it was, so without this
         // the next pass would deliver the same backlog a second time.
@@ -3097,11 +3268,17 @@ export class Orchestrator implements OrchestratorApi {
    * turn gets none: its messages stay pending and are delivered again after
    * Continue (a marker would deliver them twice).
    */
-  private pauseOwed(followUp: string | undefined, purpose: 'work' | 'publish', actor?: string): PausedTurn | null {
+  private pauseOwed(
+    followUp: string | undefined,
+    purpose: 'work' | 'publish',
+    actor?: string,
+    scope: 'all' | 'queue' = 'all',
+  ): PausedTurn | null {
     const at = new Date().toISOString();
-    if (purpose === 'publish') return { at, kind: 'publish', auto: actor === LANDING_ACTOR };
+    const owedTo = scope === 'queue' ? { scope: 'queue' as const } : {};
+    if (purpose === 'publish') return { at, kind: 'publish', auto: actor === LANDING_ACTOR, ...owedTo };
     if (actor === 'dispatch') return null;
-    return { at, kind: 'resume', message: followUp ?? null, purpose };
+    return { at, kind: 'resume', message: followUp ?? null, purpose, ...owedTo };
   }
 
   private async pauseUnspawned(
@@ -3114,7 +3291,7 @@ export class Orchestrator implements OrchestratorApi {
   ): Promise<void> {
     let moved: Task | null = null;
     if (followUp || resumeFrom || purpose === 'publish') {
-      const owed = this.pauseOwed(followUp, purpose, actor);
+      const owed = this.pauseOwed(followUp, purpose, actor, (await this.pauseScopeFor(task)) ?? 'all');
       moved = await this.storage.transitionTask(task.id, ['running'], 'review', 'orchestrator', {
         error: null,
         ...(owed ? { pausedTurn: owed } : {}),
@@ -3277,7 +3454,9 @@ export class Orchestrator implements OrchestratorApi {
         try {
           // Stopped by Pause all (docs/pause.md): the turn it was about to
           // start is what Continue owes — message kept, never lost.
-          const owed = (await this.isPaused()) ? this.pauseOwed(followUp, purpose, actor) : null;
+          // Or by its repo's queue pause (docs/queue.md): owed to that Continue.
+          const scope = await this.pauseScopeFor(task.id);
+          const owed = scope ? this.pauseOwed(followUp, purpose, actor, scope) : null;
           const reverted = await this.storage.transitionTask(
             task.id,
             ['running'],
@@ -3325,7 +3504,7 @@ export class Orchestrator implements OrchestratorApi {
     // carried (Continue delivers it); a fresh claim goes back to `queued`,
     // keeping its place and its custom-queue mark; a loop's next iteration
     // stays `running`+`next` for its pump.
-    if (!(actor && HUMAN_ACTORS.has(actor)) && (await this.isPaused())) {
+    if (!(actor && HUMAN_ACTORS.has(actor)) && (await this.pausedFor(task))) {
       await this.pauseUnspawned(task, repo.id, followUp, resumeFrom ?? null, purpose, actor);
       return false;
     }
@@ -3560,8 +3739,16 @@ export class Orchestrator implements OrchestratorApi {
     // Pause all (docs/pause.md): the backstop for any automatic turn whose
     // caller did not defer it itself. Nothing is moved; the caller keeps its
     // own refusal path (a dispatch stays pending, and so on).
-    if (!HUMAN_ACTORS.has(actor) && (await this.isPaused())) {
-      return { error: 'the task manager is paused — Continue to resume automatic work', code: 409 };
+    // A repo's queue pause holds its members the same way (docs/queue.md).
+    const pauseScope = HUMAN_ACTORS.has(actor) ? null : await this.pauseScopeFor(cur);
+    if (pauseScope) {
+      return {
+        error:
+          pauseScope === 'all'
+            ? 'the task manager is paused — Continue to resume automatic work'
+            : "this repo's queue is paused — Continue it to resume automatic work",
+        code: 409,
+      };
     }
     // a worktree land is rebasing/squashing in the task's tree (docs/parallel.md § Land)
     if (this.landing.has(taskId)) return { error: 'the task is landing — wait for it to finish', code: 409 };
@@ -4398,7 +4585,7 @@ export class Orchestrator implements OrchestratorApi {
   /** The back-off ran out: resume the turn, unless the world moved on meanwhile. */
   private async fireTransient(taskId: string, entry: TransientRetry): Promise<void> {
     if (this.transientRetries.get(taskId) !== entry) return;
-    if (await this.isPaused()) return this.pauseTransient(taskId, entry);
+    if (await this.pausedFor(taskId)) return this.pauseTransient(taskId, entry);
     const giveUp = async (reason: string) => {
       this.dropTransient(taskId);
       await this.auditTransient(taskId, entry, { action: 'skipped', reason });
@@ -4464,8 +4651,9 @@ export class Orchestrator implements OrchestratorApi {
     await this.auditTransient(taskId, entry, { action: 'skipped', reason: 'paused' });
     const task = await this.storage.getTask(taskId);
     if (!task) return;
-    if (task.status === 'running' || task.status === 'waiting') await this.suspendTask(task, 'system');
-    else if ((task.status === 'review' || task.status === 'failed') && !task.pausedTurn) {
+    if (task.status === 'running' || task.status === 'waiting') {
+      await this.suspendTask(task, 'system', (await this.pauseScopeFor(task)) ?? 'all');
+    } else if ((task.status === 'review' || task.status === 'failed') && !task.pausedTurn) {
       await this.markPaused(taskId, { kind: 'resume' });
     }
   }
@@ -4487,7 +4675,7 @@ export class Orchestrator implements OrchestratorApi {
 
   /** The `--resume` delivery: the same claude session in a new process, via followUp. */
   private async resumeTransient(taskId: string, entry: TransientRetry, why: string): Promise<void> {
-    if (await this.isPaused()) return this.pauseTransient(taskId, entry);
+    if (await this.pausedFor(taskId)) return this.pauseTransient(taskId, entry);
     // A publish turn stays one: git, not the exit, decides how it lands.
     const purpose = this.publishRuns.has(entry.runId) ? 'publish' : 'work';
     const s = this.sessions.get(entry.runId);
@@ -4751,9 +4939,17 @@ export class Orchestrator implements OrchestratorApi {
       };
     }
     if (!(await this.storage.getRepo(task.repoId))) return { error: 'repo not found', code: 409 };
-    // A reviewer is an automatic session the pause holds (docs/pause.md).
-    if (await this.isPaused()) {
-      return { error: 'the task manager is paused — Continue first, then review', code: 409 };
+    // A reviewer is an automatic session the pause holds (docs/pause.md), and
+    // so does a repo's queue pause for its members (docs/queue.md).
+    const pauseScope = await this.pauseScopeFor(task);
+    if (pauseScope) {
+      return {
+        error:
+          pauseScope === 'all'
+            ? 'the task manager is paused — Continue first, then review'
+            : "this repo's queue is paused — Continue it first, then review",
+        code: 409,
+      };
     }
     // Synchronous from the lock check to its registration: two presses cannot
     // both get past here.
@@ -4802,12 +4998,12 @@ export class Orchestrator implements OrchestratorApi {
         this.reviewRecheck.delete(taskId);
         // Pause all (docs/pause.md): no check or review session starts. The
         // row keeps `pending`, which is what Continue (or boot) re-runs.
-        if (await this.isPaused()) return this.deferLanding(taskId);
+        if (await this.pausedFor(taskId)) return this.deferLanding(taskId);
         // Checks come first (docs/checks.md): cheap and deterministic, so a
         // reviewer never spends a session on a change that does not build.
         // False = no review this pass (a fix turn was sent, or red landed).
         const review = await this.runCheckStage(taskId);
-        if (await this.isPaused()) return this.deferLanding(taskId);
+        if (await this.pausedFor(taskId)) return this.deferLanding(taskId);
         // only the first pass is the forced one; a recheck is a Stop's pass
         if (review) await this.runReviewRound(taskId, forced && pass === 0);
         if (!this.reviewRecheck.has(taskId)) {
@@ -4884,7 +5080,7 @@ export class Orchestrator implements OrchestratorApi {
       // A land that hit a conflict lands again once the resolving turn's
       // verify round is clean — for whoever asked, whatever the tier.
       const askedBy = this.landAfterConflict.get(taskId)?.actor;
-      if (askedBy && !verifyOpen(task) && landingReason(task) && !(await this.isPaused())) {
+      if (askedBy && !verifyOpen(task) && landingReason(task) && !(await this.pausedFor(task))) {
         this.landAfterConflict.delete(taskId);
         await this.storage.appendEvent({ kind: 'task.land', actor: LANDING_ACTOR, taskId, repoId: repo.id, data: { phase: 'retry-after-conflict', askedBy } });
         this.relanding.add(taskId);
@@ -4934,8 +5130,9 @@ export class Orchestrator implements OrchestratorApi {
       return;
     }
     // Pause all (docs/pause.md): the publish turn is owed to Continue, which
-    // runs this landing again (budget and verdict re-read then).
-    if (await this.isPaused()) {
+    // runs this landing again (budget and verdict re-read then). A repo
+    // queue pause likewise (owed to that repo's Continue — `markPaused`).
+    if (await this.pausedFor(taskId)) {
       await this.markPaused(taskId, { kind: 'land' });
       return;
     }
@@ -5110,7 +5307,7 @@ export class Orchestrator implements OrchestratorApi {
     // back to the worker, is not recorded: the row returns to `pending` and
     // Continue reviews again (the hash was never written, so that is a real
     // round). A clean or minors-only verdict needs no turn and is kept.
-    if ((result.error || canLoop) && (await this.isPaused())) {
+    if ((result.error || canLoop) && (await this.pausedFor(taskId))) {
       await this.setReviewState(taskId, 'pending');
       return;
     }
@@ -5321,7 +5518,7 @@ export class Orchestrator implements OrchestratorApi {
       this.checkLoops.delete(taskId);
       return true;
     }
-    if (!stop && (await this.isPaused())) {
+    if (!stop && (await this.pausedFor(taskId))) {
       // Pause all (docs/pause.md): no fix turn now. The checks are due again,
       // and Continue re-runs them before typing the failure in.
       await this.setCheckState(taskId, 'pending');
@@ -5642,8 +5839,10 @@ export class Orchestrator implements OrchestratorApi {
    * budget; the loop's own budget is re-asked here.
    */
   private async pumpLoops(cap: number): Promise<void> {
+    const paused = (await this.storage.getSettings())['queue.pausedRepos'];
     const due = (await this.storage.listTasks({ status: 'running' }))
       .filter((t) => t.kind === 'loop' && t.loopState === 'next' && !this.loopSettling.has(t.id))
+      .filter((t) => !queuePauseHolds(t, paused))
       .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
     for (const task of due) {
       if (this.activeWorkers() >= cap) return;

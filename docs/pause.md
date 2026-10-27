@@ -209,6 +209,14 @@ saw: a forced restart, a signal, a watch reload, or a crash or reboot.
   task, which is not ready for anyone. The Inbox leaves it out of its review
   rows.
 
+## One repo's queue
+
+The same mechanism, scoped to one repo's custom queue, is **Pause** on the
+Queue page (`/pause <repo>` on Telegram): `docs/queue.md` § Pausing a repo's
+queue. Its markers carry `scope: 'queue'`, and Pause all's Continue leaves
+them to that repo's Continue. Every per-task gate in the table above reads
+`pausedFor(task)`, which is Pause all OR the task's queue pause.
+
 ## Knowingly left
 
 - **A loop in `checking`** whose checks were still running at a restart is

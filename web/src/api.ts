@@ -429,4 +429,7 @@ export const api = {
   events: (limit = 50) => req<AuditEvent[]>('GET', `/api/events?limit=${limit}`),
   orchestratorAction: (a: 'start' | 'stop' | 'stop-and-kill' | 'pause' | 'continue') =>
     req<{ enabled: boolean }>('POST', `/api/orchestrator/${a}`),
+  /** one repo's custom-queue pause (docs/queue.md § Pausing a repo's queue) */
+  queuePauseAction: (repoId: string, a: 'pause' | 'continue') =>
+    req<OrchestratorStatus>('POST', `/api/orchestrator/queues/${encodeURIComponent(repoId)}/${a}`),
 };

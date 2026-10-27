@@ -1,4 +1,4 @@
-import { AUTOPILOT_ACTOR, isExternalTask, questionWaitedMinutes, type Question, type QuestionItem } from '@tm/shared';
+import { AUTOPILOT_ACTOR, isExternalTask, queuePauseHolds, questionWaitedMinutes, type Question, type QuestionItem } from '@tm/shared';
 import type { QuestionService } from './questions.ts';
 import type { Storage } from './storage/types.ts';
 
@@ -127,7 +127,8 @@ export class QuestionAutopilot {
     if (pending.length === 0) return [];
     // Pause all stops every automatic action; the turns it cut expire their
     // questions on the way down, so this is only the window before that.
-    if ((await storage.getSettings())['orchestrator.paused'] === true) return [];
+    const settings = await storage.getSettings();
+    if (settings['orchestrator.paused'] === true) return [];
 
     const answered: Question[] = [];
     for (const q of pending) {
@@ -135,6 +136,8 @@ export class QuestionAutopilot {
       if (!Number.isFinite(waitedMs)) continue;
       const task = await storage.getTask(q.taskId);
       if (!task || task.status !== 'running' || isExternalTask(task)) continue;
+      // so does its repo's queue pause (docs/queue.md § Pausing a repo's queue)
+      if (queuePauseHolds(task, settings['queue.pausedRepos'])) continue;
       const repo = task.repoId ? await storage.getRepo(task.repoId) : null;
       const minutes = repo?.questionAutopilotMinutes ?? null;
       if (!minutes || waitedMs < minutes * 60_000) continue;

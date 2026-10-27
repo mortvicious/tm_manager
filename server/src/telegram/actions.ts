@@ -229,6 +229,36 @@ export async function setPaused(deps: ActionDeps, paused: boolean, actor: string
 }
 
 /**
+ * POST /api/orchestrator/queues/:repoId/pause|continue (docs/queue.md §
+ * Pausing a repo's queue): `/pause <repo>` and `/continue <repo>`, in-process.
+ * `repoName` is display text (plain; the caller's reply is HTML-escaped there).
+ */
+export async function setQueuePaused(
+  deps: ActionDeps,
+  repoId: string,
+  repoName: string,
+  paused: boolean,
+  actor: string,
+): Promise<ActionOutcome> {
+  const before = await deps.orchestrator.status();
+  const was = (before.pausedQueues ?? []).includes(repoId);
+  if (paused) {
+    const { suspended } = await deps.orchestrator.pauseQueue(repoId, actor);
+    const n = suspended.length;
+    return done(
+      `${was ? 'Already paused' : 'Paused'}: the ${repoName} queue — no member starts there.` +
+        (n ? ` ${n} live turn(s) suspended; /continue ${repoName} resumes each in its own session.` : ''),
+    );
+  }
+  if (!was) return done(`The ${repoName} queue is not paused.`);
+  const { resumed, waiting } = await deps.orchestrator.continueQueue(repoId, actor);
+  return done(
+    `Continued: the ${repoName} queue.${resumed.length ? ` Resuming ${resumed.length} task(s) in their own sessions.` : ''}` +
+      (waiting.length ? ` ${waiting.length} more wait${before.paused ? ' for Pause all\'s Continue' : ' for a free worker slot'}.` : ''),
+  );
+}
+
+/**
  * The /feature intake: create the feature and immediately start the
  * analysis, because on a phone the two are never separate acts. Mirrors
  * POST /api/features + POST /api/features/:id/analyze, including the

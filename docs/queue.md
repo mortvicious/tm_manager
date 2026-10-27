@@ -271,6 +271,120 @@ What the gate does NOT cover: turns that are not claims — a human Run now, a
 dispatch delivery (which checks `repoBusy` itself), a review fix round or a
 wake-up continue an existing task and are not refused by it.
 
+## Pausing a repo's queue (2026-10-27)
+
+Pause all (`docs/pause.md`) scoped to ONE repo's custom queue. The scenario: two
+nest members are working and five more wait, and you need the nest checkout to
+yourself for a while. Pause the nest queue, do your work, press Continue: each
+suspended member resumes in its own claude session exactly where it was cut,
+and the five waiting ones keep their places. Nothing is cancelled. Other repos'
+queues, the global queue and tasks in nest that are NOT queue members are not
+touched.
+
+**State.** `tm_config` `queue.pausedRepos` (a list of repo ids) is the switch.
+It is machine state like `orchestrator.paused`: it changes only through the two
+routes below, never through `PUT /api/config` (the Config page strips it), and
+it survives a restart. Suspended turns carry the ordinary `tm_tasks.paused_turn`
+marker with `scope: 'queue'` (`PausedTurn.scope`, no migration: the column is
+JSON).
+
+**Who it holds** is `queuePauseHolds(task, pausedRepos)` (shared): the task's
+repo is paused AND it is a member (`custom_queue_at` set) or carries a
+`scope: 'queue'` marker. The second half means that taking a suspended task out
+of the queue while the pause is on does not hand it to the next scheduling pass.
+
+**Pause** (`Orchestrator.pauseQueue(repoId)`) adds the repo to the list FIRST,
+then sweeps twice, like `pauseAll`. The sweep is limited to the tasks the pause
+holds:
+- live member turns are suspended with `suspendTask(…, 'queue')`: the run is
+  marked `killed` first, then the PTY is killed, then the task moves to `review`
+  with the marker (`run.killed { reason: 'queue paused' }`, transition reason
+  `queue paused`)
+- the members' compaction gates are aborted (`pauseScopeFor` gives the gate's
+  abort branch the scope)
+- review aux rounds whose subject is a member are aborted
+- transient back-offs are marked
+
+Between the two sweeps it waits up to 15 s for that repo's gates and dispatch
+turns. Pressing it again only sweeps again (`already`).
+
+**Held while paused.** Every per-task gate Pause all has reads
+`Orchestrator.pausedFor(task)` (Pause all OR the task's queue pause) instead of
+the global flag:
+- `startWorker`'s backstop and gate-abort branch
+- `followUp` (non-human actors get 409 `this repo's queue is paused`)
+- transients
+- `reviewLoop` (check stage and review round, via `deferLanding`)
+- the review/check fix turns
+- auto-publish and land-after-conflict in `landIfClean`
+- `reviewNow` (409)
+- question autopilot
+
+Gates that are not per task:
+- `pumpCustomQueue` puts paused repos in its skip set
+- `pumpLoops` and `deliverDispatches` skip held tasks
+- `wakeDue` leaves their `wake_at` for after Continue
+
+Human clicks still work, as under Pause all. The suspended markers hold the
+repo for every claim (`paused_turn` is already in `heldBy`, `REPO_EXCLUSIVE_GATE`
+and the JS twins), so the global queue does not start a nest task on top of
+them either. A repo queue paused with nothing running holds only its own
+members. **A global-queue task can still be claimed in that repo** when the
+global queue is on: the pause is the custom queue's.
+
+**Pause all's Continue leaves them alone.** `pausedTasks()` (what Pause all's
+Continue, `maybeSchedule`'s owed-turn pass and boot's "finish Continue" step
+resume) skips markers `queuePauseHolds`. `OrchestratorStatus.pausedTasks` does
+not count them, and `OrchestratorStatus.pausedQueues` lists the paused repos.
+A marker Pause all wrote on a member of a paused repo is held by the queue as
+well. Either Continue alone is not enough while the other pause still holds the
+task.
+
+**Continue** (`Orchestrator.continueQueue(repoId)`) takes the repo out of the
+list, then:
+1. resumes the owed turns within `orchestrator.concurrency` (`resumePaused`,
+   oldest first; the rest wait for `maybeSchedule`, as after Continue)
+2. re-runs that repo's held verify rounds (`resumeVerifyRounds(repoId)`)
+3. schedules
+
+A `scope: 'queue'` resume without a message uses `QUEUE_PAUSE_PROCEED`. It says
+the human paused the repo's queue, usually to work in the repo, so files,
+branches or commits may have changed and the agent must re-check before
+carrying on. Under Pause all, `continueQueue` resumes nothing. The markers
+become Pause all's, and its Continue resumes them.
+
+**Restart.** Boot treats a cut worker run or stranded `running` task that the
+queue pause holds exactly like one Pause all holds. It is owed (`review` + a
+`scope: 'queue'` marker), not failed, and its verify rounds wait for Continue.
+
+**Surfaces.**
+- REST: `POST /api/orchestrator/queues/:repoId/pause` → status +
+  `suspended[]` + `wasPaused`; `…/continue` → status + `resumed[]` +
+  `waiting[]`. Both need `Origin` (403 otherwise). Pause 404s an unknown repo,
+  while Continue accepts one, so a deleted repo's id can be cleared. Audit
+  `queue.pause { paused, suspended? }` with the `repoId`.
+- SPA, Queue page: a row per repo whose queue has a member working or waiting,
+  or is paused (`components/QueuePause.tsx`). It reads `nest · 2 working ·
+  5 waiting [⏸ Pause]` or `nest · paused · 2 to resume · 5 waiting
+  [▶ Continue (2)]`, and both directions take a second press (`useArm`). The
+  queue sign reads `queue #n · paused` on a waiting member and `queue · paused`
+  on a suspended one. The status badge reads **paused**, as under Pause all.
+- Telegram: `/pause <repo>` and `/continue <repo>` (`setQueuePaused`); bare
+  `/pause` is still Pause all. The `/now` board line shows `⏸ nest queue`.
+
+Verified with a throwaway harness (real `Orchestrator` and SQLite, four temp
+git repos, `sleep` PTYs as workers; 37 assertions, in the task's artifacts):
+- the pause suspends exactly the member, not a same-repo non-member and not
+  another repo's member
+- the waiting member keeps its place while a free repo's head is claimed
+- `followUp`/Review now get 409, a needs_action dispatch stays pending, and the
+  `startWorker` backstop returns a racing claim to `queued`
+- Pause all's Continue leaves the queue marker alone, including after the task
+  left the queue
+- Continue under Pause all hands the marker to Pause all
+- the queue Continue resumes with the queue text
+- boot owes a cut member and fails a cut non-member
+
 ## API
 
 - `POST /api/tasks/:id/queue` — Add to queue. Same guards as enqueue (repo

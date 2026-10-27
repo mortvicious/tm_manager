@@ -1,4 +1,4 @@
-import { customQueueHoldsRepo, customQueueWaiting, repoHasRoom, type Repo, type Run, type Task } from '@tm/shared';
+import { customQueueHoldsRepo, customQueueWaiting, queuePauseHolds, repoHasRoom, type Repo, type Run, type Task } from '@tm/shared';
 import { useApp } from '../state.tsx';
 import { Explainable } from './Explain.tsx';
 
@@ -55,7 +55,9 @@ export function customQueueBlocker(
  */
 export function QueueMark({ task, tasks, explain = true }: { task: Task; tasks: Task[]; explain?: boolean }) {
   const off = !explain;
-  const { runs, repos } = useApp();
+  const { runs, repos, orch } = useApp();
+  // its repo's queue is paused (docs/queue.md § Pausing a repo's queue)
+  const queuePaused = queuePauseHolds(task, orch.pausedQueues);
   if (!task.customQueueAt) {
     // A global-queue task an Undo start put back: same sign, no position.
     return task.status === 'queued' && task.queueHeldAt ? (
@@ -76,6 +78,21 @@ export function QueueMark({ task, tasks, explain = true }: { task: Task; tasks: 
         off={off}
       >
         <span className="dot" /> queue
+      </Explainable>
+    );
+  }
+  if (task.status === 'review' && task.pausedTurn && queuePaused) {
+    return (
+      <Explainable
+        className="chip queue-chip holding"
+        explain={{
+          title: 'queue · paused',
+          what: "Its repo's queue is paused: this turn was suspended and resumes in its own session on that queue's Continue.",
+          todo: 'Continue the queue on the Queue page.',
+        }}
+        off={off}
+      >
+        queue · paused
       </Explainable>
     );
   }
@@ -122,6 +139,21 @@ export function QueueMark({ task, tasks, explain = true }: { task: Task; tasks: 
         off={off}
       >
         queue #{pos} · held
+      </Explainable>
+    );
+  }
+  if (queuePaused) {
+    return (
+      <Explainable
+        className="chip queue-chip holding"
+        explain={{
+          title: `queue #${pos} · paused`,
+          what: `Custom queue, position ${pos}: its repo's queue is paused, so it keeps its place and starts after Continue.`,
+          todo: 'Continue the queue on the Queue page.',
+        }}
+        off={off}
+      >
+        queue #{pos} · paused
       </Explainable>
     );
   }

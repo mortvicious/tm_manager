@@ -31,6 +31,7 @@ import {
   runNowTask,
   setQueueEnabled,
   setPaused,
+  setQueuePaused,
   unblockTask,
   undoTask,
   type ActionOutcome,
@@ -595,15 +596,28 @@ export const COMMANDS: BotCommand[] = [
   },
   {
     command: 'pause',
-    description: '⏸ Pause all — suspend live turns, start nothing (resumable)',
+    description: '⏸ Pause all — or /pause <repo> for one repo\'s queue (resumable)',
     async handler(ctx) {
+      // `/pause <repo>`: that repo's custom queue only (docs/queue.md § Pausing a repo's queue)
+      const raw = ctx.args.trim();
+      if (raw) {
+        const repo = await resolveRepo(ctx.storage, raw);
+        if (!repo.ok) return repo.error;
+        return say(await setQueuePaused(deps(ctx), repo.value.id, repo.value.name, true, ctx.actor));
+      }
       return say(await setPaused(deps(ctx), true, ctx.actor));
     },
   },
   {
     command: 'continue',
-    description: '▶️ Continue after Pause all — resume suspended turns',
+    description: '▶️ Continue after Pause all — or /continue <repo> for one repo\'s queue',
     async handler(ctx) {
+      const raw = ctx.args.trim();
+      if (raw) {
+        const repo = await resolveRepo(ctx.storage, raw);
+        if (!repo.ok) return repo.error;
+        return say(await setQueuePaused(deps(ctx), repo.value.id, repo.value.name, false, ctx.actor));
+      }
       return say(await setPaused(deps(ctx), false, ctx.actor));
     },
   },
