@@ -1,5 +1,13 @@
 # Decision log
 
+- **2026-10-27 — Branches page: merged vs only-local, read from git (`docs/branches.md`)**: user request ("keep track of worktrees — what is committed and merged and on essential branches (main, staging, etc) vs what is done only locally and awaits merging").
+
+  **Chosen: a read-only ledger computed from git per request.** Essential branches are the remote's default plus a fixed list of common names that exist. A branch's own work is its commits on no essential ref, local or remote. A squash land or a rebase still counts as merged, by `Task:` trailer (no older than the commit, `landedCheck`'s rule) or by `git cherry` patch id. Unpushed essential work under a branch is reported apart as "built on N unpushed", so a branch cut from a local `main` that is ahead of `origin` does not read as dozens of its own commits.
+
+  **No network by default.** GET reads local refs and shows each repo's last-fetch time. Fetch is an explicit, Origin-gated button.
+
+  **Rejected:** storing branch state (it would drift from git, the one truth), PR state as the merge signal (a PR is a record, `docs/parallel.md`), action buttons (merge/push/delete stay with publish and with the human), and a per-repo essential setting (no named need yet).
+
 - **2026-10-03 — One Board search replaces the filter bar (`docs/search.md`)**: user request ("a single search to search in: groups, dates, sources, repos, status, task title, task description, task id, parent id… hide all search tools at the top in board tab into search widget, button should appear… iOS, liquid glass, macOS style"). The five filter selects, group-by, sort and the Task id field went behind one field-shaped button: Spotlight on a desktop (`⌘K`, `/`) and a tall sheet on a phone.
 
   **Chosen: tokens + free text, client-side.** A query is a set of chips (structured facets) plus text, where every word must start a word in the task. The Board already holds every task in memory, so there is no server query and no index. Chips of the same kind are OR-ed and different kinds AND-ed: "review or failed in neko-nest" is the common question, and Finder/Mail tokens behave the same way. Word-PREFIX matching rather than substring: a substring search over agent-written descriptions matched half the board for `fail`. The text also takes `key:value`, so a power user can type a whole query, and committing folds those words into chips.

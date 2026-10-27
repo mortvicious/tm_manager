@@ -6,6 +6,7 @@ import { PushBridge } from './components/PushBridge.tsx';
 import { TaskSlideOver } from './components/TaskSlideOver.tsx';
 import { TerminalDrawer } from './components/TerminalDrawer.tsx';
 import { BoardPage } from './pages/Board.tsx';
+import { BranchesPage } from './pages/Branches.tsx';
 import { ChatPage } from './pages/Chat.tsx';
 import { DashboardPage } from './pages/Dashboard.tsx';
 import { FeaturePage } from './pages/Feature.tsx';
@@ -41,6 +42,7 @@ export function App() {
         <Route path="/shared" element={<SharedPage onOpenTask={setOpenTask} />} />
         <Route path="/terminals" element={<TerminalsPage onOpenTerminal={openTerm} />} />
         <Route path="/repos" element={<ReposPage onOpenTerminal={openTerm} />} />
+        <Route path="/branches" element={<BranchesPage onOpenTask={setOpenTask} />} />
         <Route path="/config" element={<ConfigPage />} />
         <Route path="/handbook" element={<HandbookPage />} />
       </Routes>

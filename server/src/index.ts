@@ -29,6 +29,7 @@ import { PushService } from './push/service.ts';
 import { PushNotifier } from './push/notifier.ts';
 import { registerSpaceRoutes } from './routes/spaces.ts';
 import { registerReportRoutes } from './routes/reports.ts';
+import { registerBranchRoutes } from './routes/branches.ts';
 import { recoverReportsOnBoot } from './reports/service.ts';
 import { registerCommandRoutes } from './routes/commands.ts';
 import { registerShellRoutes } from './routes/shells.ts';
@@ -330,6 +331,7 @@ registerStatsRoutes(app, storage, sessions, orchestrator);
 registerChatRoutes(app, chats);
 registerQuestionRoutes(app, orchestrator.questions);
 registerReportRoutes(app, storage);
+registerBranchRoutes(app, storage);
 registerSpaceRoutes(app, storage, orchestrator);
 // Web Push to the Home Screen PWA (docs/push.md). Like the bot it reaches OUT
 // (to the browser vendors' push services); the routes only manage devices.

@@ -98,6 +98,10 @@ Services die when the server stops or restarts — deliberately, so their ports 
 
 **Terminal** (under *More* on a phone) opens your login shell in a repo's directory — no agent, just a terminal. Pick the repo, pick how many (1–4), **New terminal**. Each one is a tab; **grid** shows them side by side. × closes one (and kills whatever runs in it). Up to 10 can be open across all repos. A shell you `exit` stays as a tab with its output until you close it. On a phone, tapping a tab opens it full screen with the Esc/Tab/Ctrl key row. Like services, terminals close when the server restarts.
 
+## Branches — what is merged, what is only here
+
+**Branches** (under *More* on a phone) lists every repo's essential branches (main, staging, …) with what is **not pushed** or **behind**, then every branch or worktree whose work is **not merged** into one yet: whether it is pushed, what it is built on, its uncommitted files, and the task it belongs to. Already-merged branches fold away under **Merged**, including squash-landed task branches. The page reads your local git. **Fetch** asks the remote first, and each repo says when it last fetched. Details: `docs/branches.md`.
+
 ## Chat — asking, instead of tasking
 
 **Chat** in the sidebar (and `/chat` on Telegram) is a conversation with claude inside one of your repos. Full details: `docs/chat.md`. The Glass design leaves Chat out of the menus: switch the device to Classic (Config → Appearance) or open `/chat` directly.

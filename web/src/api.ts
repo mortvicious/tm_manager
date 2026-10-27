@@ -2,6 +2,7 @@ import type {
   Anomaly,
   AppSettings,
   AuditEvent,
+  BranchesOverview,
   Chat,
   ChatMessage,
   ChatMode,
@@ -305,6 +306,9 @@ export const api = {
   sentrySync: () => req<{ created: number; skipped: number; fetched: number }>('POST', '/api/sentry/sync'),
   statsOverview: (days: number) => req<StatsOverview>('GET', `/api/stats/overview?days=${days}`),
   anomalies: () => req<Anomaly[]>('GET', '/api/stats/anomalies'),
+  branches: (repoId?: string) =>
+    req<BranchesOverview>('GET', `/api/branches${repoId ? `?repoId=${encodeURIComponent(repoId)}` : ''}`),
+  fetchBranches: (repoId?: string) => req<BranchesOverview>('POST', '/api/branches/fetch', repoId ? { repoId } : {}),
   events: (limit = 50) => req<AuditEvent[]>('GET', `/api/events?limit=${limit}`),
   orchestratorAction: (a: 'start' | 'stop' | 'stop-and-kill') =>
     req<{ enabled: boolean }>('POST', `/api/orchestrator/${a}`),

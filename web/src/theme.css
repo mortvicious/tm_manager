@@ -5788,3 +5788,156 @@ tr.repo-open > td {
 .shell-orphans {
   margin-top: var(--tm-space-5);
 }
+
+/* ---------- Branches page: merged vs only-local work per repo (docs/branches.md) ---------- */
+
+.br-select {
+  width: auto;
+  max-width: 180px;
+}
+
+.br-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  margin-bottom: var(--tm-space-4);
+}
+
+.br-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-4);
+}
+
+.br-repo {
+  padding: var(--tm-space-4);
+  min-width: 0;
+}
+
+.br-repo-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--tm-space-2);
+  font-size: var(--tm-text-sm);
+}
+
+.br-repo-name {
+  font-family: var(--tm-font-display);
+  font-size: var(--tm-text-lg);
+  font-weight: 600;
+}
+
+.br-path {
+  font-size: var(--tm-text-xs);
+  overflow-wrap: anywhere;
+}
+
+.br-spacer {
+  flex: 1;
+}
+
+.br-stale {
+  color: var(--tm-status-review);
+}
+
+.br-h {
+  margin: var(--tm-space-4) 0 var(--tm-space-2);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tm-text-muted);
+}
+
+.br-gap {
+  margin: var(--tm-space-2) 0;
+  font-size: var(--tm-text-sm);
+}
+
+.br-row {
+  padding: var(--tm-space-2) 0;
+  border-top: 1px solid var(--tm-border);
+  min-width: 0;
+}
+
+.br-row-head,
+.br-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+  min-width: 0;
+}
+
+.br-row-meta {
+  margin-top: var(--tm-space-1);
+  font-size: var(--tm-text-xs);
+}
+
+.br-name {
+  font-size: var(--tm-text-sm);
+  font-weight: 600;
+  color: var(--tm-text);
+  overflow-wrap: anywhere;
+}
+
+.br-task {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--tm-accent);
+  cursor: pointer;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.br-task:hover {
+  text-decoration: underline;
+}
+
+.chip.br-tone-ok {
+  color: var(--tm-status-done);
+}
+
+.chip.br-tone-warn {
+  color: var(--tm-status-review);
+}
+
+.chip.br-tone-local {
+  color: var(--tm-status-attention);
+}
+
+.chip.br-tone-muted {
+  color: var(--tm-text-faint);
+}
+
+.br-details {
+  margin-top: var(--tm-space-1);
+  font-size: var(--tm-text-xs);
+}
+
+.br-details > summary {
+  cursor: pointer;
+  color: var(--tm-text-muted);
+}
+
+.br-merged {
+  margin-top: var(--tm-space-3);
+  font-size: var(--tm-text-sm);
+}
+
+.br-commits {
+  margin: var(--tm-space-1) 0 0;
+  padding-left: var(--tm-space-4);
+  color: var(--tm-text-muted);
+}
+
+.br-commits li {
+  overflow-wrap: anywhere;
+}
+
+.br-sha {
+  color: var(--tm-text-faint);
+}

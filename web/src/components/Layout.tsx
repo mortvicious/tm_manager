@@ -18,6 +18,7 @@ import {
   IconMoon,
   IconMore,
   IconQueue,
+  IconBranch,
   IconRepo,
   IconReport,
   IconShell,
@@ -342,6 +343,7 @@ const NAV: NavItem[] = [
   { to: '/shared', label: 'Shared', icon: <IconShared /> },
   { to: '/terminals', label: 'Terminal', icon: <IconShell /> },
   { to: '/repos', label: 'Repos', icon: <IconRepo /> },
+  { to: '/branches', label: 'Branches', icon: <IconBranch /> },
   { to: '/config', label: 'Config', icon: <IconConfig /> },
   { to: '/handbook', label: 'Handbook', icon: <IconBook /> },
 ];
