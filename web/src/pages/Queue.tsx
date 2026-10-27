@@ -7,14 +7,17 @@ import { IconTerminal } from '../components/Icons.tsx';
 import { Elapsed } from '../components/RunMeta.tsx';
 import { TaskRow } from '../components/TaskRow.tsx';
 import { customQueueWaiting } from '../components/QueueMark.tsx';
+import { QueuePauses, queuePauseRows } from '../components/QueuePause.tsx';
 import { KindBadge, runLink, runTitle } from '../components/RunKind.tsx';
 
 export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (runId: string) => void; onOpenTask: (id: string) => void }) {
-  const { runs, tasks, refresh } = useApp();
+  const { runs, tasks, repos, orch, refresh } = useApp();
   const active = runs.filter((r) => r.status === 'running' && !r.idle);
   const idle = runs.filter((r) => r.status === 'running' && r.idle);
   // Custom queue (docs/queue.md) first, in run order; the rest is the global queue.
   const custom = customQueueWaiting(tasks);
+  // Pause / Continue per repo queue (docs/queue.md § Pausing a repo's queue)
+  const pauseRows = queuePauseRows(tasks, repos, orch.pausedQueues ?? []);
   // listed in the order the orchestrator claims them (docs/grouping.md § Order)
   const queued = tasks
     .filter((t) => t.status === 'queued' && !t.customQueueAt)
@@ -143,7 +146,7 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
         </>
       )}
 
-      {custom.length > 0 && (
+      {(custom.length > 0 || pauseRows.length > 0) && (
         <>
           <div className="section-head">
             Queue <span className="count">{custom.length}</span>
@@ -151,17 +154,20 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
               one task per repo, runs even while the global queue is stopped
             </span>
           </div>
-          <div className="panel">
-            {custom.map((t) => (
-              <TaskRow
-                key={t.id}
-                task={t}
-                onOpenTask={onOpenTask}
-                onOpenTerminal={onOpenTerminal}
-                depth={t.parentId ? 1 : 0}
-              />
-            ))}
-          </div>
+          <QueuePauses rows={pauseRows} />
+          {custom.length > 0 && (
+            <div className="panel">
+              {custom.map((t) => (
+                <TaskRow
+                  key={t.id}
+                  task={t}
+                  onOpenTask={onOpenTask}
+                  onOpenTerminal={onOpenTerminal}
+                  depth={t.parentId ? 1 : 0}
+                />
+              ))}
+            </div>
+          )}
         </>
       )}
 

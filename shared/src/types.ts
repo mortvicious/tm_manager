@@ -1228,6 +1228,21 @@ export function customQueueHoldsRepo(t: Pick<Task, 'status' | 'reviewState' | 'c
 }
 
 /**
+ * Whether a repo's custom-queue pause (docs/queue.md § Pausing a repo's
+ * queue) holds this task: its repo is paused and it is a member of that queue
+ * — or carries a marker that pause wrote, so taking it out of the queue while
+ * paused does not hand it to the next scheduling pass. `pausedRepos` is
+ * `queue.pausedRepos` / `OrchestratorStatus.pausedQueues`.
+ */
+export function queuePauseHolds(
+  t: Pick<Task, 'repoId' | 'customQueueAt' | 'pausedTurn'>,
+  pausedRepos: readonly string[] | null | undefined,
+): boolean {
+  if (!t.repoId || !pausedRepos?.includes(t.repoId)) return false;
+  return !!t.customQueueAt || t.pausedTurn?.scope === 'queue';
+}
+
+/**
  * Members of the custom queue (docs/queue.md) that are still WAITING, in the
  * order they will run: FIFO by the moment each was added. `transitionTask`
  * clears `custom_queue_at` only on a terminal status, so a `running`, `review`
@@ -1628,6 +1643,12 @@ export interface PausedTurn {
   purpose?: 'work' | 'publish';
   /** the publish was the auto-publish tier's (re-issued as the orchestrator) */
   auto?: boolean;
+  /**
+   * Who owes the turn: absent = Pause all; `queue` = a repo's custom-queue
+   * pause (docs/queue.md § Pausing a repo's queue). A `queue` marker is
+   * resumed by that repo's Continue, never by Pause all's.
+   */
+  scope?: 'queue';
 }
 
 // Runtime-tunable settings stored in tm_config (JSON values under these keys).
@@ -1639,6 +1660,14 @@ export interface AppSettings {
    * changed only through /api/orchestrator/pause|continue, never PUT /api/config.
    */
   'orchestrator.paused': boolean;
+  /**
+   * Repos whose CUSTOM queue is paused (docs/queue.md § Pausing a repo's
+   * queue): no member is claimed there and the members' live turns were
+   * suspended until that repo's Continue. Machine state like
+   * `orchestrator.paused` — changed only through
+   * /api/orchestrator/queues/:repoId/pause|continue, never PUT /api/config.
+   */
+  'queue.pausedRepos': string[];
   'orchestrator.concurrency': number;
   /** WORKER model — the heavy implementation work (user policy 2026-08-24: opus) */
   'agent.model': string;
@@ -1850,6 +1879,7 @@ export interface AppSettings {
 export const DEFAULT_SETTINGS: AppSettings = {
   'orchestrator.enabled': false,
   'orchestrator.paused': false,
+  'queue.pausedRepos': [],
   'orchestrator.concurrency': 2,
   // Role split (user policy 2026-08-24): opus does the heavy work, fable
   // tells it what to do and reviews.
@@ -2082,6 +2112,8 @@ export type AuditKind =
   | 'orchestrator.toggle'
   /** Pause all on/off, and the turns it suspended (docs/pause.md) */
   | 'orchestrator.pause'
+  /** a repo's custom-queue pause on/off and what it suspended (docs/queue.md) */
+  | 'queue.pause'
   | 'schedule.overflow-claim'
   | 'schedule.spawn-fail'
   | 'boot.recovery'
@@ -2316,8 +2348,13 @@ export interface OrchestratorStatus {
    * suspended. A server predating it omits it.
    */
   paused?: boolean;
-  /** tasks Continue will resume (`Task.pausedTurn` set) */
+  /** tasks Continue will resume (`Task.pausedTurn` set, not owed to a paused repo queue) */
   pausedTasks?: number;
+  /**
+   * Repos whose custom queue is paused (docs/queue.md § Pausing a repo's
+   * queue). A server predating it omits it.
+   */
+  pausedQueues?: string[];
   /** live non-idle worker PTYs — the concurrency numerator */
   running: number;
   concurrency: number;

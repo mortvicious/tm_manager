@@ -2745,6 +2745,35 @@ button.badge.badge-link:hover {
   color: var(--tm-status-review);
 }
 
+/* One repo's queue pause (QueuePause.tsx, docs/queue.md § Pausing a repo's
+   queue): a row per repo above the queue's members */
+.queue-pauses {
+  margin-bottom: var(--tm-space-2);
+}
+
+.queue-pause-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  padding: var(--tm-space-2) var(--tm-space-3);
+}
+
+.queue-pause-row + .queue-pause-row {
+  border-top: 1px solid var(--tm-border-subtle);
+}
+
+.queue-pause-row .name {
+  font-weight: 600;
+}
+
+.queue-pause-row .paused-note {
+  color: var(--tm-status-review);
+}
+
+.queue-pause-row .btn {
+  margin-left: auto;
+}
+
 /* Rebuild & restart (Layout.tsx RebuildButton, docs/host.md): armed asks
    like Pause all; a failure opens its error and the build log's tail */
 .btn.rebuild-btn.armed {

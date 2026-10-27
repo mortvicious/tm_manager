@@ -546,7 +546,7 @@ Registered with `setMyCommands`, so they autocomplete in the client. The tables 
 | `/feature [text]` | the feature intake: the long request (typed, or given after the command) → repo picker → the feature is created and the planning session starts immediately. The plan comes back through the notification path with an **Approve & start** button |
 | `/approve <id>` | the same approve-and-start as that button, by id |
 | `/on` / `/off` | start / stop picking tasks. `/off` is the soft one: live sessions keep running, and it says **how many** (`/kill` ends one, `/killall` ends all) |
-| `/pause` / `/continue` | Pause all (`docs/pause.md`): suspend every live turn resumably and start nothing automatic, until `/continue` resumes each suspended task in its own session. Nothing is cancelled. The safe stop before `/restart` |
+| `/pause` / `/continue` | Pause all (`docs/pause.md`): suspend every live turn resumably and start nothing automatic, until `/continue` resumes each suspended task in its own session. Nothing is cancelled. The safe stop before `/restart`. With a repo (`/pause nest`, `/continue nest`): only that repo's custom queue (`docs/queue.md` § Pausing a repo's queue) |
 | `/kill <run id>` | kill a live run |
 | `/killall` | the red button — see § Emergency controls |
 | `/restart` | restart the server through the front door — see § Emergency controls |

@@ -43,6 +43,23 @@ export function registerOrchestratorRoutes(app: FastifyInstance, storage: Storag
     return { ...(await orch.status()), resumed, waiting };
   });
 
+  // One repo's custom queue (docs/queue.md § Pausing a repo's queue): the
+  // same browser-only rule — pausing suspends (kills) live turns.
+  app.post<{ Params: { repoId: string } }>('/api/orchestrator/queues/:repoId/pause', async (req, reply) => {
+    if (!req.headers.origin) return reply.code(403).send({ error: 'Pausing a queue is a browser action (Origin required)' });
+    if (!(await storage.getRepo(req.params.repoId))) return reply.code(404).send({ error: 'repo not found' });
+    const { suspended, already } = await orch.pauseQueue(req.params.repoId, 'human');
+    return { ...(await orch.status()), suspended, wasPaused: already };
+  });
+
+  // Continue accepts an unknown repo on purpose: a deleted repo's id must be
+  // removable from the paused set.
+  app.post<{ Params: { repoId: string } }>('/api/orchestrator/queues/:repoId/continue', async (req, reply) => {
+    if (!req.headers.origin) return reply.code(403).send({ error: 'Continuing a queue is a browser action (Origin required)' });
+    const { resumed, waiting } = await orch.continueQueue(req.params.repoId, 'human');
+    return { ...(await orch.status()), resumed, waiting };
+  });
+
   app.post('/api/orchestrator/stop-and-kill', async () => {
     await orch.setEnabled(false);
     const running = await storage.listRuns({ status: 'running', mode: 'worker' });

@@ -706,9 +706,15 @@ export async function renderBoard(deps: BoardDeps, want: BoardState): Promise<Re
   ];
   if (state.view === 'ru') {
     const st = await deps.orchestrator.status();
+    // repo queues paused on their own (docs/queue.md § Pausing a repo's queue)
+    const pausedQueues = (st.pausedQueues ?? []).flatMap((id) => {
+      const r = snap.repos.find((x) => x.id === id);
+      return r ? [escapeHtml(r.name)] : [];
+    });
     head.push(
       `workers ${st.running}/${st.concurrency} · queue ${st.enabled ? 'on' : 'off'}` +
         (st.paused ? ` · ⏸ paused${st.pausedTasks ? ` (${st.pausedTasks} to resume)` : ''}` : '') +
+        (pausedQueues.length ? ` · ⏸ ${pausedQueues.join(', ')} queue` : '') +
         (st.aux ? ` · ${st.aux} aux` : ''),
     );
   }

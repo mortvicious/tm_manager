@@ -69,6 +69,7 @@ export function ConfigPage() {
       }
       delete (diff as Record<string, unknown>)['orchestrator.enabled'];
       delete (diff as Record<string, unknown>)['orchestrator.paused'];
+      delete (diff as Record<string, unknown>)['queue.pausedRepos'];
       const next = await api.putConfig(diff);
       setCfg(next);
       snapshot.current = next;

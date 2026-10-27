@@ -119,6 +119,7 @@ const KIND_LABEL: Record<string, string> = {
   'repo.changed': 'changed repos',
   'config.changed': 'changed config',
   'orchestrator.toggle': 'toggled queue',
+  'queue.pause': 'repo queue pause',
   'schedule.overflow-claim': 'overflow claim',
   'schedule.spawn-fail': 'spawn failed',
   'boot.recovery': 'boot recovery',
