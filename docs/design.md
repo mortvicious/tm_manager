@@ -225,7 +225,7 @@ What reads the state: the SPA renders `review` + `pending|reviewing` as a synthe
 
 ## API
 
-REST `/api`: repos CRUD; tasks CRUD + `/enqueue|run-now|cancel|retry|unblock|complete|follow-up|proceed|review|apply-review|stop-agent` + `/queue|unqueue` (custom queue, `docs/queue.md`) + `GET /tasks/:id/resumable`; runs list + `/kill` + `GET /runs/activity` (current live-narration line per live run — the snapshot behind the Board's activity captions); `/analyze {repoId, taskIds?}`; proposals list + `/accept|reject`; features CRUD + `/analyze|plan|approve|start|pause|resume|cancel|complete`; dispatches list + `/cancel` (agent side: `POST /api/agent/dispatch`, `GET /api/agent/dispatches/:id` — `docs/dispatch.md`); config get/put; orchestrator get + `/start|stop|stop-and-kill`; `/usage` (session + weekly + weekly-fable windows, each `{pct,source,resetsAt,tokens,budget}` — real account figures from the CLI's `~/.claude.json` cache, local-transcript estimate as fallback); internal `/internal/runs/:id/{stop,session-start,session-end,needs-attention,question,subagent-start,subagent-stop}`; `/health`.
+REST `/api`: repos CRUD; tasks CRUD + `/enqueue|run-now|cancel|retry|unblock|complete|follow-up|proceed|review|apply-review|stop-agent` + `/queue|unqueue` (custom queue, `docs/queue.md`) + `GET /tasks/:id/resumable`; runs list + `/kill` + `GET /runs/activity` (current live-narration line per live run — the snapshot behind the Board's activity captions); `/analyze {repoId, taskIds?}`; proposals list + `/accept|reject`; features CRUD + `/analyze|plan|approve|start|pause|resume|cancel|complete`; dispatches list + `/cancel` (agent side: `POST /api/agent/dispatch`, `GET /api/agent/dispatches/:id` — `docs/dispatch.md`); config get/put; orchestrator get + `/start|stop|stop-and-kill`; `/branches` + `POST /branches/fetch` (git state per repo, `docs/branches.md`); `/usage` (session + weekly + weekly-fable windows, each `{pct,source,resetsAt,tokens,budget}` — real account figures from the CLI's `~/.claude.json` cache, local-transcript estimate as fallback); internal `/internal/runs/:id/{stop,session-start,session-end,needs-attention,question,subagent-start,subagent-stop}`; `/health`.
 WS: `/ws/terminal/:runId?token=…` (history/data/exit ↔ input/resize, base64-in-JSON) and `/ws/events` (task.updated, run.started/exited, run.needs-attention, run.activity, proposal.created, dispatch.updated, feature.updated/deleted, orchestrator.status) — frontend fully event-driven, no polling.
 
 ## Frontend
@@ -285,6 +285,16 @@ Plain login shells per repo (`/terminals` page): `$SHELL -l` with cwd = the repo
 1–4 per click, at most 10 open, in a FOURTH `SessionManager` pool so they never
 touch agent concurrency. In memory only (`ShellRunner`), attachable at
 `/ws/terminal/sh-<uuid>`, killed on restart/shutdown but never blocking it.
+
+## Branches (`docs/branches.md`)
+
+The `/branches` page shows, per repo, what is merged into an essential branch
+(the remote's default + main/staging/develop/… when present) and on the remote,
+versus what is only local: unpushed essential commits, branches and worktrees
+with unmerged commits (squash/rebase landings recognised by `Task:` trailer and
+patch id), and uncommitted files. Read from git on request (`GET /api/branches`,
+no network); `POST /api/branches/fetch` (Origin required) fetches first. Nothing
+is stored.
 
 ## Phases (docs/ update = exit criterion of every phase)
 
