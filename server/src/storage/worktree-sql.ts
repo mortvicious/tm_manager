@@ -1,7 +1,7 @@
 import type { Repo, Task } from '@tm/shared';
 
 /** What `updateTaskWorktree` may write — server-owned columns, never part of `updateTask` (docs/parallel.md). */
-export type WorktreePatch = Partial<Pick<Task, 'workdir' | 'branch' | 'prNumber' | 'prUrl' | 'prState' | 'worktreeEvictedAt'>>;
+export type WorktreePatch = Partial<Pick<Task, 'workdir' | 'branch' | 'prNumber' | 'prUrl' | 'prState' | 'worktreeEvictedAt' | 'worktreeBase'>>;
 
 const COLUMNS: [keyof WorktreePatch, string][] = [
   ['workdir', 'workdir'],
@@ -10,6 +10,7 @@ const COLUMNS: [keyof WorktreePatch, string][] = [
   ['prUrl', 'pr_url'],
   ['prState', 'pr_state'],
   ['worktreeEvictedAt', 'worktree_evicted_at'],
+  ['worktreeBase', 'worktree_base'],
 ];
 
 /**
@@ -31,10 +32,13 @@ export function worktreePatchSql(id: string, patch: WorktreePatch): { sql: strin
   return { sql: `UPDATE tm_tasks SET ${sets.join(', ')} WHERE id = ? RETURNING *`, params };
 }
 
-/** The `parallel, delivery, worktree_setup, worktree_copy` values `updateRepo` writes (both drivers). */
+/** The UPDATE `updateRepo` runs for the delivery columns (both drivers, params from `repoParallelParams` + id). */
+export const REPO_PARALLEL_SQL = `UPDATE tm_repos SET parallel = ?, delivery = ?, worktree_setup = ?, worktree_copy = ?, base_branch = ? WHERE id = ?`;
+
+/** The `parallel, delivery, worktree_setup, worktree_copy, base_branch` values `updateRepo` writes (both drivers). */
 export function repoParallelParams(
-  cur: Pick<Repo, 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy'>,
-  patch: Partial<Pick<Repo, 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy'>>,
+  cur: Pick<Repo, 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy' | 'baseBranch'>,
+  patch: Partial<Pick<Repo, 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy' | 'baseBranch'>>,
 ): unknown[] {
   const copy = patch.worktreeCopy === undefined ? cur.worktreeCopy : patch.worktreeCopy;
   return [
@@ -42,5 +46,6 @@ export function repoParallelParams(
     patch.delivery ?? cur.delivery,
     patch.worktreeSetup === undefined ? cur.worktreeSetup : patch.worktreeSetup,
     copy == null ? null : JSON.stringify(copy),
+    patch.baseBranch === undefined ? cur.baseBranch : patch.baseBranch,
   ];
 }

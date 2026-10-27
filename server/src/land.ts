@@ -31,8 +31,8 @@ async function event(storage: Storage, kind: 'task.pr' | 'task.land', task: Task
  */
 export async function landedCheck(repo: Repo, task: Task): Promise<ShippedCheck> {
   const none = (reason: string): ShippedCheck => ({ ok: false, reason, sha: null, ref: null, commits: 0, attribution: 'none' });
-  const def = await defaultBranch(repo.path);
-  if (!def) return none('no origin default branch');
+  const def = await defaultBranch(repo);
+  if (!def) return none('no base branch on origin');
   const log = await run(repo.path, 'git', ['log', def.ref, '--fixed-strings', `--grep=Task: ${task.id}`, '--format=%H %ct', '-n', '20']);
   if (log.code !== 0) return none(`git log failed: ${tail(log.out, 1)}`);
   const landed = log.out.split('\n').map((l) => l.trim().split(' ')).filter((p) => p[0]);
@@ -88,7 +88,7 @@ function prBody(task: Task): string {
  */
 export async function syncPr(storage: Storage, repo: Repo, task: Task, cwd: string, ready: boolean): Promise<Task> {
   if (!task.branch) return task;
-  const def = await defaultBranch(cwd);
+  const def = await defaultBranch(repo, cwd);
   if (!def) return task;
   const ahead = await run(cwd, 'git', ['rev-list', '--count', `${def.ref}..HEAD`]);
   if (ahead.code !== 0 || Number(ahead.out.trim()) === 0) return task; // nothing of its own committed yet
@@ -183,8 +183,8 @@ export async function landWorktree(
   /** the tree a previous land found red: never skip the checks on it again */
   redTree: string | null = null,
 ): Promise<LandResult> {
-  const def = await defaultBranch(cwd);
-  if (!def) return { kind: 'failed', error: 'no origin default branch to land onto' };
+  const def = await defaultBranch(repo, cwd);
+  if (!def) return { kind: 'failed', error: repo.baseBranch ? `the base branch origin/${repo.baseBranch} does not exist` : 'no origin default branch to land onto' };
   if (!task.branch) return { kind: 'failed', error: 'the task has no branch' };
   // a rebase a crash left half-done: abort it first, or the leftovers commit
   // would land on its detached HEAD and the next abort would drop it
@@ -275,7 +275,7 @@ async function squash(cwd: string, def: DefaultBranch, task: Task): Promise<{ sh
  * else (another branch, local edits, local commits) is left alone.
  */
 export async function fastForwardCheckout(storage: Storage, repo: Repo, task: Task): Promise<void> {
-  const def = await defaultBranch(repo.path);
+  const def = await defaultBranch(repo);
   if (!def) return;
   const head = await run(repo.path, 'git', ['symbolic-ref', '--short', 'HEAD']);
   if (head.code !== 0 || head.out.trim() !== def.branch) return;

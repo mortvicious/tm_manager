@@ -180,6 +180,9 @@ function PushPolicyCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<
  * fast-forward, up to N of the repo's tasks at once (still within the global
  * concurrency). Switching to pr is refused unless origin is GitHub and `gh`
  * is logged in. The setup command and copy list apply to each NEW worktree.
+ * The base branch (empty = GitHub's default) is what worktrees fork from, PRs
+ * target and lands push to; changing it moves every unlanded task branch onto
+ * the new base before its next turn or land (docs/parallel.md § Base branch).
  */
 function ParallelCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
@@ -187,12 +190,14 @@ function ParallelCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<vo
   const [open, setOpen] = useState(false);
   const [setup, setSetup] = useState(repo.worktreeSetup ?? '');
   const [copy, setCopy] = useState((repo.worktreeCopy ?? [...WORKTREE_COPY_DEFAULTS]).join(' '));
+  const [base, setBase] = useState(repo.baseBranch ?? '');
   useEffect(() => {
     if (!open) {
       setSetup(repo.worktreeSetup ?? '');
       setCopy((repo.worktreeCopy ?? [...WORKTREE_COPY_DEFAULTS]).join(' '));
+      setBase(repo.baseBranch ?? '');
     }
-  }, [repo.worktreeSetup, repo.worktreeCopy, open]);
+  }, [repo.worktreeSetup, repo.worktreeCopy, repo.baseBranch, open]);
   const current = repo.delivery === 'pr' ? `pr:${repo.parallel}` : 'direct';
   const patch = async (b: Parameters<typeof api.updateRepo>[1]) => {
     setBusy(true);
@@ -215,8 +220,20 @@ function ParallelCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<vo
   const saveSetup = async () => {
     const list = copy.split(/\s+/).filter(Boolean);
     const same = list.join(' ') === [...WORKTREE_COPY_DEFAULTS].join(' ');
-    if (await patch({ worktreeSetup: setup.trim() || null, worktreeCopy: same ? null : list })) setOpen(false);
+    const baseBranch = base.trim() || null;
+    if (
+      await patch({
+        worktreeSetup: setup.trim() || null,
+        worktreeCopy: same ? null : list,
+        // only a change: setting it fetches and checks origin/<branch>
+        ...(baseBranch !== repo.baseBranch ? { baseBranch } : {}),
+      })
+    )
+      setOpen(false);
   };
+  const summary = [repo.baseBranch ? `base: ${repo.baseBranch}` : null, repo.worktreeSetup ? `setup: ${repo.worktreeSetup}` : null]
+    .filter(Boolean)
+    .join(' · ');
   return (
     <span className="repo-landing">
       <select
@@ -225,7 +242,7 @@ function ParallelCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<vo
         disabled={busy}
         title={
           repo.delivery === 'pr'
-            ? `Each task works in its own worktree (${shortPath(repo.path)}.worktrees/) on tm/<task>; the server opens a draft PR and lands it by squash + fast-forward. Up to ${repo.parallel} at once.`
+            ? `Each task works in its own worktree (${shortPath(repo.path)}.worktrees/) on tm/<task>, forked from origin/${repo.baseBranch ?? '<default>'}; the server opens a draft PR and lands it by squash + fast-forward. Up to ${repo.parallel} at once.`
             : 'One task at a time, working in this checkout (today’s behaviour).'
         }
         onChange={(e) => choose(e.target.value)}
@@ -239,11 +256,18 @@ function ParallelCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<vo
       </select>
       {repo.delivery === 'pr' && (
         <button type="button" className="btn ghost repo-url-edit" onClick={() => setOpen((o) => !o)} disabled={busy}>
-          {open ? 'close' : repo.worktreeSetup ? `setup: ${repo.worktreeSetup}` : 'worktree setup…'}
+          {open ? 'close' : summary || 'worktree setup…'}
         </button>
       )}
       {open && (
         <span className="repo-landing">
+          <input
+            className="field mono"
+            placeholder="base branch (default: GitHub's)"
+            value={base}
+            onChange={(e) => setBase(e.target.value)}
+            title="The branch worktrees fork from, PRs target and lands push to (origin/<branch>). Empty = the remote's default branch. Changing it moves every unlanded task branch onto the new base before its next turn or land."
+          />
           <input
             className="field mono"
             placeholder="setup command, e.g. npm install"

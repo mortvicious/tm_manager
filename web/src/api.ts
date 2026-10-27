@@ -197,7 +197,7 @@ export const api = {
     b: Partial<
       Pick<
         Repo,
-        'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes' | 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy'
+        'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes' | 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy' | 'baseBranch'
       >
     >,
   ) =>

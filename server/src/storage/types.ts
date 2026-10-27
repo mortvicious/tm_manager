@@ -110,7 +110,7 @@ export type LoopStep = Partial<Pick<Task, 'loopState' | 'loopIteration' | 'loopH
 
 /** undefined = leave as-is; null clears the column. */
 export type RepoPatch = Partial<
-  Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes' | 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy'>
+  Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes' | 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy' | 'baseBranch'>
 >;
 
 export interface NewCommand {

@@ -135,6 +135,7 @@ import { describeStopCause, type StopCause } from './stop-cause.ts';
 import {
   defaultBranch,
   ensureWorktree,
+  type Retargeted,
   evictWorktree,
   pruneOrphans,
   removeWorktree,
@@ -197,6 +198,15 @@ function landConflictMessage(onto: string, files: string[]): string {
     'resolve every conflict keeping the intent of both sides, `git rebase --continue` until the rebase is done, run the',
     "repo's checks/tests and fix what the rebase broke, and commit any fix (with this task's trailer). Do not merge the",
     'default branch in, do not push, do not open a PR. Then stop: the server re-verifies the change and lands it.',
+  ].join(' ');
+}
+
+/** The prompt note for a turn whose branch the server just moved onto the repo's base (docs/parallel.md § Base branch). */
+function retargetedNote(r: Retargeted, branch: string | null): string {
+  return [
+    `Note from the server: this task's branch${branch ? ` \`${branch}\`` : ''} was forked from \`origin/${r.from}\`, which is not this repo's`,
+    `base. Before this turn it was rebased onto \`origin/${r.to}\` (${r.commits} commit(s) of this task carried over).`,
+    'The tree you work in now is the base\'s current code: re-read any file before relying on what an earlier turn saw.',
   ].join(' ');
 }
 
@@ -1565,7 +1575,7 @@ export class Orchestrator implements OrchestratorApi {
       // construction: its branch is its change and the tree is its leftovers.
       // The base is the branch's CURRENT fork point — after a rebase onto a
       // newer origin/<default>, the stored base would sweep main's commits in.
-      const def = await defaultBranch(taskWorkdir(task, repo));
+      const def = await defaultBranch(repo, taskWorkdir(task, repo));
       const fork = def ? await execIn(taskWorkdir(task, repo), 'git', ['merge-base', 'HEAD', def.ref]) : null;
       const baseSha = fork?.code === 0 && fork.out.trim() ? fork.out.trim() : task.baseSha;
       return { taskId: task.id, baseSha, until: now, soleWorker: !!baseSha, includeUncommitted: true, branchRange: true };
@@ -3174,12 +3184,16 @@ export class Orchestrator implements OrchestratorApi {
     // its own worktree, created — or re-created at the same path after an
     // eviction — HERE, the funnel of every turn, before anything reads the cwd.
     // Counted as a gate meanwhile (the setup command can take minutes).
+    // A branch forked from another base than the repo's current one is moved
+    // onto it here, before the turn (docs/parallel.md § Base branch).
+    let retargetNote: string | undefined;
     if (await this.wantsWorktree(task, repo)) {
       this.gatesInFlight.add(task.id);
       let made: EnsureResult;
       try {
         made = await ensureWorktree(this.storage, repo, task, {
           logPath: path.join(artifactsRoot, task.id, 'worktree-setup.log'),
+          retarget: true,
         }).catch((e): EnsureResult => ({ ok: false, error: String((e as Error)?.message ?? e).slice(0, 300) }));
       } finally {
         this.gatesInFlight.delete(task.id);
@@ -3199,6 +3213,7 @@ export class Orchestrator implements OrchestratorApi {
         return false;
       }
       task = made.task;
+      if (made.retargeted) retargetNote = retargetedNote(made.retargeted, task.branch);
     }
     const settings = await this.storage.getSettings();
     const model = await this.resolveModel(task, settings);
@@ -3398,7 +3413,7 @@ export class Orchestrator implements OrchestratorApi {
         callbackUrl: this.callbackUrl,
         artifactsDir,
         followUp,
-        dispatchNote: fyi.note,
+        dispatchNote: [retargetNote, fyi.note].filter(Boolean).join('\n\n') || undefined,
         shared,
         doneNote: doneNote ?? undefined,
         landing: effectiveLanding(task, repo),
@@ -3857,8 +3872,15 @@ export class Orchestrator implements OrchestratorApi {
     }
     let checkResults: CheckResult[] | null = null;
     const res: LandResult = await withRepoLock(`land:${repo.id}`, async () => {
-      const view = await this.taskRepo(task);
-      if (!view) return { kind: 'failed', error: 'the task worktree could not be re-created' } as LandResult;
+      // re-created if evicted, and moved onto the repo's base first when it was
+      // forked from another one (docs/parallel.md § Base branch) — the land's own
+      // rebase would carry the old base's commits along
+      const made = await ensureWorktree(this.storage, repo, task, { retarget: true }).catch(
+        (e): EnsureResult => ({ ok: false, error: String((e as Error)?.message ?? e).slice(0, 300) }),
+      );
+      if (!made.ok) return { kind: 'failed', error: `the task worktree: ${made.error}` } as LandResult;
+      task = made.task;
+      const view = { ...repo, path: made.cwd };
       // the PR is the record: one that never opened (gh down at every sync) opens now, ready
       if (!task.prNumber) task = await syncPr(this.storage, repo, task, view.path, true).catch(() => task);
       const landed = await landWorktree(this.storage, repo, task, view.path, async (cwd) => {

@@ -21,11 +21,12 @@ The target setup is 3–4 projects with 6–8 agents, 2 per repo, so the global
 | `tm_repos.parallel` | 1..`PARALLEL_MAX` (3); read as 1 unless `delivery = 'pr'` |
 | `tm_repos.worktree_setup` | optional setup command line (argv, never a shell), run in a new worktree |
 | `tm_repos.worktree_copy` | ignored-file patterns copied into a new worktree (default `.env*`, `.claude/settings.local.json`) |
+| `tm_repos.base_branch` (migration 47) | the branch worktrees fork from, PRs target and lands push to; null = the remote default (§ Base branch) |
 
 Set on the Repos page (**Parallel** column → `direct · 1` / `pr · N`, plus a
 "worktree setup…" toggle). Switching to `pr` is refused unless the repo has a
-GitHub `origin`, a resolvable default branch (`origin/HEAD`, else
-`origin/main|master`) and an authenticated `gh` (`prDeliveryRefusal`).
+GitHub `origin`, a resolvable base branch (`origin/<base_branch>`, else
+`origin/HEAD`, else `origin/main|master`) and an authenticated `gh` (`prDeliveryRefusal`).
 `parallel > 1`, `pr` and a setup command need `Origin` (403 otherwise) — a
 worker's curl cannot raise its own repo's concurrency or plant a command the
 server will run. `direct` with `parallel > 1` is a 400; switching back to
@@ -36,7 +37,8 @@ repo's `<path>.worktrees` folder.
 
 `server/src/worktrees.ts`. A task's worktree is
 **`<repo path>.worktrees/<task8>`** (a sibling of the repo, never inside it) on
-branch **`tm/<task8>`**, forked from a freshly fetched `origin/<default>`.
+branch **`tm/<task8>`**, forked from a freshly fetched `origin/<base>` (§ Base branch;
+the fork's base is recorded in `tm_tasks.worktree_base`).
 `tm_tasks.workdir`/`branch` are written BEFORE any git step, so the gate counts
 the task as a worktree holder from its first second and a crash mid-create
 leaves a directory the module recognises. Creation, removal and pruning run
@@ -86,6 +88,66 @@ hand-off ignores worktree tasks — they never share the checkout.
 `worktreeShipRule(branch)`, which outranks the ship gate and the publish turn:
 commit on `tm/<task8>` with the trailer, never push, never open a PR, never
 switch branches. The server does all three.
+
+## Base branch
+
+Task dcdff30e. "The default branch" everywhere in this doc is **the repo's
+base branch**: `defaultBranch(repo, cwd)` in `worktrees.ts` returns
+`origin/<tm_repos.base_branch>` when the repo names one, else the remote's own
+default (`remoteDefaultBranch`: `origin/HEAD`, else `origin/main|master`).
+That ONE resolver feeds the fork, the PR's `--base`, the land's rebase,
+squash and fast-forward push, `landedCheck`, `fastForwardCheckout`, the
+review's `changeScope` and `prDeliveryRefusal`.
+
+Why: GitHub's default branch is not always the line the work happens on.
+neko-nest develops and deploys on `staging` (a push to it IS the production
+deploy) while `main` sat 446 commits behind, five months stale. Forking from
+`origin/HEAD` put every task on a tree without the code it was about, and a
+land would have squashed all of staging's history into one commit on `main`.
+Fixing that with `git remote set-head origin staging` in the checkout works,
+but it is local state a `git remote set-head -a` silently undoes; the
+setting is on the row, visible on the Repos page.
+
+Set on the Repos page (**worktree setup…** → *base branch*; empty = the
+remote default; `origin/` is stripped). `PATCH /api/repos/:id {baseBranch}`:
+any change — set or cleared — needs `Origin` (it moves where lands push, which
+for some repos is a deploy); a name must be a plain ref (`validBaseBranchName`:
+no leading `-`, no `..`) and `origin/<name>` must exist after a fetch (400
+otherwise); POST refuses it like the other delivery fields; audited in
+`repo.changed`.
+
+**Moving existing work onto a changed base** (`retargetWorktree`). Each
+worktree task records the base its branch was forked from or last moved onto
+(`tm_tasks.worktree_base`, migration 47; a row from before it reads as the
+remote default, which is what it was forked from). When it differs from the
+repo's base, the branch is moved **before the next turn** (`startWorker` →
+`ensureWorktree(…, { retarget: true })`) **and before a land**
+(`publishWorktree`), never under a reviewer or a check run:
+
+1. under the `wt:` lock, fetch both bases, abort a half-done rebase, commit
+   leftovers under the trailer;
+2. `git rebase --onto origin/<new> <upstream>`, where upstream is the
+   branch's fork point off the OLD base, or off the NEW one when the branch
+   already sits on it (an agent moved it by hand), whichever is newer — so
+   only the task's own commits move: an old base that is an ancestor of the
+   new one (main ⊂ staging) contributes nothing, and a diverged old base's
+   commits are left behind;
+3. `worktree_base` written, `task.worktree { action: 'retargeted', from, to,
+   commits }`; an open/draft PR gets its branch re-pushed (lease) and
+   `gh pr edit --base <new>` (`task.pr { action: 'retargeted' }`);
+4. the turn's prompt carries a note that the tree moved (through the
+   `dispatchNote` context slot), so a resumed session re-reads files.
+
+A conflict is aborted (branch untouched, `worktree_base` unchanged, audited
+`retarget-failed` with the files) and the turn fails, or the land is refused,
+with the files and the exact `git rebase --onto …` to run by hand in the
+worktree; the next turn tries again. A task that never runs again before its
+land is moved by the land itself.
+
+**What it does not do**: commits that exist only on the human's LOCAL base
+branch (not pushed) are invisible to a fork from `origin/<base>`; a branch an
+agent moved onto the local tip carries them, and its squash will include them.
+Push the base branch first (or accept that).
 
 ## The gate
 

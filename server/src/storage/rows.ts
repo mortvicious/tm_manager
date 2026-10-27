@@ -86,6 +86,7 @@ export function rowToRepo(r: any): Repo {
     delivery: REPO_DELIVERIES.includes(r.delivery) ? r.delivery : 'direct',
     worktreeSetup: r.worktree_setup ?? null,
     worktreeCopy: stringList(r.worktree_copy),
+    baseBranch: r.base_branch || null,
     createdAt: r.created_at,
   };
 }
@@ -151,6 +152,7 @@ export function rowToTask(r: any): Task {
     prUrl: r.pr_url ?? null,
     prState: PR_STATES.includes(r.pr_state) ? r.pr_state : null,
     worktreeEvictedAt: r.worktree_evicted_at ?? null,
+    worktreeBase: r.worktree_base ?? null,
     customQueueAt: r.custom_queue_at ?? null,
     reviewSummary: r.review_summary ?? null,
     reviewDiffHash: r.review_diff_hash ?? null,

@@ -27,7 +27,7 @@ import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
 import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, REPO_EXCLUSIVE_GATE, skipRepos } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
-import { repoParallelParams, worktreePatchSql } from './worktree-sql.ts';
+import { REPO_PARALLEL_SQL, repoParallelParams, worktreePatchSql } from './worktree-sql.ts';
 import { LOOP_LEAVES_RUNNING_SQL, loopStepSets, stepLoopSql } from './loop-sql.ts';
 import {
   MANUAL_CLAIM_ORDER,
@@ -289,7 +289,7 @@ export class PostgresStorage implements Storage {
       patch.questionAutopilotMinutes === undefined ? cur.questionAutopilotMinutes : patch.questionAutopilotMinutes,
       id,
     ]);
-    await this.q(`UPDATE tm_repos SET parallel = ?, delivery = ?, worktree_setup = ?, worktree_copy = ? WHERE id = ?`, [
+    await this.q(REPO_PARALLEL_SQL, [
       ...repoParallelParams(cur, patch),
       id,
     ]);

@@ -551,6 +551,13 @@ export interface Repo {
   worktreeSetup: string | null;
   /** untracked/ignored files copied into a new worktree (basename or path globs); null = WORKTREE_COPY_DEFAULTS */
   worktreeCopy: string[] | null;
+  /**
+   * The branch `pr` delivery forks worktrees from, opens PRs against and lands
+   * onto (`origin/<baseBranch>`); null = the remote default (`origin/HEAD`, else
+   * origin/main|master). For a repo whose real line is not GitHub's default —
+   * neko-nest lives on `staging` (docs/parallel.md § Base branch).
+   */
+  baseBranch: string | null;
   createdAt: string;
 }
 
@@ -965,6 +972,13 @@ export interface Task {
   prState: PrState | null;
   /** when the idle sweep removed the worktree directory (branch kept; re-created on the next turn) */
   worktreeEvictedAt: string | null;
+  /**
+   * The base branch (no remote, e.g. `staging`) the worktree was forked from or
+   * last moved onto. A repo whose base changed since moves the branch before the
+   * next turn or land (`retargetWorktree`); null = forked before this was
+   * recorded, read as the remote default.
+   */
+  worktreeBase: string | null;
   /**
    * Membership in the custom queue (docs/queue.md): set when a human clicks
    * "Add to queue", ISO time of that click = FIFO position. The custom queue

@@ -102,18 +102,54 @@ export interface DefaultBranch {
   ref: string;
 }
 
-/** The remote default branch the worktrees fork from and land onto (`origin/HEAD`, else origin/main|master). */
-export async function defaultBranch(repoPath: string): Promise<DefaultBranch | null> {
-  const head = await run(repoPath, 'git', ['rev-parse', '--abbrev-ref', 'origin/HEAD']);
+/**
+ * The remote's own default branch (`origin/HEAD`, else origin/main|master) —
+ * what a repo with no `baseBranch` forks from and lands onto, and what a
+ * worktree recorded before `worktree_base` existed was forked from.
+ */
+export async function remoteDefaultBranch(cwd: string): Promise<DefaultBranch | null> {
+  const head = await run(cwd, 'git', ['rev-parse', '--abbrev-ref', 'origin/HEAD']);
   if (head.code === 0 && /^origin\/\S+$/.test(head.out.trim())) {
     const ref = head.out.trim();
     return { remote: 'origin', branch: ref.slice('origin/'.length), ref };
   }
   for (const b of ['main', 'master']) {
-    const r = await run(repoPath, 'git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${b}`]);
+    const r = await run(cwd, 'git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${b}`]);
     if (r.code === 0) return { remote: 'origin', branch: b, ref: `origin/${b}` };
   }
   return null;
+}
+
+/**
+ * The branch a `pr` repo's worktrees fork from, its PRs target and its lands
+ * push to (docs/parallel.md § Base branch): `origin/<repo.baseBranch>` when the
+ * repo names one, else the remote default. `cwd` may be a task's worktree (the
+ * remote-tracking refs are shared). A configured branch not fetched yet is
+ * fetched once; null when it still does not exist on the remote.
+ */
+export async function defaultBranch(repo: Pick<Repo, 'path' | 'baseBranch'>, cwd: string = repo.path): Promise<DefaultBranch | null> {
+  const name = repo.baseBranch;
+  if (!name) return remoteDefaultBranch(cwd);
+  const has = async () => (await run(cwd, 'git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${name}`])).code === 0;
+  if (!(await has())) {
+    await run(cwd, 'git', ['fetch', 'origin', name], 60_000);
+    if (!(await has())) return null;
+  }
+  return { remote: 'origin', branch: name, ref: `origin/${name}` };
+}
+
+/** A branch name we accept as a repo's base: plain git ref characters, no option or range lookalikes. */
+export function validBaseBranchName(name: string): boolean {
+  return (
+    /^[A-Za-z0-9._/-]{1,200}$/.test(name) &&
+    !name.startsWith('-') &&
+    !name.startsWith('/') &&
+    !name.endsWith('/') &&
+    !name.endsWith('.lock') &&
+    !name.includes('..') &&
+    !name.includes('//') &&
+    name !== 'HEAD'
+  );
 }
 
 /**
@@ -121,19 +157,37 @@ export async function defaultBranch(repoPath: string): Promise<DefaultBranch | n
  * `origin` with a default branch and an authenticated `gh` (the server opens
  * the PRs). Read at the route before the switch is written.
  */
-export async function prDeliveryRefusal(repoPath: string): Promise<string | null> {
+export async function prDeliveryRefusal(repo: Pick<Repo, 'path' | 'baseBranch'>): Promise<string | null> {
+  const repoPath = repo.path;
   const url = await run(repoPath, 'git', ['remote', 'get-url', 'origin']);
   if (url.code !== 0) return 'pr delivery needs an `origin` remote';
   if (!/github\.com[:/]/i.test(url.out)) return 'pr delivery needs a GitHub `origin` remote';
-  if (!(await defaultBranch(repoPath))) return 'pr delivery needs origin/HEAD (or origin/main) — run `git fetch origin` in the repo';
+  if (!(await defaultBranch(repo))) {
+    return repo.baseBranch
+      ? `pr delivery needs the base branch on the remote — origin/${repo.baseBranch} does not exist`
+      : 'pr delivery needs origin/HEAD (or origin/main) — run `git fetch origin` in the repo';
+  }
   const auth = await run(repoPath, 'gh', ['auth', 'status'], 20_000);
   if (auth.code !== 0) return `pr delivery needs an authenticated GitHub CLI — run \`gh auth login\` (${auth.out.split('\n')[0] || 'gh not found'})`;
   return null;
 }
 
 export type EnsureResult =
-  | { ok: true; task: Task; cwd: string; created: boolean; note?: string }
+  | { ok: true; task: Task; cwd: string; created: boolean; note?: string; retargeted?: Retargeted }
   | { ok: false; error: string };
+
+/** A branch `retargetWorktree` moved: from which base onto which, carrying how many of the task's own commits. */
+export interface Retargeted {
+  from: string;
+  to: string;
+  commits: number;
+}
+
+function noBase(repo: Pick<Repo, 'baseBranch'>): string {
+  return repo.baseBranch
+    ? `the base branch origin/${repo.baseBranch} does not exist on the remote (Repos page → base branch)`
+    : 'no origin default branch to fork the worktree from (run `git fetch origin`)';
+}
 
 /**
  * Make sure a worktree task's directory exists, creating or re-creating it.
@@ -152,8 +206,24 @@ export async function ensureWorktree(
   storage: Storage,
   repo: Repo,
   task: Task,
-  opts: { logPath?: string } = {},
+  opts: {
+    logPath?: string;
+    /**
+     * Also move the branch onto the repo's base when it was forked from
+     * another one (`retargetWorktree`). Only where nothing of the task is
+     * running: a turn about to spawn, a land — never a reviewer or a check.
+     */
+    retarget?: boolean;
+  } = {},
 ): Promise<EnsureResult> {
+  const made = await ensureTree(storage, repo, task, opts);
+  if (!made.ok || !opts.retarget) return made;
+  const moved = await retargetWorktree(storage, repo, made.task, made.cwd);
+  if (!moved.ok) return moved;
+  return { ...made, task: moved.task, ...(moved.retargeted ? { retargeted: moved.retargeted } : {}) };
+}
+
+async function ensureTree(storage: Storage, repo: Repo, task: Task, opts: { logPath?: string }): Promise<EnsureResult> {
   // the common case, a later turn of a live worktree: no lock (a land may hold
   // it for minutes) — unless an eviction is removing it right now, or its setup
   // never finished (a failed setup command, a crash mid-clone)
@@ -197,11 +267,12 @@ export async function ensureWorktree(
     if (hasBranch) {
       add = await run(repo.path, 'git', ['worktree', 'add', dir, branch], 120_000);
     } else {
-      const def = await defaultBranch(repo.path);
-      if (!def) return { ok: false, error: 'no origin default branch to fork the worktree from (run `git fetch origin`)' };
+      const def = await defaultBranch(repo);
+      if (!def) return { ok: false, error: noBase(repo) };
       await run(repo.path, 'git', ['fetch', def.remote, def.branch], 60_000);
       add = await run(repo.path, 'git', ['worktree', 'add', '--no-track', '-b', branch, dir, def.ref], 120_000);
       base = def.ref;
+      if (add.code === 0) row = (await storage.updateTaskWorktree(task.id, { worktreeBase: def.branch })) ?? row;
     }
     if (add.code !== 0) return { ok: false, error: `git worktree add failed: ${lastLines(add.out, 3)}` };
 
@@ -219,6 +290,103 @@ export async function ensureWorktree(
       setup: setup.setupRan,
     } });
     return { ok: true, task: row, cwd: dir, created: !hasBranch, note: setup.note };
+  });
+}
+
+/**
+ * Move a worktree task's branch onto the repo's CURRENT base when it was forked
+ * from (or last moved onto) another one (docs/parallel.md § Base branch) — a
+ * repo whose real line is `staging` while GitHub's default `main` is months
+ * stale. Only the task's OWN commits move: the upstream of the rebase is the
+ * branch's fork point off the old base, or off the new one when the branch
+ * already sits on it (an agent that moved it by hand), whichever is newer —
+ * so neither the old base's history nor the new one's is ever replayed.
+ * Leftovers are committed first (like a land). A conflict is aborted and
+ * refused with the files, the branch untouched. An open PR gets the new base
+ * and the moved branch. Runs under the `wt:` lock; a no-op once
+ * `worktree_base` matches.
+ */
+export async function retargetWorktree(
+  storage: Storage,
+  repo: Repo,
+  task: Task,
+  cwd: string,
+): Promise<{ ok: true; task: Task; retargeted?: Retargeted } | { ok: false; error: string }> {
+  if (!task.branch) return { ok: true, task };
+  const def = await defaultBranch(repo, cwd);
+  if (!def) return { ok: false, error: noBase(repo) };
+  if (task.worktreeBase === def.branch) return { ok: true, task };
+  // a row from before worktree_base: forked from the remote default
+  const from = task.worktreeBase ?? (await remoteDefaultBranch(cwd))?.branch ?? null;
+  if (from === def.branch) {
+    return { ok: true, task: (await storage.updateTaskWorktree(task.id, { worktreeBase: def.branch })) ?? task };
+  }
+  return withRepoLock(`wt:${repo.id}`, async () => {
+    const fresh = (await storage.getTask(task.id)) ?? task;
+    if (fresh.worktreeBase === def.branch) return { ok: true as const, task: fresh };
+    const fail = (error: string) => ({ ok: false as const, error: `moving ${task.branch} from ${from ? `origin/${from}` : 'its old base'} onto ${def.ref}: ${error}` });
+
+    await run(cwd, 'git', ['fetch', def.remote, def.branch], 60_000);
+    if (from) await run(cwd, 'git', ['fetch', def.remote, from], 60_000);
+    for (const p of ['rebase-merge', 'rebase-apply']) {
+      const gp = (await run(cwd, 'git', ['rev-parse', '--git-path', p])).out.trim();
+      if (gp && fs.existsSync(path.resolve(cwd, gp))) {
+        await run(cwd, 'git', ['rebase', '--abort']);
+        break;
+      }
+    }
+    const leftovers = await commitLeftovers(cwd, task.id, `WIP: uncommitted work before moving onto ${def.ref}`);
+    if (leftovers.error) return fail(`could not commit the leftovers: ${leftovers.error}`);
+
+    const mergeBase = async (ref: string) => {
+      const r = await run(cwd, 'git', ['merge-base', 'HEAD', ref]);
+      return r.code === 0 && r.out.trim() ? r.out.trim() : null;
+    };
+    const forkNew = await mergeBase(def.ref);
+    const oldRef = from && (await run(cwd, 'git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${from}`])).code === 0 ? `origin/${from}` : null;
+    const forkOld = oldRef ? await mergeBase(oldRef) : null;
+    let upstream = forkNew ?? forkOld;
+    if (forkOld && forkNew && forkOld !== forkNew) {
+      upstream = (await run(cwd, 'git', ['merge-base', '--is-ancestor', forkOld, forkNew])).code === 0 ? forkNew : forkOld;
+    }
+    if (!upstream) return fail('the branch shares no history with either base');
+    const own = await run(cwd, 'git', ['rev-list', '--count', '--no-merges', `${upstream}..HEAD`]);
+    const commits = Number(own.out.trim()) || 0;
+
+    const r = await run(cwd, 'git', ['-c', 'core.editor=true', 'rebase', '--onto', def.ref, upstream], 5 * 60_000);
+    if (r.code !== 0) {
+      const files = (await run(cwd, 'git', ['diff', '--name-only', '--diff-filter=U'])).out
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
+      await run(cwd, 'git', ['rebase', '--abort']);
+      await storage.appendEvent({ kind: 'task.worktree', actor: 'orchestrator', taskId: task.id, repoId: repo.id, data: {
+        action: 'retarget-failed', from, to: def.branch, ...(files.length ? { conflicts: files } : { error: lastLines(r.out, 3) }),
+      } });
+      return fail(
+        files.length
+          ? `conflict in ${files.slice(0, 8).join(', ')} — resolve by hand in ${cwd} (git rebase --onto ${def.ref} ${upstream.slice(0, 12)}), then run the task again`
+          : `git rebase failed: ${lastLines(r.out, 3)}`,
+      );
+    }
+    let row = (await storage.updateTaskWorktree(task.id, { worktreeBase: def.branch })) ?? fresh;
+    await storage.appendEvent({ kind: 'task.worktree', actor: 'orchestrator', taskId: task.id, repoId: repo.id, data: {
+      action: 'retargeted', from, to: def.branch, commits, ...(leftovers.sha ? { leftovers: leftovers.sha } : {}),
+    } });
+    // the PR (a record): its base follows, and its head is the moved branch
+    if (row.prNumber && (row.prState === 'draft' || row.prState === 'open')) {
+      const push = await run(cwd, 'git', ['push', '--force-with-lease', def.remote, `HEAD:refs/heads/${task.branch}`], 60_000);
+      const edit = await run(cwd, 'gh', ['pr', 'edit', String(row.prNumber), '--base', def.branch], 60_000);
+      const ok = push.code === 0 && edit.code === 0;
+      await storage.appendEvent({ kind: 'task.pr', actor: 'orchestrator', taskId: task.id, repoId: repo.id, data: {
+        action: ok ? 'retargeted' : 'retarget-failed',
+        number: row.prNumber,
+        base: def.branch,
+        ...(ok ? {} : { error: lastLines(push.code !== 0 ? push.out : edit.out, 3) }),
+      } });
+    }
+    row = (await storage.getTask(task.id)) ?? row;
+    return { ok: true as const, task: row, retargeted: { from: from ?? '?', to: def.branch, commits } };
   });
 }
 

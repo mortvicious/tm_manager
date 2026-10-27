@@ -16,7 +16,7 @@ import { expandHome } from '../config.ts';
 import { commitRepo, gitStatus, pushRepo } from '../git.ts';
 import { spaceConflictForRepo } from '../spaces/service.ts';
 import { parseCommandLine } from '../commands/parse.ts';
-import { prDeliveryRefusal, worktreeRoot } from '../worktrees.ts';
+import { defaultBranch, prDeliveryRefusal, validBaseBranchName, worktreeRoot } from '../worktrees.ts';
 import type { Storage } from '../storage/types.ts';
 
 const repoBody = z
@@ -52,6 +52,8 @@ const repoBody = z
       )
       .max(30)
       .nullish(),
+    // the branch pr delivery forks from / targets / lands onto (docs/parallel.md § Base branch); '' / null = the remote default
+    baseBranch: z.string().max(200).nullish(),
   })
   .strict();
 
@@ -63,13 +65,14 @@ const repoBody = z
  * anywhere.
  */
 export function parallelNeedsBrowser(
-  body: { parallel?: number; delivery?: RepoDelivery; worktreeSetup?: string | null },
+  body: { parallel?: number; delivery?: RepoDelivery; worktreeSetup?: string | null; baseBranch?: string | null },
   origin: string | undefined,
 ): boolean {
   if (origin) return false;
-  return (body.parallel ?? 1) > 1 || body.delivery === 'pr' || !!body.worktreeSetup?.trim();
+  // the base branch is where lands PUSH (for some repos a deploy): any change, set or cleared, is the dashboard's
+  return (body.parallel ?? 1) > 1 || body.delivery === 'pr' || !!body.worktreeSetup?.trim() || body.baseBranch !== undefined;
 }
-export const PARALLEL_FROM_BROWSER = 'parallel tasks, PR delivery and the worktree setup command are set from the dashboard';
+export const PARALLEL_FROM_BROWSER = 'parallel tasks, PR delivery, the base branch and the worktree setup command are set from the dashboard';
 
 /**
  * Raising a landing tier lets work reach `done` (or the remote) with no human
@@ -135,7 +138,7 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
 
   app.post('/api/repos', async (req, reply) => {
     const body = repoBody.parse(req.body);
-    if (body.parallel !== undefined || body.delivery !== undefined || body.worktreeSetup != null || body.worktreeCopy != null) {
+    if (body.parallel !== undefined || body.delivery !== undefined || body.worktreeSetup != null || body.worktreeCopy != null || body.baseBranch != null) {
       return reply.code(400).send({ error: 'set parallel tasks and delivery on the Repos page once the repo is added' });
     }
     if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
@@ -208,8 +211,16 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
       if ((parallel ?? 1) > 1) return reply.code(400).send({ error: 'more than one task at a time needs PR delivery (each task in its own worktree)' });
       if (body.delivery === 'direct') parallel = 1;
     }
+    let baseBranch: string | null | undefined;
+    if ('baseBranch' in body) {
+      baseBranch = body.baseBranch?.trim().replace(/^origin\//, '') || null;
+      if (baseBranch && !validBaseBranchName(baseBranch)) return reply.code(400).send({ error: `not a branch name: ${baseBranch}` });
+      if (baseBranch && baseBranch !== current.baseBranch && !(await defaultBranch({ path: current.path, baseBranch }))) {
+        return reply.code(400).send({ error: `origin/${baseBranch} does not exist — push the branch first, or check the name` });
+      }
+    }
     if (body.delivery === 'pr' && current.delivery !== 'pr') {
-      const refusal = await prDeliveryRefusal(current.path);
+      const refusal = await prDeliveryRefusal({ path: current.path, baseBranch: baseBranch === undefined ? current.baseBranch : baseBranch });
       if (refusal) return reply.code(400).send({ error: refusal });
     }
     let worktreeSetup: string | null | undefined;
@@ -257,6 +268,7 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
       delivery: body.delivery,
       worktreeSetup,
       worktreeCopy: 'worktreeCopy' in body ? (body.worktreeCopy ?? null) : undefined,
+      baseBranch,
     });
     if (!repo) return reply.code(404).send({ error: 'repo not found' });
     await storage.appendEvent({
@@ -274,6 +286,7 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
         ...(before.delivery !== repo.delivery ? { delivery: { from: before.delivery, to: repo.delivery } } : {}),
         ...(before.worktreeSetup !== repo.worktreeSetup ? { worktreeSetup: { from: before.worktreeSetup, to: repo.worktreeSetup } } : {}),
         ...(JSON.stringify(before.worktreeCopy) !== JSON.stringify(repo.worktreeCopy) ? { worktreeCopy: { from: before.worktreeCopy, to: repo.worktreeCopy } } : {}),
+        ...(before.baseBranch !== repo.baseBranch ? { baseBranch: { from: before.baseBranch, to: repo.baseBranch } } : {}),
       },
     });
     return repo;

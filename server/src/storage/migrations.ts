@@ -733,6 +733,17 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `ALTER TABLE tm_tasks ADD COLUMN worktree_evicted_at TEXT`,
     ],
   },
+  {
+    id: 47,
+    // Base branch (docs/parallel.md § Base branch): the branch a `pr` repo's
+    // worktrees fork from, its PRs target and its lands push to (null = the
+    // remote default, origin/HEAD), and on the task the base its worktree was
+    // forked from / last moved onto, so a changed base moves the branch once.
+    statements: [
+      `ALTER TABLE tm_repos ADD COLUMN base_branch TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN worktree_base TEXT`,
+    ],
+  },
 ];
 
 /** The migration whose command owners each driver backfills in JS once it is applied. */
