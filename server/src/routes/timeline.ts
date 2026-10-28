@@ -1,8 +1,13 @@
 // Timeline range API (docs/timeline.md): the audit rows and runs of a window,
-// plus the past segments the shared fold builds from them. Read-only.
+// plus the past segments the shared fold builds from them; and the schedule
+// accuracy replay over them (§ Prediction accuracy). Read-only.
 import type { FastifyInstance } from 'fastify';
 import {
+  ACCURACY_CONTROL_KINDS,
+  ACCURACY_DEFAULT_DAYS,
   buildTaskSegments,
+  replayClaimSteps,
+  type ScheduleAccuracy,
   sortEvents,
   TIMELINE_EVENT_KINDS,
   TIMELINE_MAX_DAYS,
@@ -13,6 +18,8 @@ import {
   type TaskHistoryResponse,
   type TimelineResponse,
 } from '@tm/shared';
+import { scheduleBaselineCached } from '../schedule-baseline.ts';
+import { EVENT_LIST_MAX } from '../storage/event-sql.ts';
 import type { Storage } from '../storage/types.ts';
 
 const DAY_MS = 86_400_000;
@@ -144,6 +151,93 @@ export async function loadTaskHistory(storage: Storage, taskId: string, createdA
   return { events: all, runs, segments, truncated };
 }
 
+/** a replay result is reused this long per `days` (the log it grades moves by minutes, not by renders) */
+const ACCURACY_TTL_MS = 10 * 60_000;
+const accuracyCache = new Map<number, { at: number; value: ScheduleAccuracy }>();
+const accuracyInFlight = new Map<number, Promise<ScheduleAccuracy>>();
+
+/**
+ * `loadAccuracy` cached per `days` for ACCURACY_TTL_MS with one in-flight
+ * computation shared by every caller: an uncached replay is seconds of CPU in
+ * the API process, so a polling page or a worker's curl must not repeat it.
+ */
+export function accuracyCached(storage: Storage, days: number, nowMs = Date.now()): Promise<ScheduleAccuracy> {
+  const hit = accuracyCache.get(days);
+  if (hit && nowMs - hit.at < ACCURACY_TTL_MS) return Promise.resolve(hit.value);
+  const pending = accuracyInFlight.get(days);
+  if (pending) return pending;
+  const p = loadAccuracy(storage, days, nowMs)
+    .then((value) => {
+      accuracyCache.set(days, { at: nowMs, value });
+      return value;
+    })
+    .finally(() => accuracyInFlight.delete(days));
+  accuracyInFlight.set(days, p);
+  return p;
+}
+
+/** for tests: forget cached replays */
+export function resetAccuracyCache() {
+  accuracyCache.clear();
+}
+
+/** hand the event loop back (a macrotask, so I/O and timers run — a resolved `await` does not) */
+const yieldLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/** run a generator to its return value, yielding the event loop between steps */
+async function drainYielding<T>(it: Generator<void, T, void>): Promise<T> {
+  for (;;) {
+    const r = it.next();
+    if (r.done) return r.value;
+    await yieldLoop();
+  }
+}
+
+/**
+ * The schedule accuracy replay over the last `days` (docs/timeline.md §
+ * Prediction accuracy): the window's timeline rows (seeds included), the
+ * queue/undo/pause/toggle/feature/push-health rows of all time (they are few,
+ * and a membership or a switch may predate the window), every worker run (an
+ * overflow credit names its creator's run), the current rows and baseline.
+ */
+export async function loadAccuracy(storage: Storage, days: number, nowMs = Date.now()): Promise<ScheduleAccuracy> {
+  const now = new Date(nowMs).toISOString();
+  const since = new Date(nowMs - days * DAY_MS).toISOString();
+  // One load per macrotask: the SQLite driver answers synchronously, so loads
+  // chained by `await` (or a Promise.all) would hold the event loop for their sum.
+  const tl = await loadTimeline(storage, { since, until: now, now });
+  await yieldLoop();
+  const control = await storage.listEvents({ kinds: [...ACCURACY_CONTROL_KINDS], until: now, limit: EVENT_LIST_MAX });
+  await yieldLoop();
+  const tasks = await storage.listTasks();
+  await yieldLoop();
+  const [repos, features, settings] = await Promise.all([storage.listRepos(), storage.listFeatures(), storage.getSettings()]);
+  await yieldLoop();
+  const workerRuns = await storage.listRuns({ mode: 'worker' });
+  await yieldLoop();
+  const baseline = await scheduleBaselineCached(storage, nowMs);
+  await yieldLoop();
+  // worked time reads each run's first idle: stats-finals back to the oldest run of a task that may have landed in the window
+  const maybeLanded = new Set(tasks.filter((t) => (t.status === 'done' || t.status === 'published') && t.updatedAt >= since).map((t) => t.id));
+  const oldest = workerRuns.reduce((m, r) => (r.taskId && maybeLanded.has(r.taskId) && r.startedAt < m ? r.startedAt : m), since);
+  const statsFinals = await storage.listEvents({ kind: 'run.stats-final', since: oldest, until: now, limit: EVENT_LIST_MAX });
+  await yieldLoop();
+  const runs = [...new Map([...tl.runs, ...workerRuns].map((r) => [r.id, r])).values()];
+  // stepwise: one predictSchedule per claim, the event loop handed back between them
+  return drainYielding(replayClaimSteps({
+    tasks,
+    repos,
+    features,
+    settings,
+    events: [...tl.events, ...control, ...statsFinals],
+    runs,
+    baseline,
+    since,
+    until: now,
+    truncated: tl.truncated,
+  }));
+}
+
 function isoParam(v: unknown, name: string): string | undefined {
   if (v === undefined || v === '') return undefined;
   const t = typeof v === 'string' ? Date.parse(v) : NaN;
@@ -182,6 +276,15 @@ export function registerTimelineRoutes(app: FastifyInstance, storage: Storage) {
       throw e;
     }
     return loadTimeline(storage, q);
+  });
+
+  app.get('/api/schedule/accuracy', async (req, reply) => {
+    const raw = (req.query as Record<string, unknown>).days;
+    const days = raw === undefined || raw === '' ? ACCURACY_DEFAULT_DAYS : Number(raw);
+    if (!Number.isInteger(days) || days < 1 || days > TIMELINE_MAX_DAYS) {
+      return reply.code(400).send({ error: `days must be an integer from 1 to ${TIMELINE_MAX_DAYS}` });
+    }
+    return accuracyCached(storage, days);
   });
 
   app.get('/api/tasks/:id/history', async (req, reply) => {

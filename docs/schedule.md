@@ -71,6 +71,11 @@ and mutated as the simulation goes (`running` at a start, `review` + an open
 predicted landing frees a repo or opens a feature phase exactly where the real
 row write would.
 
+How often it agrees with the server is measured by replaying every past claim
+(`GET /api/schedule/accuracy`, `replayClaims` in `shared/src/schedule-accuracy.ts`,
+docs/timeline.md § Prediction accuracy). The work-segment figure is
+`scheduleWorkMs(baseline, repoId)`, exported so the replay scores the same number.
+
 ### Input
 
 | field | what |

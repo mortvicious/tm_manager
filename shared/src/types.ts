@@ -3390,6 +3390,8 @@ export function taskTemplateProblem(list: TaskTemplate[], presets: TaskPreset[] 
 // Approximate progress % of a live task (docs/task-progress.md)
 export * from './progress.ts';
 export * from './schedule.ts';
+// Schedule prediction accuracy replay (docs/timeline.md § Prediction accuracy)
+export * from './schedule-accuracy.ts';
 
 // Timeline past segments (docs/timeline.md)
 export * from './timeline.ts';

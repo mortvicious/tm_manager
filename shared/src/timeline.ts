@@ -563,11 +563,21 @@ export interface TimelineStateAt {
  * is a review round or an idle review (checks are `checking`); markers hold no
  * time.
  */
+/**
+ * The one segment of a task holding time T — the rule `stateAt` buckets by,
+ * exported so a reader that needs the exact kind (a review ROUND vs an idle
+ * review: the schedule accuracy replay) reads the same one.
+ */
+export function segmentAt(segs: readonly TimelineSegment[], at: string | number | Date): TimelineSegment | null {
+  const T = typeof at === 'number' ? at : at instanceof Date ? at.getTime() : ms(at);
+  return segs.find((x) => ms(x.start) <= T && (x.end === null || T < ms(x.end))) ?? null;
+}
+
 export function stateAt(segmentsByTask: Record<string, readonly TimelineSegment[]>, at: string | number | Date): TimelineStateAt {
   const T = typeof at === 'number' ? at : at instanceof Date ? at.getTime() : ms(at);
   const res: TimelineStateAt = { running: [], waiting: [], inReview: [], checking: [], queued: [], landed: [] };
   for (const [taskId, segs] of Object.entries(segmentsByTask)) {
-    const s = segs.find((x) => ms(x.start) <= T && (x.end === null || T < ms(x.end)));
+    const s = segmentAt(segs, T);
     if (!s) continue;
     switch (s.kind) {
       case 'running':

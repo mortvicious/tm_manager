@@ -2,7 +2,7 @@
 
 The timeline shows what every task did over a window: when it waited in the queue, ran, parked, sat in a review round or the checks, was fixed, idled in review and landed. Later phases add "now" and a predicted future. It reads the audit log (`tm_events`) and `tm_runs`; it writes nothing.
 
-This document covers **phase 1 (data foundations)**: the shared segment builder and the range API. There is no SPA view yet.
+This document covers **phase 1 (data foundations)**: the shared segment builder and the range API. It also covers the **prediction accuracy replay** (§ Prediction accuracy), which grades the schedule simulator against the claims the server actually made. There is no SPA view yet.
 
 ## Segments
 
@@ -81,6 +81,77 @@ A `TimelineSegment` is one task in one state for a stretch of time:
 - **Prediction.** `predictSchedule()` (`shared/src/schedule.ts`, docs/schedule.md) in a `useMemo` over the app state — tasks (with optimistic patches), repos, features, the live runs, the commands' check names per repo (`repoChecks`), `createdByRun` → task ids from the runs list, `taskProgress` per running/waiting task through `computeProgress` (the board row's reading, the per-task floor included), the duration baseline, push-failing repos (`OrchestratorStatus.pushHealth`, `!ok` with kind `auth`/`protected` — the kinds that hold a repo), and settings — the LIVE `OrchestratorStatus` `enabled`/`paused`/`concurrency` outrank the `/api/config` snapshot, which is read once per refresh. The day budget fuse is not on the status, so `dayBudgetReached` is left unset. Recomputed on any of those changing and on the 30 s tick. It runs over the WHOLE board — the claim order, the worker cap and the repo holds are global — and only the OUTPUT is cut to the workspace (a slot's `repoId` in scope, repo-less always), sorted by start, unscheduled last.
 - **`applyOptimistic(patch)`** (`{ tasks: { [id]: { sortOrder?, priority?, customQueueAt?, queueHeldAt?, status? } } }`) is phase 4's drag seam: the patch is laid over the task rows the prediction reads, so the future re-predicts before the server answers. Each entry remembers the row's `updatedAt` it was applied over and is dropped by itself once the server's row moves past it (the confirmed move arrives as `task.updated`); the returned function removes the patch (a refused move), `clearOptimistic()` all of them. `tasks` on the result is the patched list.
 
+## Prediction accuracy
+
+How well the schedule simulator (`predictSchedule`, docs/schedule.md § Simulator) agrees with the claims the server actually made. **`GET /api/schedule/accuracy?days=14`** (`days` 1–31, default 14; anything else gets a 400) is in `server/src/routes/timeline.ts` (`loadAccuracy`). It is backed by the pure **`replayClaims()`** (`shared/src/schedule-accuracy.ts`). Read-only, and no `Origin` is needed.
+
+### Method
+
+The replay takes every `task.transition` in the window that carries `data.claim` (`base` = the global claim, `custom-queue`, `overflow`). For each one it rebuilds the board as it stood **just before that row** (id order, so rows of the same millisecond keep their order). It then runs `predictSchedule` with `now` = the claim's instant. The claim **matches** when the simulator's first claim (earliest start, then lane) is the claimed task AND starts at that same instant. A prediction of "the same task, two minutes later" is a miss.
+
+What the replay rebuilds from the log:
+
+- **Status.** Each task's last `task.transition` / `task.created` before the claim. The window's rows come from `loadTimeline`, seeds included. A task with no row at all keeps its current status. A task whose first row is its `task.created` did not exist yet.
+- **Review and check rounds.** Read from the phase-0 segment fold: `buildTaskSegments` over every row, then `segmentAt` (the lookup `stateAt` uses, now exported). `review-round` means `reviewState: 'reviewing'`, `checks` means `checkState: 'running'`, and an idle review is settled. The fold covers ALL the rows, so a provisional idle that a later verdict relabels is a round at every instant inside it.
+- **Custom-queue marks.** From `task.queue` rows: `add` sets the mark to the row's time, `remove` clears it, and `reorder` sets it to `data.after`. A terminal transition clears the mark. So does a human/telegram transition into `queued` (Enqueue/Retry mean the global queue), except that a following `task.undo { action: 'undo' }` puts it back. `task.undo { action: 'release', queue: 'global' }` clears it too.
+- **Undo-start holds.** `task.undo { held: true }` sets the hold, and release or any transition clears it.
+- **Pause-all markers.** The `suspended` ids of `orchestrator.pause` rows, cleared by the task's next transition.
+- **Settings and holds.** `orchestrator.enabled` from `orchestrator.toggle` and `orchestrator.paused` from `orchestrator.pause`. For each, the value before the first row is the inverse of that row, else the current setting. Feature status comes from `feature.transition`. A `repo.push-health` row with `ok: false` of kind `auth`/`protected` holds the repo until the next row.
+- **Live runs.** Worker and review runs with `startedAt ≤ T < endedAt`, or ended-less and still `running`. The run's current `idle` flag is dropped. Every worker run is passed, so an overflow credit and an agent filing's filer resolve.
+
+The control rows (`ACCURACY_CONTROL_KINDS`) are fetched over all time, because a membership or a switch may predate the window. Done/published/cancelled rows without a feature are left out of each simulation: they gate nothing. That cut the 14-day run from ≈13 s to 4–10 s on the live DB.
+
+### Cost in the API process
+
+An uncached replay is seconds of CPU in the single-process API, and the route needs no `Origin` (it is a read). So it must neither freeze the server nor be repeatable at will:
+
+- **Cached.** `accuracyCached` keeps each `days` result for 10 min (`ACCURACY_TTL_MS`). Concurrent callers share ONE in-flight computation, so a polling page or a worker's curl gets the cached answer, never a new replay.
+- **Stepwise.** `replayClaims` is a thin drain over the generator `replayClaimSteps`, which yields after the segment fold and after every claim (each claim is one full `predictSchedule`). `loadAccuracy` drains it with a `setImmediate` between steps.
+- **One load per macrotask.** `loadAccuracy` also yields between its loads. The SQLite driver answers synchronously, so loads chained by `await` or put in a `Promise.all` would hold the loop for their sum: an `await` on a resolved promise is a microtask, and I/O never runs in between.
+- **What still blocks.** The longest stretch is now one storage call or one claim's simulation, never the whole replay.
+  - Measured on the DB copy at a machine load average of 22–30, with a 20 ms probe timer: a claim step took ≤ ~0.7 s (72 ms at normal load).
+  - The slowest single call is `listTasks()` (860 rows): 0.7–4 s at that load. It is the same call `GET /api/tasks` makes on every board load. Splitting it would need a paged storage read, and moving the replay off the loop would need a `worker_thread` with its own storage connection. Neither is done.
+  - A cached call answers in under 0.1 s.
+
+**Approximations** (also returned verbatim as `approximations`):
+
+- Priority, sort order, group, feature phase, `workdir` and the repo rows (`parallel`, `delivery`, `landing`) come from the CURRENT rows.
+- `orchestrator.concurrency` is the current value. `config.changed` records keys, never values, so a claim made before the last change may have run under another cap; the response names when that change was.
+- `review.enabled` and `agent.autoWake` are the current values. Wake-ups (`wake_at`) and loop states are not replayed, and the day budget fuse is taken as never reached.
+- A custom-queue member with no `task.queue add` row before its custom-queue claim (an agent filing) counts as a member from its creation.
+- Deleted tasks are gone. Their claims are counted in `skipped`, and a hold they had on a repo is not seen.
+- The replay grades the past against TODAY's rules (the shared twins). A claim made under a rule that has since changed shows up as a miss.
+
+### Response
+
+`ScheduleAccuracy`:
+
+- `{ total, matched, rate }` overall and per claim kind (`byClaimKind.base | custom-queue | overflow`).
+- `contested`: the claims that were a real choice, with two or more queued, unheld candidates in the rebuilt state. A lone waiting task is an easy match.
+- `skipped`: claims of deleted tasks.
+- `samePassOtherOrder`: misses where the claimed task WAS among the claims predicted for that instant, only in another order.
+- `mismatches`: oldest first, capped at `ACCURACY_MISMATCH_CAP` (50), with `mismatchesTotal` uncapped. Each is `{ at, predicted: { taskId, title, source, start } | null, actual: { taskId, title, claim }, reason }`. The `reason` reads like "predicted 2 min later (global) — waits for nest: Task B in review round" or "predicted global claim of "G" instead; …".
+- `duration`: for the tasks that landed (first transition to `done`/`published`) in the window with worked time, the **median absolute error** of the predicted work segment against the actual worked time.
+  - Predicted is `scheduleWorkMs`, the same figure the simulator uses (the repo's median from the CURRENT baseline, else all repos', else the default). Note that the current baseline includes the window's own landed tasks.
+  - Actual is the sum of `runWorkedMs` over the task's worker runs, as in the baseline.
+  - Also reported: the signed median (`medianErrorMs`, negative = predicted short) and the medians of both sides.
+- `approximations` and `truncated` (the timeline load hit its row cap).
+
+### Measured (live DB copy, 2026-10-28)
+
+Measured on a `.backup` copy of the live DB through an `app.inject` harness that registers only the timeline routes.
+
+| window | claims | matched | contested (matched/total) | duration n | median abs error | median signed error | median predicted / actual |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 14 d (10-14 → 10-28) | 127 | **127 (100%)** | 116 / 116 | 246 | **21.3 min** | −15.8 min (short) | 43.9 / 51.7 min |
+| 31 d (09-27 → 10-28) | 191 | **190 (99.5%)** | 157 / 158 | 454 | **17.7 min** | −3.3 min | 43.9 / 37.1 min |
+
+- **Every claim was a `custom-queue` claim.** The global queue switch was off for the whole period, so `base` and `overflow` have no live numbers; the unit test covers them.
+- **Skipped:** 0 in both windows.
+- **The one miss** (2026-09-28 20:48) was two custom-queue heads in one pass, the same pass in another order. The simulator put an agent-filed nest member first. The server held it until the next morning, and claimed it 2 s after a nest task sitting in an idle review (an old-shaped landing with no recorded round) was marked done. That is the pre-2026-09-28 hold, where a filed member waited while any same-repo task sat in review. It was replaced that day (docs/queue.md), so this is a past rule graded against today's twin, not a twin bug.
+- **The control.** Re-running the 14-day window on a copy with the `task.queue` rows deleted drops it to 15/127. The match comes from the rebuilt membership, not from the replay echoing the log.
+- **Duration.** The median work segment is about 20 min off in either window. Over 14 days it runs short (recent tasks are longer than the baseline's median), while over 31 days the bias is nearly gone. The p75 is not used for fresh turns, only to clamp live ones.
+
 ## Verification
 
 - `server/src/timeline.test.ts` (`npm test`) covers:
@@ -107,3 +178,11 @@ A `TimelineSegment` is one task in one state for a stretch of time:
   - NOW (and the prediction, which reads it) moved on the 30 s tick with no event.
   - `?ws=neko`: the fetch carried the workspace's repo ids, only neko repos were listed, a row from another repo was not folded, and the sidebar link read `/timeline?ws=neko`.
   - Phone (393 px, iPhone UA): `.app.mobile`, the stream (past newest 60, NOW, predicted), and the More sheet's Timeline link read `/timeline?ws=neko`.
+- `server/src/schedule-accuracy.test.ts` (`npm test`) covers:
+  - A synthetic log of eight server-made claims that must replay at 100%. Its cases: a priority win, two base claims in one pass, a review round and a checks stage holding the repo until their verdicts, custom-queue heads with one waiting on a busy repo, an overflow child past a full cap, a Pause/Continue, and an Undo-start hold skipped by the next claim. The queue switch is reconstructed from `orchestrator.toggle` (the current setting says on, the log says off before T0).
+  - A claim moved into the open review round is a mismatch whose reason names the holder.
+  - Dropping the `task.undo` row makes the held task the prediction.
+  - A deleted task's claim is skipped, and the mismatch cap is applied.
+  - The worked-duration error.
+  - The route's `days` validation, and a real `claimNextQueuedTask` row through SQLite replaying as a matched `base` claim.
+  - The cache: a new claim is not seen until `resetAccuracyCache`, two concurrent callers share one result, and the recomputed replay counts the new claim as matched.

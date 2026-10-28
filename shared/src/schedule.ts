@@ -290,6 +290,16 @@ export const SCHEDULE_PUBLISH_MS = 3 * MIN;
 export const SCHEDULE_WAKE_DELAY_MS = 90_000;
 /** no live segment is predicted to end sooner than this */
 const MIN_REMAINING_MS = MIN;
+
+/**
+ * The work segment the simulator predicts for a fresh turn of a task in this
+ * repo: the repo's (else all repos', else the default) median worked time.
+ * Exported so the accuracy replay (schedule-accuracy.ts) scores the SAME figure.
+ */
+export function scheduleWorkMs(baseline: ScheduleBaseline | null | undefined, repoId: string | null): number {
+  const line = (baseline ? scheduleLineFor(baseline, repoId) : null) ?? SCHEDULE_DEFAULT_LINE;
+  return Math.max(MIN_REMAINING_MS, line.workMs.median);
+}
 const MAX_WAITS = 6;
 const MAX_INSTANTS = 10_000;
 
@@ -349,7 +359,7 @@ export function predictSchedule(input: ScheduleInput): PredictedSlot[] {
 
   const lineOf = (repoId: string | null) =>
     (input.baseline ? scheduleLineFor(input.baseline, repoId) : null) ?? SCHEDULE_DEFAULT_LINE;
-  const workMs = (t: Task) => Math.max(MIN_REMAINING_MS, lineOf(t.repoId).workMs.median);
+  const workMs = (t: Task) => scheduleWorkMs(input.baseline, t.repoId);
   const checkMs = (t: Task) => Math.max(MIN_REMAINING_MS, lineOf(t.repoId).checkMs ?? SCHEDULE_DEFAULT_LINE.checkMs!);
   const reviewMs = (t: Task) => Math.max(MIN_REMAINING_MS, lineOf(t.repoId).reviewMs ?? SCHEDULE_DEFAULT_LINE.reviewMs!);
   const repoName = (id: string | null) => (id && repos.get(id)?.name) || 'its repo';
