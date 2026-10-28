@@ -51,7 +51,7 @@ tm_events (
 ## 3. Aggregation endpoints (computed server-side, SQL + event log)
 
 ```
-GET /api/stats/overview?days=7
+GET /api/stats/overview?days=7[&repoIds=a,b]   # optional scope; empty list = nothing (docs/workspaces.md)
   → { totals: { workedMs, costUsd, tokens, runs, tasksDone, tasksFailed, avgCtxPct,
                 attentionEvents, agentFiledTasks, overflowClaims },
       perDay:   [{ date, runs, workedMs, costUsd, done, failed }],   # bar-chart series

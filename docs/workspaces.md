@@ -75,6 +75,17 @@ Rules:
 - **Audit.** Every successful write appends a `workspace.changed` row (actor `human`) with `action` set to `created`, `edited` (with `fields`), `reordered` or `deleted`.
 - **Events.** Every successful write broadcasts `workspace.updated {workspace}` (the read-filtered row) or `workspace.deleted {workspaceId}`. A reorder re-broadcasts every workspace.
 
+## Scoped stats (`GET /api/stats/overview?repoIds=`)
+
+`/api/stats/overview` takes an optional `repoIds` query parameter, a comma-separated list of repo ids. Without it the endpoint aggregates every repo, and the response is unchanged byte for byte. With it, every figure is restricted to those repos:
+
+- runs by `run.repoId` (the tiles, `perDay`, `perModel` and the `perRepo` run/cost columns);
+- task-derived figures by the task's `repoId` (`depth`);
+- `task.transition`, `run.attention`, `run.stats-final`, `agent.create` and the `byActor` stream by the event's own `repoId`, else its task's, else its run's. That covers done/failed, overflow claims, attention and agent-filed counts;
+- `perRepo` lists only those repos.
+
+A present but EMPTY list (`repoIds=`) matches nothing and returns zeros. It never means "all", which is the same rule as `TaskFilter.repoIds`. Unknown ids simply match nothing. Scoping happens in JS after the reads, so it shares the existing 2000-row cap that storage puts on every event query. For a busy window, `byActor` is therefore the scoped share of the newest 2000 events in the window, which is the same newest-biased sample the unscoped view already uses. `/api/stats/anomalies` is not scoped. `api.statsOverview(days, repoIds?)` in `web/src/api.ts` passes the parameter. Nothing in the SPA uses it yet.
+
 ## SPA
 
 - `web/src/api.ts` has `listWorkspaces`, `createWorkspace`, `updateWorkspace`, `deleteWorkspace` and `reorderWorkspaces`.
@@ -91,3 +102,12 @@ These checks ran against `app.inject` on a copy of the live SQLite DB, under tsx
 - **Read filtering and side effects.** A ghost repo id is filtered on read but kept in storage. Each write leaves one audit row and the expected broadcasts.
 
 `npm run typecheck` and `npm run build` pass. The pg driver was not run against a live Postgres. It runs the same SQL module, and its seed loop mirrors the SQLite one.
+
+### Scoped stats
+
+These checks ran on the same kind of DB copy:
+
+- **Unchanged without the parameter.** `days=30` with no `repoIds` returned byte-identical JSON before and after the change, with `Date.now` frozen.
+- **One repo.** On a 3-day window, scoping to one repo gave runs, cost, done, failed, attention and agent-filed counts that equal a hand-written SQL count. The `perRepo` table had that single row.
+- **Two repos.** Two repos together gave the sum of the two single-repo results.
+- **Empty list.** `repoIds=` returned zero totals and empty `perRepo`, `perModel`, `depth` and `byActor`.

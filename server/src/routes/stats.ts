@@ -33,8 +33,12 @@ export function registerStatsRoutes(
   void orchestrator;
 
   app.get('/api/stats/overview', async (req) => {
-    const q = req.query as { days?: string };
+    const q = req.query as { days?: string; repoIds?: string };
     const days = Math.min(Math.max(Number(q.days) || 14, 1), 90);
+    // Optional scope (workspaces): comma-separated repo ids. Absent = every
+    // repo; PRESENT but empty matches NOTHING, never "all" — the same rule as
+    // TaskFilter.repoIds, so an empty workspace shows zeros.
+    const scope = q.repoIds === undefined ? null : new Set(String(q.repoIds).split(',').map((s) => s.trim()).filter(Boolean));
     // Anchor at LOCAL midnight of the window's first day — a wall-clock
     // cutoff would admit runs whose dayKey precedes the first seeded bucket,
     // inflating tiles invisibly (dashboard impl W1).
@@ -46,7 +50,7 @@ export function registerStatsRoutes(
 
     // Per-kind queries: one mixed stream truncates at the limit and silently
     // drops the OLDEST events — per-kind volumes stay well under it (W2).
-    const [runs, tasks, repos, transitions, statsFinals, attention, agentCreates, allForActors] =
+    const [allRuns, allTasks, allRepos, allTransitions, allStatsFinals, allAttention, allAgentCreates, allEvents] =
       await Promise.all([
         storage.listRuns(),
         storage.listTasks(),
@@ -55,8 +59,25 @@ export function registerStatsRoutes(
         storage.listEvents({ kind: 'run.stats-final', since, limit: 2000 }),
         storage.listEvents({ kind: 'run.attention', since, limit: 2000 }),
         storage.listEvents({ kind: 'agent.create', since, limit: 2000 }),
-        storage.listEvents({ since, limit: 2000 }), // byActor only; newest-biased truncation acceptable
+        // byActor only; newest-biased truncation acceptable. A scoped view
+        // filters this same (storage-capped) sample AFTER the read.
+        storage.listEvents({ since, limit: 2000 }),
       ]);
+    const inScope = (repoId: string | null | undefined) => !scope || (!!repoId && scope.has(repoId));
+    const runs = scope ? allRuns.filter((r) => inScope(r.repoId)) : allRuns;
+    const tasks = scope ? allTasks.filter((t) => inScope(t.repoId)) : allTasks;
+    const repos = scope ? allRepos.filter((r) => inScope(r.id)) : allRepos;
+    // An event belongs to its own repo, else its task's, else its run's.
+    const taskRepo = new Map(allTasks.map((t) => [t.id, t.repoId]));
+    const runRepo = new Map(allRuns.map((r) => [r.id, r.repoId]));
+    const eventRepo = (e: AuditEvent) =>
+      e.repoId ?? (e.taskId ? taskRepo.get(e.taskId) : undefined) ?? (e.runId ? runRepo.get(e.runId) : undefined) ?? null;
+    const scoped = (events: AuditEvent[]) => (scope ? events.filter((e) => inScope(eventRepo(e))) : events);
+    const transitions = scoped(allTransitions);
+    const statsFinals = scoped(allStatsFinals);
+    const attention = scoped(allAttention);
+    const agentCreates = scoped(allAgentCreates);
+    const allForActors = scoped(allEvents);
     const windowRuns = runs.filter((r) => Date.parse(r.startedAt) >= sinceMs);
 
     // first-idle timestamps from stats-final events (≤1 per run by dedupe;

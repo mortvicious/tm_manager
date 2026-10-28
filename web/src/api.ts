@@ -438,7 +438,12 @@ export const api = {
   sentryToken: () => req<SentryTokenStatus>('GET', '/api/sentry/token'),
   putSentryToken: (token: string) => req<SentryTokenStatus>('PUT', '/api/sentry/token', { token }),
   sentrySync: () => req<{ created: number; skipped: number; fetched: number }>('POST', '/api/sentry/sync'),
-  statsOverview: (days: number) => req<StatsOverview>('GET', `/api/stats/overview?days=${days}`),
+  /** `repoIds` scopes to those repos; an empty array matches nothing (zeros), omitted = all repos. */
+  statsOverview: (days: number, repoIds?: string[]) =>
+    req<StatsOverview>(
+      'GET',
+      `/api/stats/overview?days=${days}${repoIds ? `&repoIds=${encodeURIComponent(repoIds.join(','))}` : ''}`,
+    ),
   anomalies: () => req<Anomaly[]>('GET', '/api/stats/anomalies'),
   events: (limit = 50) => req<AuditEvent[]>('GET', `/api/events?limit=${limit}`),
   orchestratorAction: (a: 'start' | 'stop' | 'stop-and-kill' | 'pause' | 'continue') =>
