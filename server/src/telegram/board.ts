@@ -100,20 +100,22 @@ export function checkStateLine(t: Task): string | null {
  * into `running`/`review`/`blocked` (whether or not it still holds its repo's
  * place — `customQueueHoldsRepo`), and counting those would inflate every
  * position by however many were in flight.
+ *
+ * No "added at" time: `customQueueAt` starts as the click but a reorder
+ * rewrites it (docs/queue.md § Reordering), so it is a sort key, not a clock.
  */
 export async function queueLine(storage: Storage, t: Task): Promise<string> {
-  const added = ` · added ${escapeHtml(formatClock(t.customQueueAt!))}`;
-  if (t.status === 'running') return `➕ holding its repo's custom-queue slot${added}`;
+  if (t.status === 'running') return `➕ holding its repo's custom-queue slot`;
   if (customQueueHoldsRepo(t)) {
     const why = t.status === 'review' ? 'its automatic review is open' : `it is ${escapeHtml(t.status)}`;
-    return `➕ in the custom queue — holding its repo's place while ${why}${added}`;
+    return `➕ in the custom queue — holding its repo's place while ${why}`;
   }
-  if (t.status === 'review') return `➕ in the custom queue — done here, waiting for you; the queue moved on${added}`;
+  if (t.status === 'review') return `➕ in the custom queue — done here, waiting for you; the queue moved on`;
   const waiting = customQueueWaiting(await storage.listTasks());
   const at = waiting.findIndex((m) => m.id === t.id) + 1;
-  if (at === 0) return `➕ in the custom queue${added}`;
+  if (at === 0) return `➕ in the custom queue`;
   const held = t.queueHeldAt ? ' · ⏸ held (Undo start) until you Release it' : '';
-  return `➕ custom queue <b>#${at}</b> of ${waiting.length} waiting${held}${added}`;
+  return `➕ custom queue <b>#${at}</b> of ${waiting.length} waiting${held}`;
 }
 
 /**

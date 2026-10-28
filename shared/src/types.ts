@@ -1241,6 +1241,11 @@ export function customQueueHoldsRepo(t: Pick<Task, 'status' | 'reviewState' | 'c
  * Shared rather than duplicated: the board's `queue #n` chip and the Telegram
  * bot's `/task` and `/queue` both derive their ordinal from this, so the two
  * surfaces cannot tell the same task a different number.
+ *
+ * "Added" is only the starting value: a reorder (`POST /api/tasks/:id/queue-move`,
+ * docs/queue.md § Reordering) rewrites `customQueueAt` itself, so this sort and
+ * CUSTOM_QUEUE_HEAD_ORDER (server/src/storage/queue-sql.ts) follow it unchanged.
+ * Read the column as a sort key, never as a time to show.
  */
 export function customQueueWaiting(tasks: Task[]): Task[] {
   return tasks

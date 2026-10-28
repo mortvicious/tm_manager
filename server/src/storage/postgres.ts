@@ -26,7 +26,7 @@ import {
 import { planCards } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
-import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, REPO_EXCLUSIVE_GATE, skipRepos } from './queue-sql.ts';
+import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, CUSTOM_QUEUE_WAITING_SQL, REPO_EXCLUSIVE_GATE, planQueueReorder, reorderAudit, skipRepos, type QueueMoveAnchor } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
 import { REPO_PARALLEL_SQL, repoParallelParams, worktreePatchSql } from './worktree-sql.ts';
 import { LOOP_LEAVES_RUNNING_SQL, loopStepSets, stepLoopSql } from './loop-sql.ts';
@@ -742,6 +742,33 @@ export class PostgresStorage implements Storage {
         }
       }
       return [...rows.values()];
+    });
+  }
+
+  async reorderCustomQueue(id: string, anchor: QueueMoveAnchor, actor: string): Promise<{ refused: string } | { tasks: Task[] } | null> {
+    // Twin of the sqlite driver; the waiting set is locked for the decision.
+    return this.tx(async (c, sink): Promise<{ refused: string } | { tasks: Task[] } | null> => {
+      const cur = (await c.query(`SELECT * FROM tm_tasks WHERE id = $1 FOR UPDATE`, [id])).rows[0];
+      if (!cur) return null;
+      const waiting = (await c.query(`${CUSTOM_QUEUE_WAITING_SQL} FOR UPDATE`)).rows;
+      const plan = planQueueReorder(cur, waiting, anchor);
+      if ('refused' in plan) return plan;
+      if (!plan.writes.length) return { tasks: [] };
+      for (const w of plan.writes) {
+        await c.query(`UPDATE tm_tasks SET custom_queue_at = $1 WHERE id = $2`, [w.at, w.id]);
+      }
+      const ids = [id, ...plan.writes.map((w) => w.id).filter((rid) => rid !== id)];
+      const byId = new Map<string, Task>();
+      for (const r of (await c.query(`SELECT * FROM tm_tasks WHERE id = ANY($1)`, [ids])).rows) byId.set(r.id, rowToTask(r));
+      const task = byId.get(id)!;
+      await this.appendEventWith(c, {
+        kind: 'task.queue',
+        actor,
+        taskId: id,
+        repoId: task.repoId,
+        data: reorderAudit(anchor, plan),
+      }, sink);
+      return { tasks: ids.map((rid) => byId.get(rid)!) };
     });
   }
 

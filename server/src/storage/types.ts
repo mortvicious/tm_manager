@@ -1,6 +1,7 @@
 import type { WorktreePatch } from './worktree-sql.ts';
 import type { ApprovalFilter, NewApproval } from './approval-sql.ts';
 import type { MoveAnchor } from './group.ts';
+import type { QueueMoveAnchor } from './queue-sql.ts';
 import type { Approval, ApprovalStatus, PushDevice, PushKind } from '@tm/shared';
 import type {
   LoopState,
@@ -486,6 +487,15 @@ export interface Storage {
    * or null when the task does not exist.
    */
   moveTask(id: string, parentId: string | null, anchor: MoveAnchor, actor: string): Promise<Task[] | null>;
+  /**
+   * Reorder a WAITING custom-queue member (docs/queue.md § Reordering) in one
+   * transaction: rewrites `custom_queue_at` on the waiting set only
+   * (`planQueueReorder` — a midpoint, else an even renumber within the set's
+   * span). Audited `task.queue { action: 'reorder' }` when anything moved.
+   * null = task not found; `{ refused }` = not movable (→ 409); `tasks` =
+   * every rewritten row, the moved one first (empty for a no-op).
+   */
+  reorderCustomQueue(id: string, anchor: QueueMoveAnchor, actor: string): Promise<{ refused: string } | { tasks: Task[] } | null>;
   /** Atomic queued→running claim (repo-less tasks are never claimed); null when queue is empty. */
   claimNextQueuedTask(actor: string, skipRepoIds?: string[]): Promise<Task | null>;
   /**

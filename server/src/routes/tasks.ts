@@ -40,7 +40,9 @@ import {
   loopProblem,
   moveTask,
   queueAddTask,
+  queueMoveTask,
   queueRemoveTask,
+  QUEUE_MOVE_PLACES,
   reviewTask,
   unblockTask,
 } from '../task-actions.ts';
@@ -209,6 +211,19 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
   app.post('/api/tasks/:id/queue', async (req, reply) => {
     const { id } = req.params as { id: string };
     const r = await queueAddTask(deps(), id, 'human');
+    if ('error' in r) return reply.code(r.code).send({ error: r.error });
+    return r.task;
+  });
+
+  // Reorder the custom queue (docs/queue.md § Reordering). Same guard as
+  // /move (none): reordering only changes which waiting member runs first.
+  const queueMoveBody = z
+    .object({ place: z.enum(QUEUE_MOVE_PLACES), targetId: z.string().min(1).nullish() })
+    .strict();
+  app.post('/api/tasks/:id/queue-move', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = queueMoveBody.parse(req.body);
+    const r = await queueMoveTask(deps(), id, body, 'human');
     if ('error' in r) return reply.code(r.code).send({ error: r.error });
     return r.task;
   });

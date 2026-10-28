@@ -28,7 +28,7 @@ import {
 import { planCards } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
-import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, REPO_EXCLUSIVE_GATE, skipRepos } from './queue-sql.ts';
+import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, CUSTOM_QUEUE_WAITING_SQL, REPO_EXCLUSIVE_GATE, planQueueReorder, reorderAudit, skipRepos, type QueueMoveAnchor } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
 import { REPO_PARALLEL_SQL, repoParallelParams, worktreePatchSql } from './worktree-sql.ts';
 import { LOOP_LEAVES_RUNNING_SQL, loopStepSets, stepLoopSql } from './loop-sql.ts';
@@ -726,6 +726,30 @@ export class SqliteStorage implements Storage {
         if (r) rows.set(rid, rowToTask(r));
       }
       return [...rows.values()];
+    });
+  }
+
+  async reorderCustomQueue(id: string, anchor: QueueMoveAnchor, actor: string): Promise<{ refused: string } | { tasks: Task[] } | null> {
+    return this.inTxn((): { refused: string } | { tasks: Task[] } | null => {
+      const cur = this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id) as any;
+      if (!cur) return null;
+      const plan = planQueueReorder(cur, this.db.prepare(CUSTOM_QUEUE_WAITING_SQL).all() as any[], anchor);
+      if ('refused' in plan) return plan;
+      if (!plan.writes.length) return { tasks: [] };
+      // Only the mark: updated_at stays, like moveTask's sort_order writes.
+      const set = this.db.prepare(`UPDATE tm_tasks SET custom_queue_at = ? WHERE id = ?`);
+      for (const w of plan.writes) set.run(w.at, w.id);
+      const task = rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
+      this.appendEventSync({
+        kind: 'task.queue',
+        actor,
+        taskId: id,
+        repoId: task.repoId,
+        data: reorderAudit(anchor, plan),
+      });
+      const get = this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`);
+      const ids = [id, ...plan.writes.map((w) => w.id).filter((rid) => rid !== id)];
+      return { tasks: ids.map((rid) => rowToTask(get.get(rid))) };
     });
   }
 

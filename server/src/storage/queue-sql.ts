@@ -90,6 +90,9 @@ export const CUSTOM_QUEUE_HEAD_WHERE = `t.status = 'queued' AND t.repo_id IS NOT
     AND ${repoHasRoom('a', heldBy('a'))}
   ))`;
 
+// The custom queue's ONE order. A reorder (`POST /api/tasks/:id/queue-move`,
+// planQueueReorder below) rewrites `custom_queue_at` itself, so this clause
+// and its JS twin `customQueueWaiting` need no change for it.
 export const CUSTOM_QUEUE_HEAD_ORDER = `ORDER BY t.custom_queue_at, t.created_at LIMIT 1`;
 
 /**
@@ -140,3 +143,116 @@ export const REPO_EXCLUSIVE_GATE = repoHasRoom(
            OR (x.status = 'review' AND (x.review_state IN ('pending', 'reviewing', 'fixing')
                                          OR x.check_state IN ('pending', 'running'))))`,
 );
+
+/**
+ * Custom-queue reorder (docs/queue.md § Reordering). The order IS
+ * `custom_queue_at` (then `created_at`) — CUSTOM_QUEUE_HEAD_ORDER above and
+ * `customQueueWaiting` in shared both sort on it — so a reorder only rewrites
+ * that column on WAITING members (`queued` + marked) and no claim SQL or JS
+ * twin changes. A member that is running/review/blocked keeps its mark as is.
+ *
+ * The waiting set, in claim order. Both drivers read it inside the reorder's
+ * transaction (Postgres appends FOR UPDATE).
+ */
+export const CUSTOM_QUEUE_WAITING_SQL = `SELECT id, custom_queue_at, created_at FROM tm_tasks
+  WHERE status = 'queued' AND custom_queue_at IS NOT NULL
+  ORDER BY custom_queue_at, created_at`;
+
+export type QueueMoveAnchor = { side: 'before' | 'after'; targetId: string } | 'first' | 'last';
+
+export interface QueueOrderRow {
+  id: string;
+  custom_queue_at: string;
+  created_at: string;
+}
+
+export type QueueReorderPlan =
+  | { refused: string }
+  | { writes: { id: string; at: string }[]; renumbered: boolean; before: string; after: string };
+
+/**
+ * Where the moved member's new mark goes — pure, so both drivers run the same
+ * decision. `task` is the moved row (null = not found is the caller's), and
+ * `waiting` is CUSTOM_QUEUE_WAITING_SQL's result.
+ *
+ * - A millisecond midpoint strictly between the new neighbours when their gap
+ *   is ≥ 2 ms: one row written.
+ * - Otherwise (tie, gap < 2 ms, or no neighbour on one side — 'first'/'last'
+ *   and the ends) the whole waiting set is renumbered evenly WITHIN its
+ *   current [min, max] span in the new order, ties having been broken by the
+ *   current order. Only when that span is narrower than one ms per member
+ *   (marks stamped in the same millisecond) does it reach back before `min`,
+ *   by the fewest ms that keep every mark distinct — never forward, where a
+ *   later "Add to queue" click must still land behind.
+ */
+export function planQueueReorder(
+  task: { id: string; status: string; custom_queue_at: string | null },
+  waiting: QueueOrderRow[],
+  anchor: QueueMoveAnchor,
+): QueueReorderPlan {
+  if (!task.custom_queue_at) return { refused: 'task is not in the custom queue' };
+  if (task.status !== 'queued') return { refused: `only a waiting member can move (task is ${task.status})` };
+  // Same tie-break as customQueueWaiting, whatever order the driver returned.
+  const rows = [...waiting].sort(
+    (a, b) => cmp(a.custom_queue_at, b.custom_queue_at) || cmp(a.created_at, b.created_at),
+  );
+  const self = rows.find((r) => r.id === task.id);
+  if (!self) return { refused: 'task is not waiting in the custom queue' };
+  const others = rows.filter((r) => r.id !== task.id);
+  let at: number;
+  if (anchor === 'first') at = 0;
+  else if (anchor === 'last') at = others.length;
+  else {
+    if (anchor.targetId === task.id) return { refused: 'a task cannot be moved relative to itself' };
+    const i = others.findIndex((r) => r.id === anchor.targetId);
+    if (i === -1) return { refused: 'target is not waiting in the custom queue' };
+    at = anchor.side === 'before' ? i : i + 1;
+  }
+  const order = [...others.slice(0, at), self, ...others.slice(at)];
+  const unchanged = order.every((r, i) => r.id === rows[i].id);
+  if (unchanged) return { writes: [], renumbered: false, before: self.custom_queue_at, after: self.custom_queue_at };
+  const ms = rows.map((r) => Date.parse(r.custom_queue_at));
+  if (ms.some((v) => Number.isNaN(v))) return { refused: 'a custom-queue mark is not a timestamp' };
+  const lo = others[at - 1];
+  const hi = others[at];
+  if (lo && hi) {
+    const a = Date.parse(lo.custom_queue_at);
+    const b = Date.parse(hi.custom_queue_at);
+    if (b - a >= 2) {
+      const iso = new Date(a + Math.floor((b - a) / 2)).toISOString();
+      return { writes: [{ id: self.id, at: iso }], renumbered: false, before: self.custom_queue_at, after: iso };
+    }
+  }
+  const n = order.length;
+  const min = ms[0];
+  const max = ms[n - 1];
+  const span = max - min;
+  const start = span >= n - 1 ? min : max - (n - 1);
+  const width = Math.max(span, n - 1);
+  const writes: { id: string; at: string }[] = [];
+  let after = self.custom_queue_at;
+  order.forEach((r, i) => {
+    const iso = new Date(start + Math.floor((i * width) / (n - 1))).toISOString();
+    if (r.id === self.id) after = iso;
+    if (iso !== r.custom_queue_at) writes.push({ id: r.id, at: iso });
+  });
+  return { writes, renumbered: true, before: self.custom_queue_at, after };
+}
+
+/** The `task.queue` audit row's data for a reorder that moved something. */
+export function reorderAudit(
+  anchor: QueueMoveAnchor,
+  plan: Extract<QueueReorderPlan, { writes: unknown }>,
+): Record<string, unknown> {
+  return {
+    queue: 'custom',
+    action: 'reorder',
+    place: typeof anchor === 'string' ? anchor : anchor.side,
+    targetId: typeof anchor === 'string' ? undefined : anchor.targetId,
+    before: plan.before,
+    after: plan.after,
+    renumbered: plan.renumbered ? plan.writes.length : undefined,
+  };
+}
+
+const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);

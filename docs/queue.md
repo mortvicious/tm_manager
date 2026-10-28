@@ -22,8 +22,9 @@ into, and it has three properties the global queue does not:
    against `orchestrator.concurrency`: two repos can each run a member, and
    with the global queue on the custom and global claims share the two slots,
    never a third.
-3. **FIFO by the click.** The order is the order tasks were added, not
-   `priority`, not `created_at`. The board shows that order as `queue #n`.
+3. **FIFO by the click, then by hand.** The order is the order tasks were
+   added, not `priority`, not `created_at`, unless a human
+   [reorders](#reordering) waiting members. The board shows that order as `queue #n`.
 
 ## When the next member starts
 
@@ -162,7 +163,10 @@ Workspaces (docs/workspaces.md) only filter what the Queue page LISTS, after ord
 ## Data
 
 One nullable column, `tm_tasks.custom_queue_at` (`Task.customQueueAt`,
-migration 16): set = member, its value = position. No status was added —
+migration 16): set = member, its value = position. It starts as the
+"Add to queue" click time, but a [reorder](#reordering) rewrites it, so read it
+as a sort key and never show it as an "added at" time. The Telegram `/task`
+card used to print `added HH:MM`. That suffix was dropped with the reorder. No status was added —
 a member is an ordinary `queued` task with a mark, so every status rule
 (cancel, delete, feature gates, boot recovery) applies unchanged.
 
@@ -288,9 +292,58 @@ wake-up continue an existing task and are not refused by it.
 - `enqueue`/`retry` clear the mark (they mean the global queue) — only after the
   status guard has passed, so a refused call leaves a waiting member exactly
   where it was; a lost race restores the mark and broadcasts.
+- `POST /api/tasks/:id/queue-move` `{ place: 'before'|'after', targetId }` or
+  `{ place: 'first'|'last' }` reorders the custom queue. See [Reordering](#reordering).
 - The generic `PATCH` does not accept `customQueueAt` (`.strict()`), by design.
-- Audit: `task.queue` events with `{queue:'custom', action:'add'|'remove'}`;
+- Audit: `task.queue` events with `{queue:'custom', action:'add'|'remove'}`,
+  or `{action:'reorder', place, targetId?, before, after, renumbered?}`;
   claims log `task.transition` with `claim:'custom-queue'`.
+
+## Reordering
+
+`POST /api/tasks/:id/queue-move` lets a human reorder the custom queue. The
+logic is `queueMoveTask` in `server/src/task-actions.ts`, so Telegram can reuse
+it. Storage does the work in the `reorderCustomQueue` composite, one
+transaction per driver like `moveTask`. Both drivers make the decision in the
+same pure function, `planQueueReorder` in `storage/queue-sql.ts`.
+
+- **Who may move.** Only a WAITING member may move: `queued` with
+  `custom_queue_at` set. A held (Undo start) member counts as waiting. It moves
+  relative to another waiting member of ANY repo, because the order is global
+  and serial only per repo. Anything else is refused with 409 and a reason:
+  not a member, not `queued`, a target that is not waiting (e.g. a `running`
+  member), or the task itself. An unknown task is 404. A `targetId` with
+  `first`/`last` is 400.
+- **Midpoint.** When the new neighbours are ≥ 2 ms apart, the moved member
+  gets the millisecond midpoint between their values as an ISO
+  `toISOString()`. That is one row written.
+- **Renumber.** When the neighbours are tied or < 2 ms apart, the whole
+  waiting set is renumbered in its new order, evenly WITHIN its current
+  [min, max] span. Moving to either end (`first`/`last`, or before the head)
+  always renumbers, since there is no neighbour on that side. Ties have already
+  been broken by the current `customQueueWaiting` order (`custom_queue_at`,
+  then `created_at`). Only when the span is narrower than 1 ms per member
+  (marks stamped in the same millisecond) does it reach back before `min`, by
+  the fewest milliseconds that keep the marks distinct. It never reaches
+  forward, where a later Add to queue click must still land behind.
+- **What is never touched.** `running`/`review`/`blocked` members keep their
+  marks. `updated_at` is not bumped. A move that changes nothing writes and
+  audits nothing.
+- **No other code changes.** `CUSTOM_QUEUE_HEAD_ORDER` (the claim/peek SQL)
+  and its JS twin `customQueueWaiting` both sort on this column, so no claim
+  SQL or twin changes.
+- **Audit and broadcast.** One `task.queue { action: 'reorder' }` audit row is
+  written in the transaction. A `task.updated` event is broadcast for every
+  rewritten row, then a scheduling pass runs, since a new head may be
+  claimable.
+- **Guard.** The route has the same guard as `POST /api/tasks/:id/move`: no
+  `Origin` requirement. Reordering only changes which waiting member runs
+  first.
+
+Verified on a copy of the live DB through `app.inject`. Three members across
+two repos were reordered three ways; after each move the `peekCustomQueue`
+head-per-repo walk matched `customQueueWaiting`. The refusals were checked
+too. Unit tests are in `server/src/storage/queue-order.test.ts`.
 
 ## UI
 

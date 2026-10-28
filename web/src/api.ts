@@ -328,6 +328,9 @@ export const api = {
   /** One board drop / picker choice (docs/grouping.md § Drag and drop) */
   moveTask: (id: string, b: { place: TaskMovePlace; targetId?: string | null }) =>
     req<Task>('POST', `/api/tasks/${id}/move`, b).then(normalizeTask),
+  /** Reorder a waiting custom-queue member (docs/queue.md § Reordering) */
+  queueMoveTask: (id: string, b: { place: 'before' | 'after' | 'first' | 'last'; targetId?: string | null }) =>
+    req<Task>('POST', `/api/tasks/${id}/queue-move`, b).then(normalizeTask),
   taskAction: (
     id: string,
     action:

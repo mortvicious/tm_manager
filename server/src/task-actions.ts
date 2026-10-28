@@ -2,6 +2,7 @@ import { GROUP_COLOR_COUNT, LOOP_DEFAULT_MAX_ITERATIONS, LOOP_MAX_ITERATIONS_LIM
 import type { ActionResult, OrchestratorApi } from './app-types.ts';
 import { broadcast } from './events.ts';
 import type { MoveAnchor } from './storage/group.ts';
+import type { QueueMoveAnchor } from './storage/queue-sql.ts';
 import type { NewTask, Storage } from './storage/types.ts';
 
 // The task lifecycle moves, once. Every one of these used to live inline in
@@ -387,6 +388,44 @@ export async function queueAddTask(deps: TaskActionDeps, id: string, actor: stri
   broadcast({ type: 'task.updated', task });
   deps.orchestrator?.maybeSchedule();
   return { task };
+}
+
+export const QUEUE_MOVE_PLACES = ['before', 'after', 'first', 'last'] as const;
+export type QueueMovePlace = (typeof QUEUE_MOVE_PLACES)[number];
+
+/**
+ * Reorder the custom queue (docs/queue.md § Reordering): a WAITING member
+ * (`queued` + marked) goes before/after another waiting member, or to the
+ * front/back. The driver decides and writes in one transaction
+ * (`reorderCustomQueue`) and refuses anything else with a reason (409).
+ * Every rewritten row is broadcast; a no-op writes nothing and audits nothing.
+ */
+export async function queueMoveTask(
+  deps: TaskActionDeps,
+  id: string,
+  input: { place: QueueMovePlace; targetId?: string | null },
+  actor: string,
+): Promise<ActionResult> {
+  const { storage } = deps;
+  let anchor: QueueMoveAnchor;
+  if (input.place === 'first' || input.place === 'last') {
+    if (input.targetId) return err(400, `targetId is not used with place "${input.place}"`);
+    anchor = input.place;
+  } else {
+    if (!input.targetId) return err(400, `targetId is required for place "${input.place}"`);
+    anchor = { side: input.place, targetId: input.targetId };
+  }
+  const r = await storage.reorderCustomQueue(id, anchor, actor);
+  if (!r) return err(404, 'task not found');
+  if ('refused' in r) return err(409, r.refused);
+  if (!r.tasks.length) {
+    const task = await storage.getTask(id);
+    return task ? { task } : err(404, 'task not found');
+  }
+  for (const t of r.tasks) broadcast({ type: 'task.updated', task: t });
+  // A new head may be claimable now (another repo's member moved to the front).
+  deps.orchestrator?.maybeSchedule();
+  return { task: r.tasks[0] };
 }
 
 /**
