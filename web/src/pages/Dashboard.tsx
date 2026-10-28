@@ -3,6 +3,7 @@ import type { Anomaly, AuditEvent, StatsOverview } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { errorText } from '../toast.ts';
+import { useWorkspace } from '../workspace.ts';
 
 const fmtDuration = (ms: number) => {
   const h = Math.floor(ms / 3600_000);
@@ -143,7 +144,10 @@ function describeEvent(e: AuditEvent, taskTitle: (id: string | null) => string |
 }
 
 export function DashboardPage({ onOpenTask }: { onOpenTask: (id: string) => void }) {
-  const { tasks, auditEvents, connected } = useApp();
+  const { tasks, runs, auditEvents, connected } = useApp();
+  const { workspace, repoIds, inScopeRepo } = useWorkspace();
+  // the workspace's repos as a stable key: the stats query and the reload trigger
+  const scopeKey = repoIds ? [...repoIds].sort().join(',') : null;
   const [overview, setOverview] = useState<StatsOverview | null>(null);
   // why the first load has not landed — shown instead of an endless "Loading…"
   // (docs/mobile.md § Server offline); a later failure keeps the last numbers
@@ -152,17 +156,27 @@ export function DashboardPage({ onOpenTask }: { onOpenTask: (id: string) => void
   const [feed, setFeed] = useState<AuditEvent[]>([]);
   const [days, setDays] = useState(14);
   const lastFetch = useRef(0);
+  // the newest load wins: a slow answer for the previous workspace or window
+  // must not overwrite the one that replaced it
+  const loadSeq = useRef(0);
 
   const load = async () => {
     lastFetch.current = Date.now();
+    const seq = ++loadSeq.current;
     try {
-      const [o, a, f] = await Promise.all([api.statsOverview(days), api.anomalies(), api.events(60)]);
+      // scoped: a deeper audit page, since the feed is filtered client-side
+      const [o, a, f] = await Promise.all([
+        api.statsOverview(days, repoIds ? [...repoIds] : undefined),
+        api.anomalies(),
+        api.events(repoIds ? 200 : 60),
+      ]);
+      if (seq !== loadSeq.current) return;
       setOverview(o);
       setAnomalies(a);
       setFeed(f);
       setLoadErr(null);
     } catch (e) {
-      setLoadErr(errorText(e));
+      if (seq === loadSeq.current) setLoadErr(errorText(e));
     }
   };
 
@@ -175,7 +189,7 @@ export function DashboardPage({ onOpenTask }: { onOpenTask: (id: string) => void
     }, 60_000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [days]);
+  }, [days, scopeKey]);
 
   // The socket coming back is the server coming back: reload now rather than
   // sit on the error (or stale numbers) until the 60s tick.
@@ -194,10 +208,25 @@ export function DashboardPage({ onOpenTask }: { onOpenTask: (id: string) => void
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastEventId]);
 
+  // Scoped (docs/workspaces.md § Scoped pages): an event or anomaly belongs to
+  // its own repo, else its task's, else its run's; one that names none
+  // (config, server, a day fuse) or whose task/run is not loaded stays visible.
+  const taskRepo = useMemo(() => new Map(tasks.map((t) => [t.id, t.repoId])), [tasks]);
+  const runRepo = useMemo(() => new Map(runs.map((r) => [r.id, r.repoId])), [runs]);
+  const repoOf = (repoId: string | null | undefined, taskId: string | null | undefined, runId: string | null | undefined) =>
+    repoId ?? (taskId ? taskRepo.get(taskId) : undefined) ?? (runId ? runRepo.get(runId) : undefined) ?? null;
+
   const mergedFeed = useMemo(() => {
     const seen = new Set(feed.map((e) => e.id));
-    return [...auditEvents.filter((e) => !seen.has(e.id)).reverse(), ...feed].slice(0, 60);
-  }, [feed, auditEvents]);
+    const merged = [...auditEvents.filter((e) => !seen.has(e.id)).reverse(), ...feed];
+    return (repoIds ? merged.filter((e) => inScopeRepo(repoOf(e.repoId, e.taskId, e.runId))) : merged).slice(0, 60);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feed, auditEvents, repoIds, inScopeRepo, taskRepo, runRepo]);
+  const shownAnomalies = useMemo(
+    () => (repoIds ? anomalies.filter((a) => inScopeRepo(repoOf(null, a.taskId, a.runId))) : anomalies),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [anomalies, repoIds, inScopeRepo, taskRepo, runRepo],
+  );
 
   const taskTitle = (id: string | null) => tasks.find((t) => t.id === id)?.title?.slice(0, 48) ?? null;
 
@@ -219,6 +248,11 @@ export function DashboardPage({ onOpenTask }: { onOpenTask: (id: string) => void
     <div>
       <h1 className="page-title">
         Dashboard
+        {workspace && (
+          <span className="muted" style={{ marginLeft: 'var(--tm-space-2)', fontWeight: 400 }}>
+            · {workspace.name}
+          </span>
+        )}
         <span style={{ flex: 1 }} />
         <select className="field mono" style={{ width: 110 }} value={days} onChange={(e) => setDays(Number(e.target.value))}>
           <option value={7}>7 days</option>
@@ -276,14 +310,14 @@ export function DashboardPage({ onOpenTask }: { onOpenTask: (id: string) => void
 
         <div className="chart-card">
           <h3>Anomalies</h3>
-          <div className="chart-sub">{anomalies.length === 0 ? 'watching for stuck runs, cost spikes, stale reviews' : `${anomalies.length} finding(s)`}</div>
-          {anomalies.length === 0 && (
+          <div className="chart-sub">{shownAnomalies.length === 0 ? 'watching for stuck runs, cost spikes, stale reviews' : `${shownAnomalies.length} finding(s)`}</div>
+          {shownAnomalies.length === 0 && (
             <div className="empty" style={{ padding: 'var(--tm-space-5)', margin: 'auto 0' }}>
               <div className="big">All clear</div>
               nothing needs your attention
             </div>
           )}
-          {anomalies.slice(0, 12).map((a, i) => (
+          {shownAnomalies.slice(0, 12).map((a, i) => (
             <div className="anomaly-row" key={i} onClick={() => a.taskId && onOpenTask(a.taskId)}>
               <span className={`sev sev-${a.severity}`}>{a.severity}</span>
               <span style={{ minWidth: 0 }}>

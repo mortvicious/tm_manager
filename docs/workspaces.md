@@ -6,7 +6,7 @@ A **workspace** is a named, scoped view over a set of repos. You use one to look
 - A repo may be in any number of workspaces. A repo is in at most one space.
 - Agents have no API for it, and nothing in a worker's prompt, environment or claim order depends on it.
 
-This feature has four phases. **Phase 1** adds the data, the REST API, the live events and the SPA store slice. **Phase 2** adds the editor on the Repos page (§ SPA › Managing them). The switcher, scoped pages and the rest come in later phases and add their own sections here.
+This feature has four phases. **Phase 1** adds the data, the REST API, the live events and the SPA store slice. **Phase 2** adds the editor on the Repos page (§ SPA › Managing them). It also adds the switcher (§ Current workspace). **Phase 3** scopes the Queue page and the Dashboard (§ Scoped pages). The rest comes in a later phase and adds its own sections here.
 
 ## Model
 
@@ -133,7 +133,7 @@ The rules:
 - **Colour**: `--tm-ws: var(--tm-group-<slot>)`, where the slot comes from `groupColorSlot({ groupId: id, groupColor: color })`. That is the explicit colour, or for an uncoloured workspace a stable slot hashed from the id, like groups.
 - **Styles**: `.ws-dot`, `.ws-switch`, `.ws-pop`, `.ws-opt` and `.ws-title` in `theme.css`, using tokens only. Glass adds one thing, `.ws-pop` in the shared popover-material rule (`:is(.cmd-pop, .group-picker-pop, .ws-pop)`). Nothing touches `.main`, `.header` or `.app`.
 
-Nothing consumes the scope yet beyond the switcher.
+Phase 3 makes the pages consume it (§ Scoped pages).
 
 Verified (phase 2) with Playwright Chromium against the live front door. A scratch build was served from `ctx.route`, `GET /api/workspaces` was faked (the live API predated migration 49), every non-GET was aborted, and `/ws/events` was a mock socket for injecting `workspace.deleted`. Both designs passed 60 checks at desktop 1400 px and phone 393 px:
 
@@ -147,6 +147,32 @@ Verified (phase 2) with Playwright Chromium against the live front door. A scrat
 - the phone header does not overflow at 393 px.
 
 `openTaskFromAnywhere` was checked under tsx: `/queue?ws=neko` produces `/queue?task=<id>&ws=neko`. `npm run typecheck` and `npm run build` pass, with the build going to a scratch outDir.
+
+## Scoped pages
+
+Phase 3 makes pages read `useWorkspace()`. Under All each page behaves exactly as before.
+
+### Queue (`web/src/pages/Queue.tsx`)
+
+- **Active sessions and idle terminals** keep runs where `inScopeRepo(run.repoId)` holds. A repo-less aux run, such as a report or a repo-less chat, stays visible.
+- **The custom queue** (`customQueueWaiting(tasks)`) and **the global queue** are filtered with `inScope` only AFTER they are ordered (`compareClaimOrder` over ALL tasks). The rows that remain therefore keep their place in the global run order. A scoped list is always a subsequence of the All list.
+- **Hidden rows are counted.** When the scope hides rows from a section, the section ends with a muted line, `n more in other workspaces`. That way a scoped empty queue is not mistaken for an idle orchestrator. The Idle and Queue sections normally disappear when they are empty. They keep their header (count 0) while there are hidden rows, and the empty texts say "in this workspace".
+- **Behaviour is unchanged.** No orchestrator call or button behaves differently.
+
+### Dashboard (`web/src/pages/Dashboard.tsx`)
+
+- **Tiles, charts and tables** come from `api.statsOverview(days, [...repoIds])` (§ Scoped stats). These are the tiles, both per-day charts, provenance, per repo and per model. Under All the call is `?days=` alone. The load effect depends on `[days, scopeKey]`, where `scopeKey` is the sorted repo ids. A switch refetches immediately and re-arms the 60 s interval. A sequence ref drops a slow answer that a newer load has overtaken, so the previous scope's numbers cannot land last.
+- **Anomalies and the activity feed** are filtered client-side. An item belongs to its own `repoId`, else its task's repo, else its run's repo (from the loaded `tasks`/`runs`). One that names none of these stays visible, because it is repo-less: config, server and the day fuse. One whose task or run is not loaded also stays visible. While scoped, the feed fetches 200 audit rows instead of 60, then keeps the newest 60 in scope.
+- **The title** reads `Dashboard · <workspace name>` when scoped.
+
+Verified (phase 3) with Playwright against the live front door. A scratch build was served from `ctx.route`, `GET /api/workspaces` was faked (the live API predates migration 49), and every non-GET was aborted. `/api/stats/overview` was proxied, and its `perRepo` was trimmed to the requested `repoIds`, because the live API ignores the parameter. Nine finished tasks across three repos were rewritten to `queued`: six global and three custom. The checks:
+
+- **Queue order.** In `tm` and `neko` scope, the Queue and Global queue rows were exact subsequences of the All order. Active sessions split 1 + 1 over the two live runs, and each section's `n more` added up to the All count.
+- **Empty workspace.** A repo set with nothing in it showed `2 / 3 / 10 more in other workspaces` under the three sections.
+- **Dashboard requests.** The Dashboard fetched `?days=14`. After a switch to Neko it fetched `?days=14&repoIds=<fe>,<nest>` (per repo 4 → 2 rows, title `Dashboard · Neko`), and back on All it fetched `?days=14` again.
+- **Anomalies and feed.** Anomalies went from 59 to 48 findings, which equals the count computed from `/api/stats/anomalies` and the task repos. The feed dropped a TM task's `anomaly.notified` row.
+
+There were no page errors. `npm run typecheck` and `npm run build` pass.
 
 ## Verification (phase 1)
 

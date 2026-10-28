@@ -8,17 +8,39 @@ import { Elapsed } from '../components/RunMeta.tsx';
 import { TaskRow } from '../components/TaskRow.tsx';
 import { customQueueWaiting } from '../components/QueueMark.tsx';
 import { KindBadge, runLink, runTitle } from '../components/RunKind.tsx';
+import { useWorkspace } from '../workspace.ts';
+
+/** what a workspace hid from a section — so a scoped empty queue is not read as an idle orchestrator */
+function OtherWorkspaces({ n }: { n: number }) {
+  if (n === 0) return null;
+  return (
+    <div
+      className="muted"
+      style={{ fontSize: 'var(--tm-text-sm)', padding: 'var(--tm-space-1) var(--tm-space-2)' }}
+    >
+      {n} more in other workspaces
+    </div>
+  );
+}
 
 export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (runId: string) => void; onOpenTask: (id: string) => void }) {
   const { runs, tasks, refresh } = useApp();
-  const active = runs.filter((r) => r.status === 'running' && !r.idle);
-  const idle = runs.filter((r) => r.status === 'running' && r.idle);
+  const { inScope, inScopeRepo } = useWorkspace();
+  const allActive = runs.filter((r) => r.status === 'running' && !r.idle);
+  const allIdle = runs.filter((r) => r.status === 'running' && r.idle);
   // Custom queue (docs/queue.md) first, in run order; the rest is the global queue.
-  const custom = customQueueWaiting(tasks);
+  const allCustom = customQueueWaiting(tasks);
   // listed in the order the orchestrator claims them (docs/grouping.md § Order)
-  const queued = tasks
+  const allQueued = tasks
     .filter((t) => t.status === 'queued' && !t.customQueueAt)
     .sort(compareClaimOrder(new Map(tasks.map((t) => [t.id, t]))));
+  // The workspace (docs/workspaces.md § Scoped pages) filters AFTER ordering,
+  // so the remaining rows keep their place in the GLOBAL run order; repo-less
+  // aux runs (chat without a repo, reports) always stay.
+  const active = allActive.filter((r) => inScopeRepo(r.repoId));
+  const idle = allIdle.filter((r) => inScopeRepo(r.repoId));
+  const custom = allCustom.filter(inScope);
+  const queued = allQueued.filter(inScope);
   const navigate = useNavigate();
   // Workers and aux sessions (review, plan, chat, …) side by side: every one
   // is a terminal, told apart by its kind badge (docs/design.md § PTY sessions).
@@ -47,7 +69,7 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
         Active sessions <span className="count">{active.length}</span>
       </div>
       {active.length === 0 ? (
-        <div className="empty panel">No live sessions.</div>
+        <div className="empty panel">{allActive.length > 0 ? 'No live sessions in this workspace.' : 'No live sessions.'}</div>
       ) : (
         <div className="panel">
           <table className="tbl stack-tbl">
@@ -104,46 +126,50 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
           </table>
         </div>
       )}
+      <OtherWorkspaces n={allActive.length - active.length} />
 
-      {idle.length > 0 && (
+      {allIdle.length > 0 && (
         <>
           <div className="section-head">
             Idle terminals <span className="count">{idle.length}</span>
           </div>
-          <div className="panel">
-            {idle.map((r) => (
-              <div className="task-row" key={r.id} onClick={() => open(r)}>
-                <span className="title">{runTitle(r, tasks)}</span>
-                {r.stats && (
-                  <span className="mono muted">
-                    ${r.stats.costUsd.toFixed(3)} · ctx {Math.round(contextPctOf(r.stats, r.model))}%
-                  </span>
-                )}
-                <button
-                  className="btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onOpenTerminal(r.id);
-                  }}
-                >
-                  <IconTerminal /> Terminal
-                </button>
-                <button
-                  className="btn danger"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    kill(r.id);
-                  }}
-                >
-                  Close
-                </button>
-              </div>
-            ))}
-          </div>
+          {idle.length > 0 && (
+            <div className="panel">
+              {idle.map((r) => (
+                <div className="task-row" key={r.id} onClick={() => open(r)}>
+                  <span className="title">{runTitle(r, tasks)}</span>
+                  {r.stats && (
+                    <span className="mono muted">
+                      ${r.stats.costUsd.toFixed(3)} · ctx {Math.round(contextPctOf(r.stats, r.model))}%
+                    </span>
+                  )}
+                  <button
+                    className="btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpenTerminal(r.id);
+                    }}
+                  >
+                    <IconTerminal /> Terminal
+                  </button>
+                  <button
+                    className="btn danger"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      kill(r.id);
+                    }}
+                  >
+                    Close
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <OtherWorkspaces n={allIdle.length - idle.length} />
         </>
       )}
 
-      {custom.length > 0 && (
+      {allCustom.length > 0 && (
         <>
           <div className="section-head">
             Queue <span className="count">{custom.length}</span>
@@ -151,17 +177,14 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
               one task per repo, runs even while the global queue is stopped
             </span>
           </div>
-          <div className="panel">
-            {custom.map((t) => (
-              <TaskRow
-                key={t.id}
-                task={t}
-                onOpenTask={onOpenTask}
-                onOpenTerminal={onOpenTerminal}
-                depth={t.parentId ? 1 : 0}
-              />
-            ))}
-          </div>
+          {custom.length > 0 && (
+            <div className="panel">
+              {custom.map((t) => (
+                <TaskRow key={t.id} task={t} onOpenTask={onOpenTask} onOpenTerminal={onOpenTerminal} depth={t.parentId ? 1 : 0} />
+              ))}
+            </div>
+          )}
+          <OtherWorkspaces n={allCustom.length - custom.length} />
         </>
       )}
 
@@ -169,22 +192,17 @@ export function QueuePage({ onOpenTerminal, onOpenTask }: { onOpenTerminal: (run
         Global queue <span className="count">{queued.length}</span>
       </div>
       {queued.length === 0 ? (
-        <div className="empty panel">Global queue is empty.</div>
+        <div className="empty panel">{allQueued.length > 0 ? 'Nothing queued in this workspace.' : 'Global queue is empty.'}</div>
       ) : (
         <div className="panel">
           {queued.map((t) => (
-            <TaskRow
-              key={t.id}
-              task={t}
-              onOpenTask={onOpenTask}
-              onOpenTerminal={onOpenTerminal}
-              depth={t.parentId ? 1 : 0}
-            >
+            <TaskRow key={t.id} task={t} onOpenTask={onOpenTask} onOpenTerminal={onOpenTerminal} depth={t.parentId ? 1 : 0}>
               <span className="mono muted">prio {t.priority}</span>
             </TaskRow>
           ))}
         </div>
       )}
+      <OtherWorkspaces n={allQueued.length - queued.length} />
     </div>
   );
 }
