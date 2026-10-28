@@ -11,6 +11,7 @@ import { PARALLEL_MAX } from '@tm/shared';
  * the candidate's repo: `parallel` only for a `delivery = 'pr'` repo — each
  * of its tasks works in its own worktree — else 1. Out-of-range reads as 1,
  * like `rowToRepo`. JS twin: `repoParallelCap` in shared — edit together.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
 const repoCapSql = (t: string) =>
   `COALESCE((SELECT CASE WHEN rp.delivery = 'pr' AND rp.parallel BETWEEN 2 AND ${PARALLEL_MAX} THEN rp.parallel ELSE 1 END
@@ -22,6 +23,7 @@ const repoCapSql = (t: string) =>
  * works in the MAIN CHECKOUT (`workdir IS NULL` — that tree is one agent's),
  * and fewer holders than the cap. With cap 1 — every `direct` repo — this is
  * exactly the old `NOT EXISTS (holder)`. JS twin: `repoHasRoom` in shared.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
 const repoHasRoom = (h: string, holder: string) =>
   `(NOT EXISTS (SELECT 1 FROM tm_tasks ${h}
@@ -47,6 +49,7 @@ const repoHasRoom = (h: string, holder: string) =>
  * with the previous change still in it (committed or not), and a Publish of the
  * first task while the next one is running will not find a clean tree.
  * JS twin: `customQueueHoldsRepo` in shared/src/types.ts — edit together.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
 const heldBy = (a: string) =>
   `(${a}.status IN ('running', 'waiting', 'blocked')
@@ -77,6 +80,7 @@ const heldBy = (a: string) =>
  * And for any task in its repo, member or not, that Pause all owes a turn
  * (`paused_turn`, docs/pause.md): Continue resumes it in this checkout.
  * The caller interpolates the gate; expects the candidate row aliased `t`.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
 export const CUSTOM_QUEUE_HEAD_WHERE = `t.status = 'queued' AND t.repo_id IS NOT NULL AND t.custom_queue_at IS NOT NULL
   AND t.queue_held_at IS NULL
@@ -93,6 +97,7 @@ export const CUSTOM_QUEUE_HEAD_WHERE = `t.status = 'queued' AND t.repo_id IS NOT
 // The custom queue's ONE order. A reorder (`POST /api/tasks/:id/queue-move`,
 // planQueueReorder below) rewrites `custom_queue_at` itself, so this clause
 // and its JS twin `customQueueWaiting` need no change for it.
+// JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
 export const CUSTOM_QUEUE_HEAD_ORDER = `ORDER BY t.custom_queue_at, t.created_at LIMIT 1`;
 
 /**
@@ -135,6 +140,7 @@ export const skipRepos = (n: number) =>
  * JS twin: `holdsRepoForClaim` in shared/src/types.ts — edit together.
  * Per-repo cap (docs/parallel.md § The gate): "no other" is `repoHasRoom` —
  * fewer holders than the repo's cap, and none in the main checkout.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
 export const REPO_EXCLUSIVE_GATE = repoHasRoom(
   'x',

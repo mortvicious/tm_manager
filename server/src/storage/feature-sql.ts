@@ -12,6 +12,8 @@
  * exempt: it is a human-triage item, not phase work, and would otherwise wedge
  * the phase forever. Must stay in lockstep with `isFeatureTaskBlocking` below.
  * Expects the candidate row to be aliased `t`.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the simulated global
+ * and custom-queue claims apply this gate; edit together.
  */
 export const FEATURE_CLAIM_GATE = `(
   t.feature_id IS NULL
@@ -34,6 +36,7 @@ export const FEATURE_CLAIM_GATE = `(
  * full phase gate would deadlock it — e.g. the moment a sibling failure pauses
  * the feature. Only a cancelled feature stops its children from starting.
  * Expects the candidate row to be aliased `t`.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — its overflow step.
  */
 export const FEATURE_OVERFLOW_GATE = `(
   t.feature_id IS NULL
@@ -41,12 +44,9 @@ export const FEATURE_OVERFLOW_GATE = `(
 )`;
 
 /**
- * JS twin of the lower-phase predicate inside FEATURE_CLAIM_GATE. Both express
- * one policy — "does this task still hold its phase open?" — so they are edited
- * together or not at all.
+ * JS twin of the lower-phase predicate inside FEATURE_CLAIM_GATE, now in
+ * shared (the schedule simulator reads it too) and re-exported here for the
+ * drivers. Both express one policy — "does this task still hold its phase
+ * open?" — so they are edited together or not at all.
  */
-export function isFeatureTaskBlocking(t: { status: string; source: string }): boolean {
-  if (t.status === 'published' || t.status === 'done' || t.status === 'cancelled') return false;
-  if (t.status === 'draft' && t.source !== 'feature') return false;
-  return true;
-}
+export { isFeatureTaskBlocking } from '@tm/shared';

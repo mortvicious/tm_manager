@@ -576,6 +576,7 @@ export const WORKTREE_COPY_DEFAULTS: readonly string[] = ['.env*', '.claude/sett
  * How many of a repo's tasks may hold it at once — the SQL gates' cap
  * (`repoCapSql` in queue-sql.ts) in JS: `parallel` only for a `pr` repo,
  * whose tasks each work in their own worktree; a `direct` repo is always 1.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
 export function repoParallelCap(repo: Pick<Repo, 'parallel' | 'delivery'> | null | undefined): number {
   if (!repo || repo.delivery !== 'pr') return 1;
@@ -588,6 +589,7 @@ export function repoParallelCap(repo: Pick<Repo, 'parallel' | 'delivery'> | null
  * A holder working in the main checkout (no `workdir`) keeps the repo
  * exclusive whatever the cap, so a `direct` repo, or a pr repo's task that
  * started before the switch, behaves exactly as before.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
 export function repoHasRoom(
   holders: readonly Pick<Task, 'workdir'>[],
@@ -1139,6 +1141,7 @@ export interface Task {
  * still open. Unlike the custom queue, `blocked` does NOT hold the repo — a
  * split parent waits on children that live in that same repo. JS twin of
  * `REPO_EXCLUSIVE_GATE` in server/src/storage/queue-sql.ts — edit together.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
 export function holdsRepoForClaim(t: Pick<Task, 'status' | 'reviewState' | 'checkState' | 'pausedTurn'>): boolean {
   if (t.status === 'running' || t.status === 'waiting') return true;
@@ -1153,6 +1156,7 @@ export function holdsRepoForClaim(t: Pick<Task, 'status' | 'reviewState' | 'chec
  * docs/checks.md — they read the checkout, so nobody else may edit it). The
  * `review_state … OR check_state …` clause of the SQL twins in
  * server/src/storage/queue-sql.ts — edit together.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
 export function verifyOpen(t: Pick<Task, 'status' | 'reviewState' | 'checkState'>): boolean {
   if (t.status !== 'review') return false;
@@ -1222,6 +1226,7 @@ export const CUSTOM_QUEUE_IN_FLIGHT_STATUSES: readonly TaskStatus[] = ['running'
  * was never going to be reviewed — sits in `review` for the human without
  * stopping the queue. JS twin of `CUSTOM_QUEUE_HELD_BY` in
  * server/src/storage/queue-sql.ts — edit together.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
 export function customQueueHoldsRepo(t: Pick<Task, 'status' | 'reviewState' | 'checkState' | 'pausedTurn'>): boolean {
   if (CUSTOM_QUEUE_IN_FLIGHT_STATUSES.includes(t.status)) return true;
@@ -1246,6 +1251,7 @@ export function customQueueHoldsRepo(t: Pick<Task, 'status' | 'reviewState' | 'c
  * docs/queue.md § Reordering) rewrites `customQueueAt` itself, so this sort and
  * CUSTOM_QUEUE_HEAD_ORDER (server/src/storage/queue-sql.ts) follow it unchanged.
  * Read the column as a sort key, never as a time to show.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
 export function customQueueWaiting(tasks: Task[]): Task[] {
   return tasks
@@ -1267,6 +1273,7 @@ export type TaskMovePlace = (typeof TASK_MOVE_PLACES)[number];
  * `MANUAL_CLAIM_ORDER` (server/src/storage/group.ts); edit them together.
  * priority first, then the group's root key (then group id), root before its
  * members, then the task's own key, then creation. `byId` must hold the roots.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
 export function compareClaimOrder(byId: ReadonlyMap<string, Task>) {
   return (a: Task, b: Task): number => {
@@ -2034,6 +2041,23 @@ export type FeatureStatus =
   | 'done'
   | 'failed'
   | 'cancelled';
+
+/**
+ * Does this task still hold its feature phase open? The JS twin of the
+ * lower-phase predicate inside FEATURE_CLAIM_GATE
+ * (server/src/storage/feature-sql.ts, which re-exports it for both drivers'
+ * `resolveFeatureProgress`). Settled = `published`/`done`/`cancelled`;
+ * `failed` blocks on purpose (it pauses the feature rather than advancing it);
+ * a draft a worker filed inside the feature (source not 'feature') is a
+ * human-triage item, not phase work, and never blocks. Edit together with the
+ * SQL, or not at all.
+ * JS twin: predictSchedule (shared/src/schedule.ts) reads it for the phase gate.
+ */
+export function isFeatureTaskBlocking(t: { status: string; source: string }): boolean {
+  if (t.status === 'published' || t.status === 'done' || t.status === 'cancelled') return false;
+  if (t.status === 'draft' && t.source !== 'feature') return false;
+  return true;
+}
 
 /** One planned task card. Nothing exists as a tm_tasks row until approval. */
 export interface FeaturePlanTask {

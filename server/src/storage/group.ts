@@ -123,6 +123,7 @@ export function keyNextTo(
  * group — which is what the board's drag produces; members nested deeper
  * compare by their own key within the group rather than depth-first.
  * JS twin: `compareClaimOrder` in shared/src/types.ts — edit them together.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
 export const MANUAL_CLAIM_ORDER = `t.priority DESC,
        COALESCE((SELECT g.sort_order FROM tm_tasks g WHERE g.id = t.group_id), t.sort_order), t.group_id,

@@ -67,8 +67,9 @@ export interface TaskProgress {
 
 export const PROGRESS_MIN_TASKS = 10;
 export const PROGRESS_WINDOW_DAYS = 90;
-/** work band 0–70: the agent is coding */
-const WORK_END = 70;
+/** work band 0–70: the agent is coding (the schedule simulator rescales a work-band % by it) */
+export const PROGRESS_WORK_END = 70;
+const WORK_END = PROGRESS_WORK_END;
 /** the share of a band a held (overrun / all-ticked) reading stops at */
 const HOLD = 0.95;
 /** fixed in-band points for the stages that have no fraction of their own */
