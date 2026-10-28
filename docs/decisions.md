@@ -1,5 +1,10 @@
 # Decision log
 
+- **2026-10-28 — Workspaces are view scopes; per-workspace queues were considered and rejected for now (`docs/workspaces.md` § What is not scoped)**: task 14ffdf0d, phase 4/4 of *Workspaces: scoped views over repo sets*.
+  - **A workspace changes what the SPA shows, never what the server does.** There is still one worker pool, one `orchestrator.concurrency` cap, one enabled switch, one Pause all and one custom queue. No claim SQL, `REPO_EXCLUSIVE_GATE`/`repoHasRoom`/`CUSTOM_QUEUE_HEAD_WHERE` or its JS twin reads a workspace.
+  - **Rejected for now: per-workspace queues, caps or switches.** A repo can be in several workspaces, so a per-workspace cap has no single owner. Each one would also need a new clause in every claim SQL plus its JS twin in both drivers, which is the drift-prone surface. The per-repo serial custom queue already keeps repos from waiting on each other (2026-10-22). Revisit if the human wants to stop "the neko repos" as a unit.
+  - **`?ws=<slug>`, not `/w/:slug/`.** It composes with `?task=`, needs no route changes, and a URL without it (deep links, push taps, Telegram) means All. Only a bare `/` or `/board` launch restores the device's pick.
+
 - **2026-10-28 — Workspaces are views, not spaces; seeded once from the spaces (`docs/workspaces.md`)**: task 6c4172b9, phase 1/4 of the feature *Workspaces: scoped views over repo sets*.
   - **A separate table, not a flag on `tm_spaces`.** A space changes what a worker sees and allows a repo in only one space. A workspace is a dashboard view: a repo can be in many, there is no folder, and there is no agent API.
   - **Migration 49, not the 48 the task named.** Approvals had already taken 48.

@@ -6,7 +6,7 @@ A **workspace** is a named, scoped view over a set of repos. You use one to look
 - A repo may be in any number of workspaces. A repo is in at most one space.
 - Agents have no API for it, and nothing in a worker's prompt, environment or claim order depends on it.
 
-This feature has four phases. **Phase 1** adds the data, the REST API, the live events and the SPA store slice. **Phase 2** adds the editor on the Repos page (§ SPA › Managing them). It also adds the switcher (§ Current workspace). **Phase 3** scopes the Queue page, the Dashboard, the Inbox and the Board (§ Scoped pages). The rest comes in a later phase and adds its own sections here.
+This feature has four phases. **Phase 1** adds the data, the REST API, the live events and the SPA store slice. **Phase 2** adds the editor on the Repos page (§ SPA › Managing them). It also adds the switcher (§ Current workspace). **Phase 3** scopes the Queue page, the Dashboard, the Inbox and the Board (§ Scoped pages). **Phase 4** adds this document's decision sections (§ Why `?ws=`, § What is not scoped) and the end-to-end pass (§ Verification (phase 4, end to end)). Decision log: docs/decisions.md 2026-10-28 (two entries: views not spaces; view scopes, not per-workspace queues).
 
 ## Model
 
@@ -126,6 +126,19 @@ The rules:
 - **A bare launch restores the device's pick.** `applyRememberedWorkspace()` runs in `main.tsx` before the router reads the URL, so nothing renders unscoped first. It applies `tm.workspace` only when the path is `/` or `/board` with an EMPTY query string, which is what the Home Screen app opens (`start_url: "/"`). Any other URL without `?ws` means All, so a push tap (`/?task=<id>`), `/board?task=<id>` and old bookmarks keep meaning All. A reload of a bare `/board` counts as a launch.
 - **An unknown slug falls back to All.** `WorkspaceGuard` is mounted once in `Layout`. When the list has loaded (`workspacesLoaded`, a flag added to `state.tsx` because the global `loaded` is set before workspaces arrive) and `?ws` names no workspace, the guard does three things: it shows an info toast (`toastInfo`, new in `toast.ts`, which is a plain notice with no action), it forgets `tm.workspace` if that was the slug, and it removes the param. The slug can be unknown because the workspace was deleted in this tab or another one (the `workspace.deleted` event), or because a link is stale. An empty `?ws=` is dropped without a toast.
 
+### Why `?ws=` and not `/w/:slug/`
+
+The scope is a query parameter, deliberately, not a path prefix:
+
+- **It composes like `?task=`.** Both are independent overlays on whatever page is open, and `setWorkspace` edits only its own param, so a panel can be open in any scope and either can change without touching the other.
+- **No route changes.** A prefix would have doubled every route in the router, every `NavLink` match and every hard-coded path (toasts, push `?task=` deep links, Telegram links, the manifest's `start_url`). With a param, an old URL is still valid and simply means All.
+- **Deep links mean All.** A link without `?ws` (a push tap, a Telegram link, a bookmark) must show the thing it points at, whatever scope the device last used. Only a BARE `/` or `/board` launch restores `tm.workspace` (§ The rules), because that is what the Home Screen app opens.
+- **An unknown slug is not an error page.** It falls back to All with a toast (`WorkspaceGuard`).
+
+### `useWorkspace()` is THE scoping helper
+
+Every view that should follow the workspace reads `useWorkspace()` and nothing else: `inScope(task)` / `inScopeRepo(repoId)` for membership, `repoIds` to pass to a server filter (`buildInbox`'s `repoIds`, `statsOverview`'s `repoIds`), `wsHref` for links. Later views (Timeline, the ⌘K palette, a Review deck) should do the same instead of reading `?ws` or `tm.workspace` themselves. **A repo-less item (`repoId` null: a repo-less chat or report, config/server anomalies, the day fuse) is in every scope**, because it belongs to no repo that could be out of scope.
+
 ### Switcher (`web/src/components/WorkspaceSwitcher.tsx`)
 
 - **Desktop**: a compact ghost button in `.header`, before the queue switch. It shows the colour dot and the name ("All repos" with a hollow ring for All). It opens a `.ws-pop` menu: All repos, the workspaces in `sortOrder` with their repo counts and a check on the current one, then **Manage…** → `wsHref('/repos#workspaces')`. Outside press and Escape close it. The task panel's overlay covers the header, so the scope cannot be switched by pointer while a panel is open.
@@ -198,6 +211,39 @@ Verified (phase 3, Inbox) the same way: Playwright, a scratch build and a frozen
 Each count equals the shared `buildInbox` run on the snapshot. Pressing the hint drops `?ws` and restores the All counts exactly. There were no page errors, and the phone header does not overflow. A Glass issue that predates this change: at 1400 px the header's pill row wraps and covers the page title, the hint included. It is reachable at 1700 px and wider.
 
 Verified (phase 3, Board) with Playwright at 1400 px and 393 px. A scratch build was served from `ctx.route`, `GET /api/workspaces` was faked with Neko = [neko-vite-new, neko-nest], and every non-GET was aborted. Under All the board rendered rows from other repos (15 on desktop, 11 on phone). On `?ws=neko` it rendered 29 and 22 rows, none outside the workspace, with the `workspace: Neko` chip. With the global key set to task-manager, the new-task default was neko-vite-new (the first repo). With `tm.newTask.repo.ws-neko` = neko-nest it was neko-nest. With that key set to task-manager (no longer in the workspace) it went back to neko-vite-new. Clearing the chip dropped `?ws`, restored the All rows, and the default became the global task-manager. `tm.board` was byte-identical before, across reloads and after. There were no page errors.
+
+## What is not scoped
+
+A workspace changes what the SPA SHOWS and nothing the server DOES (decisions.md 2026-10-28, view scopes):
+
+- **The orchestrator**: one global worker pool, one `orchestrator.concurrency` cap, one enabled switch, one Pause all.
+- **Claims and gates**: no claim SQL reads a workspace. `REPO_EXCLUSIVE_GATE`, `repoHasRoom`, `CUSTOM_QUEUE_HEAD_WHERE` and their JS twins are unchanged.
+- **The custom queue**: still per repo and global. The Queue page filters what it lists AFTER ordering, so the scoped rows are a subsequence of the real run order.
+- **`QuestionModal`**: global by design, since a blocked agent is blocked whatever you are looking at. The ❓ chip count IS scoped.
+- **Push-health and other server banners**: global.
+- **Telegram and Web Push**: no workspace concept. A push tap's `/?task=` opens under All.
+- **`/api/stats/anomalies`**: unscoped on the server. The Dashboard filters it client-side.
+- **Agents**: no API, nothing in a prompt, environment or claim order.
+
+## Verification (phase 4, end to end)
+
+These steps re-run the whole feature:
+
+1. On `/repos#workspaces`, create a workspace with one repo. The slug preview equals the created slug.
+2. Switch to it in the header. `?ws=<slug>` and `tm.workspace` are set, and every sidebar link carries `?ws`.
+3. Check the Inbox (title `· <name>`, scoped count, `n more` hint), the Queue (scoped rows plus `n more in other workspaces`), the Dashboard (the request carries `repoIds=`) and the Board (`workspace: <name>` chip). The new-task form defaults to a repo in the workspace.
+4. Full-load `/?task=<id>`: the panel opens under All and `tm.workspace` is kept. Then full-load a bare `/`: it lands on `/board?ws=<slug>`.
+5. Delete the workspace while it is current. You get All, the toast "no longer exists — showing all repos", `?ws` dropped and `tm.workspace` cleared.
+
+**Run on 2026-10-28** in Chrome (Claude in Chrome) at desktop width. The live API predated migration 49 and could not be restarted while agents worked, so the harness used the REAL `registerWorkspaceRoutes` over a `.backup` copy of the live DB (the migration seeded `neko` from its space), with a forwarding `/ws/events` and a scratch `vite build`. Other GETs were proxied to the live API and other writes were refused. The steps:
+
+1. Created `E2E TM` → `e2e-tm` (task-manager only) through the form.
+2. Switched with the header menu. The links carried `?ws=e2e-tm`.
+3. Inbox: `Inbox · E2E TM`, nothing waiting. Queue: one active session (this task) with `1 more in other workspaces`, and an empty global queue with `2 more in other workspaces`. Dashboard: titled `· E2E TM`, both overview requests carried `repoIds=`. The totals were not narrowed, because the live API ignores the parameter, as noted in phase 3. Board: the `workspace: E2E TM` chip. New task: `17 - task-manager`.
+4. `/?task=<id>` showed All with the memory kept. A bare `/` went to `/board?ws=e2e-tm`.
+5. Deleting the workspace via the inline confirm fell back to All with the toast, `/repos` without `?ws` and the memory cleared. The list was back to `neko`.
+
+No doc inaccuracies and no code defects were found. Not covered: phone width and Glass in this pass (phases 2–3 covered both), and live numbers from a scoped `/api/stats/overview`, which need the API restarted on this code.
 
 ## Verification (phase 1)
 

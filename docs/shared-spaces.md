@@ -10,6 +10,8 @@ two things:
 - **A ledger** (`tm_shared_notes`) of cross-repo **requests** ("repo B must do
   X because of my change") and **notes** (durable knowledge for every member).
 
+Not to be confused with a **workspace** (docs/workspaces.md): a dashboard view over any repo set, with no folder and no effect on workers. Each space was seeded once as a workspace.
+
 ## Why
 
 Every worker runs in its own working tree. It cannot see another repo's

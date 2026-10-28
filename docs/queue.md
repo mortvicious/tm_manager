@@ -157,6 +157,8 @@ while those commits sit unpushed under it. Audit: `task.undo` rows,
 Undo is refused (409) for a task that is not `running`/`waiting`, or that left
 `running` while the undo was killing it.
 
+Workspaces (docs/workspaces.md) only filter what the Queue page LISTS, after ordering: the custom queue, the global queue and every claim stay global.
+
 ## Data
 
 One nullable column, `tm_tasks.custom_queue_at` (`Task.customQueueAt`,
