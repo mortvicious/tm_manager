@@ -15,6 +15,7 @@ import type {
   Run,
   SharedNote,
   Space,
+  Workspace,
   CheckState,
   LandingTier,
   Task,
@@ -301,6 +302,19 @@ export function rowToSpace(r: any): Space {
     name: r.name,
     path: r.path,
     repoIds: safeParse<string[]>(r.repo_ids, []),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+export function rowToWorkspace(r: any): Workspace {
+  return {
+    id: r.id,
+    name: r.name,
+    slug: r.slug,
+    repoIds: safeParse<string[]>(r.repo_ids, []),
+    color: r.color == null ? null : Number(r.color),
+    sortOrder: Number(r.sort_order ?? 0),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };

@@ -1,6 +1,8 @@
 // Dialect-neutral DDL: runs unchanged on bundled SQLite (>=3.35) and Postgres.
 // All tables carry the fixed `tm_` prefix (see docs/decisions.md).
 
+import { uniqueWorkspaceSlug } from '@tm/shared';
+
 // One generation of the migration-12 group backfill: every row whose parent
 // already has a group inherits it. Dialect-neutral (correlated subquery on the
 // table being updated works on both SQLite and Postgres).
@@ -777,7 +779,55 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `UPDATE tm_push_devices SET kinds = REPLACE(kinds, '"question"', '"question","approval"') WHERE kinds LIKE '%"question"%' AND kinds NOT LIKE '%"approval"%'`,
     ],
   },
+  {
+    id: 49,
+    // Workspaces (docs/workspaces.md): a named, scoped view over a set of
+    // repos — no folder, no ledger, a repo may be in many. FK-less like
+    // tm_spaces: `repo_ids` is a JSON array filtered against tm_repos on read,
+    // so deleting a repo never has to touch a workspace. `color` is a group
+    // palette slot (null = none). Each existing shared space is seeded as one
+    // workspace in JS (`workspaceSeedRows`) in the same transaction — once,
+    // so a seeded workspace the human deletes stays deleted.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_workspaces (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        repo_ids TEXT NOT NULL,
+        color INTEGER,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS tm_workspaces_slug_idx ON tm_workspaces (slug)`,
+    ],
+  },
 ];
+
+/** The migration after which each driver seeds one workspace per shared space, in JS, once. */
+export const WORKSPACE_SEED_MIGRATION_ID = 49;
+
+/**
+ * Migration 49's seed, shared by both drivers: one workspace per `tm_spaces`
+ * row, oldest space first (`sort_order` 0, 1, …), the space's name and repo ids
+ * as they are, colour unset, and a slug unique among the seeded rows (a
+ * numeric suffix on collision, never the reserved `all`). The table is new in
+ * the same migration, so nothing else can hold a slug yet.
+ */
+export function workspaceSeedRows(
+  spaces: { name: string; repo_ids: string; created_at: string }[],
+  newId: () => string,
+  at: string,
+): { id: string; name: string; slug: string; repoIds: string; color: null; sortOrder: number; createdAt: string; updatedAt: string }[] {
+  const taken = new Set<string>();
+  return [...spaces]
+    .sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0))
+    .map((sp, i) => {
+      const slug = uniqueWorkspaceSlug(sp.name, taken);
+      taken.add(slug);
+      return { id: newId(), name: sp.name, slug, repoIds: sp.repo_ids, color: null, sortOrder: i, createdAt: at, updatedAt: at };
+    });
+}
 
 /** The migration whose command owners each driver backfills in JS once it is applied. */
 export const COMMAND_OWNER_MIGRATION_ID = 45;

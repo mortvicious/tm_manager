@@ -764,3 +764,14 @@ concise markdown, grouped by completion date, Russian or English.
 - [x] A 2px bar along the bottom of each live board row plus `~45%` beside the status badge, from the shared pure `taskProgress` (bands work 0–70 · checks 70–80 · auto-review 80–90 · fixing/landing 90–95 · done 100; work % from loop iterations, the run's todo list, else worker output tokens vs the repo baseline; overrun held at 67 with "longer than usual"; a per-task floor keeps it from moving backwards). Baseline served by `GET /api/progress/baseline`, cached hourly. Full write-up: `docs/task-progress.md`; decisions.md 2026-10-26.
 - Verified: typecheck, scratch `vite build`, baseline via `app.inject` on a DB copy, a tsx check over 3,840 state combinations + the todo tracker, Playwright screenshots in Classic/Glass at desktop/phone widths.
 - Workers now get `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet` (CLI 2.1.280 gates `TodoWrite` off, so no worker had a todo tool before); the tracker was checked on a real session's transcript. Not exercised: a live worker's list on the board — that needs the API restarted.
+
+## Workspaces phase 1: model, API and store (2026-10-28, `docs/workspaces.md`)
+
+- [x] **Shared**: `Workspace`, the `workspace.updated`/`workspace.deleted` events, the `workspace.changed` audit kind, `WORKSPACE_SLUG_RE`, `WORKSPACE_RESERVED_SLUG`, `slugify` and `uniqueWorkspaceSlug`.
+- [x] **Server**:
+  - migration 49 (`tm_workspaces` and the unique slug index), seeded once from `tm_spaces` by `workspaceSeedRows` in both drivers;
+  - `storage/workspace-sql.ts`, `rowToWorkspace` and six Storage methods;
+  - `routes/workspaces.ts` (GET, POST, PATCH, DELETE and reorder; Origin required, audit rows, broadcasts).
+- [x] **Web**: the api methods and the live `workspaces` slice in `state.tsx`.
+- **Verified**: `app.inject` on a DB copy (migration, seed, re-boot, CRUD, 403/409/400), typecheck and build.
+- **Not exercised**: Postgres live, and any UI (phase 2).

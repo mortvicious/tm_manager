@@ -22,6 +22,7 @@ import {
   type SharedNote,
   type SharedNoteStatus,
   type Space,
+  type Workspace,
   type Task,
 } from '@tm/shared';
 import { planCards } from '../claude/feature-plan.ts';
@@ -43,7 +44,22 @@ import {
   siblingsQuery,
   type MoveAnchor,
 } from './group.ts';
-import { COMMAND_OWNER_MIGRATION_ID, COST_MIGRATION_ID, MIGRATIONS, commandOwnerBackfill } from './migrations.ts';
+import {
+  COMMAND_OWNER_MIGRATION_ID,
+  COST_MIGRATION_ID,
+  MIGRATIONS,
+  WORKSPACE_SEED_MIGRATION_ID,
+  commandOwnerBackfill,
+  workspaceSeedRows,
+} from './migrations.ts';
+import {
+  WORKSPACE_APPEND_SQL,
+  WORKSPACE_INSERT_SQL,
+  WORKSPACE_LIST_SQL,
+  WORKSPACE_SORT_SQL,
+  workspaceOrder,
+  workspacePatchColumns,
+} from './workspace-sql.ts';
 import {
   APPROVAL_DECIDE_SQL,
   APPROVAL_INSERT_SQL,
@@ -81,6 +97,7 @@ import {
   rowToReport,
   rowToSharedNote,
   rowToSpace,
+  rowToWorkspace,
   rowToEvent,
   rowToFeature,
   rowToProposal,
@@ -108,9 +125,11 @@ import type {
   NewReport,
   NewSharedNote,
   NewSpace,
+  NewWorkspace,
   SharedNoteFilter,
   SharedNotePatch,
   SpacePatch,
+  WorkspacePatch,
   ReportPatch,
   QuestionFilter,
   NewFeature,
@@ -149,6 +168,7 @@ export class SqliteStorage implements Storage {
         // migration marked applied with no costs.
         if (m.id === COST_MIGRATION_ID) this.backfillCosts();
         if (m.id === COMMAND_OWNER_MIGRATION_ID) this.backfillCommandOwners();
+        if (m.id === WORKSPACE_SEED_MIGRATION_ID) this.seedWorkspaces();
       });
       run();
     }
@@ -176,6 +196,15 @@ export class SqliteStorage implements Storage {
       .all() as any[];
     const set = this.db.prepare(`UPDATE tm_commands SET owner_task_id = ? WHERE id = ?`);
     for (const o of commandOwnerBackfill(commands, events)) set.run(o.ownerTaskId, o.id);
+  }
+
+  /** Migration 49: one workspace per shared space, once (docs/workspaces.md § Seed). */
+  private seedWorkspaces(): void {
+    const spaces = this.db.prepare(`SELECT name, repo_ids, created_at FROM tm_spaces`).all() as any[];
+    const insert = this.db.prepare(WORKSPACE_INSERT_SQL);
+    for (const w of workspaceSeedRows(spaces, randomUUID, now())) {
+      insert.run(w.id, w.name, w.slug, w.repoIds, w.color, w.sortOrder, w.createdAt, w.updatedAt);
+    }
   }
 
   async spendSince(sinceIso: string): Promise<number> {
@@ -1943,6 +1972,47 @@ export class SqliteStorage implements Storage {
       this.db.prepare(`DELETE FROM tm_shared_notes WHERE space_id = ?`).run(id);
       return this.db.prepare(`DELETE FROM tm_spaces WHERE id = ?`).run(id).changes > 0;
     });
+  }
+
+  // ---- Workspaces (docs/workspaces.md) ----
+
+  async listWorkspaces(): Promise<Workspace[]> {
+    return (this.db.prepare(WORKSPACE_LIST_SQL).all() as any[]).map(rowToWorkspace);
+  }
+
+  async getWorkspace(id: string): Promise<Workspace | null> {
+    const r = this.db.prepare(`SELECT * FROM tm_workspaces WHERE id = ?`).get(id);
+    return r ? rowToWorkspace(r) : null;
+  }
+
+  async createWorkspace(w: NewWorkspace): Promise<Workspace> {
+    const id = randomUUID();
+    const at = now();
+    this.db.prepare(WORKSPACE_APPEND_SQL).run(id, w.name, w.slug, JSON.stringify(w.repoIds), w.color, at, at);
+    return (await this.getWorkspace(id))!;
+  }
+
+  async updateWorkspace(id: string, patch: WorkspacePatch): Promise<Workspace | null> {
+    const cols = workspacePatchColumns(patch);
+    if (cols.length === 0) return this.getWorkspace(id);
+    const r = this.db
+      .prepare(`UPDATE tm_workspaces SET ${cols.map(([c]) => `${c} = ?`).join(', ')}, updated_at = ? WHERE id = ? RETURNING *`)
+      .get(...cols.map(([, v]) => v), now(), id);
+    return r ? rowToWorkspace(r) : null;
+  }
+
+  async deleteWorkspace(id: string): Promise<boolean> {
+    return this.db.prepare(`DELETE FROM tm_workspaces WHERE id = ?`).run(id).changes > 0;
+  }
+
+  async reorderWorkspaces(ids: string[]): Promise<Workspace[]> {
+    this.inTxn(() => {
+      const order = workspaceOrder(this.db.prepare(WORKSPACE_LIST_SQL).all() as { id: string }[], ids);
+      const set = this.db.prepare(WORKSPACE_SORT_SQL);
+      const at = now();
+      order.forEach((id, i) => set.run(i, at, id));
+    });
+    return this.listWorkspaces();
   }
 
   async listSharedNotes(f: SharedNoteFilter): Promise<SharedNote[]> {

@@ -32,6 +32,7 @@ import type {
   SharedNoteKind,
   SharedNoteStatus,
   Space,
+  Workspace,
   Repo,
   RepoCommand,
   Run,
@@ -356,6 +357,21 @@ export interface SpacePatch {
   name?: string;
   path?: string;
   repoIds?: string[];
+}
+
+/** Workspaces (docs/workspaces.md). The route validates; storage stores what it is given. */
+export interface NewWorkspace {
+  name: string;
+  slug: string;
+  repoIds: string[];
+  color: number | null;
+}
+
+export interface WorkspacePatch {
+  name?: string;
+  slug?: string;
+  repoIds?: string[];
+  color?: number | null;
 }
 
 export interface NewSharedNote {
@@ -728,6 +744,21 @@ export interface Storage {
   createSharedNote(n: NewSharedNote): Promise<SharedNote>;
   updateSharedNote(id: string, patch: SharedNotePatch, fromStatus?: readonly SharedNoteStatus[]): Promise<SharedNote | null>;
   deleteSharedNote(id: string): Promise<boolean>;
+
+  /**
+   * Workspaces (docs/workspaces.md): plain CRUD, ordered by `sort_order` then
+   * name. Storage filters nothing — `repoIds` may name a deleted repo; the
+   * route drops those on read. A new workspace goes last. A duplicate slug
+   * throws the driver's unique-violation (`isUniqueViolation`).
+   * `reorderWorkspaces(ids)` renumbers 0..n-1: the listed ids in that order,
+   * then the rest in their current order; returns the new list.
+   */
+  listWorkspaces(): Promise<Workspace[]>;
+  getWorkspace(id: string): Promise<Workspace | null>;
+  createWorkspace(w: NewWorkspace): Promise<Workspace>;
+  updateWorkspace(id: string, patch: WorkspacePatch): Promise<Workspace | null>;
+  deleteWorkspace(id: string): Promise<boolean>;
+  reorderWorkspaces(ids: string[]): Promise<Workspace[]>;
 
   getSettings(): Promise<AppSettings>;
   /** Total `cost_usd` of every run (any mode) STARTED at or after this ISO time — the `budget.dayUsd` measure. */

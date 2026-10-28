@@ -26,6 +26,7 @@ import type {
   Report,
   SpaceFile,
   Space,
+  Workspace,
   SharedNoteKind,
   SharedNote,
   ReportLanguage,
@@ -223,6 +224,14 @@ export const api = {
   }) => req<Report>('POST', '/api/reports', b),
   regenerateReport: (id: string) => req<Report>('POST', `/api/reports/${id}/regenerate`),
   deleteReport: (id: string) => req<{ ok: boolean }>('DELETE', `/api/reports/${id}`),
+  // Workspaces (docs/workspaces.md)
+  listWorkspaces: () => req<Workspace[]>('GET', '/api/workspaces'),
+  createWorkspace: (b: { name: string; slug?: string; repoIds: string[]; color?: number | null }) =>
+    req<Workspace>('POST', '/api/workspaces', b),
+  updateWorkspace: (id: string, b: { name?: string; slug?: string; repoIds?: string[]; color?: number | null }) =>
+    req<Workspace>('PATCH', `/api/workspaces/${id}`, b),
+  deleteWorkspace: (id: string) => req<{ ok: boolean }>('DELETE', `/api/workspaces/${id}`),
+  reorderWorkspaces: (ids: string[]) => req<Workspace[]>('POST', '/api/workspaces/reorder', { ids }),
   // Shared spaces (docs/shared-spaces.md)
   listSpaces: () => req<Space[]>('GET', '/api/spaces'),
   createSpace: (b: { name: string; path: string; repoIds: string[] }) =>

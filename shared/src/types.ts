@@ -2182,6 +2182,8 @@ export type AuditKind =
   | 'report.changed'
   /** a shared space was created / edited / deleted, or a shared request/note changed (docs/shared-spaces.md) */
   | 'space.changed'
+  /** a workspace (a named, scoped view over a set of repos) was created / edited / reordered / deleted (docs/workspaces.md) */
+  | 'workspace.changed'
   /** a tailnet login passed the front door's remote gate for the first time this front-door boot (docs/remote-access.md) */
   | 'remote.login'
   | 'shared-note.changed'
@@ -2605,6 +2607,65 @@ export interface Report {
 }
 
 /**
+ * A workspace (docs/workspaces.md): a named, scoped VIEW over a set of repos —
+ * nothing more. Unlike a shared space it owns no folder and no ledger, a repo
+ * may sit in any number of workspaces, and nothing a worker sees changes.
+ * `repoIds` is filtered on read to repos that still exist.
+ */
+export interface Workspace {
+  id: string;
+  name: string;
+  /** URL key: `WORKSPACE_SLUG_RE`, unique, never `WORKSPACE_RESERVED_SLUG`. A rename keeps it. */
+  slug: string;
+  repoIds: string[];
+  /** group palette slot, 1..GROUP_COLOR_COUNT; null = uncoloured */
+  color: number | null;
+  /** position in the switcher (ascending; ties by name) */
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const WORKSPACE_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+/** The slug the "every repo" view answers to, so no workspace may take it. */
+export const WORKSPACE_RESERVED_SLUG = 'all';
+const WORKSPACE_SLUG_MAX = 40;
+
+/**
+ * A name's slug — always matches `WORKSPACE_SLUG_RE`: accents folded, every
+ * other run of non-[a-z0-9] a single `-`, at most 40 chars, and `workspace`
+ * when nothing is left (a name in Cyrillic, say). It may still be the
+ * reserved `all` or taken; `uniqueWorkspaceSlug` settles those.
+ */
+export function slugify(name: string): string {
+  const s = name
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+/, '')
+    .slice(0, WORKSPACE_SLUG_MAX)
+    .replace(/-+$/, '');
+  return s || 'workspace';
+}
+
+/**
+ * `slugify(name)`, or `<slug>-2`, `-3`… (truncated to fit 40) when it is
+ * reserved or already in `taken`.
+ */
+export function uniqueWorkspaceSlug(name: string, taken: ReadonlySet<string> | readonly string[]): string {
+  const set = taken instanceof Set ? taken : new Set(taken as readonly string[]);
+  const base = slugify(name);
+  const free = (s: string) => s !== WORKSPACE_RESERVED_SLUG && !set.has(s);
+  if (free(base)) return base;
+  for (let n = 2; ; n++) {
+    const suffix = `-${n}`;
+    const s = base.slice(0, WORKSPACE_SLUG_MAX - suffix.length).replace(/-+$/, '') + suffix;
+    if (free(s)) return s;
+  }
+}
+
+/**
  * A shared space (docs/shared-spaces.md): a set of repos that work on one
  * product and share one persistent knowledge folder plus a ledger of
  * cross-repo requests and notes. A repo belongs to at most ONE space, so a
@@ -2775,6 +2836,8 @@ export type ServerEvent =
   | { type: 'report.deleted'; reportId: string }
   | { type: 'space.updated'; space: Space }
   | { type: 'space.deleted'; spaceId: string }
+  | { type: 'workspace.updated'; workspace: Workspace }
+  | { type: 'workspace.deleted'; workspaceId: string }
   | { type: 'shared-note.updated'; note: SharedNote }
   | { type: 'shared-note.deleted'; noteId: string }
   | { type: 'background-shells'; shells: BackgroundShell[] }

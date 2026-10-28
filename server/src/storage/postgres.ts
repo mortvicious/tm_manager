@@ -20,6 +20,7 @@ import {
   type SharedNote,
   type SharedNoteStatus,
   type Space,
+  type Workspace,
   type Task,
 } from '@tm/shared';
 import { planCards } from '../claude/feature-plan.ts';
@@ -41,7 +42,22 @@ import {
   siblingsQuery,
   type MoveAnchor,
 } from './group.ts';
-import { COMMAND_OWNER_MIGRATION_ID, COST_MIGRATION_ID, MIGRATIONS, commandOwnerBackfill } from './migrations.ts';
+import {
+  COMMAND_OWNER_MIGRATION_ID,
+  COST_MIGRATION_ID,
+  MIGRATIONS,
+  WORKSPACE_SEED_MIGRATION_ID,
+  commandOwnerBackfill,
+  workspaceSeedRows,
+} from './migrations.ts';
+import {
+  WORKSPACE_APPEND_SQL,
+  WORKSPACE_INSERT_SQL,
+  WORKSPACE_LIST_SQL,
+  WORKSPACE_SORT_SQL,
+  workspaceOrder,
+  workspacePatchColumns,
+} from './workspace-sql.ts';
 import {
   APPROVAL_DECIDE_SQL,
   APPROVAL_INSERT_SQL,
@@ -79,6 +95,7 @@ import {
   rowToReport,
   rowToSharedNote,
   rowToSpace,
+  rowToWorkspace,
   rowToEvent,
   rowToFeature,
   rowToProposal,
@@ -106,9 +123,11 @@ import type {
   NewReport,
   NewSharedNote,
   NewSpace,
+  NewWorkspace,
   SharedNoteFilter,
   SharedNotePatch,
   SpacePatch,
+  WorkspacePatch,
   ReportPatch,
   QuestionFilter,
   NewFeature,
@@ -187,6 +206,22 @@ export class PostgresStorage implements Storage {
             ).rows;
             for (const o of commandOwnerBackfill(commands, events)) {
               await client.query(`UPDATE tm_commands SET owner_task_id = $1 WHERE id = $2`, [o.ownerTaskId, o.id]);
+            }
+          }
+          // Migration 49: one workspace per shared space, same transaction, once.
+          if (m.id === WORKSPACE_SEED_MIGRATION_ID) {
+            const spaces = (await client.query(`SELECT name, repo_ids, created_at FROM tm_spaces`)).rows;
+            for (const w of workspaceSeedRows(spaces, randomUUID, now())) {
+              await client.query(toPg(WORKSPACE_INSERT_SQL), [
+                w.id,
+                w.name,
+                w.slug,
+                w.repoIds,
+                w.color,
+                w.sortOrder,
+                w.createdAt,
+                w.updatedAt,
+              ]);
             }
           }
           await client.query('COMMIT');
@@ -1917,6 +1952,49 @@ export class PostgresStorage implements Storage {
       const r = await c.query(toPg(`DELETE FROM tm_spaces WHERE id = ? RETURNING id`), [id]);
       return (r.rowCount ?? 0) > 0;
     });
+  }
+
+  // ---- Workspaces (docs/workspaces.md) ----
+
+  async listWorkspaces(): Promise<Workspace[]> {
+    return (await this.q(WORKSPACE_LIST_SQL)).map(rowToWorkspace);
+  }
+
+  async getWorkspace(id: string): Promise<Workspace | null> {
+    const r = await this.q(`SELECT * FROM tm_workspaces WHERE id = ?`, [id]);
+    return r[0] ? rowToWorkspace(r[0]) : null;
+  }
+
+  async createWorkspace(w: NewWorkspace): Promise<Workspace> {
+    const id = randomUUID();
+    const at = now();
+    await this.q(WORKSPACE_APPEND_SQL, [id, w.name, w.slug, JSON.stringify(w.repoIds), w.color, at, at]);
+    return (await this.getWorkspace(id))!;
+  }
+
+  async updateWorkspace(id: string, patch: WorkspacePatch): Promise<Workspace | null> {
+    const cols = workspacePatchColumns(patch);
+    if (cols.length === 0) return this.getWorkspace(id);
+    const r = await this.q(
+      `UPDATE tm_workspaces SET ${cols.map(([c]) => `${c} = ?`).join(', ')}, updated_at = ? WHERE id = ? RETURNING *`,
+      [...cols.map(([, v]) => v), now(), id],
+    );
+    return r[0] ? rowToWorkspace(r[0]) : null;
+  }
+
+  async deleteWorkspace(id: string): Promise<boolean> {
+    const r = await this.q(`DELETE FROM tm_workspaces WHERE id = ? RETURNING id`, [id]);
+    return r.length > 0;
+  }
+
+  async reorderWorkspaces(ids: string[]): Promise<Workspace[]> {
+    await this.tx(async (c) => {
+      const cur = (await c.query(toPg(WORKSPACE_LIST_SQL))).rows as { id: string }[];
+      const at = now();
+      const order = workspaceOrder(cur, ids);
+      for (let i = 0; i < order.length; i++) await c.query(toPg(WORKSPACE_SORT_SQL), [i, at, order[i]]);
+    });
+    return this.listWorkspaces();
   }
 
   async listSharedNotes(f: SharedNoteFilter): Promise<SharedNote[]> {

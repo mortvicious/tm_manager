@@ -1,0 +1,93 @@
+# Workspaces
+
+A **workspace** is a named, scoped view over a set of repos. You use one to look at "the neko repos" or "the backend repos" without the rest of the board in the way. It is a view and nothing more.
+
+- It owns no folder and no ledger. A [shared space](shared-spaces.md) has both, and it changes what a worker sees (`$TM_SHARED_DIR`, `--add-dir`, the prompt block).
+- A repo may be in any number of workspaces. A repo is in at most one space.
+- Agents have no API for it, and nothing in a worker's prompt, environment or claim order depends on it.
+
+This feature has four phases. **Phase 1 (this document)** adds the data, the REST API, the live events and the SPA store slice. The switcher, scoped pages and the rest come in later phases and add their own sections here.
+
+## Model
+
+`Workspace` (`shared/src/types.ts`):
+
+| field | |
+|---|---|
+| `id` | uuid |
+| `name` | 1–60 chars |
+| `slug` | URL key. Matches `WORKSPACE_SLUG_RE` (`^[a-z0-9][a-z0-9-]{0,39}$`), is unique, and is never `all` (`WORKSPACE_RESERVED_SLUG`, kept for the every-repo view) |
+| `repoIds` | 1–50 member repos |
+| `color` | a group palette slot `1..GROUP_COLOR_COUNT`, or `null` |
+| `sortOrder` | position in the switcher. New workspaces go last (max + 1) |
+| `createdAt` / `updatedAt` | ISO |
+
+`slugify(name)` and `uniqueWorkspaceSlug(name, taken)` are shared so the server and the SPA derive the same slug.
+
+- **`slugify`** folds accents, turns each other run of non-`[a-z0-9]` into one `-`, trims to 40 chars, and falls back to `workspace` when nothing is left (a name written entirely in Cyrillic, for example). Its result always matches the regex.
+- **`uniqueWorkspaceSlug`** adds `-2`, `-3`… (truncating the base to fit) when the slug is taken or is `all`.
+
+## Storage
+
+Migration **49** creates `tm_workspaces`: `id`, `name`, `slug`, `repo_ids` (JSON), `color`, `sort_order`, `created_at`, `updated_at`, plus the unique index `tm_workspaces_slug_idx` on `slug`.
+
+- **Why 49:** the task asked for 48, which approvals had already taken.
+- **No foreign keys**, as with `tm_spaces`. The row keeps whatever repo ids it was given, and the route drops the ones no longer in `tm_repos` **on read**. Deleting a repo never has to touch a workspace.
+
+Both drivers run the same SQL from `server/src/storage/workspace-sql.ts`:
+
+- the insert statements (explicit order for the seed, append for a create);
+- the list order (`sort_order, name, id`);
+- `workspacePatchColumns`;
+- `workspaceOrder` (the reorder plan);
+- `isUniqueViolation` (`SQLITE_CONSTRAINT_UNIQUE` / pg `23505`).
+
+The Storage methods are `listWorkspaces`, `getWorkspace`, `createWorkspace`, `updateWorkspace`, `deleteWorkspace` and `reorderWorkspaces(ids)`. Storage validates nothing; the route does.
+
+### Seed
+
+When migration 49 is applied, each driver seeds **one workspace per `tm_spaces` row**. This runs in the migration's own transaction, next to the cost and command-owner backfills, and uses the pure `workspaceSeedRows` in `migrations.ts`:
+
+- the space's name and `repo_ids` as they are;
+- `color` null;
+- `sort_order` 0, 1, … ordered by the space's `created_at`;
+- a slug from `uniqueWorkspaceSlug`, unique among the seeded rows.
+
+It runs **once**, because it is tied to the migration being applied and not to the table being empty. A later boot seeds nothing, and a seeded workspace the human deletes stays deleted. Spaces created after the migration get no workspace.
+
+## API (`server/src/routes/workspaces.ts`)
+
+| route | |
+|---|---|
+| `GET /api/workspaces` | every workspace in switcher order, with `repoIds` filtered to existing repos |
+| `POST /api/workspaces` | `{name, slug?, repoIds, color?}` → 201. With no `slug`, `uniqueWorkspaceSlug(name)` is used and never refused |
+| `PATCH /api/workspaces/:id` | any of `name`, `slug`, `repoIds`, `color`. **A rename keeps the slug**: only an explicit `slug` changes it |
+| `DELETE /api/workspaces/:id` | `{ok:true}`, or 404 |
+| `POST /api/workspaces/reorder` | `{ids}`: the listed ids take positions 0..n-1 in that order, and any workspace not listed follows in its current order (so one created mid-drag is not thrown to the top). Returns the new list |
+
+Rules:
+
+- **Every write needs `Origin`**, otherwise 403. This is the `fromBrowser` rule of `routes/spaces.ts`: a worker's curl has no Origin.
+- **Slugs.** An explicit slug that fails the regex is 400, and so is `all`. A slug another workspace holds is **409**, including a race caught by the unique index.
+- **Repos.** Unknown repo ids are 400 on write. Duplicates are collapsed.
+- **Colour.** Outside `1..GROUP_COLOR_COUNT` (and not `null`) is 400.
+- **Reorder.** Repeated or unknown ids are 400.
+- **Audit.** Every successful write appends a `workspace.changed` row (actor `human`) with `action` set to `created`, `edited` (with `fields`), `reordered` or `deleted`.
+- **Events.** Every successful write broadcasts `workspace.updated {workspace}` (the read-filtered row) or `workspace.deleted {workspaceId}`. A reorder re-broadcasts every workspace.
+
+## SPA
+
+- `web/src/api.ts` has `listWorkspaces`, `createWorkspace`, `updateWorkspace`, `deleteWorkspace` and `reorderWorkspaces`.
+- `web/src/state.tsx` holds a `workspaces` slice. It loads with the other initial lists and is kept live by the two events: upsert, then re-sort by `sortOrder`, then name. A repo deleted while the page is open stays in a workspace's `repoIds` until the next load, so consumers should intersect with `repos`.
+
+## Verification (phase 1)
+
+These checks ran against `app.inject` on a copy of the live SQLite DB, under tsx with nvm node v24:
+
+- **Migration and seed.** The migration applies and seeds the one existing space. A second `migrate()` seeds nothing, and a deleted seeded workspace does not come back.
+- **Seed collisions.** A second copy with spaces `neko`, `Neko`, `All` and `Проект` seeded the slugs `neko`, `neko-2`, `all-2` and `workspace`.
+- **Routes.** CRUD and reorder work. All four write routes return 403 without Origin. A duplicate slug returns 409 on POST and PATCH, `all` returns 400, and a bad slug, unknown repo, colour 8 or empty name each return 400.
+- **Slugs on create and rename.** A derived slug that collides gets a suffix. A rename keeps the slug.
+- **Read filtering and side effects.** A ghost repo id is filtered on read but kept in storage. Each write leaves one audit row and the expected broadcasts.
+
+`npm run typecheck` and `npm run build` pass. The pg driver was not run against a live Postgres. It runs the same SQL module, and its seed loop mirrors the SQLite one.

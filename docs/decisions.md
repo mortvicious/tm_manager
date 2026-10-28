@@ -1,5 +1,12 @@
 # Decision log
 
+- **2026-10-28 — Workspaces are views, not spaces; seeded once from the spaces (`docs/workspaces.md`)**: task 6c4172b9, phase 1/4 of the feature *Workspaces: scoped views over repo sets*.
+  - **A separate table, not a flag on `tm_spaces`.** A space changes what a worker sees and allows a repo in only one space. A workspace is a dashboard view: a repo can be in many, there is no folder, and there is no agent API.
+  - **Migration 49, not the 48 the task named.** Approvals had already taken 48.
+  - **The seed is tied to the migration, not to the table being empty.** It runs in the migration's own transaction, so a seeded workspace the human deletes stays deleted and a later boot never re-seeds.
+  - **Repo ids are filtered on read, not cascaded on repo delete.** The table is FK-less like `tm_spaces`.
+  - **Explicit and derived slugs are treated differently.** An explicit slug that is taken is a 409. A derived one (POST without `slug`) takes a numeric suffix instead, because the human never typed it.
+
 - **2026-10-28 — Approvals: agents request human-only actions, the human taps, the server runs them (`docs/approvals.md`)**: task 77ea502c, at the owner's request after the 6.22.0 release. Every step after the release agent's report was done by hand: three `git push`es, a bulk Mark published, Rebuild & restart, and a local `merge --ff-only`. The owner chose all four actions as requestable (push-ref, mark-published, rebuild-restart, sync-branch) and **per-repo auto-approve** for the safe ones.
   - **The agent gets no power, only a request.** The server validates and describes the action at request time, the human approves the exact `summary`, and the server re-checks at run time: a push refuses if origin moved since the request (`expectedOld`), and mark-published re-reads git per task. That keeps D458 ("the owner approves that exact push") intact while the agent does the legwork. Rejected: giving agents Origin-free access to the routes (that removes the guard), and a generic "run this command" approval (unreviewable; each action is a fixed executor).
   - **Never a force, never a moved tag**, by construction: a non-fast-forward is refused at request time and git refuses one at push time anyway (no force flag is ever passed). A push to a repo whose push health fails is refused.

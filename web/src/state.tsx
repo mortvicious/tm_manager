@@ -30,6 +30,7 @@ import type {
   ServerEvent,
   SharedNote,
   Space,
+  Workspace,
   Task,
 } from '@tm/shared';
 import { APPROVAL_LABELS, AUTOPILOT_ACTOR, questionWaitedMinutes } from '@tm/shared';
@@ -70,6 +71,8 @@ interface AppState {
   reports: Report[];
   /** shared spaces and their request/note ledger (docs/shared-spaces.md) */
   spaces: Space[];
+  /** scoped views over repo sets, in switcher order (docs/workspaces.md) */
+  workspaces: Workspace[];
   sharedNotes: SharedNote[];
   /** saved per-repo command definitions (docs/commands.md) */
   commands: RepoCommand[];
@@ -109,6 +112,11 @@ interface AppState {
 
 const Ctx = createContext<AppState | null>(null);
 
+/** The server's `listWorkspaces` order: `sortOrder`, then name, then id. */
+function byWorkspaceOrder(a: Workspace, b: Workspace): number {
+  return a.sortOrder - b.sortOrder || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
 export function useApp(): AppState {
   const v = useContext(Ctx);
   if (!v) throw new Error('useApp outside provider');
@@ -134,6 +142,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [chatMessages, setChatMessages] = useState<Record<string, ChatMessage[]>>({});
   const [reports, setReports] = useState<Report[]>([]);
   const [spaces, setSpaces] = useState<Space[]>([]);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [sharedNotes, setSharedNotes] = useState<SharedNote[]>([]);
   const [commands, setCommands] = useState<RepoCommand[]>([]);
   const [commandRuns, setCommandRuns] = useState<CommandRun[]>([]);
@@ -170,6 +179,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api.listChats().then(setChats).catch(() => {});
     api.listReports().then(setReports).catch(() => {});
     api.listSpaces().then(setSpaces).catch(() => {});
+    api.listWorkspaces().then(setWorkspaces).catch(() => {});
     api.listSharedNotes().then(setSharedNotes).catch(() => {});
     api.listCommands().then(setCommands).catch(() => {});
     api.listCommandRuns().then(setCommandRuns).catch(() => {});
@@ -421,6 +431,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
               return next;
             });
             break;
+          case 'workspace.updated':
+            setWorkspaces((cur) => {
+              const i = cur.findIndex((x) => x.id === e.workspace.id);
+              const next = [...cur];
+              if (i === -1) next.push(e.workspace);
+              else next[i] = e.workspace;
+              // a reorder re-broadcasts every row, so keep the server's order here too
+              return next.sort(byWorkspaceOrder);
+            });
+            break;
+          case 'workspace.deleted':
+            setWorkspaces((cur) => cur.filter((x) => x.id !== e.workspaceId));
+            break;
           case 'space.deleted':
             setSpaces((cur) => cur.filter((x) => x.id !== e.spaceId));
             setSharedNotes((cur) => cur.filter((n) => n.spaceId !== e.spaceId));
@@ -554,6 +577,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         loadChat,
         reports,
         spaces,
+        workspaces,
         sharedNotes,
         commands,
         commandRuns,
