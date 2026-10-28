@@ -73,6 +73,11 @@ interface AppState {
   spaces: Space[];
   /** scoped views over repo sets, in switcher order (docs/workspaces.md) */
   workspaces: Workspace[];
+  /**
+   * true once `workspaces` has been fetched: before that an empty list is "not
+   * heard yet", and `?ws=<slug>` must not be judged unknown (workspace.tsx).
+   */
+  workspacesLoaded: boolean;
   sharedNotes: SharedNote[];
   /** saved per-repo command definitions (docs/commands.md) */
   commands: RepoCommand[];
@@ -143,6 +148,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [reports, setReports] = useState<Report[]>([]);
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
   const [sharedNotes, setSharedNotes] = useState<SharedNote[]>([]);
   const [commands, setCommands] = useState<RepoCommand[]>([]);
   const [commandRuns, setCommandRuns] = useState<CommandRun[]>([]);
@@ -179,7 +185,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api.listChats().then(setChats).catch(() => {});
     api.listReports().then(setReports).catch(() => {});
     api.listSpaces().then(setSpaces).catch(() => {});
-    api.listWorkspaces().then(setWorkspaces).catch(() => {});
+    api
+      .listWorkspaces()
+      .then((list) => {
+        setWorkspaces(list);
+        setWorkspacesLoaded(true);
+      })
+      .catch(() => {});
     api.listSharedNotes().then(setSharedNotes).catch(() => {});
     api.listCommands().then(setCommands).catch(() => {});
     api.listCommandRuns().then(setCommandRuns).catch(() => {});
@@ -578,6 +590,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         reports,
         spaces,
         workspaces,
+        workspacesLoaded,
         sharedNotes,
         commands,
         commandRuns,

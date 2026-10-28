@@ -6,11 +6,21 @@
  */
 export const NAVIGATE_EVENT = 'tm-navigate';
 
+/** history-state mark on an entry the task panel pushed: closing it is Back (App.tsx useOpenTask) */
+export const PANEL_PUSHED = 'tmTaskPanel';
+
 export function navigateFromAnywhere(url: string): void {
   window.dispatchEvent(new CustomEvent<string>(NAVIGATE_EVENT, { detail: url }));
 }
 
-/** `?task=<id>` IS the open panel (App.tsx useOpenTask), over the page you are on. */
+/**
+ * `?task=<id>` IS the open panel (App.tsx useOpenTask), over the page you are
+ * on — and in the workspace you are in: `?ws=` rides along (docs/workspaces.md
+ * § Current workspace).
+ */
 export function openTaskFromAnywhere(taskId: string): void {
-  navigateFromAnywhere(`${window.location.pathname}?task=${encodeURIComponent(taskId)}`);
+  const q = new URLSearchParams({ task: taskId });
+  const ws = new URLSearchParams(window.location.search).get('ws');
+  if (ws) q.set('ws', ws);
+  navigateFromAnywhere(`${window.location.pathname}?${q}`);
 }

@@ -108,6 +108,46 @@ A present but EMPTY list (`repoIds=`) matches nothing and returns zeros. It neve
 
 Verified (phase 2) against a harness: the real `registerWorkspaceRoutes` and `/ws/events` over a copy of the live DB, serving a scratch build, with other GETs proxied to the live API. The live API predated migration 49 and could not be restarted. Playwright drove two desktop tabs, and tab B followed tab A live through each step: create (preview `/zz-test-ws`), rename (slug kept), a bad slug and the reserved `all` refused client-side, a 409 on `neko` shown inline, a slug change, recolour, unticking a repo down to the last (then disabled), move up, and a delete from a 393 px phone context. It ran at 393 px in Classic and Glass with no horizontal overflow.
 
+## Current workspace (`web/src/workspace.ts`)
+
+The workspace you are looking at is the URL's `?ws=<slug>`, exactly as the open task panel is `?task=<id>` (App.tsx `useOpenTask`). No param means All. There is no React state for it, so a link, a reload and Back all carry it for free.
+
+`useWorkspace()` is the one module every consumer reads:
+
+- `workspace: Workspace | null` is null for All. It is also null while the list has not loaded yet, and for a slug that names nothing.
+- `repoIds: ReadonlySet<string> | null` is the workspace's `repoIds`, or null for All. It is not intersected with `repos`: a deleted repo's id matches no task, so it is harmless in a membership test.
+- `inScope(task)` / `inScopeRepo(repoId)` are true for everything under All, and **always true for a repo-less item** (`repoId` null).
+- `setWorkspace(slug | null)` rewrites `?ws` on the LIVE URL (`window.location`, not the render's), so it composes with `?task=` in either order. Null removes the param. It writes `localStorage` `tm.workspace` (removed for All) and navigates with `replace`. A replaced entry drops the panel's "pushed" history mark (`PANEL_PUSHED`, now exported from `nav.ts`): without that, closing a panel after a switch would go Back to the old scope.
+- `wsHref(to)` appends the current `?ws` to an in-app path and keeps the path's own query and hash (`/repos#workspaces` → `/repos?ws=neko#workspaces`).
+
+The rules:
+
+- **Moving between pages keeps the workspace.** Every `NavLink` in `Layout.tsx` (the sidebar, the phone tab bar including the Board FAB, and the More sheet) and the desktop Inbox chip go through `wsHref`. NavLink's active matching reads only the pathname, so highlighting is unchanged. `nav.ts` `openTaskFromAnywhere` (a toast's Open) keeps `?ws` beside `?task=`. Navigation elsewhere in the pages does not carry it yet. Phase 3, where the pages consume the scope, decides which of those links should.
+- **A bare launch restores the device's pick.** `applyRememberedWorkspace()` runs in `main.tsx` before the router reads the URL, so nothing renders unscoped first. It applies `tm.workspace` only when the path is `/` or `/board` with an EMPTY query string, which is what the Home Screen app opens (`start_url: "/"`). Any other URL without `?ws` means All, so a push tap (`/?task=<id>`), `/board?task=<id>` and old bookmarks keep meaning All. A reload of a bare `/board` counts as a launch.
+- **An unknown slug falls back to All.** `WorkspaceGuard` is mounted once in `Layout`. When the list has loaded (`workspacesLoaded`, a flag added to `state.tsx` because the global `loaded` is set before workspaces arrive) and `?ws` names no workspace, the guard does three things: it shows an info toast (`toastInfo`, new in `toast.ts`, which is a plain notice with no action), it forgets `tm.workspace` if that was the slug, and it removes the param. The slug can be unknown because the workspace was deleted in this tab or another one (the `workspace.deleted` event), or because a link is stale. An empty `?ws=` is dropped without a toast.
+
+### Switcher (`web/src/components/WorkspaceSwitcher.tsx`)
+
+- **Desktop**: a compact ghost button in `.header`, before the queue switch. It shows the colour dot and the name ("All repos" with a hollow ring for All). It opens a `.ws-pop` menu: All repos, the workspaces in `sortOrder` with their repo counts and a check on the current one, then **Manage…** → `wsHref('/repos#workspaces')`. Outside press and Escape close it. The task panel's overlay covers the header, so the scope cannot be switched by pointer while a panel is open.
+- **Phone**: the `brand-mini` slot is now the switcher, a tappable title (dot + name + chevron) that opens a `<Sheet>` holding the same list as `.sheet-nav` rows, so Glass gives them the More sheet's tiles. Under All it reads `tm_manager`. Below 430 px, where the brand used to be hidden, it stays visible and reads "All repos" instead.
+- **Colour**: `--tm-ws: var(--tm-group-<slot>)`, where the slot comes from `groupColorSlot({ groupId: id, groupColor: color })`. That is the explicit colour, or for an uncoloured workspace a stable slot hashed from the id, like groups.
+- **Styles**: `.ws-dot`, `.ws-switch`, `.ws-pop`, `.ws-opt` and `.ws-title` in `theme.css`, using tokens only. Glass adds one thing, `.ws-pop` in the shared popover-material rule (`:is(.cmd-pop, .group-picker-pop, .ws-pop)`). Nothing touches `.main`, `.header` or `.app`.
+
+Nothing consumes the scope yet beyond the switcher.
+
+Verified (phase 2) with Playwright Chromium against the live front door. A scratch build was served from `ctx.route`, `GET /api/workspaces` was faked (the live API predated migration 49), every non-GET was aborted, and `/ws/events` was a mock socket for injecting `workspace.deleted`. Both designs passed 60 checks at desktop 1400 px and phone 393 px:
+
+- picking a workspace sets `?ws` and the memory; Escape and outside press close the menu;
+- every sidebar, tab-bar, FAB and More-sheet href carries `?ws`, and navigating keeps it;
+- opening a panel gives `?ws=…&task=…`, and closing it keeps `?ws`;
+- switching with the panel open keeps `task`, and a later close keeps the NEW scope;
+- `Manage…` → `/repos?ws=tm#workspaces`;
+- a bare `/` and `/board` restore the memory, while `/queue` and `/board?task=<id>` mean All;
+- deleting the current workspace over the socket falls back to All with a toast and clears the memory, and `?ws=nope` does the same;
+- the phone header does not overflow at 393 px.
+
+`openTaskFromAnywhere` was checked under tsx: `/queue?ws=neko` produces `/queue?task=<id>&ws=neko`. `npm run typecheck` and `npm run build` pass, with the build going to a scratch outDir.
+
 ## Verification (phase 1)
 
 These checks ran against `app.inject` on a copy of the live SQLite DB, under tsx with nvm node v24:

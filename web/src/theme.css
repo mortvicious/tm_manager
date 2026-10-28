@@ -5050,6 +5050,163 @@ pre.check-tail {
   color: var(--tm-accent);
 }
 
+/* ---- the workspace switcher (WorkspaceSwitcher.tsx, docs/workspaces.md § Switcher) ---- */
+
+/* a workspace's colour dot: its group slot, or a hollow ring for All */
+.ws-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-ws, var(--tm-border-strong));
+}
+
+.ws-dot.all {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--tm-text-faint);
+}
+
+.ws-caret {
+  display: inline-flex;
+  flex: none;
+  color: var(--tm-text-faint);
+}
+
+.ws-caret svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ws-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.ws-switch {
+  max-width: 220px;
+  padding-inline: var(--tm-space-2);
+}
+
+.ws-switch-name,
+.ws-opt-name,
+.ws-title-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-pop {
+  position: absolute;
+  top: calc(100% + var(--tm-space-2));
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 240px;
+  max-width: 320px;
+  max-height: 72vh;
+  overflow: auto;
+  padding: var(--tm-space-1);
+  background: var(--tm-bg-raised);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-lg);
+  box-shadow: var(--tm-shadow-lg);
+}
+
+.ws-opt {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  width: 100%;
+  padding: var(--tm-space-2);
+  border: 0;
+  border-radius: var(--tm-radius-sm);
+  background: transparent;
+  color: var(--tm-text);
+  font: inherit;
+  font-size: var(--tm-text-sm);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.ws-opt:hover,
+.ws-opt:focus-visible {
+  background: var(--tm-bg-overlay);
+}
+
+.ws-opt.on {
+  color: var(--tm-accent);
+}
+
+.ws-opt-count {
+  margin-left: auto;
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-xs);
+  white-space: nowrap;
+}
+
+.ws-opt-check {
+  display: inline-flex;
+  flex: none;
+}
+
+.ws-opt-check svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ws-opt-count + .ws-opt-check {
+  margin-left: 0;
+}
+
+.ws-opt-name + .ws-opt-check {
+  margin-left: auto;
+}
+
+.ws-pop-sep {
+  height: 1px;
+  margin: var(--tm-space-1) 0;
+  background: var(--tm-border);
+}
+
+.ws-manage {
+  color: var(--tm-text-muted);
+}
+
+/* phone: the header's title is the switcher (the brand-mini slot) */
+.ws-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+  min-width: 0;
+  max-width: 45vw;
+  min-height: var(--tm-tap-dense);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--tm-text);
+  cursor: pointer;
+}
+
+.ws-title .ws-dot {
+  margin-right: var(--tm-space-1);
+}
+
+.ws-title-all {
+  display: none;
+}
+
+.ws-sheet-nav {
+  grid-template-columns: 1fr;
+}
+
+.ws-sheet-nav .ws-opt {
+  font-size: inherit;
+}
+
 /* the phone header's connection dot (Layout.tsx ConnDot), in the slot the ⋯
    button held: green up, amber reconnecting, red stopped */
 .conn-dot-btn {
@@ -6606,6 +6763,19 @@ button.explain-tap:active {
      the tab bar already carries. */
   .brand-mini {
     display: none;
+  }
+
+  /* …except as the workspace switcher, which then reads its scope, not the brand */
+  .brand-mini.ws-title {
+    display: inline-flex;
+  }
+
+  .ws-title-brand {
+    display: none;
+  }
+
+  .ws-title-all {
+    display: inline;
   }
 }
 

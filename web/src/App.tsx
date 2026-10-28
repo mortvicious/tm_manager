@@ -20,6 +20,7 @@ import { ReportsPage } from './pages/Reports.tsx';
 import { ReposPage } from './pages/Repos.tsx';
 import { TerminalsPage } from './pages/Terminals.tsx';
 import type { InboxReturn, ReturnTo } from './returnTo.ts';
+import { PANEL_PUSHED } from './nav.ts';
 import { useTermDock } from './termLayout.ts';
 
 export function App() {
@@ -97,9 +98,6 @@ export function App() {
 }
 
 type OpenTaskSetter = (next: string | null | ((cur: string | null) => string | null)) => void;
-
-/** history-state mark on an entry the panel pushed: closing it is Back */
-const PANEL_PUSHED = 'tmTaskPanel';
 
 /**
  * The open task panel IS the URL's `?task=<id>` (UX review #19, docs/design.md

@@ -1078,7 +1078,7 @@
 }
 
 /* popovers grow out of their button */
-[data-design='glass'] :is(.cmd-pop, .group-picker-pop) {
+[data-design='glass'] :is(.cmd-pop, .group-picker-pop, .ws-pop) {
   border: 1px solid var(--tm-glass-rim);
   border-radius: var(--tm-radius-lg);
   background: var(--tm-glass-thick);

@@ -11,6 +11,8 @@ import { BUILD_ID, cancelRebuildDrain, dismissRebuildFailure, rebuildRunning, st
 import { CommandsLauncher } from './Commands.tsx';
 import { EmulatorLauncher } from './Emulator.tsx';
 import { Sheet } from './Sheet.tsx';
+import { WorkspaceSwitcher } from './WorkspaceSwitcher.tsx';
+import { useWorkspace, WorkspaceGuard } from '../workspace.ts';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { InboxChip, InboxSheet, decisions, useInbox } from './Inbox.tsx';
 import { Explainable } from './Explain.tsx';
@@ -840,11 +842,12 @@ function ConnDot() {
 
 function MoreSheet({ onClose, onOpenTerminal }: { onClose: () => void; onOpenTerminal: (runId: string) => void }) {
   const nav = useNav();
+  const { wsHref } = useWorkspace();
   return (
     <Sheet label="Menu" onClose={onClose}>
       <div className="sheet-nav">
         {nav.map((n) => (
-          <NavLink key={n.to} to={n.to} className={navClass} onClick={onClose}>
+          <NavLink key={n.to} to={wsHref(n.to)} className={navClass} onClick={onClose}>
             {n.icon} {n.label}
           </NavLink>
         ))}
@@ -871,6 +874,7 @@ function owns(to: string, pathname: string) {
 
 function TabBar({ onMore, moreOpen }: { onMore: () => void; moreOpen: boolean }) {
   const { pathname } = useLocation();
+  const { wsHref } = useWorkspace();
   const inbox = decisions(useInbox());
   const urgent = inbox.some((i) => i.kind === 'question' || i.kind === 'attention');
   // Slots left to right: left tabs, the Board, right tabs, More. A page reached
@@ -885,7 +889,7 @@ function TabBar({ onMore, moreOpen }: { onMore: () => void; moreOpen: boolean })
   const tab = (to: string) => {
     const n = navItem(to);
     return (
-      <NavLink key={to} to={to} className={navClass}>
+      <NavLink key={to} to={wsHref(to)} className={navClass}>
         {to === '/inbox' ? (
           <span className="tab-icon">
             {n.icon}
@@ -908,7 +912,7 @@ function TabBar({ onMore, moreOpen }: { onMore: () => void; moreOpen: boolean })
       <div className="tab-group" style={lens(0, TABS_LEFT.length)}>
         {TABS_LEFT.map(tab)}
       </div>
-      <NavLink to={TAB_CENTRE} className={({ isActive }) => `nav-link tab-centre${isActive && !moreOpen ? ' active' : ''}`} aria-label="Board">
+      <NavLink to={wsHref(TAB_CENTRE)} className={({ isActive }) => `nav-link tab-centre${isActive && !moreOpen ? ' active' : ''}`} aria-label="Board">
         <span className="tab-fab" aria-hidden="true">
           <IconBoard />
         </span>
@@ -944,6 +948,8 @@ export function Layout({
 }) {
   const mobile = useIsMobile();
   const nav = useNav();
+  // moving between pages keeps the workspace (docs/workspaces.md § Current workspace)
+  const { wsHref } = useWorkspace();
   const [moreOpen, setMoreOpen] = useState(false);
   // the phone's Inbox sheet stack, opened from the header chip (docs/inbox.md)
   const [inboxOpen, setInboxOpen] = useState(false);
@@ -992,7 +998,7 @@ export function Layout({
             <span className="sub">tasks · agents · terminals</span>
           </div>
           {nav.map((n) => (
-            <NavLink key={n.to} to={n.to} className={navClass}>
+            <NavLink key={n.to} to={wsHref(n.to)} className={navClass}>
               {n.icon} {n.label}
             </NavLink>
           ))}
@@ -1002,11 +1008,8 @@ export function Layout({
       {/* Glass only: the blur the page scrolls under (glass.css § the shell) */}
       <div className="edge-top" aria-hidden="true" />
       <header className="header">
-        {mobile && (
-          <span className="brand-mini">
-            <span className="tm">tm_</span>manager
-          </span>
-        )}
+        {/* the phone's title is the workspace switcher; the desktop's sits before the queue switch */}
+        <WorkspaceSwitcher mobile={mobile} />
         {!mobile && <OrchestratorSwitch />}
         {!mobile && <PauseButton />}
         <RunCount state={mobile} />
@@ -1016,7 +1019,7 @@ export function Layout({
         <InboxChip
           compact={mobile}
           urgentOnly={mobile}
-          onClick={() => (!mobile ? navigate('/inbox') : onlyQuestions ? nudgeQuestions() : setInboxOpen(true))}
+          onClick={() => (!mobile ? navigate(wsHref('/inbox')) : onlyQuestions ? nudgeQuestions() : setInboxOpen(true))}
         />
         {!mobile && <UsagePill />}
         <span className="spacer" />
@@ -1033,6 +1036,7 @@ export function Layout({
         )}
       </header>
       <NewBuildWatcher />
+      <WorkspaceGuard />
       <main className="main" ref={mainRef}>
         {mobile && <OfflineBanner />}
         {children}

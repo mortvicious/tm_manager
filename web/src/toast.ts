@@ -90,6 +90,18 @@ export function toastSticky(key: string, text: string, action: { label: string; 
   emit();
 }
 
+/**
+ * A notice with nothing to act on (a link named a workspace that no longer
+ * exists). Keyed like toastUndo; gone after UNDO_MS like any info toast.
+ */
+export function toastInfo(key: string, text: string): void {
+  toasts = [
+    ...toasts.filter((t) => t.key !== key),
+    { id: nextId++, text, title: null, seq: 0, tone: 'info' as const, key },
+  ].slice(-MAX);
+  emit();
+}
+
 export function dismissToast(id: number): void {
   const left = toasts.filter((t) => t.id !== id);
   if (left.length === toasts.length) return;
