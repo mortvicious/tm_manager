@@ -44,6 +44,20 @@ import {
   type MoveAnchor,
 } from './group.ts';
 import { COMMAND_OWNER_MIGRATION_ID, COST_MIGRATION_ID, MIGRATIONS, commandOwnerBackfill } from './migrations.ts';
+import {
+  APPROVAL_DECIDE_SQL,
+  APPROVAL_INSERT_SQL,
+  REPO_AUTO_APPROVE_SQL,
+  approvalExpireSql,
+  approvalInsertParams,
+  approvalListSql,
+  approvalStepSql,
+  autoApproveValue,
+  rowToApproval,
+  type ApprovalFilter,
+  type NewApproval,
+} from './approval-sql.ts';
+import type { Approval, ApprovalStatus } from '@tm/shared';
 import { PUSH_RESULT_FAIL_SQL, PUSH_RESULT_OK_SQL, PUSH_UPSERT_SQL, rowToPushDevice } from './push-sql.ts';
 import type { LoopStep, NewPushDevice, PushDeviceRecord } from './types.ts';
 import type { LoopState } from '@tm/shared';
@@ -294,6 +308,7 @@ export class SqliteStorage implements Storage {
     this.db
       .prepare(REPO_PARALLEL_SQL)
       .run(...repoParallelParams(cur, patch), id);
+    if (patch.autoApprove !== undefined) this.db.prepare(REPO_AUTO_APPROVE_SQL).run(autoApproveValue(patch.autoApprove), id);
     return this.getRepo(id);
   }
 
@@ -1179,6 +1194,40 @@ export class SqliteStorage implements Storage {
     }
     const sql = `SELECT * FROM tm_questions ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC, id DESC`;
     return (this.db.prepare(sql).all(...params) as any[]).map(rowToQuestion);
+  }
+
+  // ---- approvals (docs/approvals.md; SQL shared in approval-sql.ts) ----
+
+  async listApprovals(f?: ApprovalFilter): Promise<Approval[]> {
+    const { sql, params } = approvalListSql(f);
+    return (this.db.prepare(sql).all(...params) as any[]).map(rowToApproval);
+  }
+
+  async getApproval(id: string): Promise<Approval | null> {
+    const r = this.db.prepare(`SELECT * FROM tm_approvals WHERE id = ?`).get(id);
+    return r ? rowToApproval(r) : null;
+  }
+
+  async createApproval(a: NewApproval): Promise<Approval> {
+    const id = randomUUID();
+    this.db.prepare(APPROVAL_INSERT_SQL).run(...approvalInsertParams(id, a, now()));
+    return (await this.getApproval(id))!;
+  }
+
+  async decideApproval(id: string, status: 'approved' | 'rejected', actor: string, result: string | null = null): Promise<Approval | null> {
+    const r = this.db.prepare(APPROVAL_DECIDE_SQL).get(status, actor, now(), result, id);
+    return r ? rowToApproval(r) : null;
+  }
+
+  async stepApproval(id: string, from: ApprovalStatus[], to: ApprovalStatus, result: string | null = null): Promise<Approval | null> {
+    const { sql, params } = approvalStepSql(from, to, result, now(), id);
+    const r = this.db.prepare(sql).get(...params);
+    return r ? rowToApproval(r) : null;
+  }
+
+  async expireApprovals(from: ApprovalStatus[], note: string): Promise<Approval[]> {
+    const { sql, params } = approvalExpireSql(from, note, now());
+    return (this.db.prepare(sql).all(...params) as any[]).map(rowToApproval);
   }
 
   // ---- web push devices (docs/push.md) ----

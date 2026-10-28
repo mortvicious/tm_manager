@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { LANDING_TIERS, PARALLEL_MAX, PUSH_POLICIES, WORKTREE_COPY_DEFAULTS, type LandingTier, type PushPolicy, type Repo } from '@tm/shared';
+import { LANDING_TIERS, PARALLEL_MAX, PUSH_POLICIES, WORKTREE_COPY_DEFAULTS, type ApprovalAction, type LandingTier, type PushPolicy, type Repo } from '@tm/shared';
 import { api } from '../api.ts';
 import { LANDING_HINT } from '../components/LandingPicker.tsx';
 import { useApp } from '../state.tsx';
@@ -296,6 +296,58 @@ function ParallelCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<vo
 const AUTOPILOT_CHOICES = [10, 15, 30, 60, 120, 240];
 
 /**
+ * Auto-approve (docs/approvals.md § Auto-approve): the approval actions this
+ * repo runs on an agent's request without a tap. Only the two that re-read git
+ * and can neither ship code nor stop the server; a push and a restart always
+ * ask. Turning one on needs the dashboard (the server checks Origin).
+ */
+const AUTO_APPROVE_CHOICES: { value: string; label: string; actions: ApprovalAction[] }[] = [
+  { value: 'none', label: 'always ask', actions: [] },
+  { value: 'mark', label: 'mark published', actions: ['mark-published'] },
+  { value: 'sync', label: 'sync branch', actions: ['sync-branch'] },
+  { value: 'both', label: 'both', actions: ['mark-published', 'sync-branch'] },
+];
+
+function AutoApproveCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const has = (a: ApprovalAction) => repo.autoApprove.includes(a);
+  const current = AUTO_APPROVE_CHOICES.find((c) => c.actions.length === repo.autoApprove.length && c.actions.every(has))?.value ?? 'none';
+  const save = async (value: string) => {
+    const next = AUTO_APPROVE_CHOICES.find((c) => c.value === value);
+    if (!next || value === current) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.updateRepo(repo.id, { autoApprove: next.actions });
+      await onSaved();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="repo-landing">
+      <select
+        className="field"
+        value={current}
+        disabled={busy}
+        title="Agent requests this repo runs without asking you. Pushes and Rebuild & restart always ask."
+        onChange={(e) => void save(e.target.value)}
+      >
+        {AUTO_APPROVE_CHOICES.map((c) => (
+          <option key={c.value} value={c.value}>
+            {c.label}
+          </option>
+        ))}
+      </select>
+      {err && <span className="warn-text">{err}</span>}
+    </span>
+  );
+}
+
+/**
  * The repo's question autopilot (docs/questions.md § Autopilot), saved on
  * change: after this many minutes a worker's question nobody answered gets
  * its one "(Recommended)" option picked by the server — never a push, deploy,
@@ -543,6 +595,7 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                 <th title="How far this repo's tasks land on their own — a task may override">Landing</th>
                 <th title="What agents are told about git push when no review holds the ship">Push</th>
                 <th title="Minutes a worker's question waits before its Recommended option is picked for you">Autopilot</th>
+                <th title="Agent requests (mark published, sync a local branch) this repo runs without asking you">Auto-approve</th>
                 <th title="How many of this repo's tasks may run at once, and how they ship (direct, or worktree + PR)">Parallel</th>
                 <th>Tasks</th>
                 <th>Git</th>
@@ -579,6 +632,9 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                       <td data-label="Autopilot">
                         <AutopilotCell repo={r} onSaved={refresh} />
                       </td>
+                      <td data-label="Auto-approve">
+                        <AutoApproveCell repo={r} onSaved={refresh} />
+                      </td>
                       <td data-label="Parallel">
                         <ParallelCell repo={r} onSaved={refresh} />
                       </td>
@@ -608,7 +664,7 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                     </tr>
                     {expanded && (
                       <tr className="repo-open">
-                        <td colSpan={9} className="repo-cmd-cell">
+                        <td colSpan={10} className="repo-cmd-cell">
                           <RepoCommandsPanel repoId={r.id} onOpenTerminal={onOpenTerminal} />
                         </td>
                       </tr>

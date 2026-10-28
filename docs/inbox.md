@@ -24,13 +24,14 @@ The items appear in this order. A task appears once, under its first kind.
 | # | kind | what | desktop keys | Telegram buttons |
 |---|---|---|---|---|
 | 1 | `question` | a task with a pending agent question (`tm_questions`), one item per task | answer inline (`QuestionForm`), `o` | ❓ Answer |
-| 2 | `attention` | a `running` task whose live, non-idle run is flagged needs-attention (a dialog in a hidden terminal) | `t` terminal, `o` | ✖ Kill |
-| 3 | `review` | a task in `review` whose automatic verify round is **settled** (not `verifyOpen`) | `p` publish, `d` mark done, `f` send findings back (flagged only), `o` | ✅ Done · 🚀 Publish |
-| 4 | `failed` | a task that failed in the last `INBOX_FAILED_DAYS` (7) | `r` retry, `p` resume (limit-stopped only), `o` | 🔁 Retry |
-| 5 | `blocked` | a blocked split parent, with its subtasks settled / failed | `a` unblock, `o` | ⛔ Unblock |
-| 6 | `proposal` | a pending analysis proposal (rewrite, split, new task, options) | `a` accept, `x` reject, `o` | ✅ Accept (only without options) · ✖ Reject |
-| 7 | `feature` | a feature plan in `proposed` | `a` approve, `o` opens the plan | ✅ Approve |
-| 8 | `stale-draft` | an agent-filed draft nobody has triaged, older than `inbox.staleDraftDays` (14), at most 10 listed (§ Stale drafts) | `l` keep, `h` hide, `x` cancel, `o` | 📌 Keep · 🙈 Hide · 🚫 Cancel |
+| 2 | `approval` | a pending approval request (`tm_approvals`, docs/approvals.md), one item per request, oldest first | `a` approve (a push confirms first), `x` reject, `o` | ✅ Approve · ✖ Reject |
+| 3 | `attention` | a `running` task whose live, non-idle run is flagged needs-attention (a dialog in a hidden terminal) | `t` terminal, `o` | ✖ Kill |
+| 4 | `review` | a task in `review` whose automatic verify round is **settled** (not `verifyOpen`) | `p` publish, `d` mark done, `f` send findings back (flagged only), `o` | ✅ Done · 🚀 Publish |
+| 5 | `failed` | a task that failed in the last `INBOX_FAILED_DAYS` (7) | `r` retry, `p` resume (limit-stopped only), `o` | 🔁 Retry |
+| 6 | `blocked` | a blocked split parent, with its subtasks settled / failed | `a` unblock, `o` | ⛔ Unblock |
+| 7 | `proposal` | a pending analysis proposal (rewrite, split, new task, options) | `a` accept, `x` reject, `o` | ✅ Accept (only without options) · ✖ Reject |
+| 8 | `feature` | a feature plan in `proposed` | `a` approve, `o` opens the plan | ✅ Approve |
+| 9 | `stale-draft` | an agent-filed draft nobody has triaged, older than `inbox.staleDraftDays` (14), at most 10 listed (§ Stale drafts) | `l` keep, `h` hide, `x` cancel, `o` | 📌 Keep · 🙈 Hide · 🚫 Cancel |
 
 - **Questions and attention come first** because each holds a live session,
   which means a worker slot and the repo with it.

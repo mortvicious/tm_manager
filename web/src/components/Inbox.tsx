@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  APPROVAL_LABELS,
   DEFAULT_SETTINGS,
   buildInbox,
   publishCaution,
@@ -38,11 +39,11 @@ import { Sheet, SheetAction } from './Sheet.tsx';
  * on the WS event that changed it, with no polling and no route of its own.
  */
 export function useInbox(): InboxItem[] {
-  const { tasks, questions, runs, proposals, features, settings } = useApp();
+  const { tasks, questions, approvals, runs, proposals, features, settings } = useApp();
   const staleDraftDays = staleDays(settings);
   return useMemo(
-    () => buildInbox({ tasks, questions, runs, proposals, features, staleDraftDays }),
-    [tasks, questions, runs, proposals, features, staleDraftDays],
+    () => buildInbox({ tasks, questions, approvals, runs, proposals, features, staleDraftDays }),
+    [tasks, questions, approvals, runs, proposals, features, staleDraftDays],
   );
 }
 
@@ -63,6 +64,7 @@ const CANCEL_STALE_REASON = 'stale draft triage';
 
 export const KIND_LABEL: Record<InboxKind, string> = {
   question: 'asks you',
+  approval: 'approve',
   attention: 'needs attention',
   review: 'review',
   failed: 'failed',
@@ -74,7 +76,7 @@ export const KIND_LABEL: Record<InboxKind, string> = {
 
 /** The task an item is about, when it is about one. */
 export function itemTask(item: InboxItem): Task | null {
-  if (item.kind === 'proposal') return item.task;
+  if (item.kind === 'proposal' || item.kind === 'approval') return item.task;
   if (item.kind === 'feature') return null;
   return item.task;
 }
@@ -83,6 +85,7 @@ export function itemTitle(item: InboxItem): string {
   if (item.kind === 'proposal')
     return item.proposal.payload.title ?? item.task?.title ?? item.proposal.payload.rationale;
   if (item.kind === 'feature') return item.feature.title;
+  if (item.kind === 'approval') return `${APPROVAL_LABELS[item.approval.action]}${item.task ? ` · ${item.task.title}` : ''}`;
   return item.task.title;
 }
 
@@ -103,6 +106,8 @@ export function itemSummary(item: InboxItem): string {
       const more = item.questions.reduce((n, q) => n + q.questions.length, 0) - 1;
       return first ? `“${first.question}”${more > 0 ? ` (+${more})` : ''}` : 'a question is waiting';
     }
+    case 'approval':
+      return item.approval.summary.split('\n')[0];
     case 'attention':
       return 'the agent is waiting at a prompt in its terminal';
     case 'review': {
@@ -179,6 +184,24 @@ export function useInboxActs(nav: InboxNav) {
       switch (item.kind) {
         case 'question':
           return open(item.task);
+        case 'approval': {
+          // the server runs exactly what the card says (docs/approvals.md)
+          const a = item.approval;
+          const push = a.action === 'push-ref';
+          return [
+            {
+              key: 'a',
+              label: 'Approve',
+              hint: push ? 'the server pushes exactly these refs' : 'the server runs it now',
+              tone: 'primary',
+              icon: <IconCheck />,
+              confirm: push ? () => window.confirm(`Approve this push?\n\n${a.summary}`) : undefined,
+              run: () => api.decideApproval(a.id, true),
+            },
+            { key: 'x', label: 'Reject', tone: 'danger', run: () => api.decideApproval(a.id, false) },
+            ...open(item.task),
+          ];
+        }
         case 'attention':
           return [
             {
@@ -363,7 +386,13 @@ export function InboxRowHead({ item, bare = false }: { item: InboxItem; bare?: b
   const { repos } = useApp();
   const t = itemTask(item);
   const repoId =
-    item.kind === 'proposal' ? item.proposal.repoId : item.kind === 'feature' ? item.feature.repoId : item.task.repoId;
+    item.kind === 'proposal'
+      ? item.proposal.repoId
+      : item.kind === 'feature'
+        ? item.feature.repoId
+        : item.kind === 'approval'
+          ? item.approval.repoId
+          : item.task.repoId;
   const repo = repos.find((r) => r.id === repoId);
   return (
     <>
@@ -393,6 +422,13 @@ export function InboxDetail({ item }: { item: InboxItem }) {
           {item.questions.map((q) => (
             <QuestionForm key={q.id} question={q} />
           ))}
+        </div>
+      );
+    case 'approval':
+      return (
+        <div className="inbox-detail">
+          <pre className="inbox-pre">{item.approval.summary}</pre>
+          <Block label="Why">{item.approval.reason}</Block>
         </div>
       );
     case 'review':

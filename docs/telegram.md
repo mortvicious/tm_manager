@@ -436,6 +436,10 @@ The Dashboard's `anomaly.*` thresholds used to be display-only. They are now als
 
 The coalescing memory is the audit log: every alert is an `anomaly.notified` row carrying its key, and a boot re-reads the last 30 days of them, so a restart never re-pings the same stale review. The Dashboard's per-RUN `cost-high` is unchanged and keeps `anomaly.costUsd`; the notification is per TASK on purpose, with its own setting — it is the number on the card and the one the budget measures.
 
+### Approvals
+
+An agent's approval request (`docs/approvals.md`) arrives as a 🔐 card: the action, the requesting task, the exact `summary` (refs, commit range, task list) and the agent's reason, with **✅ Approve / ✖ Reject** (`ap:<uuid>:y|n`, parsed before the action codec like `q:`). Like a question, it is not coalesced and not gated by notify flags. A pre-approved request (the repo's auto-approve) sends no card, only its outcome. The outcome (done / failed / rejected / expired, with the server's `result`) follows as its own line. A press on a request already decided elsewhere answers "Already decided" with the reason. Presses are audited as `telegram.command` `button:approval.approve|reject`, and the decision itself as `approval.decided` with actor `telegram`.
+
 ### Buttons
 
 Inline keyboards ride the **last** chunk of a message. `callback_data` is a `<ns>:<verb>:<id>` string — `p:acc:<n>:<id>` for the option-choosing accept, the one action that carries a parameter (Telegram caps the whole thing at 64 bytes); codec and dispatch table live together in `actions.ts` so a button cannot be added to one without the other, and an option segment on any other verb parses as null rather than being guessed about.

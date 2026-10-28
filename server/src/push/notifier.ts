@@ -8,6 +8,8 @@ import {
   type Feature,
   type Proposal,
   landingReason,
+  type Approval,
+  APPROVAL_LABELS,
   type Question,
   type Report,
   type CheckState,
@@ -141,6 +143,9 @@ export class PushNotifier {
         break;
       case 'question.updated':
         await this.onQuestion(e.question);
+        break;
+      case 'approval.updated':
+        await this.onApproval(e.approval);
         break;
       case 'proposal.created':
         this.onProposal(e.proposal);
@@ -363,6 +368,42 @@ export class PushNotifier {
       },
       // an agent is blocked until someone answers; a question outlives a day
       // only as an expired row, so a day of TTL is enough
+      { urgency: 'high' },
+    );
+  }
+
+  // ---- approvals (docs/approvals.md § Web Push) -----------------------------
+
+  private approvalsSent = new Set<string>();
+
+  private async onApproval(a: Approval): Promise<void> {
+    // Only the request is news, like a question: the outcome shows in the app
+    // (and a banner per outcome would be a second banner for one decision).
+    // A failed run is the exception — something the human approved did not happen.
+    if (a.status === 'failed') {
+      await this.deps.push.deliver('approval', {
+        title: `⚠ ${APPROVAL_LABELS[a.action]} failed`,
+        body: clip(a.result ?? a.summary, SUMMARY_CLIP),
+        tag: `approvalfail-${a.id}`,
+        url: '/inbox',
+      });
+      return;
+    }
+    if (a.status !== 'pending' || this.approvalsSent.has(a.id)) return;
+    this.approvalsSent.add(a.id);
+    // a pre-approved request is decided in the same breath — no banner for it
+    await new Promise((r) => setTimeout(r, 1500));
+    const fresh = await this.deps.storage.getApproval(a.id);
+    if (!fresh || fresh.status !== 'pending') return;
+    const task = fresh.taskId ? await this.deps.storage.getTask(fresh.taskId) : null;
+    await this.deps.push.deliver(
+      'approval',
+      {
+        title: `🔐 Approve: ${APPROVAL_LABELS[fresh.action]}${task ? ` · ${task.title}` : ''}`,
+        body: clip(`${fresh.summary}\n— ${fresh.reason}`, SUMMARY_CLIP),
+        tag: `approval-${fresh.id}`,
+        url: '/inbox',
+      },
       { urgency: 'high' },
     );
   }

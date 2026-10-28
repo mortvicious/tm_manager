@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import type { Run } from '@tm/shared';
-import { AGENT_BRIEF_MAX, AGENT_COMMANDS_PER_REPO_CAP, AGENT_TITLE_MAX } from '@tm/shared';
+import { AGENT_BRIEF_MAX, APPROVAL_PENDING_CAP, AGENT_COMMANDS_PER_REPO_CAP, AGENT_TITLE_MAX } from '@tm/shared';
 import { serverRoot } from '../config.ts';
 import { broadcast } from '../events.ts';
 import { onEvent } from '../events.ts';
@@ -134,6 +134,7 @@ export function registerAgentRoutes(
     const md = fs
       .readFileSync(p, 'utf8')
       .replaceAll('{{taskCreationCap}}', String(cap))
+      .replaceAll('{{approvalPendingCap}}', String(APPROVAL_PENDING_CAP))
       .replaceAll('{{maxSpawnDepth}}', String(maxSpawnDepth(settings)))
       .replaceAll('{{sharedNoteRunCap}}', String(SHARED_NOTE_RUN_CAP))
       .replaceAll('{{dispatchRunCap}}', String(DISPATCH_RUN_CAP))

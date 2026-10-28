@@ -76,6 +76,11 @@ export function PushBridge() {
         .listQuestions('pending')
         .then((qs) => closeQuestionBanners((id) => !qs.some((q) => q.id === id)))
         .catch(() => {});
+      // the same for approval requests decided elsewhere (docs/approvals.md)
+      api
+        .listApprovals('pending')
+        .then((as) => closeQuestionBanners((id) => !as.some((a) => a.id === id), 'approval-'))
+        .catch(() => {});
     };
     sweep();
     document.addEventListener('visibilitychange', sweep);
@@ -95,10 +100,10 @@ export function PushBridge() {
   return null;
 }
 
-async function closeQuestionBanners(stale: (questionId: string) => boolean): Promise<void> {
+async function closeQuestionBanners(stale: (id: string) => boolean, prefix = 'question-'): Promise<void> {
   const reg = await navigator.serviceWorker.getRegistration('/');
   if (!reg) return;
   for (const n of await reg.getNotifications()) {
-    if (n.tag.startsWith('question-') && stale(n.tag.slice('question-'.length))) n.close();
+    if (n.tag.startsWith(prefix) && stale(n.tag.slice(prefix.length))) n.close();
   }
 }

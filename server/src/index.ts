@@ -1,3 +1,5 @@
+import { ApprovalService } from './approvals.ts';
+import { registerApprovalRoutes } from './routes/approvals.ts';
 import { spawn } from 'node:child_process';
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
@@ -226,6 +228,20 @@ const bootedAt = new Date().toISOString();
 // lifetime: under the host it is a child that will be respawned when it exits,
 // so a restart is a clean exit rather than a detached self-respawn.
 const supervised = process.env.TM_SUPERVISED === '1';
+// Approvals (docs/approvals.md): human-only actions an agent requests and the
+// server runs once the human taps Approve. Here rather than beside the
+// questions because a rebuild-restart goes through the front door, which only
+// this file knows about (`hostPort`, `supervised`).
+const approvals = new ApprovalService({
+  storage,
+  markPublished: async (taskId, actor) => {
+    const r = await orchestrator.markPublished(taskId, actor);
+    return 'error' in r ? { ok: false, code: r.code, error: r.error } : { ok: true };
+  },
+  hostPort: cfg.host.port,
+  supervised,
+});
+await approvals.recoverOnBoot();
 // `logLevel: 'silent'` because the front door polls this every 1.5s to decide
 // whether the API is alive: at the default level it is two log lines a second
 // and it buries everything the server actually has to say.
@@ -399,6 +415,7 @@ registerStatsRoutes(app, storage, sessions, orchestrator);
 registerProgressRoutes(app, storage);
 registerChatRoutes(app, chats);
 registerQuestionRoutes(app, orchestrator.questions);
+registerApprovalRoutes(app, storage, approvals);
 registerReportRoutes(app, storage);
 registerSpaceRoutes(app, storage, orchestrator);
 // Web Push to the Home Screen PWA (docs/push.md). Like the bot it reaches OUT
@@ -437,6 +454,7 @@ const telegram = new TelegramBot(
   chats,
   orchestrator.questions,
   activity,
+  approvals,
 );
 
 // Serve the built SPA when present (production mode). When it is absent this

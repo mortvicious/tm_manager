@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import {
+  APPROVAL_AUTO_ACTIONS,
+  type ApprovalAction,
   LANDING_TIERS,
   PARALLEL_MAX,
   PUSH_POLICIES,
@@ -54,6 +56,8 @@ const repoBody = z
       .nullish(),
     // the branch pr delivery forks from / targets / lands onto (docs/parallel.md § Base branch); '' / null = the remote default
     baseBranch: z.string().max(200).nullish(),
+    // approval actions this repo pre-approves (docs/approvals.md § Auto-approve); only the auto-approvable ones
+    autoApprove: z.array(z.enum(APPROVAL_AUTO_ACTIONS as [ApprovalAction, ...ApprovalAction[]])).max(APPROVAL_AUTO_ACTIONS.length).optional(),
   })
   .strict();
 
@@ -106,6 +110,16 @@ export function autopilotNeedsBrowser(minutes: number | null | undefined, origin
   return typeof minutes === 'number' && !origin;
 }
 export const AUTOPILOT_FROM_BROWSER = 'the question autopilot is set from the dashboard';
+
+/**
+ * And for auto-approve (docs/approvals.md § Auto-approve): adding an action
+ * lets the server run it on an agent's word alone, so it needs the dashboard.
+ * Removing one is allowed from anywhere.
+ */
+export function autoApproveNeedsBrowser(next: ApprovalAction[] | undefined, current: ApprovalAction[], origin: string | undefined): boolean {
+  return !origin && !!next?.some((a) => !current.includes(a));
+}
+export const AUTO_APPROVE_FROM_BROWSER = 'auto-approve is turned on from the dashboard';
 
 /** The emulator puts this string straight into an iframe `src`, so the scheme
  *  is pinned to http/https here — the one place every write passes through. */
@@ -204,6 +218,9 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
     if (parallelNeedsBrowser(body, req.headers.origin)) return reply.code(403).send({ error: PARALLEL_FROM_BROWSER });
     const current = await storage.getRepo(id);
     if (!current) return reply.code(404).send({ error: 'repo not found' });
+    if (autoApproveNeedsBrowser(body.autoApprove, current.autoApprove, req.headers.origin)) {
+      return reply.code(403).send({ error: AUTO_APPROVE_FROM_BROWSER });
+    }
     // `direct` is always one task at a time; `pr` must be provable before it is written
     let parallel = body.parallel;
     const delivery = body.delivery ?? current.delivery;
@@ -269,6 +286,7 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
       worktreeSetup,
       worktreeCopy: 'worktreeCopy' in body ? (body.worktreeCopy ?? null) : undefined,
       baseBranch,
+      autoApprove: body.autoApprove,
     });
     if (!repo) return reply.code(404).send({ error: 'repo not found' });
     await storage.appendEvent({
@@ -287,6 +305,7 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
         ...(before.worktreeSetup !== repo.worktreeSetup ? { worktreeSetup: { from: before.worktreeSetup, to: repo.worktreeSetup } } : {}),
         ...(JSON.stringify(before.worktreeCopy) !== JSON.stringify(repo.worktreeCopy) ? { worktreeCopy: { from: before.worktreeCopy, to: repo.worktreeCopy } } : {}),
         ...(before.baseBranch !== repo.baseBranch ? { baseBranch: { from: before.baseBranch, to: repo.baseBranch } } : {}),
+        ...(JSON.stringify(before.autoApprove) !== JSON.stringify(repo.autoApprove) ? { autoApprove: { from: before.autoApprove, to: repo.autoApprove } } : {}),
       },
     });
     return repo;

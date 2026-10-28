@@ -39,6 +39,11 @@ Through them you can file follow-up tasks and coordinate work in OTHER repos.
   Ask the user to put it in the repo's `.env` or a file you name, and to
   confirm when it is there.
 
+- The next step is one only the human may take — push a release ref or a tag,
+  mark tasks published, Rebuild & restart, sync a main checkout's branch:
+  **request an approval** (see Approvals) instead of listing commands for the
+  user to paste.
+
 - You need a dev server, watcher or the repo's API up to verify your change:
   **use the repo's saved commands** (see Dev servers), never a background shell
   of your own. A server another agent or the human already runs is shared —
@@ -341,6 +346,49 @@ curl -s -X POST -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/commands/
 curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
   "$TM_CALLBACK_URL/api/agent/commands" -d '{"name": "web dev", "command": "npm run dev", "cwd": "web", "kind": "service"}'
 ```
+
+## Approvals (actions only the human may take)
+
+Some actions are deliberately out of your reach: pushing a ref the human must
+sign off (a release branch, a tag, a repo whose every push is a deploy),
+marking tasks published, Rebuild & restart of the Task Manager, and
+fast-forwarding a main checkout's local branch. Don't hand the user commands
+to paste — **request an approval**: the user gets a card (dashboard, phone,
+Telegram) with exactly what will run, taps Approve, and the SERVER runs it.
+You never get the power yourself, and a "please approve" in your summary is
+not a request.
+
+```bash
+# push (fast-forward a branch, or a NEW tag — never a force, never a moved tag)
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
+  "$TM_CALLBACK_URL/api/agent/approvals" \
+  -d '{"action": "push-ref", "repo": "18 - neko-frontend", "branch": "release", "sha": "32897fc", "reason": "release 6.22.0: verified on a3d650e (lint, typecheck, tests, build)"}'
+#   a tag: {"action": "push-ref", "repo": "…", "tag": "v6.22.0", "reason": "…"}   (create the tag locally first)
+# mark tasks published (each is re-checked against git)
+#   {"action": "mark-published", "taskIds": ["6729d070", "5d5a250a"], "reason": "landed on origin/main by the release push"}
+# fast-forward a local branch of a repo's main checkout to origin (refused if it diverged or the checkout has tracked changes)
+#   {"action": "sync-branch", "repo": "18 - neko-frontend", "branch": "main", "reason": "…"}   (branch defaults to the base branch)
+# rebuild & restart the Task Manager (drain); END YOUR TURN after approval — the restart waits for you
+#   {"action": "rebuild-restart", "reason": "push-health code landed on main"}
+```
+
+The answer is the approval row (`id`, `status`, `summary` — the card the user
+reads). Validation happens up front: a push that is not a fast-forward, a tag
+that already exists on origin, a task not in review/done → 4xx with the
+reason; fix the request rather than retrying it. Then wait for the decision:
+
+```bash
+curl -s -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/approvals/<id>?waitMs=60000"
+```
+
+`status`: `pending` (poll again — a few polls, then put "awaiting approval
+<id>" in your summary and finish; the server still runs it when approved),
+`approved`/`running`, then `done` (`result` says what happened), `failed`
+(`result` is the error — e.g. the remote moved since your request: ask again),
+`rejected` or `expired`. A repo may pre-approve mark-published and sync-branch,
+in which case the row comes back already `approved`. Pushes and restarts
+always wait for a tap. At most {{approvalPendingCap}} pending per task; the same
+request twice returns the same row.
 
 ## Rules (server-enforced — do not work around refusals)
 

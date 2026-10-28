@@ -17,6 +17,7 @@ import type {
   BackgroundShell,
   Dispatch,
   Question,
+  Approval,
   Feature,
   HostStatus,
   OrchestratorStatus,
@@ -31,10 +32,10 @@ import type {
   Space,
   Task,
 } from '@tm/shared';
-import { AUTOPILOT_ACTOR, questionWaitedMinutes } from '@tm/shared';
+import { APPROVAL_LABELS, AUTOPILOT_ACTOR, questionWaitedMinutes } from '@tm/shared';
 import { api, normalizeTask } from './api.ts';
 import { openTaskFromAnywhere } from './nav.ts';
-import { toastSticky } from './toast.ts';
+import { toastError, toastSticky } from './toast.ts';
 
 interface AppState {
   repos: Repo[];
@@ -47,6 +48,8 @@ interface AppState {
   dispatches: Dispatch[];
   /** decisions worker agents are waiting on — pending only (docs/questions.md) */
   questions: Question[];
+  /** human-only actions agents asked for — pending only (docs/approvals.md) */
+  approvals: Approval[];
   /** bumped by the header chip: the modal drops what was dismissed and reopens */
   questionNudge: number;
   nudgeQuestions: () => void;
@@ -123,6 +126,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [dispatches, setDispatches] = useState<Dispatch[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [approvals, setApprovals] = useState<Approval[]>([]);
   const [questionNudge, setQuestionNudge] = useState(0);
   const nudgeQuestions = useCallback(() => setQuestionNudge((n) => n + 1), []);
   const [features, setFeatures] = useState<Feature[]>([]);
@@ -161,6 +165,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api.listProposals().then(setProposals).catch(() => {});
     api.listDispatches().then(setDispatches).catch(() => {});
     api.listQuestions().then(setQuestions).catch(() => {});
+    api.listApprovals().then(setApprovals).catch(() => {});
     api.listFeatures().then(setFeatures).catch(() => {});
     api.listChats().then(setChats).catch(() => {});
     api.listReports().then(setReports).catch(() => {});
@@ -379,6 +384,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
               );
             }
             break;
+          case 'approval.updated': {
+            // the PENDING set, like questions; the outcome of one the human
+            // approved is a toast (a failure stays until dismissed)
+            const a = e.approval;
+            setApprovals((cur) => {
+              const rest = cur.filter((x) => x.id !== a.id);
+              return a.status === 'pending' ? [...rest, a] : rest;
+            });
+            if (a.status === 'failed') toastError(a.result ?? 'unknown error', `${APPROVAL_LABELS[a.action]} failed`);
+            else if (a.status === 'done') {
+              toastSticky(`approval-${a.id}`, `${APPROVAL_LABELS[a.action]} done${a.result ? ` — ${a.result.split('\n')[0]}` : ''}`, { label: 'OK', run: () => {} });
+            }
+            break;
+          }
           case 'report.updated':
             // Newest first, matching the server's ORDER BY: a re-run keeps its
             // place in the list rather than jumping to the top.
@@ -526,6 +545,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         proposals,
         dispatches,
         questions,
+        approvals,
         questionNudge,
         nudgeQuestions,
         features,

@@ -558,6 +558,8 @@ export interface Repo {
    * neko-nest lives on `staging` (docs/parallel.md § Base branch).
    */
   baseBranch: string | null;
+  /** approval actions this repo pre-approves — a subset of APPROVAL_AUTO_ACTIONS (docs/approvals.md § Auto-approve) */
+  autoApprove: ApprovalAction[];
   createdAt: string;
 }
 
@@ -1525,6 +1527,87 @@ export interface Question {
   answeredAt: string | null;
 }
 
+// ---- Approvals (docs/approvals.md) ----
+
+/**
+ * Human-only actions an agent may REQUEST (docs/approvals.md). The agent never
+ * gets the power: the request is a row the human approves with one tap, and
+ * then the SERVER runs exactly what the row says — so "the owner approves that
+ * exact push" (neko D458) holds with the agent doing the legwork.
+ */
+export type ApprovalAction = 'push-ref' | 'mark-published' | 'rebuild-restart' | 'sync-branch';
+export const APPROVAL_ACTIONS: ApprovalAction[] = ['push-ref', 'mark-published', 'rebuild-restart', 'sync-branch'];
+/**
+ * The only actions a repo may pre-approve (`Repo.autoApprove`): both re-read
+ * git and can neither publish code nor stop the server. A push and a restart
+ * always wait for a tap.
+ */
+export const APPROVAL_AUTO_ACTIONS: ApprovalAction[] = ['mark-published', 'sync-branch'];
+/** the `decidedBy` / audit actor of a pre-approved request */
+export const AUTO_APPROVE_ACTOR = 'auto-approve';
+/** pending requests one task may hold at once */
+export const APPROVAL_PENDING_CAP = 5;
+/** task ids one mark-published request may name */
+export const APPROVAL_MARK_MAX = 50;
+
+export const APPROVAL_LABELS: Record<ApprovalAction, string> = {
+  'push-ref': 'Push',
+  'mark-published': 'Mark published',
+  'rebuild-restart': 'Rebuild & restart',
+  'sync-branch': 'Sync local branch',
+};
+
+/**
+ * pending → approved → running → done | failed, or pending → rejected.
+ * `expired`: the server refused to run it any more (the remote moved, a
+ * restart cut it mid-run).
+ */
+export type ApprovalStatus = 'pending' | 'approved' | 'running' | 'done' | 'failed' | 'rejected' | 'expired';
+
+export type ApprovalParams =
+  | {
+      action: 'push-ref';
+      /** full sha of what is pushed (a commit, or an annotated tag object for a tag) */
+      sha: string;
+      /** `refs/heads/<branch>` or `refs/tags/<tag>` */
+      ref: string;
+      /** the remote ref's sha when the request was made; null = it does not exist yet. The push refuses if it moved. */
+      expectedOld: string | null;
+      /** commits `expectedOld..sha` (or reachable, for a new ref — capped) */
+      commits: number;
+    }
+  | { action: 'mark-published'; taskIds: string[] }
+  | { action: 'rebuild-restart'; drainMinutes: number | null }
+  | {
+      action: 'sync-branch';
+      branch: string;
+      /** commits origin has that the local branch lacks, at request time */
+      behind: number;
+    };
+
+export interface Approval {
+  id: string;
+  /** the requesting task (null when the run had none) */
+  taskId: string | null;
+  runId: string;
+  /** the repo the action acts on — may differ from the requester's (a release push) */
+  repoId: string | null;
+  action: ApprovalAction;
+  params: ApprovalParams;
+  /** what the human approves, in words and exact refs — the card's body */
+  summary: string;
+  /** the agent's why */
+  reason: string;
+  status: ApprovalStatus;
+  /** human | telegram | auto-approve */
+  decidedBy: string | null;
+  /** the outcome in words (the error on `failed`) */
+  result: string | null;
+  createdAt: string;
+  decidedAt: string | null;
+  finishedAt: string | null;
+}
+
 // ---- Dispatches (docs/dispatch.md) ----
 
 export type DispatchStatus = 'pending' | 'delivered' | 'failed' | 'cancelled';
@@ -2132,6 +2215,9 @@ export type AuditKind =
   | 'question.answered'
   | 'question.autopilot'
   | 'question.expired'
+  | 'approval.requested'
+  | 'approval.decided'
+  | 'approval.finished'
   /** an automatic turn was refused, or claiming stopped for the day, by a budget fuse (docs/token-budget.md § Fuses) */
   | 'task.budget'
   /** an anomaly notification went out — also the coalescing memory, so a restart does not re-ping (docs/push.md § What pings) */
@@ -2684,6 +2770,7 @@ export type ServerEvent =
   | { type: 'chat.deleted'; chatId: string }
   | { type: 'chat.message'; message: ChatMessage }
   | { type: 'question.updated'; question: Question }
+  | { type: 'approval.updated'; approval: Approval }
   | { type: 'report.updated'; report: Report }
   | { type: 'report.deleted'; reportId: string }
   | { type: 'space.updated'; space: Space }
@@ -2797,6 +2884,7 @@ export interface RebuildJob {
 /** What a Home Screen device can be pinged about; chosen per device. */
 export type PushKind =
   | 'question'
+  | 'approval'
   | 'attention'
   | 'review'
   | 'done'
@@ -2814,6 +2902,7 @@ export type PushKind =
 /** The one list every surface renders (SPA toggles, server validation, defaults). */
 export const PUSH_KINDS: { kind: PushKind; label: string; hint: string; default: boolean }[] = [
   { kind: 'question', label: 'Questions', hint: 'an agent asks you something (AskUserQuestion)', default: true },
+  { kind: 'approval', label: 'Approvals', hint: 'an agent asks you to approve a push, a restart, mark published…', default: true },
   { kind: 'attention', label: 'Needs attention', hint: 'an agent is stuck on a prompt in its hidden terminal', default: true },
   { kind: 'review', label: 'Ready for review', hint: 'a task landed in review, with the reviewer’s verdict', default: true },
   { kind: 'done', label: 'Done', hint: 'a task the orchestrator landed on its own (on-green: checks green, review clean)', default: true },
@@ -2871,17 +2960,17 @@ export interface PushMessage {
 
 // ---- Inbox (docs/inbox.md) --------------------------------------------------
 
-export type InboxKind = 'question' | 'attention' | 'review' | 'failed' | 'blocked' | 'proposal' | 'feature' | 'stale-draft';
+export type InboxKind = 'question' | 'approval' | 'attention' | 'review' | 'failed' | 'blocked' | 'proposal' | 'feature' | 'stale-draft';
 
 /**
  * The order the kinds are listed in — by how much one decision unblocks: a
  * question or a permission prompt holds a LIVE session (its slot and its
- * repo), a review holds a landing (and any later feature phase), a failure
+ * repo), an approval holds the agent waiting on it, a review holds a landing (and any later feature phase), a failure
  * holds a retry, a blocked split parent its tree; proposals and planned
  * features are new work nobody waits on yet; a stale agent draft is backlog
  * hygiene — last, because nothing at all waits on it.
  */
-export const INBOX_KINDS: InboxKind[] = ['question', 'attention', 'review', 'failed', 'blocked', 'proposal', 'feature', 'stale-draft'];
+export const INBOX_KINDS: InboxKind[] = ['question', 'approval', 'attention', 'review', 'failed', 'blocked', 'proposal', 'feature', 'stale-draft'];
 
 /** A `failed` task older than this has been seen and left alone — it drops out of the inbox (the board still lists it). */
 export const INBOX_FAILED_DAYS = 7;
@@ -2915,6 +3004,7 @@ interface InboxBase {
 
 export type InboxItem =
   | (InboxBase & { kind: 'question'; task: Task; questions: Question[] })
+  | (InboxBase & { kind: 'approval'; approval: Approval; task: Task | null })
   | (InboxBase & { kind: 'attention'; task: Task; run: Run })
   | (InboxBase & {
       kind: 'review';
@@ -2939,6 +3029,8 @@ export interface InboxInput {
   tasks: Task[];
   /** pending ones are used; others are ignored */
   questions: Question[];
+  /** pending ones are used (optional: older callers pass none) */
+  approvals?: Approval[];
   /** live runs; a `running` task's non-idle run flagged needsAttention is an item */
   runs: Run[];
   /** pending ones are used */
@@ -2992,6 +3084,11 @@ export function buildInbox(input: InboxInput): InboxItem[] {
   for (const q of questions.sort(byWeight)) {
     seen.add(q.task.id);
     out.push({ kind: 'question', key: `question:${q.task.id}`, task: q.task, questions: q.qs, unblocks: q.unblocks });
+  }
+
+  // approvals — oldest first; one item per request (each is its own decision)
+  for (const a of [...(input.approvals ?? [])].filter((a) => a.status === 'pending').sort((x, y) => x.createdAt.localeCompare(y.createdAt))) {
+    out.push({ kind: 'approval', key: `approval:${a.id}`, approval: a, task: a.taskId ? byId.get(a.taskId) ?? null : null, unblocks: 0 });
   }
 
   // permission prompts / needs-attention on a live worker

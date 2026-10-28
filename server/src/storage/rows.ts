@@ -1,3 +1,4 @@
+import { autoApproveList } from './approval-sql.ts';
 import type {
   LoopState,
   Chat,
@@ -87,6 +88,7 @@ export function rowToRepo(r: any): Repo {
     worktreeSetup: r.worktree_setup ?? null,
     worktreeCopy: stringList(r.worktree_copy),
     baseBranch: r.base_branch || null,
+    autoApprove: autoApproveList(r.auto_approve),
     createdAt: r.created_at,
   };
 }

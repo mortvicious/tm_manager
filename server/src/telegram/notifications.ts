@@ -1,3 +1,4 @@
+import { approvalMessage, approvalNotice } from './approvals.ts';
 import {
   ANOMALY_ALERT_LABELS,
   type AnomalyAlert,
@@ -5,6 +6,7 @@ import {
   type Proposal,
   LOOP_DEFAULT_MAX_ITERATIONS,
   landingReason,
+  type Approval,
   type Question,
   type CheckState,
   type ReviewState,
@@ -350,7 +352,33 @@ export class TelegramNotifier {
         // kind of chatter /mute exists for (docs/questions.md).
         await this.onQuestion(e.question);
         break;
+      case 'approval.updated':
+        // Same rule as a question: the agent is usually waiting on it, so no
+        // coalescing and no notify flag (docs/approvals.md § Telegram).
+        await this.onApproval(e.approval);
+        break;
     }
+  }
+
+  /** ids whose card was sent (a pending row is broadcast once, but a reconnect must not resend) */
+  private approvalCards = new Set<string>();
+
+  private async onApproval(a: Approval): Promise<void> {
+    if (a.status === 'pending') {
+      if (this.approvalCards.has(a.id)) return;
+      this.approvalCards.add(a.id);
+      // a pre-approved request is decided in the same breath — let it settle
+      // first, so it arrives as its outcome alone rather than a card to ignore
+      await new Promise((r) => setTimeout(r, 1500));
+      const fresh = await this.deps.storage.getApproval(a.id);
+      if (!fresh || fresh.status !== 'pending') return;
+      const task = fresh.taskId ? await this.deps.storage.getTask(fresh.taskId) : null;
+      const m = approvalMessage(fresh, task);
+      await this.deps.send(m.html, m.keyboard);
+      return;
+    }
+    const notice = approvalNotice(a);
+    if (notice) await this.deps.send(notice);
   }
 
   private async onQuestion(q: Question): Promise<void> {

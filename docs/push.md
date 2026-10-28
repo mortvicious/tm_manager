@@ -36,6 +36,7 @@ state a review verdict the same way.
 | kind | when | tap opens |
 |---|---|---|
 | `question` | an agent's `AskUserQuestion` is pending (immediately, `Urgency: high`), or the question autopilot picked its Recommended option (normal urgency) | `/?task=<id>`, where the question modal pops |
+| `approval` | an agent requested a human-only action (docs/approvals.md) — immediately, `Urgency: high`, unless the repo pre-approved it; and when an approved action FAILED (`approvalfail-<id>`) | `/inbox` |
 | `attention` | the run is still flagged at the 5s flush (running, not idle) | `/?task=<id>` |
 | `review` | the task is in `review` AND the review settled — and its repo checks too (`docs/checks.md`; the body opens with the check clause): one verdict per change. Also a "Review now" verdict on a non-review task | `/?task=<id>` |
 | `done` | a task that reached `done` without a human: an on-green landing (`autoLandedAt`, `docs/design.md` § Landing tiers — "✅ Auto-landed · <title>", body "auto-landed: <reason>" + the reviewer's summary), or `running`/`waiting` → `done`. A human's Mark done is silent | `/?task=<id>` |

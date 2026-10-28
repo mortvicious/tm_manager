@@ -1,3 +1,5 @@
+import { parseApprovalData, type ApprovalButton } from './approvals.ts';
+import type { ApprovalService } from '../approvals.ts';
 import { DEFAULT_DIGEST, saveTelegramDigest, saveTelegramNotify, type TelegramConfig } from '../config.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { Storage } from '../storage/types.ts';
@@ -16,9 +18,9 @@ import {
   type ListButton,
   type MessageContext,
 } from './board.ts';
-import { resolveFeature, resolveProposal, resolveTask } from './ids.ts';
+import { resolveFeature, resolveProposal, resolveTask, short } from './ids.ts';
 import { commandSpecs, findCommand, parseCommand, unknownCommandReply } from './commands.ts';
-import type { Chat } from '@tm/shared';
+import { APPROVAL_LABELS, type Chat } from '@tm/shared';
 import type { ChatService } from '../chat/service.ts';
 import {
   activeChat,
@@ -200,6 +202,8 @@ export class TelegramBot {
     /** the activity watcher's read side, for the board's live lines. Null in
      *  a harness — the board then renders without narration. */
     private readonly activity: ActivitySource | null = null,
+    /** the approval service (docs/approvals.md). Null in a harness — the buttons then say so. */
+    private readonly approvals: ApprovalService | null = null,
   ) {
     // `loadBootConfig()` always merges this block in, but a config built by
     // hand — a harness, an older caller — can be missing it entirely. The
@@ -815,6 +819,13 @@ export class TelegramBot {
       await this.handleQuestionPress(cb, questionButton);
       return;
     }
+    // Then the approval buttons (docs/approvals.md § Telegram) — decided
+    // once, so a stale one is refused with the outcome like a question's.
+    const approvalButton = cb.data ? parseApprovalData(cb.data) : null;
+    if (approvalButton) {
+      await this.handleApprovalPress(cb, approvalButton);
+      return;
+    }
     // The board (docs/telegram.md § The board). Navigation only — a tab, a
     // page, a card, a 🔄 — so it is deliberately NOT audited; the mutations
     // its action buttons carry go through the codec below like any other.
@@ -1103,6 +1114,37 @@ export class TelegramBot {
     });
     await this.answerCallback(cb.id, press.toast);
     await this.send(this.cfg.allowedUserId, press.reply.html, press.reply.keyboard);
+  }
+
+  private async handleApprovalPress(cb: TelegramCallbackQuery, button: ApprovalButton): Promise<void> {
+    if (!this.approvals) {
+      await this.answerCallback(cb.id, 'Approvals are unavailable');
+      return;
+    }
+    let toast: string;
+    let html: string;
+    let ok = false;
+    try {
+      const r = await this.approvals.decide(button.id, button.approve, ACTOR);
+      ok = r.ok;
+      if (r.ok) {
+        toast = button.approve ? 'Approved' : 'Rejected';
+        html = button.approve
+          ? `▶ ${escapeHtml(APPROVAL_LABELS[r.approval.action])} <code>${short(r.approval.id)}</code> approved — running; the outcome follows.`
+          : `✖ ${escapeHtml(APPROVAL_LABELS[r.approval.action])} <code>${short(r.approval.id)}</code> rejected.`;
+      } else {
+        toast = r.code === 404 ? 'Gone' : 'Already decided';
+        html = `⚠ ${escapeHtml(r.error)}`;
+      }
+    } catch (e) {
+      console.error('telegram: approval button failed:', errText(e));
+      toast = 'Failed';
+      html = `⚠ ${escapeHtml(errText(e))}`;
+    }
+    // Audited BEFORE the answer, like every other button.
+    await this.audit('telegram.command', { command: `button:approval.${button.approve ? 'approve' : 'reject'}`, target: button.id, ok });
+    await this.answerCallback(cb.id, toast);
+    await this.send(this.cfg.allowedUserId, html);
   }
 
   private questionDeps(): QuestionDeps | null {

@@ -14,6 +14,7 @@ import type {
   CommandRun,
   Dispatch,
   Question,
+  Approval,
   Feature,
   FeaturePlan,
   HostStatus,
@@ -197,7 +198,7 @@ export const api = {
     b: Partial<
       Pick<
         Repo,
-        'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes' | 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy' | 'baseBranch'
+        'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes' | 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy' | 'baseBranch' | 'autoApprove'
       >
     >,
   ) =>
@@ -373,6 +374,10 @@ export const api = {
     req<Question[]>('GET', `/api/questions?status=${status}`),
   answerQuestion: (id: string, answers: Record<string, string>) =>
     req<Question>('POST', `/api/questions/${id}/answer`, { answers }),
+  // human-only actions an agent asked for (docs/approvals.md)
+  listApprovals: (status: Approval['status'] = 'pending') => req<Approval[]>('GET', `/api/approvals?status=${status}`),
+  decideApproval: (id: string, approve: boolean, note?: string) =>
+    req<Approval>('POST', `/api/approvals/${id}/${approve ? 'approve' : 'reject'}`, note ? { note } : {}),
 
   listRuns: () => req<Run[]>('GET', '/api/runs'),
   runActivity: () => req<RunActivity[]>('GET', '/api/runs/activity'),

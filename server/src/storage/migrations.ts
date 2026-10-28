@@ -744,6 +744,39 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `ALTER TABLE tm_tasks ADD COLUMN worktree_base TEXT`,
     ],
   },
+  {
+    id: 48,
+    // Approvals (docs/approvals.md): a human-only action an agent requested
+    // (push a ref, mark published, rebuild & restart, sync a local branch),
+    // run by the server once the human approves it. FK-less like tm_questions:
+    // the row is the record of what was asked, decided and done. `params` is
+    // the JSON of exactly what runs. On the repo, the actions it pre-approves
+    // (JSON array, null = none).
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_approvals (
+        id TEXT PRIMARY KEY,
+        task_id TEXT,
+        run_id TEXT NOT NULL,
+        repo_id TEXT,
+        action TEXT NOT NULL,
+        params TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        decided_by TEXT,
+        result TEXT,
+        created_at TEXT NOT NULL,
+        decided_at TEXT,
+        finished_at TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_approvals_status_idx ON tm_approvals(status, created_at)`,
+      `CREATE INDEX IF NOT EXISTS tm_approvals_task_idx ON tm_approvals(task_id, status)`,
+      `ALTER TABLE tm_repos ADD COLUMN auto_approve TEXT`,
+      // a device that is pinged about questions is pinged about approvals too —
+      // both are an agent waiting on the human (kinds is a JSON array of strings)
+      `UPDATE tm_push_devices SET kinds = REPLACE(kinds, '"question"', '"question","approval"') WHERE kinds LIKE '%"question"%' AND kinds NOT LIKE '%"approval"%'`,
+    ],
+  },
 ];
 
 /** The migration whose command owners each driver backfills in JS once it is applied. */

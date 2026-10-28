@@ -1,6 +1,7 @@
 import type { WorktreePatch } from './worktree-sql.ts';
+import type { ApprovalFilter, NewApproval } from './approval-sql.ts';
 import type { MoveAnchor } from './group.ts';
-import type { PushDevice, PushKind } from '@tm/shared';
+import type { Approval, ApprovalStatus, PushDevice, PushKind } from '@tm/shared';
 import type {
   LoopState,
   AppSettings,
@@ -110,7 +111,7 @@ export type LoopStep = Partial<Pick<Task, 'loopState' | 'loopIteration' | 'loopH
 
 /** undefined = leave as-is; null clears the column. */
 export type RepoPatch = Partial<
-  Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes' | 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy' | 'baseBranch'>
+  Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes' | 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy' | 'baseBranch' | 'autoApprove'>
 >;
 
 export interface NewCommand {
@@ -572,6 +573,19 @@ export interface Storage {
    * expires ALL pending questions — the boot sweep.
    */
   expireQuestions(f: { runId?: string; taskId?: string }, note: string): Promise<Question[]>;
+
+  // ---- approvals (docs/approvals.md; SQL in approval-sql.ts) ----
+
+  /** Newest first, at most 500. */
+  listApprovals(f?: ApprovalFilter): Promise<Approval[]>;
+  getApproval(id: string): Promise<Approval | null>;
+  createApproval(a: NewApproval): Promise<Approval>;
+  /** Conditional pending → approved|rejected; null when it was no longer pending (decided elsewhere first). */
+  decideApproval(id: string, status: 'approved' | 'rejected', actor: string, result?: string | null): Promise<Approval | null>;
+  /** Conditional step from one of `from`; null when the row was in none of them. */
+  stepApproval(id: string, from: ApprovalStatus[], to: ApprovalStatus, result?: string | null): Promise<Approval | null>;
+  /** Every row in one of `from` → expired with `note`; returns them (the boot sweep). */
+  expireApprovals(from: ApprovalStatus[], note: string): Promise<Approval[]>;
 
   // ---- web push devices (docs/push.md) ----
 

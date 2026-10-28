@@ -1,6 +1,8 @@
+import { encodeApprovalButton } from './approvals.ts';
 import {
   REVIEW_BUSY_STATES,
   publishGateReason,
+  APPROVAL_LABELS,
   REVIEW_NOW_FROM,
   TERMINAL_TASK_STATUSES,
   buildInbox,
@@ -12,6 +14,7 @@ import {
   taskPresets,
   type Feature,
   type Proposal,
+  type Approval,
   type Question,
   type Repo,
   type Run,
@@ -370,6 +373,7 @@ interface Snapshot {
   repos: Repo[];
   live: Run[];
   questions: Question[];
+  approvals: Approval[];
   proposals: Proposal[];
   features: Feature[];
   /** task ids with a pending question */
@@ -383,11 +387,12 @@ interface Snapshot {
 }
 
 async function load(deps: BoardDeps): Promise<Snapshot> {
-  const [tasks, repos, live, questions, proposals, features, settings] = await Promise.all([
+  const [tasks, repos, live, questions, approvals, proposals, features, settings] = await Promise.all([
     deps.storage.listTasks(),
     deps.storage.listRepos(),
     deps.storage.listRuns({ status: 'running' }),
     deps.storage.listQuestions({ status: 'pending' }),
+    deps.storage.listApprovals({ status: 'pending' }),
     deps.storage.listProposals({ status: 'pending' }),
     deps.storage.listFeatures({ status: 'proposed' }),
     deps.storage.getSettings(),
@@ -422,6 +427,7 @@ async function load(deps: BoardDeps): Promise<Snapshot> {
     repos,
     live,
     questions,
+    approvals,
     proposals,
     features,
     asking: new Set(questions.map((q) => q.taskId)),
@@ -531,6 +537,7 @@ function inboxItems(snap: Snapshot, state: BoardState, inRepo: (id: string | nul
   const inbox = buildInbox({
     tasks: snap.tasks.filter((t) => inRepo(t.repoId)),
     questions: snap.questions,
+    approvals: snap.approvals.filter((a) => inRepo(a.repoId)),
     runs: snap.live,
     proposals: snap.proposals.filter((p) => inRepo(p.repoId)),
     features: snap.features.filter((f) => inRepo(f.repoId)),
@@ -548,6 +555,18 @@ function inboxItems(snap: Snapshot, state: BoardState, inRepo: (id: string | nul
         });
         it.actions.push({ text: '❓ Answer', callback_data: encodeList({ kind: 'ask', task: x.task.id }) });
         return it;
+      }
+      case 'approval': {
+        // Decided from its own card (the 🔐 message); the board only lists it.
+        const a = x.approval;
+        return {
+          open: null,
+          lines: (max) => [`🔐 <b>${escapeHtml(APPROVAL_LABELS[a.action])}</b> <code>${short(a.id)}</code> · ${escapeHtml(clip(a.summary.split('\n')[0], max))}`],
+          actions: [
+            { text: '✅ Approve', callback_data: encodeApprovalButton(a.id, true) },
+            { text: '✖ Reject', callback_data: encodeApprovalButton(a.id, false) },
+          ],
+        };
       }
       case 'attention': {
         const it = taskItem(snap, x.task, state, liveDetail(snap, x.task));
