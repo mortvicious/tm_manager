@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { contextPctOf, holdsRepoForClaim, repoHasRoom, type Anomaly, type AuditEvent, type StatsOverview, type Task } from '@tm/shared';
+import { contextPctOf, holdsRepoForClaim, repoHasRoom, runWorkedMs, type Anomaly, type AuditEvent, type StatsOverview, type Task } from '@tm/shared';
 import { budgetAllows } from '../budget.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
@@ -16,13 +16,6 @@ const dayKey = (iso: string) => {
   const d = new Date(iso);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
-
-/** workedMs for a run: start → first-idle (stats-final event) or exit (review A3). */
-function runWorkedMs(run: { startedAt: string; endedAt: string | null }, idleAt: string | undefined): number {
-  const start = Date.parse(run.startedAt);
-  const end = idleAt ? Date.parse(idleAt) : run.endedAt ? Date.parse(run.endedAt) : Date.now();
-  return Math.max(0, end - start);
-}
 
 export function registerStatsRoutes(
   app: FastifyInstance,

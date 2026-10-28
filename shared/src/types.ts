@@ -3360,3 +3360,4 @@ export function taskTemplateProblem(list: TaskTemplate[], presets: TaskPreset[] 
 
 // Approximate progress % of a live task (docs/task-progress.md)
 export * from './progress.ts';
+export * from './schedule.ts';
