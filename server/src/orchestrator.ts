@@ -136,6 +136,7 @@ import {
   defaultBranch,
   ensureWorktree,
   type Retargeted,
+  type StaleBase,
   evictWorktree,
   pruneOrphans,
   removeWorktree,
@@ -144,7 +145,9 @@ import {
   withRepoLock,
   type EnsureResult,
 } from './worktrees.ts';
-import { closePr, confirmMerged, fastForwardCheckout, landedCheck, landWorktree, syncPr, type LandResult } from './land.ts';
+import { closePr, confirmMerged, fastForwardCheckout, integratedIn, landedCheck, landWorktree, syncPr, type LandResult } from './land.ts';
+import { probePush, pushHealth } from './push-health.ts';
+import type { RepoPushHealth } from '@tm/shared';
 
 /** Upper bound on how long a custom-queue hold may outlive its follow-on (docs/queue.md). */
 const CUSTOM_QUEUE_HOLD_TTL_MS = 30 * 60_000;
@@ -207,6 +210,14 @@ function retargetedNote(r: Retargeted, branch: string | null): string {
     `Note from the server: this task's branch${branch ? ` \`${branch}\`` : ''} was forked from \`origin/${r.from}\`, which is not this repo's`,
     `base. Before this turn it was rebased onto \`origin/${r.to}\` (${r.commits} commit(s) of this task carried over).`,
     'The tree you work in now is the base\'s current code: re-read any file before relying on what an earlier turn saw.',
+  ].join(' ');
+}
+
+function staleBaseNote(b: StaleBase): string {
+  return [
+    `Note from the server: this task's worktree was forked from \`${b.ref}\`, but the local \`${b.branch}\` in the main checkout`,
+    `has ${b.ahead} commit(s) that \`${b.ref}\` does not. They are NOT in your tree, and they were not pushed.`,
+    'Do not re-create them and do not merge the local branch in: build on what you have, and mention the gap in your summary if your change depends on them.',
   ].join(' ');
 }
 
@@ -507,6 +518,7 @@ export class Orchestrator implements OrchestratorApi {
   /** single-flight for the anomaly/budget sweep */
   private anomalySweeping = false;
   private worktreeSweeping = false;
+  private pushHealthSweeping = false;
   /** the `cost-high` baseline: one 30-day task read, reused for an hour */
   private costBaselineCache: { at: number; tasks: Pick<Task, 'repoId' | 'costUsd'>[] } | null = null;
   /**
@@ -659,6 +671,62 @@ export class Orchestrator implements OrchestratorApi {
     setInterval(() => {
       void this.worktreeSweep();
     }, 5 * 60_000).unref();
+    // Push health of `pr` repos (docs/parallel.md § Push health): a failing
+    // repo is re-probed every minute, a healthy one every 5.
+    pushHealth.configure({
+      probe: (repo) => probePush(repo, (r) => defaultBranch(r)),
+      onChange: (now, prev) => this.onPushHealthChange(now, prev),
+    });
+    setInterval(() => {
+      void this.pushHealthSweep();
+    }, 60_000).unref();
+  }
+
+  // ---- push health (docs/parallel.md § Push health) ------------------------
+
+  /** Probe the `pr` repos that are due; `force` = all of them (boot). Never throws. */
+  async pushHealthSweep(force = false): Promise<void> {
+    if (this.pushHealthSweeping) return;
+    this.pushHealthSweeping = true;
+    try {
+      await pushHealth.sweep(await this.storage.listRepos(), 5 * 60_000, force);
+    } catch (e) {
+      console.error('push health sweep failed:', e);
+    } finally {
+      this.pushHealthSweeping = false;
+    }
+  }
+
+  /**
+   * A repo's push health changed: audit it, tell every surface (the board's
+   * banner reads `OrchestratorStatus.pushHealth`), alert ONCE per failure
+   * episode, and let the queue go again when it recovers.
+   */
+  private async onPushHealthChange(now: RepoPushHealth, prev: RepoPushHealth | undefined): Promise<void> {
+    await this.storage
+      .appendEvent({
+        kind: 'repo.push-health',
+        actor: 'system',
+        repoId: now.repoId,
+        data: {
+          ok: now.ok,
+          ...(now.ok ? {} : { kind: now.kind, step: now.step, error: now.error }),
+          ...(now.base ? { base: now.base } : {}),
+          ...(now.localAhead ? { localAhead: now.localAhead } : {}),
+        },
+      })
+      .catch(() => {});
+    if (!now.ok && (!prev || prev.ok)) {
+      await this.alerts.emit({
+        type: 'push-failed',
+        severity: 'critical',
+        message: `${now.repoName}: push to origin fails (${now.kind}) — no new task starts and nothing lands in this repo until it works. ${now.error ?? ''}`.trim(),
+        key: `push-failed:${now.repoId}:${now.failingSince}`,
+        data: { repoId: now.repoId, kind: now.kind, step: now.step },
+      });
+    }
+    broadcast({ type: 'orchestrator.status', status: await this.status() });
+    if (now.ok && prev && !prev.ok) this.maybeSchedule();
   }
 
   // ---- worktrees (docs/parallel.md § Cleanup) ------------------------------
@@ -1835,6 +1903,8 @@ export class Orchestrator implements OrchestratorApi {
     }
     // worktree hygiene, orphans included — after the sweeps above settled who is live
     void this.worktreeSweep(true);
+    // every `pr` repo's push preflight, before the first claim can fork from a stale base
+    void this.pushHealthSweep(true);
   }
 
   async status() {
@@ -1852,6 +1922,7 @@ export class Orchestrator implements OrchestratorApi {
       // but the restart guard and the header need them counted.
       aux: aux().liveCount(),
       shellWaits: this.shellWaitTasks(),
+      pushHealth: pushHealth.list(),
     };
   }
 
@@ -2145,8 +2216,10 @@ export class Orchestrator implements OrchestratorApi {
             await this.deliverDispatches();
             return;
           }
+          // a repo the server cannot push to starts nothing (docs/parallel.md § Push health)
+          const pushHeld = pushHealth.failingRepoIds();
           while (this.activeWorkers() < cap) {
-            const task = await this.storage.claimNextQueuedTask('orchestrator');
+            const task = await this.storage.claimNextQueuedTask('orchestrator', pushHeld);
             if (!task) break;
             const started = await this.startWorker(task);
             if (!started) break; // claim resolved to failed; don't spin
@@ -2165,7 +2238,7 @@ export class Orchestrator implements OrchestratorApi {
             if (this.sessions.totalLiveCount() >= MAX_LIVE_SESSIONS - 1) break;
             const eligible = await this.overflowEligibleRunIds();
             if (eligible.length === 0) break;
-            const task = await this.storage.claimNextAgentChildTask(eligible, 'orchestrator');
+            const task = await this.storage.claimNextAgentChildTask(eligible, 'orchestrator', pushHeld);
             if (!task) break;
             const started = await this.startWorker(task);
             if (!started) break;
@@ -2467,6 +2540,7 @@ export class Orchestrator implements OrchestratorApi {
     // live — `repoBusy` sees it from then on; a compaction gate on the way
     // would otherwise let a same-repo member start on top of the work.
     for (const repoId of this.pauseResumesInFlight.values()) if (repoId) skip.add(repoId);
+    for (const repoId of pushHealth.failingRepoIds()) skip.add(repoId);
     while (this.activeWorkers() < cap && this.sessions.totalLiveCount() < MAX_LIVE_SESSIONS) {
       const head = await this.storage.peekCustomQueue([...skip]);
       if (!head?.repoId) return;
@@ -3214,6 +3288,7 @@ export class Orchestrator implements OrchestratorApi {
       }
       task = made.task;
       if (made.retargeted) retargetNote = retargetedNote(made.retargeted, task.branch);
+      else if (made.staleBase) retargetNote = staleBaseNote(made.staleBase);
     }
     const settings = await this.storage.getSettings();
     const model = await this.resolveModel(task, settings);
@@ -3858,6 +3933,22 @@ export class Orchestrator implements OrchestratorApi {
     // a fresh land asked by a human starts the conflict budget over; a re-land
     // after a conflict round (whoever asked for it) does not
     if (!this.relanding.delete(taskId) && actor !== LANDING_ACTOR) this.conflictRounds.delete(taskId);
+    // docs/parallel.md § Push health / § Integrated elsewhere: refused before
+    // the terminal is touched, with the reason on the row
+    const refused = pushHealth.refusal(repo.id) ?? (await this.integratedRefusal(task, repo));
+    if (refused) {
+      this.autoPublishing.delete(taskId);
+      const patched = await this.storage.updateTask(taskId, { error: `publish refused: ${refused}` });
+      if (patched) broadcast({ type: 'task.updated', task: patched });
+      await this.storage.appendEvent({
+        kind: 'task.publish',
+        actor,
+        taskId,
+        repoId: repo.id,
+        data: { phase: 'refused', delivery: 'squash', error: refused.slice(0, 300) },
+      });
+      return { error: refused, code: 409 };
+    }
     if (this.landing.has(taskId)) return { error: 'the task is already landing', code: 409 };
     this.landing.add(taskId);
     // the idle terminal goes first: a prompt typed into it mid-rebase would
@@ -3927,16 +4018,34 @@ export class Orchestrator implements OrchestratorApi {
       if (patched?.status === 'review') void this.reviewCompletedRun(taskId);
       return { error: `land held: ${res.detail}`, code: 409 };
     }
-    const patched = await this.storage.updateTask(taskId, { error: `publish failed: ${res.error}` });
+    // an auth/protected refusal holds the whole repo at once (alert + banner);
+    // nothing retries this land — a human publishes again once it is fixed
+    const kind = await pushHealth.report(repo, res.error, 'land');
+    const why = kind === 'auth' || kind === 'protected' ? `publish failed (push ${kind}, not retried): ${res.error}` : `publish failed: ${res.error}`;
+    const patched = await this.storage.updateTask(taskId, { error: why });
     if (patched) broadcast({ type: 'task.updated', task: patched });
     await this.storage.appendEvent({
       kind: 'task.publish',
       actor,
       taskId,
       repoId: repo.id,
-      data: { phase: 'failed', delivery: 'squash', error: res.error.slice(0, 300) },
+      data: { phase: 'failed', delivery: 'squash', kind, error: res.error.slice(0, 300) },
     });
-    return { error: res.error, code: 409 };
+    return { error: why, code: 409 };
+  }
+
+  /**
+   * docs/parallel.md § Integrated elsewhere: a task whose branch another open
+   * task's branch already contains (an integration task merged it) is shipped
+   * by THAT task — landing it alone would squash the same change twice.
+   */
+  private async integratedRefusal(task: Task, repo: Repo): Promise<string | null> {
+    const def = await defaultBranch(repo);
+    if (!def) return null;
+    const others = (await this.storage.listTasks({ repoId: repo.id })).filter((o) => o.branch && o.id !== task.id);
+    const host = await integratedIn(repo.path, task, others, def.ref).catch(() => null);
+    if (!host) return null;
+    return `this task's branch is already merged into ${host.branch} (task ${host.id.slice(0, 8)}, ${host.status}) — that task ships it; do not land it on its own`;
   }
 
   /**
@@ -4009,6 +4118,9 @@ export class Orchestrator implements OrchestratorApi {
         if (task.status !== 'review' && task.status !== 'done') return;
         const repo = await this.storage.getRepo(task.repoId);
         if (!repo || repo.delivery !== 'pr' || !fs.existsSync(task.workdir)) return;
+        // held: the banner and the alert already say why; another attempt per
+        // verify round is what made 14 silent rows (docs/parallel.md § Push health)
+        if (pushHealth.refusal(repo.id)) return;
         const row = await syncPr(this.storage, repo, task, task.workdir, ready);
         if (row !== task) broadcast({ type: 'task.updated', task: row });
       })

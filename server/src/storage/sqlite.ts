@@ -708,7 +708,7 @@ export class SqliteStorage implements Storage {
     del(id);
   }
 
-  async claimNextQueuedTask(actor: string): Promise<Task | null> {
+  async claimNextQueuedTask(actor: string, skipRepoIds: string[] = []): Promise<Task | null> {
     // .get() (not .run()) — RETURNING rows are discarded by .run().
     // Atomic only because the orchestrator is single-process; a Postgres
     // multi-writer setup would need FOR UPDATE SKIP LOCKED (Phase 7 note).
@@ -720,11 +720,11 @@ export class SqliteStorage implements Storage {
                          AND t.custom_queue_at IS NULL
                          AND t.queue_held_at IS NULL
                          AND ${FEATURE_CLAIM_GATE}
-                         AND ${REPO_EXCLUSIVE_GATE}
+                         AND ${REPO_EXCLUSIVE_GATE}${skipRepos(skipRepoIds.length)}
                        ORDER BY ${MANUAL_CLAIM_ORDER} LIMIT 1)
            RETURNING *`,
         )
-        .get(now());
+        .get(now(), ...skipRepoIds);
       if (!r) return null;
       const task = rowToTask(r);
       this.appendEventSync({
@@ -999,7 +999,7 @@ export class SqliteStorage implements Storage {
     return Number(r.n);
   }
 
-  async claimNextAgentChildTask(eligibleRunIds: string[], actor: string): Promise<Task | null> {
+  async claimNextAgentChildTask(eligibleRunIds: string[], actor: string, skipRepoIds: string[] = []): Promise<Task | null> {
     if (eligibleRunIds.length === 0) return null;
     const placeholders = eligibleRunIds.map(() => '?').join(', ');
     return this.inTxn((): Task | null => {
@@ -1011,11 +1011,11 @@ export class SqliteStorage implements Storage {
                          AND t.custom_queue_at IS NULL
                          AND t.queue_held_at IS NULL
                          AND ${FEATURE_OVERFLOW_GATE}
-                         AND ${REPO_EXCLUSIVE_GATE}
+                         AND ${REPO_EXCLUSIVE_GATE}${skipRepos(skipRepoIds.length)}
                        ORDER BY t.created_at LIMIT 1)
            RETURNING *`,
         )
-        .get(now(), ...eligibleRunIds);
+        .get(now(), ...eligibleRunIds, ...skipRepoIds);
       if (!r) return null;
       const task = rowToTask(r);
       this.appendEventSync({

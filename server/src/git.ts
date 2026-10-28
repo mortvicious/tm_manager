@@ -10,12 +10,18 @@ import type { Storage } from './storage/types.ts';
 
 const COMMIT_MODEL = 'claude-opus-5-5';
 
-export function run(cwd: string, cmd: string, args: string[], timeoutMs = 60_000): Promise<{ out: string; code: number }> {
+export function run(
+  cwd: string,
+  cmd: string,
+  args: string[],
+  timeoutMs = 60_000,
+  env?: Record<string, string>,
+): Promise<{ out: string; code: number }> {
   return new Promise((resolve) => {
     execFile(
       cmd,
       args,
-      { cwd, timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, env: cleanEnv() },
+      { cwd, timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, env: { ...cleanEnv(), ...(env ?? {}) } },
       (err, stdout, stderr) => {
         const rawCode = (err as { code?: unknown } | null)?.code;
         resolve({

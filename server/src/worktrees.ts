@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { WORKTREE_COPY_DEFAULTS, type Repo, type Task } from '@tm/shared';
 import { cleanEnv, run } from './git.ts';
+import { gitNetEnv, holdsRepo, localAhead, pushHealth } from './push-health.ts';
 import { parseCommandLine, resolveBin } from './commands/parse.ts';
 import type { Storage } from './storage/types.ts';
 
@@ -173,8 +174,27 @@ export async function prDeliveryRefusal(repo: Pick<Repo, 'path' | 'baseBranch'>)
 }
 
 export type EnsureResult =
-  | { ok: true; task: Task; cwd: string; created: boolean; note?: string; retargeted?: Retargeted }
+  | {
+      ok: true;
+      task: Task;
+      cwd: string;
+      created: boolean;
+      note?: string;
+      retargeted?: Retargeted;
+      /** a NEW fork whose local base branch had commits origin lacks (docs/parallel.md § Base branch) */
+      staleBase?: StaleBase;
+    }
   | { ok: false; error: string };
+
+/** The local `<base>` was ahead of `origin/<base>` when a worktree forked from the latter. */
+export interface StaleBase {
+  /** `origin/main` */
+  ref: string;
+  /** `main` */
+  branch: string;
+  /** commits on the local branch the fork does not have */
+  ahead: number;
+}
 
 /** A branch `retargetWorktree` moved: from which base onto which, carrying how many of the task's own commits. */
 export interface Retargeted {
@@ -264,12 +284,26 @@ async function ensureTree(storage: Storage, repo: Repo, task: Task, opts: { logP
     const hasBranch = (await run(repo.path, 'git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])).code === 0;
     let add: { out: string; code: number };
     let base: string | null = null;
+    let staleBase: StaleBase | undefined;
     if (hasBranch) {
       add = await run(repo.path, 'git', ['worktree', 'add', dir, branch], 120_000);
     } else {
+      // docs/parallel.md § Push health: no new fork while the server cannot
+      // push here — its work could not land, and the fetch below could not
+      // refresh the base it forks from
+      const held = pushHealth.refusal(repo.id);
+      if (held) return { ok: false, error: held };
       const def = await defaultBranch(repo);
       if (!def) return { ok: false, error: noBase(repo) };
-      await run(repo.path, 'git', ['fetch', def.remote, def.branch], 60_000);
+      const fetched = await run(repo.path, 'git', ['fetch', def.remote, def.branch], 60_000, await gitNetEnv(repo.path));
+      if (fetched.code !== 0) {
+        // offline still falls back to the last known origin/<base>; a refused
+        // key does not — that is the stale base the night of 2026-10-26 forked from
+        const kind = await pushHealth.report(repo, fetched.out, 'fetch');
+        if (holdsRepo(kind)) return { ok: false, error: pushHealth.refusal(repo.id) ?? `git fetch failed (${kind}): ${lastLines(fetched.out, 2)}` };
+      }
+      const ahead = await localAhead(repo.path, def);
+      if (ahead > 0) staleBase = { ref: def.ref, branch: def.branch, ahead };
       add = await run(repo.path, 'git', ['worktree', 'add', '--no-track', '-b', branch, dir, def.ref], 120_000);
       base = def.ref;
       if (add.code === 0) row = (await storage.updateTaskWorktree(task.id, { worktreeBase: def.branch })) ?? row;
@@ -285,11 +319,12 @@ async function ensureTree(storage: Storage, repo: Repo, task: Task, opts: { logP
       dir,
       branch,
       ...(base ? { base } : {}),
+      ...(staleBase ? { staleBase } : {}),
       cloned: setup.cloned,
       copied: setup.copied,
       setup: setup.setupRan,
     } });
-    return { ok: true, task: row, cwd: dir, created: !hasBranch, note: setup.note };
+    return { ok: true, task: row, cwd: dir, created: !hasBranch, note: setup.note, ...(staleBase ? { staleBase } : {}) };
   });
 }
 

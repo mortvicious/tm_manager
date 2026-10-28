@@ -1772,6 +1772,37 @@ button.badge.badge-link:hover {
   width: auto;
 }
 
+/* ---------- push health (PushHealthBanner, docs/parallel.md § Push health) ---------- */
+.push-health {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  margin: 0 0 var(--tm-space-3);
+}
+
+.push-health-row {
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-status-review);
+  border-radius: var(--tm-radius-md);
+  background: color-mix(in srgb, var(--tm-status-review) var(--tm-group-tint), var(--tm-bg-raised));
+  color: var(--tm-text);
+  font-size: var(--tm-text-sm);
+}
+
+.push-health-row.failing {
+  border-color: var(--tm-status-failed);
+  background: color-mix(in srgb, var(--tm-status-failed) var(--tm-group-tint), var(--tm-bg-raised));
+}
+
+.push-health-error {
+  display: block;
+  margin-top: var(--tm-space-1);
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ---------- the phone's offline banner (Layout.tsx OfflineBanner, docs/mobile.md § Server offline) ---------- */
 /* First child of .main, sticky, so a stale board scrolled far down still says
    it is stale. `top: 0` is .main's CONTENT edge, which in Glass already sits
@@ -5073,6 +5104,10 @@ button.explain-tap:active {
 
 .chip.chip-published {
   color: var(--tm-status-published);
+}
+
+.chip.chip-failed {
+  color: var(--tm-status-failed);
 }
 
 .explain {

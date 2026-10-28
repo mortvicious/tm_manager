@@ -2042,6 +2042,8 @@ export type AuditKind =
   | 'task.worktree'
   /** the server pushed the task branch / opened, updated or readied its PR (docs/parallel.md § The PR) */
   | 'task.pr'
+  /** a `pr` repo's push preflight changed (docs/parallel.md § Push health); data `{ ok, kind?, step?, error?, base?, localAhead? }` */
+  | 'repo.push-health'
   /** a worktree task's local squash + fast-forward land, or the reason it stopped (docs/parallel.md § Land) */
   | 'task.land'
   | 'task.landing'
@@ -2196,7 +2198,7 @@ export interface Anomaly {
  * The anomalies that are NOTIFIED (push kind `anomaly`, Telegram class
  * `anomaly`), one per task per type per episode — docs/push.md § What pings.
  */
-export type AnomalyAlertType = 'long-run' | 'cost-high' | 'stale-review' | 'task-budget' | 'day-budget';
+export type AnomalyAlertType = 'long-run' | 'cost-high' | 'stale-review' | 'task-budget' | 'day-budget' | 'push-failed';
 
 /** How every surface (push, Telegram) names an alert type — one record so they cannot drift. */
 export const ANOMALY_ALERT_LABELS: Record<AnomalyAlertType, { icon: string; label: string }> = {
@@ -2205,6 +2207,7 @@ export const ANOMALY_ALERT_LABELS: Record<AnomalyAlertType, { icon: string; labe
   'stale-review': { icon: '🕰', label: 'Stale review' },
   'task-budget': { icon: '🧯', label: 'Task budget reached' },
   'day-budget': { icon: '🧯', label: 'Day budget reached' },
+  'push-failed': { icon: '⛔', label: 'Push to origin fails' },
 };
 
 export interface AnomalyAlert {
@@ -2337,6 +2340,39 @@ export interface OrchestratorStatus {
    * memory, so a server predating it omits it.
    */
   shellWaits?: string[];
+  /**
+   * Push preflight of every `delivery: 'pr'` repo (docs/parallel.md § Push
+   * health): in memory, refreshed every 5 min and by every push the server
+   * makes. A failing repo starts no new task and lands nothing until it
+   * passes again. A server predating it omits it.
+   */
+  pushHealth?: RepoPushHealth[];
+}
+
+/** What a failed git network command says about its cause (`classifyGitFailure`). */
+export type GitFailureKind = 'auth' | 'protected' | 'race' | 'network' | 'other';
+
+/** One `pr` repo's push preflight — docs/parallel.md § Push health. */
+export interface RepoPushHealth {
+  repoId: string;
+  repoName: string;
+  /** ls-remote AND `push --dry-run` succeeded (or the last real push did) */
+  ok: boolean;
+  kind?: GitFailureKind;
+  /** the git output's last lines, when failing */
+  error?: string;
+  /** which step failed: the base lookup, the read, or the write */
+  step?: 'base' | 'ls-remote' | 'push' | 'fetch' | 'pr-sync' | 'land';
+  checkedAt: string;
+  /** when the current failure began (unset while ok) */
+  failingSince?: string;
+  /** `origin/<base>` */
+  base?: string;
+  /**
+   * Commits on the LOCAL base branch that `origin/<base>` lacks: new worktrees
+   * fork from origin, so they start without them (docs/parallel.md § Base branch).
+   */
+  localAhead?: number;
 }
 
 /**

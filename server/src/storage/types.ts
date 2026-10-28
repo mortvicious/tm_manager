@@ -470,7 +470,7 @@ export interface Storage {
    */
   moveTask(id: string, parentId: string | null, anchor: MoveAnchor, actor: string): Promise<Task[] | null>;
   /** Atomic queued→running claim (repo-less tasks are never claimed); null when queue is empty. */
-  claimNextQueuedTask(actor: string): Promise<Task | null>;
+  claimNextQueuedTask(actor: string, skipRepoIds?: string[]): Promise<Task | null>;
   /**
    * Custom queue (docs/queue.md). `peekCustomQueue` is the head the next
    * claim WOULD take (FIFO by `customQueueAt`, feature gate applied), skipping
@@ -512,7 +512,7 @@ export interface Storage {
   countQueuedAgentTasks(): Promise<number>;
   /** Overflow claim (review R1): claim a queued task created by one of the
    *  given runs even when the concurrency cap is reached. */
-  claimNextAgentChildTask(eligibleRunIds: string[], actor: string): Promise<Task | null>;
+  claimNextAgentChildTask(eligibleRunIds: string[], actor: string, skipRepoIds?: string[]): Promise<Task | null>;
   createRun(r: NewRun): Promise<Run>;
   /**
    * Writing `stats` also rewrites `tm_runs.cost_usd` and the roll-up of the

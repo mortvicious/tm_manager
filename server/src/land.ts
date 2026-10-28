@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { Repo, Task } from '@tm/shared';
 import { run, type ShippedCheck } from './git.ts';
 import { commitLeftovers, defaultBranch, type DefaultBranch } from './worktrees.ts';
+import { classifyGitFailure, gitNetEnv, holdsRepo, pushHealth } from './push-health.ts';
 import type { Storage } from './storage/types.ts';
 
 // PR delivery (docs/parallel.md § The PR / § Land). The PR is a RECORD, not
@@ -60,6 +61,9 @@ export async function landedCheck(repo: Repo, task: Task): Promise<ShippedCheck>
   return { ok: true, reason: null, sha: landed[0][0], ref: def.ref, commits: landed.length, attribution: 'trailer' };
 }
 
+/** `Task.error` of a push the server could not make — cleared by the next push that works. */
+export const PUSH_FAILED_PREFIX = 'push to origin failed';
+
 /** `https://github.com/o/r/pull/12` → 12 */
 function prNumberOf(text: string): { url: string; number: number } | null {
   const m = text.match(/https:\/\/\S+\/pull\/(\d+)/);
@@ -92,12 +96,19 @@ export async function syncPr(storage: Storage, repo: Repo, task: Task, cwd: stri
   if (!def) return task;
   const ahead = await run(cwd, 'git', ['rev-list', '--count', `${def.ref}..HEAD`]);
   if (ahead.code !== 0 || Number(ahead.out.trim()) === 0) return task; // nothing of its own committed yet
-  const push = await run(cwd, 'git', ['push', '--force-with-lease', def.remote, `HEAD:refs/heads/${task.branch}`], GH_TIMEOUT);
+  const push = await run(cwd, 'git', ['push', '--force-with-lease', def.remote, `HEAD:refs/heads/${task.branch}`], GH_TIMEOUT, await gitNetEnv(repo.path));
   if (push.code !== 0) {
-    await event(storage, 'task.pr', task, { action: 'push-failed', error: tail(push.out) });
-    return task;
+    // docs/parallel.md § Push health: a failure only a human can fix (auth,
+    // branch protection) holds the whole repo and says so on the task — no
+    // more silent audit rows while the queue keeps forking from a stale base
+    const kind = await pushHealth.report(repo, push.out, 'pr-sync');
+    await event(storage, 'task.pr', task, { action: 'push-failed', kind, error: tail(push.out) });
+    if (!holdsRepo(kind)) return task;
+    return (await storage.updateTask(task.id, { error: `${PUSH_FAILED_PREFIX} (${kind}): ${tail(push.out)} — the PR branch was not updated` })) ?? task;
   }
+  await pushHealth.reportOk(repo);
   let row = task;
+  if (task.error?.startsWith(PUSH_FAILED_PREFIX)) row = (await storage.updateTask(task.id, { error: null })) ?? row;
   if (!task.prNumber) {
     const create = await run(
       cwd,
@@ -109,7 +120,7 @@ export async function syncPr(storage: Storage, repo: Repo, task: Task, cwd: stri
     const pr = prNumberOf(create.out);
     if (!pr) {
       await event(storage, 'task.pr', task, { action: 'create-failed', error: tail(create.out) });
-      return task;
+      return row;
     }
     row = (await storage.updateTaskWorktree(task.id, { prNumber: pr.number, prUrl: pr.url, prState: 'draft' })) ?? row;
     await event(storage, 'task.pr', task, { action: 'opened', number: pr.number, url: pr.url, draft: true });
@@ -198,9 +209,10 @@ export async function landWorktree(
   const leftovers = await commitLeftovers(cwd, task.id, 'WIP: uncommitted work at land time');
   if (leftovers.error) return { kind: 'failed', error: `could not commit the leftovers: ${leftovers.error}` };
   const judged = await treeOf(cwd);
+  const net = await gitNetEnv(repo.path);
   let checked = false;
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const fetched = await run(cwd, 'git', ['fetch', def.remote, def.branch], GH_TIMEOUT);
+    const fetched = await run(cwd, 'git', ['fetch', def.remote, def.branch], GH_TIMEOUT, net);
     if (fetched.code !== 0) return { kind: 'failed', error: `git fetch failed: ${tail(fetched.out)}` };
     const rebased = await rebaseOnto(cwd, def);
     if (rebased) return rebased;
@@ -212,19 +224,45 @@ export async function landWorktree(
       const red = await verify(cwd);
       if (red) return { kind: 'red', sha: squashed.sha, detail: red, tree };
     }
-    const branchPush = await run(cwd, 'git', ['push', '--force-with-lease', def.remote, `HEAD:refs/heads/${task.branch}`], GH_TIMEOUT);
+    const branchPush = await run(cwd, 'git', ['push', '--force-with-lease', def.remote, `HEAD:refs/heads/${task.branch}`], GH_TIMEOUT, net);
     if (branchPush.code !== 0) return { kind: 'failed', error: `could not update the PR branch: ${tail(branchPush.out)}` };
-    const land = await run(cwd, 'git', ['push', def.remote, `HEAD:refs/heads/${def.branch}`], GH_TIMEOUT);
+    const land = await run(cwd, 'git', ['push', def.remote, `HEAD:refs/heads/${def.branch}`], GH_TIMEOUT, net);
     if (land.code === 0) {
       await event(storage, 'task.land', task, { phase: 'pushed', sha: squashed.sha, onto: def.ref, attempt, checked });
       return { kind: 'landed', sha: squashed.sha, ref: def.ref, checked, attempts: attempt };
     }
-    if (!/\b(rejected|non-fast-forward|fetch first)\b/i.test(land.out)) {
+    // only a real race (someone landed first) is worth another round; a
+    // protected branch's `[remote rejected]` or a refused key never changes
+    if (classifyGitFailure(land.out) !== 'race') {
       return { kind: 'failed', error: `push to ${def.branch} refused: ${tail(land.out)}` };
     }
     await event(storage, 'task.land', task, { phase: 'raced', attempt, error: tail(land.out, 2) });
   }
   return { kind: 'failed', error: `${def.ref} kept moving — three fast-forward pushes were rejected; publish again` };
+}
+
+/**
+ * Is this task's branch already contained in ANOTHER open task's branch
+ * (docs/parallel.md § Integrated elsewhere)? An integration task that merged
+ * a pile of finished branches by hand ships them — landing one of them on its
+ * own again would squash the same change twice and conflict with the
+ * integration. Returns the first such task, else null. An `other` whose tip
+ * equals ours has nothing of its own and does not count, and neither does a
+ * task whose tip is already on `baseRef` (no commit of its own).
+ */
+export async function integratedIn(repoPath: string, task: Task, others: Task[], baseRef: string): Promise<Task | null> {
+  if (!task.branch) return null;
+  const tip = await run(repoPath, 'git', ['rev-parse', '--verify', '--quiet', `refs/heads/${task.branch}`]);
+  if (tip.code !== 0 || !tip.out.trim()) return null;
+  // no commit of its own yet (the fork point is an ancestor of every branch)
+  if ((await run(repoPath, 'git', ['merge-base', '--is-ancestor', tip.out.trim(), baseRef])).code === 0) return null;
+  for (const o of others) {
+    if (o.id === task.id || !o.branch || o.status === 'published' || o.status === 'cancelled') continue;
+    const theirs = await run(repoPath, 'git', ['rev-parse', '--verify', '--quiet', `refs/heads/${o.branch}`]);
+    if (theirs.code !== 0 || theirs.out.trim() === tip.out.trim()) continue;
+    if ((await run(repoPath, 'git', ['merge-base', '--is-ancestor', tip.out.trim(), theirs.out.trim()])).code === 0) return o;
+  }
+  return null;
 }
 
 async function treeOf(cwd: string): Promise<string> {

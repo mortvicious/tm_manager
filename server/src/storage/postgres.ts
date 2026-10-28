@@ -110,6 +110,11 @@ import type {
 
 /** Rewrites `?` placeholders to `$1..$n`. Constraint: no `?` inside SQL string
  *  literals — all SQL here is in-house and follows that rule. */
+/** `skipRepos` (queue-sql.ts) for the claims that number their own `$n`: `n` ids from `$first` on. */
+function pgSkipRepos(n: number, first: number): string {
+  return n > 0 ? ` AND t.repo_id NOT IN (${Array.from({ length: n }, (_, i) => `$${first + i}`).join(', ')})` : '';
+}
+
 function toPg(sql: string): string {
   let i = 0;
   return sql.replace(/\?/g, () => `$${++i}`);
@@ -715,7 +720,7 @@ export class PostgresStorage implements Storage {
     });
   }
 
-  async claimNextQueuedTask(actor: string): Promise<Task | null> {
+  async claimNextQueuedTask(actor: string, skipRepoIds: string[] = []): Promise<Task | null> {
     // Single-process orchestrator; multi-writer would need FOR UPDATE SKIP LOCKED.
     return this.tx(async (c, sink) => {
       const r = await c.query(
@@ -724,10 +729,10 @@ export class PostgresStorage implements Storage {
                        AND t.custom_queue_at IS NULL
                        AND t.queue_held_at IS NULL
                        AND ${FEATURE_CLAIM_GATE}
-                       AND ${REPO_EXCLUSIVE_GATE}
+                       AND ${REPO_EXCLUSIVE_GATE}${pgSkipRepos(skipRepoIds.length, 2)}
                      ORDER BY ${MANUAL_CLAIM_ORDER} LIMIT 1)
          RETURNING *`,
-        [now()],
+        [now(), ...skipRepoIds],
       );
       if (!r.rows[0]) return null;
       const task = rowToTask(r.rows[0]);
@@ -984,7 +989,7 @@ export class PostgresStorage implements Storage {
     return Number(r[0].n);
   }
 
-  async claimNextAgentChildTask(eligibleRunIds: string[], actor: string): Promise<Task | null> {
+  async claimNextAgentChildTask(eligibleRunIds: string[], actor: string, skipRepoIds: string[] = []): Promise<Task | null> {
     if (eligibleRunIds.length === 0) return null;
     const placeholders = eligibleRunIds.map((_, i) => `$${i + 2}`).join(', ');
     return this.tx(async (c, sink) => {
@@ -995,10 +1000,10 @@ export class PostgresStorage implements Storage {
                        AND t.custom_queue_at IS NULL
                        AND t.queue_held_at IS NULL
                        AND ${FEATURE_OVERFLOW_GATE}
-                       AND ${REPO_EXCLUSIVE_GATE}
+                       AND ${REPO_EXCLUSIVE_GATE}${pgSkipRepos(skipRepoIds.length, eligibleRunIds.length + 2)}
                      ORDER BY t.created_at LIMIT 1)
          RETURNING *`,
-        [now(), ...eligibleRunIds],
+        [now(), ...eligibleRunIds, ...skipRepoIds],
       );
       if (!r.rows[0]) return null;
       const task = rowToTask(r.rows[0]);

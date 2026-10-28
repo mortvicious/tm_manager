@@ -147,7 +147,15 @@ land is moved by the land itself.
 **What it does not do**: commits that exist only on the human's LOCAL base
 branch (not pushed) are invisible to a fork from `origin/<base>`; a branch an
 agent moved onto the local tip carries them, and its squash will include them.
-Push the base branch first (or accept that).
+Push the base branch first (or accept that). Since 2026-10-28 this is no longer
+silent: the push preflight (§ Push health) counts those commits
+(`RepoPushHealth.localAhead`, against the sha `ls-remote` just read) and the
+board shows an amber line per repo ("local main is 15 commits ahead of
+origin/main — new worktrees fork without them"); a NEW fork from such a base
+writes `staleBase {ref, branch, ahead}` on its `task.worktree created` row and
+its first turn gets a note saying the commits are not in its tree. It warns,
+it does not refuse: refusing would stop all pr work in the repo until someone
+pushes.
 
 ## The gate
 
@@ -181,8 +189,12 @@ from `landIfClean`: once the branch has a commit of its own it is pushed
 (`--force-with-lease`) and a **draft** PR opened (`gh pr create --draft`;
 `tm_tasks.pr_number/pr_url/pr_state`); later rounds re-push; once the checks
 are green and the review clean (`landingReason`) it is marked ready. Never
-fatal — a failure is a `task.pr` audit row. A publish of a task that never got
-a PR opens it first. The PR is where a human can read the change on GitHub; it
+fatal to the task — but no longer silent: a failed push is a `task.pr
+push-failed` row with its `kind` (`classifyGitFailure`), and an auth or
+branch-protection failure also writes `Task.error` (`push to origin failed
+(auth): …`, cleared by the next push that works) and holds the repo (§ Push
+health), after which no further sync is attempted until it passes. A publish
+of a task that never got a PR opens it first. The PR is where a human can read the change on GitHub; it
 is never merged through GitHub.
 
 Surfaces: a branch/PR chip on board rows and in the task panel (a real link),
@@ -239,7 +251,76 @@ view` (6 × 5 s), and only then is the remote branch deleted (deleting it first
 would make GitHub read the PR as closed), with the worktree and local branch.
 
 Branch protection that refuses a direct push to the default branch makes the
-land fail with the push's reason; such a repo should stay `direct`.
+land fail with the push's reason; such a repo should stay `direct`. Only a
+real race (`[rejected]`, non-fast-forward, fetch first) is retried — a
+`[remote rejected]` from a protected branch or a refused key fails at once,
+with `publish failed (push auth|protected, not retried): …` on the row, and
+holds the repo.
+
+## Push health
+
+Added 2026-10-28 (task 77ea502c) after the night of 2026-10-26/27: the Mac had
+rebooted, the ssh key's passphrase was in neither the agent nor the keychain,
+and every push the server made to neko-frontend failed with `Permission denied
+(publickey)` — 14 `task.pr push-failed` rows, nothing on the board, while 13
+finished tasks piled up on their branches and new worktrees kept forking from
+a stale `origin/main`.
+
+`server/src/push-health.ts`, one in-memory store per process:
+
+- **The preflight** (`probePush`), for every `delivery: 'pr'` repo at boot
+  (end of `recoverOnBoot`) and then from a 60 s timer — a failing repo every
+  pass, a healthy one every 5 min: `git ls-remote --heads origin <base>` (can
+  we read) and `git push --dry-run --porcelain origin origin/<base>:refs/heads/tm-push-probe`
+  (can we write — nothing is sent, but the remote checks the credentials for a
+  push), then `localAhead` (§ Base branch).
+- **Real pushes report too**: `syncPr`, the land (`publishWorktree`'s failed
+  branch) and the fork's `git fetch` (`ensureTree`) classify their failure
+  (`classifyGitFailure`: network → protected → auth → race → other; network is
+  read first because git adds "Could not read from remote repository" to an
+  unresolvable host as well). `auth` and `protected` hold the repo at once,
+  without waiting for the probe; a push that works clears a hold.
+- **While a repo is held**: the global and overflow claims skip it
+  (`claimNextQueuedTask` / `claimNextAgentChildTask` take `skipRepoIds`,
+  the `skipRepos` fragment; the custom-queue pump adds it to its skip set), a
+  NEW fork refuses (`ensureTree`, so a human's Run now fails with the reason
+  instead of forking from a stale base), `syncTaskPr` does not push, and
+  `publishWorktree` refuses with `publish refused: push to origin fails …` on
+  the row. Work already in a worktree keeps running; it just cannot land.
+- **Loud**: the first failure of an episode raises ONE `push-failed` anomaly
+  alert (Telegram `notify.anomaly`, Web Push kind `anomaly`; key
+  `push-failed:<repo>:<failingSince>`), every change is a `repo.push-health`
+  audit row, and `OrchestratorStatus.pushHealth` drives the board's banner
+  (`PushHealthBanner`: red per failing repo with git's own words, amber per
+  repo whose local base is ahead). A task whose land or PR push failed gets a
+  red `not landed` chip on its board row (the error is the chip's
+  explanation).
+- **No prompts**: every network git call the server makes runs with
+  `GIT_TERMINAL_PROMPT=0` and, unless the repo sets `core.sshCommand`,
+  `GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20'` (`gitNetEnv`)
+  — the server may run in a terminal, where ssh would otherwise ask for a
+  passphrase on that TTY.
+
+The server's git credentials are the user's: it runs from a terminal as
+`faigomarov` (`npm start` in Warp), with the launchd ssh-agent socket and
+`~/.ssh/config` `UseKeychain yes`. The durable fix of 2026-10-28 is the key's
+passphrase stored in the login keychain (`ssh-add --apple-use-keychain
+~/.ssh/id_ed25519`): ssh then unlocks the key itself on every connection, with
+no agent identity needed, so a reboot no longer breaks it (proved with
+`IdentityAgent=none`: denied with `UseKeychain=no`, authenticated with `yes`).
+The preflight is what catches it if that ever regresses.
+
+## Integrated elsewhere
+
+A task whose branch is already contained in ANOTHER open task's branch (an
+integration task merged a pile of finished branches by hand, as 6ac7f2bc did
+for 13 on 2026-10-28) is shipped by that task: `publishWorktree` refuses it
+(`integratedIn` in `land.ts`: its tip is an ancestor of the other branch's
+tip, the other is not published/cancelled and has commits beyond it, and its
+own tip is not already on `origin/<base>`), with `publish refused: this task's
+branch is already merged into tm/… (task …) — that task ships it` on the row.
+Landing it alone would squash the same change a second time and conflict with
+the integration.
 
 ## Conflicts
 

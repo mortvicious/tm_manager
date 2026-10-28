@@ -17,6 +17,7 @@ import {
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
+import { PushHealthBanner } from '../components/PushHealthBanner.tsx';
 import { toastError, toastUndo } from '../toast.ts';
 import {
   absorbTyped,
@@ -81,6 +82,9 @@ const ACTIVE: TaskStatus[] = ['running', 'waiting', 'review'];
 const DRAFT_LIMIT = 7;
 /** "Recent" is a shortcut to whatever was touched last, whatever its status. */
 const RECENT_LIMIT = 10;
+
+/** `Task.error` of a land / PR push the server could not make (orchestrator publishWorktree, land.ts syncPr). */
+const LAND_ERROR = /^(publish (refused|failed)|push to origin failed)/;
 
 /** Phones: how many tags a row keeps, and which win (docs/mobile.md § Rows). */
 const MOBILE_CHIPS = 2;
@@ -1135,7 +1139,22 @@ export function BoardPage({
     // that will land without a human says so; a landing that happened says
     // `auto-landed` instead
     const landing = effectiveLanding(t, repos.find((r) => r.id === t.repoId));
-    if (t.autoLandedAt && (t.status === 'done' || t.status === 'published')) {
+    // a land/PR push the server could not make (docs/parallel.md § Push
+    // health) — on the row, not only in the panel
+    if ((t.status === 'review' || t.status === 'done') && t.error && LAND_ERROR.test(t.error)) {
+      all.push([
+        'landerror',
+        <Explainable
+          key="landerror"
+          className="chip chip-failed"
+          explain={{ title: 'not landed', what: t.error }}
+          off={selecting}
+        >
+          not landed
+        </Explainable>,
+      ]);
+    }
+    if (t.autoLandedAt &&(t.status === 'done' || t.status === 'published')) {
       all.push([
         'autolanded',
         <Explainable
@@ -1490,6 +1509,7 @@ export function BoardPage({
           {chips}
         </>
       )}
+      <PushHealthBanner repoId={filterRepoId} />
       {selecting && (
         <BulkBar
           ids={selected}
