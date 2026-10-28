@@ -6,7 +6,7 @@ A **workspace** is a named, scoped view over a set of repos. You use one to look
 - A repo may be in any number of workspaces. A repo is in at most one space.
 - Agents have no API for it, and nothing in a worker's prompt, environment or claim order depends on it.
 
-This feature has four phases. **Phase 1** adds the data, the REST API, the live events and the SPA store slice. **Phase 2** adds the editor on the Repos page (§ SPA › Managing them). It also adds the switcher (§ Current workspace). **Phase 3** scopes the Queue page and the Dashboard (§ Scoped pages). The rest comes in a later phase and adds its own sections here.
+This feature has four phases. **Phase 1** adds the data, the REST API, the live events and the SPA store slice. **Phase 2** adds the editor on the Repos page (§ SPA › Managing them). It also adds the switcher (§ Current workspace). **Phase 3** scopes the Queue page, the Dashboard, the Inbox and the Board (§ Scoped pages). The rest comes in a later phase and adds its own sections here.
 
 ## Model
 
@@ -171,6 +171,12 @@ Phase 3 makes pages read `useWorkspace()`. Under All each page behaves exactly a
 - **The Inbox page** title reads `Inbox · <workspace name>` when scoped. When decisions wait outside the scope it adds a muted `n more in other workspaces` button that switches to All. `n` is the difference of the two `decisions()` counts, so stale drafts are not counted, as on every badge.
 - **`QuestionChip`** (desktop ❓) counts only pending questions whose asking task is in scope. A question carries no repo, so it is looked up by `taskId` in the store, and one whose task is not loaded still counts. **`QuestionModal` stays global by design**: an agent blocked on a question is blocked whatever the user is looking at.
 
+### Board (`web/src/pages/Board.tsx`)
+
+- **The scope is applied before the search.** `filtered` keeps `inScope(t) && match(t)`, where `match` is `compileQuery` over the search tokens. Every section built from `filtered` (Active, Drafts, the groupings, Recent, Hidden) follows the workspace, and a repo-less task stays. Group membership, the search context and the drag order still read all tasks, so a group never shrinks because some members are out of scope.
+- **It is shown as a view chip.** While scoped, `viewChips` carries `workspace: <name>`. Clearing it calls `setWorkspace(null)`, which goes to All. The scope comes from `?ws` and is never written into `prefs.tokens` or the `tm.board` localStorage state, so **Reset filters** leaves it alone and a reload keeps the saved board exactly as it was.
+- **The new-task form defaults to a repo in the workspace.** The board's one-repo filter (`filterRepoId`) wins first. In a workspace the next default is the repo of the last task created from THAT workspace, read from `tm.newTask.repo.<workspaceId>` (written where the global key used to be), else the workspace's first known repo. A remembered repo that has since left the workspace is ignored. The global `tm.newTask.repo` is read and written only under All.
+
 Verified (phase 3) with Playwright against the live front door. A scratch build was served from `ctx.route`, `GET /api/workspaces` was faked (the live API predates migration 49), and every non-GET was aborted. `/api/stats/overview` was proxied, and its `perRepo` was trimmed to the requested `repoIds`, because the live API ignores the parameter. Nine finished tasks across three repos were rewritten to `queued`: six global and three custom. The checks:
 
 - **Queue order.** In `tm` and `neko` scope, the Queue and Global queue rows were exact subsequences of the All order. Active sessions split 1 + 1 over the two live runs, and each section's `n more` added up to the All count.
@@ -190,6 +196,8 @@ Verified (phase 3, Inbox) the same way: Playwright, a scratch build and a frozen
 | Empty | nothing waiting | hidden | 1 (the unloaded task's) | 13 more |
 
 Each count equals the shared `buildInbox` run on the snapshot. Pressing the hint drops `?ws` and restores the All counts exactly. There were no page errors, and the phone header does not overflow. A Glass issue that predates this change: at 1400 px the header's pill row wraps and covers the page title, the hint included. It is reachable at 1700 px and wider.
+
+Verified (phase 3, Board) with Playwright at 1400 px and 393 px. A scratch build was served from `ctx.route`, `GET /api/workspaces` was faked with Neko = [neko-vite-new, neko-nest], and every non-GET was aborted. Under All the board rendered rows from other repos (15 on desktop, 11 on phone). On `?ws=neko` it rendered 29 and 22 rows, none outside the workspace, with the `workspace: Neko` chip. With the global key set to task-manager, the new-task default was neko-vite-new (the first repo). With `tm.newTask.repo.ws-neko` = neko-nest it was neko-nest. With that key set to task-manager (no longer in the workspace) it went back to neko-vite-new. Clearing the chip dropped `?ws`, restored the All rows, and the default became the global task-manager. `tm.board` was byte-identical before, across reloads and after. There were no page errors.
 
 ## Verification (phase 1)
 

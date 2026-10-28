@@ -17,6 +17,7 @@ import {
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
+import { useWorkspace } from '../workspace.ts';
 import { PushHealthBanner } from '../components/PushHealthBanner.tsx';
 import { toastError, toastUndo } from '../toast.ts';
 import {
@@ -121,9 +122,11 @@ const START_MODES: { id: StartMode; label: string; hint: string; title: string }
 
 /** The repo the last task filed from this browser went to (docs/mobile.md § New task). */
 const LAST_REPO_KEY = 'tm.newTask.repo';
-const loadLastRepo = (): string => {
+/** the same, per workspace (docs/workspaces.md § Board); the global key is All's */
+const lastRepoKey = (workspaceId: string | null) => (workspaceId ? `${LAST_REPO_KEY}.${workspaceId}` : LAST_REPO_KEY);
+const loadLastRepo = (workspaceId: string | null): string => {
   try {
-    return localStorage.getItem(LAST_REPO_KEY) ?? '';
+    return localStorage.getItem(lastRepoKey(workspaceId)) ?? '';
   } catch {
     return '';
   }
@@ -140,6 +143,7 @@ function NewTaskForm({
   filterRepoId?: string | null;
 }) {
   const { repos, settings, commands } = useApp();
+  const { workspace, inScopeRepo } = useWorkspace();
   const presets = useTaskPresets();
   const templates = settings?.['task.templates'] ?? [];
   // the content template picked (docs/inbox.md § Templates) — a form fill, never a link
@@ -185,18 +189,26 @@ function NewTaskForm({
 
   // An open form with no repo starts from the board's one-repo filter, else
   // the repo the last task went to — re-picking it every time was the phone's
-  // slowest step. Re-run when the repos arrive (a click can beat the first
-  // load); a repo picked in this kept draft, "none" included, is left alone.
+  // slowest step. In a workspace that memory is the workspace's own (a repo
+  // since dropped from it is ignored), else its first repo. Re-run when the
+  // repos arrive (a click can beat the first load); a repo picked in this
+  // kept draft, "none" included, is left alone.
   const repoTouched = useRef(false);
+  const workspaceId = workspace?.id ?? null;
   useEffect(() => {
     if (!open || repoId || repoTouched.current) return;
     const known = (id: string | null) => !!id && repos.some((r) => r.id === id);
-    const last = loadLastRepo();
-    const next = known(filterRepoId) ? filterRepoId! : known(last) ? last : '';
+    const last = loadLastRepo(workspaceId);
+    const fallback = workspace?.repoIds.find((id) => known(id)) ?? '';
+    const next = known(filterRepoId)
+      ? filterRepoId!
+      : known(last) && inScopeRepo(last)
+        ? last
+        : fallback;
     if (next) pickRepo(next);
     // pickRepo is a fresh closure every render; these are what decide the default
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, repoId, repos, filterRepoId]);
+  }, [open, repoId, repos, filterRepoId, workspace]);
   const openForm = () => setOpen(true);
 
   // Phones: a compact toolbar button, and the form opens as a full-screen
@@ -283,7 +295,7 @@ function NewTaskForm({
     repoTouched.current = false;
     if (repoId) {
       try {
-        localStorage.setItem(LAST_REPO_KEY, repoId);
+        localStorage.setItem(lastRepoKey(workspaceId), repoId);
       } catch {
         /* private mode: the default just stays the filter's */
       }
@@ -741,6 +753,7 @@ export function BoardPage({
   onOpenTerminal: (runId: string) => void;
 }) {
   const { tasks, repos, runs, settings, refresh, dispatches, questions, features, loaded, connected } = useApp();
+  const { workspace, inScope, setWorkspace } = useWorkspace();
   // default ON so the board is coloured before /api/config answers, matching
   // DEFAULT_SETTINGS['board.groupColors']
   const groupColors = settings?.['board.groupColors'] ?? true;
@@ -855,8 +868,10 @@ export function BoardPage({
   const filterRepoId = oneRepo && repoTokens[0].value !== 'none' ? repoTokens[0].value : null;
   const filtered = useMemo(() => {
     const match = compileQuery(tokens, searchText, searchCtx, haystacks);
-    return tasks.filter(match);
-  }, [tasks, tokens, searchText, searchCtx, haystacks]);
+    // the workspace scope (docs/workspaces.md § Board) comes from the URL,
+    // never from prefs.tokens, so it is not persisted in tm.board
+    return tasks.filter((t) => inScope(t) && match(t));
+  }, [tasks, tokens, searchText, searchCtx, haystacks, inScope]);
   const setSearch = (next: { tokens: SearchToken[]; text: string }) => setPrefs((p) => ({ ...p, ...next }));
   const openSearch = useCallback(() => setSearchOpen(true), []);
   // closing folds typed `key:value` words into chips — the committed form
@@ -1441,6 +1456,9 @@ export function BoardPage({
   // What the closed search narrows by stays on screen as chips; a grouping
   // other than the default is one too, since its control is behind the search.
   const viewChips: { id: string; label: string; clear: () => void }[] = [];
+  if (workspace) {
+    viewChips.push({ id: 'workspace', label: `workspace: ${workspace.name}`, clear: () => setWorkspace(null) });
+  }
   if (groupBy !== 'status') {
     viewChips.push({
       id: 'groupBy',
