@@ -775,3 +775,8 @@ concise markdown, grouped by completion date, Russian or English.
 - [x] **Web**: the api methods and the live `workspaces` slice in `state.tsx`.
 - **Verified**: `app.inject` on a DB copy (migration, seed, re-boot, CRUD, 403/409/400), typecheck and build.
 - **Not exercised**: Postgres live, and any UI (phase 2).
+
+## Workspaces phase 2: the Repos page editor (2026-10-28, `docs/workspaces.md` § Managing them)
+
+- [x] `web/src/components/WorkspacesSection.tsx` at `/repos#workspaces` lets you create workspaces (with a slug preview), rename them inline (the slug stays), edit the slug behind an explicit action with client-side validation, recolour them with the GroupHead swatches, pick repos with checkboxes (at least one), reorder them with ↑/↓ and delete them behind an inline confirm. Server errors show inline. Nothing in it is an overlay; `.ws-*` styles in `theme.css` use tokens only.
+- [x] Verified with Playwright against a harness (the real routes and events WS over a DB copy, plus a scratch build). Two desktop tabs, where the second followed every change live, and a 393 px phone in Classic and Glass. `npm run typecheck` and `npm run build` are clean.

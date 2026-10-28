@@ -6,7 +6,7 @@ A **workspace** is a named, scoped view over a set of repos. You use one to look
 - A repo may be in any number of workspaces. A repo is in at most one space.
 - Agents have no API for it, and nothing in a worker's prompt, environment or claim order depends on it.
 
-This feature has four phases. **Phase 1 (this document)** adds the data, the REST API, the live events and the SPA store slice. The switcher, scoped pages and the rest come in later phases and add their own sections here.
+This feature has four phases. **Phase 1** adds the data, the REST API, the live events and the SPA store slice. **Phase 2** adds the editor on the Repos page (§ SPA › Managing them). The switcher, scoped pages and the rest come in later phases and add their own sections here.
 
 ## Model
 
@@ -90,6 +90,23 @@ A present but EMPTY list (`repoIds=`) matches nothing and returns zeros. It neve
 
 - `web/src/api.ts` has `listWorkspaces`, `createWorkspace`, `updateWorkspace`, `deleteWorkspace` and `reorderWorkspaces`.
 - `web/src/state.tsx` holds a `workspaces` slice. It loads with the other initial lists and is kept live by the two events: upsert, then re-sort by `sortOrder`, then name. A repo deleted while the page is open stays in a workspace's `repoIds` until the next load, so consumers should intersect with `repos`.
+
+### Managing them (Repos page, `#workspaces`)
+
+`web/src/components/WorkspacesSection.tsx` sits under the repos table on `/repos`. `/repos#workspaces` scrolls to it, because the router does not scroll to a hash and `.main` is the scroller. It reads the store slice, and every write only has to succeed: the `workspace.updated`/`workspace.deleted` broadcast redraws this tab and every other one. The one optimistic bit is the repo checkboxes, which show the set just sent until the PATCH settles.
+
+- **New workspace**: name, colour and repo checkboxes. The slug is previewed as `uniqueWorkspaceSlug(name, taken)`, which is `slugify` plus the suffix the server adds on a clash. No slug is sent, so the server derives exactly that preview. Create stays disabled until a name and at least one repo are set.
+- **Per row**: the left rail carries the colour. The row has:
+  - **Inline rename** (the name or the pencil; Enter saves, Escape abandons). It sends only `name`, so the slug stays.
+  - **Edit slug**, a separate action because old links stop working. It is checked as you type against `WORKSPACE_SLUG_RE` and the reserved `all`, and Save is disabled while that fails.
+  - **The GroupHead swatches**: `--tm-group-1..GROUP_COLOR_COUNT`, plus `auto` = null.
+  - **Repo checkboxes**. A repo may be in several workspaces. The last ticked repo is disabled, because a workspace needs one.
+  - **↑/↓** buttons, which call `reorderWorkspaces` with the swapped full list.
+  - **Delete**, behind an inline confirm (`Delete <name>?` / Keep) rather than `confirm()`.
+- **Errors**: server refusals (409 duplicate slug, 400) show inline under the row or the form, with the server's message.
+- **Phone**: nothing here is an overlay, so there is no `<Sheet>`. The lists wrap, and `.app.mobile` enlarges the swatches and the repo chips. Styles are `.ws-*` in `theme.css`, using tokens only. Glass needs no rule of its own, because the panels pick up its remapped tokens.
+
+Verified (phase 2) against a harness: the real `registerWorkspaceRoutes` and `/ws/events` over a copy of the live DB, serving a scratch build, with other GETs proxied to the live API. The live API predated migration 49 and could not be restarted. Playwright drove two desktop tabs, and tab B followed tab A live through each step: create (preview `/zz-test-ws`), rename (slug kept), a bad slug and the reserved `all` refused client-side, a 409 on `neko` shown inline, a slug change, recolour, unticking a repo down to the last (then disabled), move up, and a delete from a 393 px phone context. It ran at 393 px in Classic and Glass with no horizontal overflow.
 
 ## Verification (phase 1)
 

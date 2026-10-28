@@ -5,6 +5,8 @@ import { LANDING_HINT } from '../components/LandingPicker.tsx';
 import { useApp } from '../state.tsx';
 import { RepoCommandsMenu, RepoCommandsPanel } from '../components/Commands.tsx';
 import { IconAnalyze, IconPencil } from '../components/Icons.tsx';
+import { WorkspacesSection } from '../components/WorkspacesSection.tsx';
+import { useLocation } from 'react-router-dom';
 
 /** Home-relative path — the prefix is the same on every row, so it is noise. */
 const shortPath = (p: string) => p.replace(/^\/Users\/[^/]+/, '~');
@@ -501,6 +503,12 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
   const [previewUrl, setPreviewUrl] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState<string | null>(null);
+  // `/repos#workspaces` (the switcher's "Edit workspaces") lands on the section:
+  // the router does not scroll to a hash, and `.main` is the scroller.
+  const { hash } = useLocation();
+  useEffect(() => {
+    if (hash === '#workspaces') document.getElementById('workspaces')?.scrollIntoView({ block: 'start' });
+  }, [hash]);
 
   const add = async () => {
     setErr(null);
@@ -676,6 +684,8 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
           </table>
         </div>
       )}
+
+      <WorkspacesSection />
     </div>
   );
 }

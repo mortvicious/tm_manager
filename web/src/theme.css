@@ -1522,14 +1522,16 @@ button.badge.badge-link:hover {
   font-size: var(--tm-text-xs);
 }
 
-.task-group-head .group-swatches {
+.task-group-head .group-swatches,
+.ws-section .group-swatches {
   display: inline-flex;
   align-items: center;
   gap: var(--tm-space-1);
   flex: none;
 }
 
-.task-group-head .group-swatch-dot {
+.task-group-head .group-swatch-dot,
+.ws-section .group-swatch-dot {
   width: 14px;
   height: 14px;
   border-radius: var(--tm-radius-pill);
@@ -1537,11 +1539,13 @@ button.badge.badge-link:hover {
   box-shadow: inset 0 0 0 1px var(--tm-border-strong);
 }
 
-.task-group-head .group-swatch-dot.on {
+.task-group-head .group-swatch-dot.on,
+.ws-section .group-swatch-dot.on {
   box-shadow: 0 0 0 2px var(--tm-bg-raised), 0 0 0 3px var(--tm-group);
 }
 
-.task-group-head .group-swatch-auto {
+.task-group-head .group-swatch-auto,
+.ws-section .group-swatch-auto {
   padding: 0 var(--tm-space-1);
   border-radius: var(--tm-radius-sm);
   color: var(--tm-text-faint);
@@ -1549,7 +1553,8 @@ button.badge.badge-link:hover {
   letter-spacing: 0;
 }
 
-.task-group-head .group-swatch-auto.on {
+.task-group-head .group-swatch-auto.on,
+.ws-section .group-swatch-auto.on {
   background: var(--tm-bg-overlay);
   color: var(--tm-text);
 }
@@ -5174,6 +5179,172 @@ button.explain-tap:active {
   align-items: end;
 }
 
+/* ---- Repos page: workspaces section (docs/workspaces.md § Managing them) ----
+   Inline only — no overlay, so nothing here becomes a <Sheet> on a phone. A
+   row's left rail carries its colour slot, the way a group block does. */
+.ws-section {
+  max-width: 920px;
+  scroll-margin-top: var(--tm-space-4);
+}
+
+.ws-hint {
+  margin: 0 0 var(--tm-space-3);
+  font-size: var(--tm-text-sm);
+}
+
+.ws-new {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-3);
+  padding: var(--tm-space-3) var(--tm-space-4);
+  margin-bottom: var(--tm-space-3);
+}
+
+.ws-new-head {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--tm-space-4);
+  flex-wrap: wrap;
+}
+
+.ws-new-name {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.ws-slug-preview {
+  display: block;
+  margin-top: var(--tm-space-1);
+  font-size: var(--tm-text-xs);
+}
+
+.ws-new-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  flex-wrap: wrap;
+}
+
+.ws-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.ws-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-3) var(--tm-space-4);
+  border-left: 3px solid var(--tm-group);
+}
+
+.ws-row + .ws-row {
+  border-top: 1px solid var(--tm-border);
+}
+
+.ws-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tm-space-2);
+  flex-wrap: wrap;
+}
+
+.ws-id,
+.ws-edit,
+.ws-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+  min-width: 0;
+}
+
+.ws-edit .field {
+  width: 240px;
+  max-width: 100%;
+}
+
+/* the group head's button reset, for the swatches and the name */
+.ws-section .group-swatches button,
+.ws-name {
+  padding: 0;
+  border: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* not on the swatches: a dot's fill and the on-chip's tint are backgrounds */
+.ws-name,
+.ws-section .group-swatch-auto:not(.on) {
+  background: transparent;
+}
+
+.ws-section .group-swatches .group-swatch-auto {
+  padding: 0 var(--tm-space-1);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+.ws-section .group-swatches .group-swatch-auto.on {
+  color: var(--tm-text);
+}
+
+.ws-name {
+  min-width: 0;
+  font-weight: 600;
+  color: var(--tm-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-slug {
+  font-size: var(--tm-text-xs);
+  margin-left: var(--tm-space-1);
+}
+
+.btn.ws-icon,
+.btn.ws-slug-edit {
+  padding: var(--tm-space-1) var(--tm-space-2);
+}
+
+.btn.ws-slug-edit {
+  font-size: var(--tm-text-xs);
+  font-weight: 500;
+}
+
+.ws-repos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-1) var(--tm-space-2);
+}
+
+.ws-repo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+  padding: 2px var(--tm-space-2);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-pill);
+  font-size: var(--tm-text-sm);
+  color: var(--tm-text-muted);
+  cursor: pointer;
+}
+
+.ws-repo.on {
+  color: var(--tm-text);
+  border-color: var(--tm-border-strong);
+  background: var(--tm-bg-overlay);
+}
+
+.ws-repo input {
+  margin: 0;
+  accent-color: var(--tm-accent);
+}
+
 .plan-card-edit {
   display: flex;
   gap: 6px;
@@ -5284,6 +5455,30 @@ button.explain-tap:active {
 
 .app.mobile .form-grid {
   grid-template-columns: 1fr;
+}
+
+/* Workspaces: a full-width name field, bigger tap targets for swatches and repos. */
+.app.mobile .ws-edit {
+  flex: 1 1 100%;
+}
+
+.app.mobile .ws-edit .field {
+  flex: 1;
+  width: auto;
+}
+
+.app.mobile .ws-section .group-swatch-dot {
+  width: 22px;
+  height: 22px;
+}
+
+.app.mobile .ws-section .group-swatches {
+  gap: var(--tm-space-2);
+  flex-wrap: wrap;
+}
+
+.app.mobile .ws-repo {
+  padding: var(--tm-space-1) var(--tm-space-3);
 }
 
 .app.mobile .repo-add-grid,
