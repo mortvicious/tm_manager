@@ -39,6 +39,7 @@ A `TimelineSegment` is one task in one state for a stretch of time:
 ### API
 
 - `buildTaskSegments(events, runs, { since, until, now })` returns `Record<taskId, TimelineSegment[]>`. It is exactly `foldEvent` over the events sorted by id, then `timelineSegments`. Runs only fill in a missing `runId`: a worker run of the task started inside a running/fixing stretch, or a `review` aux run (`subjectId` = the task) inside a round.
+- `foldEvents(events, runs)` is the fold state of a batch (one copy, in place). `buildTaskSegments` is `timelineSegments(foldEvents(…))`; the SPA seeds its live state with it.
 - `foldEvent(state, event)` appends one row. Rows are folded oldest first, and a row whose id is at or below the newest folded id is a duplicate and is ignored (event ids are time-sortable and keep insertion order within a millisecond). It is copy-on-write: only the touched task's track is replaced. `foldRun(state, run)` adds or replaces a run, and `initTimeline()` is the empty state.
 - `timelineSegments(state, window)` materialises the segments with clipping. A segment that ended before `since` is dropped. One that began before it starts at `since`. One still open is `end: null` when `until ≥ now`, and ends at `until` otherwise.
 - `stateAt(segmentsByTask, T)` returns `{ running, waiting, inReview, checking, queued, landed }` as task ids. A segment holds `[start, end)`. `running` includes fix turns. `inReview` covers a round or an idle review, while checks count as `checking`. Markers hold no time.
@@ -65,6 +66,21 @@ A `TimelineSegment` is one task in one state for a stretch of time:
 - `listEvents`' hard cap went from 2 000 to `EVENT_LIST_MAX` (50 000). Every existing caller passes its own limit. The one that asked for more, `reports/service.ts` (`TRANSITION_LIMIT` 20 000), was silently clipped to 2 000 before and now gets what it asks for.
 - **Migration 50** adds `tm_events(repo_id, at)` and `tm_events(kind, at)`. A repo-scoped window now searches `tm_events_repo_at_idx`.
 
+## SPA
+
+`/timeline` (`web/src/pages/Timeline.tsx`, nav entry **Timeline** in the desktop sidebar and the phone More sheet, carried through `wsHref` so `?ws=` survives) shows the current workspace's past, NOW and predicted future. The page picks a live window (6 h · 24 h · 3 d · 7 d back from now) and the shape: `useIsMobile()` → `components/timeline/TimelineStream.tsx` (one stream: past oldest → newest, the newest 60 rows; NOW; predicted; not scheduled), else `components/timeline/TimelineTracks.tsx` (past per task, newest-moving first, one chip per segment; NOW; predicted; not scheduled). Both are plain token-styled lists for now (`.tl-*` in `theme.css`; words and colours in `components/timeline/format.ts`); later phases replace the bodies, not the data.
+
+### `useTimeline({ since, until? })`
+
+`web/src/timeline.ts` is the seam every timeline view reads.
+
+- **Fetch.** `GET /api/timeline?since&until&repoIds` for the window and the current workspace (`useWorkspace().repoIds`, sorted; All = no `repoIds`). `until` omitted/null = a LIVE window: fetched up to the moment of the fetch, then it ends at NOW and moves with it. The answer's `events`/`runs` seed the fold with `foldEvents`; the window shown starts at `coveredSince`. Refetched on a new window, a workspace switch, `reload()`, and a socket RECONNECT (rows sent while it was down are lost) — never on an event.
+- **Live, no refetch.** `state.tsx` keeps a module-level listener registry: `onServerEvent(fn)` gets every `/ws/events` message after the store applied it (one socket, so module-level). The hook folds `event.appended` rows of `TIMELINE_EVENT_KINDS` through the shared `foldEvent`, and `run.started|updated|exited` of the runs the route carries (worker, `review`, `compact`) through `foldRun`. The 200-row `auditEvents` slice is not widened. Scope: a row's `repoId` must be in the workspace; `task.deleted` carries no repo and is folded when its task is already on the timeline. The listener subscribes BEFORE the fetch and buffers what arrives while it is in flight; the buffer is folded after the answer, and `foldEvent`'s id check drops the rows the answer already had. A fixed (past) window ignores live rows. `task.updated` needs no fold: it moves the app's task rows, which the prediction reads.
+- **NOW.** `now` ticks every `TIMELINE_TICK_MS` (30 s) and jumps on every folded row, so a just-opened segment is never clipped as "after the window".
+- **Duration baseline.** `GET /api/schedule/baseline` once per hour per page load, in memory (`useScheduleBaseline`, the same shape as `useProgressBaseline`); a failure retries in a minute and the simulator uses its defaults meanwhile.
+- **Prediction.** `predictSchedule()` (`shared/src/schedule.ts`, docs/schedule.md) in a `useMemo` over the app state — tasks (with optimistic patches), repos, features, the live runs, the commands' check names per repo (`repoChecks`), `createdByRun` → task ids from the runs list, `taskProgress` per running/waiting task through `computeProgress` (the board row's reading, the per-task floor included), the duration baseline, push-failing repos (`OrchestratorStatus.pushHealth`, `!ok` with kind `auth`/`protected` — the kinds that hold a repo), and settings — the LIVE `OrchestratorStatus` `enabled`/`paused`/`concurrency` outrank the `/api/config` snapshot, which is read once per refresh. The day budget fuse is not on the status, so `dayBudgetReached` is left unset. Recomputed on any of those changing and on the 30 s tick. It runs over the WHOLE board — the claim order, the worker cap and the repo holds are global — and only the OUTPUT is cut to the workspace (a slot's `repoId` in scope, repo-less always), sorted by start, unscheduled last.
+- **`applyOptimistic(patch)`** (`{ tasks: { [id]: { sortOrder?, priority?, customQueueAt?, queueHeldAt?, status? } } }`) is phase 4's drag seam: the patch is laid over the task rows the prediction reads, so the future re-predicts before the server answers. Each entry remembers the row's `updatedAt` it was applied over and is dropped by itself once the server's row moves past it (the confirmed move arrives as `task.updated`); the returned function removes the patch (a refused move), `clearOptimistic()` all of them. `tasks` on the result is the patched list.
+
 ## Verification
 
 - `server/src/timeline.test.ts` (`npm test`) covers:
@@ -85,3 +101,9 @@ A `TimelineSegment` is one task in one state for a stretch of time:
   - 40 days and a non-ISO `since` returned 400, and `repoIds=` returned empty.
   - A repo-scoped window held only that repo's tasks, and an unknown task's history returned 404.
   - A real fix-round task rendered as review-round → idle → fixing → review-round with the reviewer runs attached, from rows written before the Stop hook recorded `reviewState`.
+- The SPA seam (`/timeline`, a scratch build served over the live front door by Playwright, `/api/timeline` + `/api/schedule/baseline` answered by a routes-only harness over a DB copy, every non-GET aborted):
+  - Desktop, All: past tracks (43 tasks over 24 h), NOW, 5 predicted `running` slots with lane, ETA and review after the work, 59 not scheduled with their reason (queue off).
+  - A synthetic `task.transition` injected on the events socket put the task on the past list as `queued … → now` and into NOW's queued row; a REAL draft → cancelled transition (a probe task filed and closed through the agent API) appeared as a `cancelled` marker. `/api/timeline` was not called again in either case.
+  - NOW (and the prediction, which reads it) moved on the 30 s tick with no event.
+  - `?ws=neko`: the fetch carried the workspace's repo ids, only neko repos were listed, a row from another repo was not folded, and the sidebar link read `/timeline?ws=neko`.
+  - Phone (393 px, iPhone UA): `.app.mobile`, the stream (past newest 60, NOW, predicted), and the More sheet's Timeline link read `/timeline?ws=neko`.

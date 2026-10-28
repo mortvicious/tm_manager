@@ -117,6 +117,33 @@ interface AppState {
 
 const Ctx = createContext<AppState | null>(null);
 
+/**
+ * Every `/ws/events` message, AFTER the store above applied it — for a view
+ * that keeps its own derived state live (the timeline folds `event.appended`
+ * through the shared `foldEvent`, docs/timeline.md § SPA) instead of widening
+ * a capped slice like `auditEvents`. Module-level: there is one socket.
+ */
+export type ServerEventListener = (e: ServerEvent) => void;
+const serverEventListeners = new Set<ServerEventListener>();
+
+/** subscribe to every server event; returns the unsubscribe */
+export function onServerEvent(fn: ServerEventListener): () => void {
+  serverEventListeners.add(fn);
+  return () => {
+    serverEventListeners.delete(fn);
+  };
+}
+
+function emitServerEvent(e: ServerEvent): void {
+  for (const fn of [...serverEventListeners]) {
+    try {
+      fn(e);
+    } catch (err) {
+      console.error('server event listener', err);
+    }
+  }
+}
+
 /** The server's `listWorkspaces` order: `sortOrder`, then name, then id. */
 function byWorkspaceOrder(a: Workspace, b: Workspace): number {
   return a.sortOrder - b.sortOrder || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -536,6 +563,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             setOrch(e.status);
             break;
         }
+        emitServerEvent(e);
       };
       ws.onclose = () => {
         setConnected(false);

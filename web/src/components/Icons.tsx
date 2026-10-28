@@ -17,6 +17,14 @@ export const IconBoard = () => (
   </svg>
 );
 
+export const IconTimeline = () => (
+  <svg {...p}>
+    <path d="M3 12h18" />
+    <path d="M12 4v16" />
+    <path d="M6 8h3M15 16h4" />
+  </svg>
+);
+
 export const IconQueue = () => (
   <svg {...p}>
     <path d="M4 6h16M4 12h16M4 18h10" />

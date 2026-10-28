@@ -527,16 +527,25 @@ export function sortEvents(events: readonly AuditEvent[]): AuditEvent[] {
   return [...events].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
+/**
+ * The fold state of a batch — `foldEvent` over the sorted events, in place
+ * (one copy, not one per row). The SPA seeds its live state with it from a
+ * `/api/timeline` answer, then appends rows with `foldEvent`.
+ */
+export function foldEvents(events: readonly AuditEvent[], runs: readonly Run[]): TimelineState {
+  const state = initTimeline();
+  for (const r of runs) state.runs[r.id] = r;
+  for (const e of sortEvents(events)) foldInto(state, e);
+  return state;
+}
+
 /** batch build — exactly `foldEvent` over the sorted events, then `timelineSegments` */
 export function buildTaskSegments(
   events: readonly AuditEvent[],
   runs: readonly Run[],
   win: TimelineWindow,
 ): Record<string, TimelineSegment[]> {
-  const state = initTimeline();
-  for (const r of runs) state.runs[r.id] = r;
-  for (const e of sortEvents(events)) foldInto(state, e);
-  return timelineSegments(state, win);
+  return timelineSegments(foldEvents(events, runs), win);
 }
 
 export interface TimelineStateAt {

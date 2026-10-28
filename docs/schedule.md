@@ -190,3 +190,7 @@ queue still running, same-repo exclusivity, a pr repo at parallel 2, a review
 round holding the repo, the feature phase gate, Pause all and paused markers,
 `wake_at`, an agent-filed member held by its filer, the remaining-time
 formula, overflow, push failing and the day fuse).
+
+## SPA
+
+The SPA reads the baseline once per hour (`useScheduleBaseline` in `web/src/timeline.ts`) and runs `predictSchedule()` over its own state on every change and a 30 s tick — docs/timeline.md § SPA.

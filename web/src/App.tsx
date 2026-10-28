@@ -19,6 +19,7 @@ import { SharedPage } from './pages/Shared.tsx';
 import { ReportsPage } from './pages/Reports.tsx';
 import { ReposPage } from './pages/Repos.tsx';
 import { TerminalsPage } from './pages/Terminals.tsx';
+import { TimelinePage } from './pages/Timeline.tsx';
 import type { InboxReturn, ReturnTo } from './returnTo.ts';
 import { PANEL_PUSHED } from './nav.ts';
 import { useTermDock } from './termLayout.ts';
@@ -55,6 +56,7 @@ export function App() {
         <Route path="/board" element={<BoardPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
         <Route path="/inbox" element={<InboxPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} inboxReturn={inboxReturn} />} />
         <Route path="/queue" element={<QueuePage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
+        <Route path="/timeline" element={<TimelinePage onOpenTask={setOpenTask} />} />
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/chat/:id" element={<ChatPage />} />
         <Route path="/features" element={<FeaturesPage />} />
