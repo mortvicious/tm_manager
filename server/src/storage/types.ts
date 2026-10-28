@@ -57,11 +57,20 @@ export interface NewAuditEvent {
 
 export interface EventFilter {
   kind?: AuditKind;
+  /** any of these kinds; an EMPTY array matches nothing */
+  kinds?: AuditKind[];
   actor?: string;
   taskId?: string;
+  /** any of these tasks; an EMPTY array matches nothing */
+  taskIds?: string[];
+  /** any of these repos; an EMPTY array matches NOTHING (like `TaskFilter.repoIds`) */
+  repoIds?: string[];
+  /** newest first; default 100, at most `EVENT_LIST_MAX` */
   limit?: number;
   /** ISO timestamp lower bound (inclusive) */
   since?: string;
+  /** ISO timestamp upper bound (exclusive) */
+  until?: string;
 }
 
 export interface TaskFilter {
@@ -306,6 +315,14 @@ export interface RunFilter {
   subjectId?: string;
   /** ISO lower bound on `started_at`, inclusive — the report window */
   since?: string;
+  /** ISO upper bound on `started_at`, exclusive */
+  until?: string;
+  /** runs still going at this instant or later: `ended_at` NULL or ≥ it (a window overlap) */
+  activeSince?: string;
+  /** any of these repos; an EMPTY array matches nothing */
+  repoIds?: string[];
+  /** at most this many, newest first (default: all) */
+  limit?: number;
 }
 
 export interface NewProposal {
@@ -722,6 +739,18 @@ export interface Storage {
    *  same transaction as the mutation). */
   appendEvent(e: NewAuditEvent): Promise<AuditEvent>;
   listEvents(f?: EventFilter): Promise<AuditEvent[]>;
+  /**
+   * The timeline's seed (docs/timeline.md): each task's newest `anchorKinds`
+   * row strictly before `before`, plus every `kinds` row of that task after it
+   * and before `before` — the stint it entered the window in. Oldest first.
+   */
+  taskSeedEvents(anchorKinds: AuditKind[], kinds: AuditKind[], taskIds: string[], before: string): Promise<AuditEvent[]>;
+  /**
+   * EVERY task's newest `anchorKinds` row strictly before `before` (scoped by
+   * that row's repo; an empty `repoIds` matches nothing) — the timeline lists
+   * the tasks that sat in one open state through a whole window from it.
+   */
+  taskAnchorsBefore(anchorKinds: AuditKind[], before: string, repoIds?: string[]): Promise<AuditEvent[]>;
   /** Rewrite ONE audit row's data — only the secret scrub (questions.ts `scrubSecrets`) does; the log is otherwise append-only. */
   setEventData(id: string, data: Record<string, unknown>): Promise<void>;
 

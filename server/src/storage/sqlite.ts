@@ -8,6 +8,7 @@ import {
   runTaskId,
   type AppSettings,
   type AuditEvent,
+  type AuditKind,
   type Chat,
   type ChatMessage,
   type Dispatch,
@@ -142,6 +143,7 @@ import type {
   Storage,
   TaskFilter,
 } from './types.ts';
+import { eventListSql, runListSql, taskAnchorsSql, taskSeedEventsSql } from './event-sql.ts';
 
 
 export class SqliteStorage implements Storage {
@@ -274,27 +276,23 @@ export class SqliteStorage implements Storage {
   }
 
   async listEvents(f?: EventFilter): Promise<AuditEvent[]> {
-    const where: string[] = [];
-    const params: unknown[] = [];
-    if (f?.kind) {
-      where.push(`kind = ?`);
-      params.push(f.kind);
-    }
-    if (f?.actor) {
-      where.push(`actor = ?`);
-      params.push(f.actor);
-    }
-    if (f?.taskId) {
-      where.push(`task_id = ?`);
-      params.push(f.taskId);
-    }
-    if (f?.since) {
-      where.push(`at >= ?`);
-      params.push(f.since);
-    }
-    const sql = `SELECT * FROM tm_events ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY id DESC LIMIT ?`;
-    return (this.db.prepare(sql).all(...params, Math.min(f?.limit ?? 100, 2000)) as any[]).map(rowToEvent);
+    const { sql, params } = eventListSql(f);
+    return (this.db.prepare(sql).all(...params) as any[]).map(rowToEvent);
   }
+
+  async taskSeedEvents(anchorKinds: AuditKind[], kinds: AuditKind[], taskIds: string[], before: string): Promise<AuditEvent[]> {
+    if (taskIds.length === 0 || anchorKinds.length === 0) return [];
+    // an empty `kinds` still returns the anchors (the IN list needs one value)
+    const { sql, params } = taskSeedEventsSql(anchorKinds, kinds.length ? kinds : anchorKinds, taskIds, before);
+    return (this.db.prepare(sql).all(...params) as any[]).map(rowToEvent);
+  }
+  async taskAnchorsBefore(anchorKinds: AuditKind[], before: string, repoIds?: string[]): Promise<AuditEvent[]> {
+    if (anchorKinds.length === 0 || (repoIds && repoIds.length === 0)) return [];
+    const { sql, params } = taskAnchorsSql(anchorKinds, before, repoIds);
+    return (this.db.prepare(sql).all(...params) as any[]).map(rowToEvent);
+  }
+
+
 
   async setEventData(id: string, data: Record<string, unknown>): Promise<void> {
     this.db.prepare(`UPDATE tm_events SET data = ? WHERE id = ?`).run(JSON.stringify(data), id);
@@ -1008,39 +1006,10 @@ export class SqliteStorage implements Storage {
   // ---- runs ----
 
   async listRuns(f?: RunFilter): Promise<Run[]> {
-    const where: string[] = [];
-    const params: unknown[] = [];
-    if (f?.taskId) {
-      where.push(`task_id = ?`);
-      params.push(f.taskId);
-    }
-    if (f?.repoId) {
-      where.push(`repo_id = ?`);
-      params.push(f.repoId);
-    }
-    if (f?.status) {
-      where.push(`status = ?`);
-      params.push(f.status);
-    }
-    if (f?.mode) {
-      where.push(`mode = ?`);
-      params.push(f.mode);
-    }
-    if (f?.kind) {
-      where.push(`kind = ?`);
-      params.push(f.kind);
-    }
-    if (f?.subjectId) {
-      where.push(`subject_id = ?`);
-      params.push(f.subjectId);
-    }
-    if (f?.since) {
-      where.push(`started_at >= ?`);
-      params.push(f.since);
-    }
-    const sql = `SELECT * FROM tm_runs ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY started_at DESC, id DESC`;
+    const { sql, params } = runListSql(f);
     return (this.db.prepare(sql).all(...params) as any[]).map(rowToRun);
   }
+
 
   async getRun(id: string): Promise<Run | null> {
     const r = this.db.prepare(`SELECT * FROM tm_runs WHERE id = ?`).get(id);

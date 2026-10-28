@@ -361,6 +361,9 @@ export function registerInternalRoutes(
         to,
         by ? by.actor : replayOf !== null ? 'system' : 'hook',
         patch,
+        // on the audit row too, so the timeline knows a round is due from the
+        // landing itself (docs/timeline.md)
+        { runId: id, reviewState: patch.reviewState, ...('checkState' in patch ? { checkState: patch.checkState } : {}) },
       );
       if (task) {
         orchestrator.dropWait(id);

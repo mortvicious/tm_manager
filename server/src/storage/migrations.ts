@@ -802,6 +802,16 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `CREATE UNIQUE INDEX IF NOT EXISTS tm_workspaces_slug_idx ON tm_workspaces (slug)`,
     ],
   },
+  {
+    id: 50,
+    // Timeline (docs/timeline.md): `/api/timeline` reads a window of the audit
+    // log by repo scope and by kind — neither had an index (only `at` and
+    // `task_id`), so a 31-day window scanned every row since.
+    statements: [
+      `CREATE INDEX IF NOT EXISTS tm_events_repo_at_idx ON tm_events(repo_id, at)`,
+      `CREATE INDEX IF NOT EXISTS tm_events_kind_at_idx ON tm_events(kind, at)`,
+    ],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */
