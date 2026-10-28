@@ -73,8 +73,10 @@ import {
   TYPE_ENTER_DELAY_MS,
 } from './claude/transient.ts';
 import {
+  gitStatus,
   handoffCommit,
   hasTaskCommit,
+  hasUnpushedTaskCommit,
   publishRepo,
   pushUpTo,
   run as execIn,
@@ -2878,15 +2880,22 @@ export class Orchestrator implements OrchestratorApi {
    */
   /**
    * Whether a task's turns run in its own worktree (docs/parallel.md): it has
-   * one already, or its repo delivers by PR and it never had a session — a
-   * task that started in the checkout before the repo switched stays there,
-   * because its `--resume` only works from that cwd.
+   * one already, or its repo delivers by PR and it never had a session. A task
+   * that started in the checkout stays there while something of it is still
+   * there: a resume (`--resume` only works from that cwd), or, for a fresh
+   * work turn (Retry, Run now), its commits on no remote or the edits it left
+   * in the tree it owns. A fresh turn with none of that moves to a worktree —
+   * kept in the checkout, it could never land (task 27fbfba5).
    */
-  private async wantsWorktree(task: Task, repo: Repo): Promise<boolean> {
+  private async wantsWorktree(task: Task, repo: Repo, freshWork: boolean): Promise<boolean> {
     if (task.workdir) return true;
     if (repo.delivery !== 'pr') return false;
     const runs = await this.storage.listRuns({ taskId: task.id, mode: 'worker' });
-    return !runs.some((r) => !!r.sessionId);
+    if (!runs.some((r) => !!r.sessionId)) return true;
+    if (!freshWork) return false;
+    if (await hasUnpushedTaskCommit(repo, task.id)) return false;
+    if ((await this.treeOwner(repo.id))?.id !== task.id) return true;
+    return (await gitStatus(repo)).dirty === 0;
   }
 
   private async findResumableRun(taskId: string, repoId: string, workdir: string | null = null): Promise<Run | null> {
@@ -3261,7 +3270,7 @@ export class Orchestrator implements OrchestratorApi {
     // A branch forked from another base than the repo's current one is moved
     // onto it here, before the turn (docs/parallel.md § Base branch).
     let retargetNote: string | undefined;
-    if (await this.wantsWorktree(task, repo)) {
+    if (await this.wantsWorktree(task, repo, !resumeFrom && purpose === 'work')) {
       this.gatesInFlight.add(task.id);
       let made: EnsureResult;
       try {

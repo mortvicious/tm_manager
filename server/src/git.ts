@@ -63,7 +63,7 @@ export async function gitStatus(repo: Repo): Promise<GitStatus> {
   if (!branch || branch === 'HEAD') {
     branch = (await run(repo.path, 'git', ['symbolic-ref', '--short', '-q', 'HEAD'])).out.trim() || 'main';
   }
-  const status = await run(repo.path, 'git', ['status', '--porcelain', '--ignore-submodules=dirty']);
+  const status = await run(repo.path, 'git', ['status', '--porcelain', '--ignore-submodules=dirty', ...TREE_PATHSPEC]);
   const dirty = status.out ? status.out.split('\n').filter(Boolean).length : 0;
   const aheadRes = await run(repo.path, 'git', ['rev-list', '--count', '@{upstream}..HEAD']);
   const ahead = aheadRes.code === 0 ? Number(aheadRes.out.trim()) || 0 : 0;
@@ -201,8 +201,9 @@ export async function verifyPublished(repo: Repo): Promise<PublishCheck> {
 
   // A submodule whose work tree is merely dirty (the CLI's own
   // `.claude/worktrees/` once tracked as a gitlink is the common case) is not
-  // something this repo could commit — same filter as the review diff.
-  const status = await run(repo.path, 'git', ['status', '--porcelain', '--ignore-submodules=dirty']);
+  // something this repo could commit, and neither is a nested worktree
+  // (`TREE_PATHSPEC`) — same filter as the review diff.
+  const status = await run(repo.path, 'git', ['status', '--porcelain', '--ignore-submodules=dirty', ...TREE_PATHSPEC]);
   const dirty = status.out ? status.out.split('\n').filter(Boolean).length : 0;
   if (dirty > 0) {
     return { ok: false, reason: `${dirty} uncommitted change(s) still in the working tree`, branch, head };
@@ -253,7 +254,7 @@ export async function publishRepo(
 // ahead of its own approval (`unpushedCommits`, used by Orchestrator.publish).
 
 /** Same exclusion as the review diff (claude/review.ts DIFF_EXCLUDES). */
-const TREE_PATHSPEC = ['--', '.', ':!.claude/worktrees'];
+const TREE_PATHSPEC = ['--', '.', ':!.claude/worktrees', ':!.worktrees'];
 const TRAILER_RE = /^Task:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*$/gim;
 
 export interface UnpushedCommit {
@@ -301,6 +302,12 @@ export async function unpushedCommits(repo: Repo): Promise<UnpushedState | null>
     commits.push({ sha: sha.trim(), taskIds });
   }
   return { upstream, remote, mergeRef, commits };
+}
+
+/** Does a local branch hold a commit with this task's trailer that no remote has? */
+export async function hasUnpushedTaskCommit(repo: Repo, taskId: string): Promise<boolean> {
+  const r = await run(repo.path, 'git', ['log', '--branches', '--not', '--remotes', '-1', '-F', `--grep=Task: ${taskId}`, '--format=%H']);
+  return r.code === 0 && r.out.trim().length > 0;
 }
 
 /** Does any commit reachable from HEAD carry this task's trailer? */

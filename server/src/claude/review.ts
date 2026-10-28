@@ -138,6 +138,9 @@ function runReviewer(
  * - `.claude/worktrees/`: the CLI's own worktree directory. It is a nested git
  *   repo, so `git add -N .` records it as a gitlink and every diff shows
  *   `+Subproject commit …` for it.
+ * - `.worktrees/`: the same, made by hand — a repo's CLAUDE.md that tells its
+ *   agents to work in "their own worktree" gets one nested in the checkout
+ *   (neko-frontend task 27fbfba5).
  * - `--ignore-submodules=dirty`: a submodule (or an already-tracked gitlink of
  *   the above) whose work tree is merely dirty renders as
  *   `-Subproject commit X` / `+Subproject commit X-dirty` — bytes that change
@@ -146,7 +149,7 @@ function runReviewer(
  * Without this a turn that wrote nothing reviewed as "nothing implemented"
  * (blocker) round after round.
  */
-export const DIFF_EXCLUDES = [':!.claude/worktrees'];
+export const DIFF_EXCLUDES = [':!.claude/worktrees', ':!.worktrees'];
 const DIFF_CMD = `git add -N -- . ${DIFF_EXCLUDES.map((e) => `'${e}'`).join(' ')} 2>/dev/null; git diff HEAD --ignore-submodules=dirty -- . ${DIFF_EXCLUDES.map((e) => `'${e}'`).join(' ')}`;
 
 function gitDiff(cwd: string): Promise<string> {

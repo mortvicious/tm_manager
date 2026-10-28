@@ -52,7 +52,23 @@ setup again on the next turn instead of running on half-installed deps.
 Who gets one (`wantsWorktree`): a task with a `workdir` already, or a task in
 a `pr` repo with no earlier worker session. A task that started in the
 checkout before the repo switched to `pr` finishes there (its session is filed
-under the checkout's cwd) and holds the repo exclusively, as before.
+under the checkout's cwd) and holds the repo exclusively, as before — but only
+while something of it is still in the checkout. A FRESH work turn (Retry, Run
+now: no session resumed, not the publish turn) moves it to a worktree unless a
+local branch holds a commit with its trailer that no remote has
+(`hasUnpushedTaskCommit`) or it owns a dirty checkout (`treeOwner` +
+`gitStatus`). Kept in the checkout it could never land: task 27fbfba5 was
+retried there, its agent followed neko-frontend's CLAUDE.md ("a TM task works
+in its own git worktree on `tm/<id>`") into a hand-made `.worktrees/27fbfba5`
+the server never knew about, and every Publish resumed an agent with nothing
+to commit (adopted by hand on 2026-10-28: `git worktree move` into
+`<repo>.worktrees/` plus `workdir`/`branch`/`worktree_base` on the row).
+
+A worktree nested in the checkout (`.worktrees/`, like the CLI's own
+`.claude/worktrees/`) is never the checkout's change: `TREE_PATHSPEC`
+(`gitStatus`, `verifyPublished`, `taskShipped`, `handoffCommit`) and the review
+diff's `DIFF_EXCLUDES` leave both out, so an untracked `.worktrees/` no longer
+reads as "1 uncommitted change(s) still in the working tree".
 
 **Dependencies** (user's call: clone + install). Only IGNORED files are ever
 copied (`git ls-files --others --ignored --exclude-standard --directory`), so
