@@ -165,6 +165,12 @@ Phase 3 makes pages read `useWorkspace()`. Under All each page behaves exactly a
 - **Anomalies and the activity feed** are filtered client-side. An item belongs to its own `repoId`, else its task's repo, else its run's repo (from the loaded `tasks`/`runs`). One that names none of these stays visible, because it is repo-less: config, server and the day fuse. One whose task or run is not loaded also stays visible. While scoped, the feed fetches 200 audit rows instead of 60, then keeps the newest 60 in scope.
 - **The title** reads `Dashboard · <workspace name>` when scoped.
 
+### Inbox and chips
+
+- **`useInbox()`** (`components/Inbox.tsx`) passes `useWorkspace().repoIds` to `buildInbox` (docs/inbox.md § Workspace scope). Everything that reads it follows the workspace: the Inbox page, the desktop `InboxChip`, the phone header chip, the phone Inbox tab's count and the phone sheet stack. `useInbox(true)` is the unscoped list.
+- **The Inbox page** title reads `Inbox · <workspace name>` when scoped. When decisions wait outside the scope it adds a muted `n more in other workspaces` button that switches to All. `n` is the difference of the two `decisions()` counts, so stale drafts are not counted, as on every badge.
+- **`QuestionChip`** (desktop ❓) counts only pending questions whose asking task is in scope. A question carries no repo, so it is looked up by `taskId` in the store, and one whose task is not loaded still counts. **`QuestionModal` stays global by design**: an agent blocked on a question is blocked whatever the user is looking at.
+
 Verified (phase 3) with Playwright against the live front door. A scratch build was served from `ctx.route`, `GET /api/workspaces` was faked (the live API predates migration 49), and every non-GET was aborted. `/api/stats/overview` was proxied, and its `perRepo` was trimmed to the requested `repoIds`, because the live API ignores the parameter. Nine finished tasks across three repos were rewritten to `queued`: six global and three custom. The checks:
 
 - **Queue order.** In `tm` and `neko` scope, the Queue and Global queue rows were exact subsequences of the All order. Active sessions split 1 + 1 over the two live runs, and each section's `n more` added up to the All count.
@@ -173,6 +179,17 @@ Verified (phase 3) with Playwright against the live front door. A scratch build 
 - **Anomalies and feed.** Anomalies went from 59 to 48 findings, which equals the count computed from `/api/stats/anomalies` and the task repos. The feed dropped a TM task's `anomaly.notified` row.
 
 There were no page errors. `npm run typecheck` and `npm run build` pass.
+
+Verified (phase 3, Inbox) the same way: Playwright, a scratch build and a frozen REST snapshot. Synthetic decisions were added to the snapshot: reviews, failures, three questions (one on a task not in the store), a proposal and a feature. The checks ran at 1400 px and 393 px, in Classic and Glass:
+
+| scope | page | Inbox chip / phone tab | ❓ chip | hint |
+|---|---|---|---|---|
+| All | 13 waiting · 8 stale | 13 | 3 | — |
+| Neko | 5 waiting | 5 | 2 | 8 more |
+| Task manager | 7 waiting | 7 | 2 | 6 more |
+| Empty | nothing waiting | hidden | 1 (the unloaded task's) | 13 more |
+
+Each count equals the shared `buildInbox` run on the snapshot. Pressing the hint drops `?ws` and restores the All counts exactly. There were no page errors, and the phone header does not overflow. A Glass issue that predates this change: at 1400 px the header's pill row wraps and covers the page title, the hint included. It is reachable at 1700 px and wider.
 
 ## Verification (phase 1)
 

@@ -778,10 +778,19 @@ function RunCount({ state = false }: { state?: boolean }) {
  * compact top bar could not hold. Those controls are mounted HERE and nowhere
  * else while the viewport is mobile.
  */
-/** "❓ n" while any agent is waiting on a decision; a click reopens the modal (docs/questions.md). */
+/**
+ * "❓ n" while any agent is waiting on a decision; a click reopens the modal (docs/questions.md).
+ * Counts the current workspace's questions only (by the asking task's repo; a
+ * task not in the store counts) — the modal itself stays global.
+ */
 function QuestionChip() {
-  const { questions, nudgeQuestions } = useApp();
-  const n = questions.length;
+  const { questions, tasks, nudgeQuestions } = useApp();
+  const { repoIds, inScopeRepo } = useWorkspace();
+  const n = useMemo(() => {
+    if (!repoIds) return questions.length;
+    const repoOf = new Map(tasks.map((t) => [t.id, t.repoId]));
+    return questions.filter((q) => inScopeRepo(repoOf.get(q.taskId) ?? null)).length;
+  }, [questions, tasks, repoIds, inScopeRepo]);
   if (n === 0) return null;
   return (
     <button

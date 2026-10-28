@@ -243,6 +243,17 @@ nothing is cancelled or hidden without a human press.
   is an `l:` navigation and is not audited. The last listed row says how many
   more there are.
 
+### Workspace scope
+
+In the SPA the Inbox follows the current workspace (docs/workspaces.md § Inbox
+and chips). `buildInbox` takes an optional `repoIds` set and emits only items
+whose repo is in it: the task's repo, a proposal's or approval's own `repoId`
+(else its task's), a feature's `repoId`. An item with no repo is in every
+scope. `unblocks` is still counted over ALL tasks, so a decision that frees
+work in another workspace keeps its rank. The stale-draft cap and `total` are
+applied after scoping. Without `repoIds` (Telegram, All) the output is exactly
+the unscoped list.
+
 ### Telegram `/inbox`
 
 `/inbox [repo]` opens the board's 📥 view (`docs/telegram.md` § The board).

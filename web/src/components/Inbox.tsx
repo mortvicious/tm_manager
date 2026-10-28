@@ -13,6 +13,7 @@ import {
 import { api } from '../api.ts';
 import { confirmMarkPublished, confirmPublish, markPublishedOffered } from '../publish.ts';
 import { useApp } from '../state.tsx';
+import { useWorkspace } from '../workspace.ts';
 import type { ReturnTo } from '../returnTo.ts';
 import { toastError } from '../toast.ts';
 import {
@@ -37,13 +38,17 @@ import { Sheet, SheetAction } from './Sheet.tsx';
  * the shared `buildInbox` — the same list Telegram's `/inbox` draws. Read off
  * the live store, so an answered question or a landed review leaves the list
  * on the WS event that changed it, with no polling and no route of its own.
+ * Scoped to the current workspace (docs/workspaces.md § Scoped pages); `all`
+ * ignores it (the Inbox page's "n more in other workspaces").
  */
-export function useInbox(): InboxItem[] {
+export function useInbox(all = false): InboxItem[] {
   const { tasks, questions, approvals, runs, proposals, features, settings } = useApp();
+  const { repoIds: scope } = useWorkspace();
+  const repoIds = all ? null : scope;
   const staleDraftDays = staleDays(settings);
   return useMemo(
-    () => buildInbox({ tasks, questions, approvals, runs, proposals, features, staleDraftDays }),
-    [tasks, questions, approvals, runs, proposals, features, staleDraftDays],
+    () => buildInbox({ tasks, questions, approvals, runs, proposals, features, staleDraftDays, repoIds }),
+    [tasks, questions, approvals, runs, proposals, features, staleDraftDays, repoIds],
   );
 }
 

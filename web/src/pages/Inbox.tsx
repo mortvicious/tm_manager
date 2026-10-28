@@ -14,6 +14,7 @@ import {
 } from '../components/Inbox.tsx';
 import { useIsMobile } from '../components/Layout.tsx';
 import type { InboxReturn } from '../returnTo.ts';
+import { useWorkspace } from '../workspace.ts';
 
 /**
  * The decide view (docs/inbox.md). Desktop: one list, the selected item
@@ -26,8 +27,12 @@ import type { InboxReturn } from '../returnTo.ts';
 export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav & { inboxReturn: InboxReturn | null }) {
   const mobile = useIsMobile();
   const items = useInbox();
+  const everywhere = useInbox(true);
+  const { workspace, setWorkspace } = useWorkspace();
   const waiting = decisions(items).length;
   const stale = items.length - waiting;
+  // what the workspace hides (docs/workspaces.md § Scoped pages): decisions only, like every badge
+  const elsewhere = workspace ? decisions(everywhere).length - waiting : 0;
   const nav = useMemo(() => ({ onOpenTask, onOpenTerminal }), [onOpenTask, onOpenTerminal]);
   const [openKey, setOpenKey] = useState<string | null>(null);
   const open = items.find((i) => i.key === openKey) ?? null;
@@ -41,9 +46,18 @@ export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav 
     <div className="inbox-page">
       <h1 className="page-title">
         Inbox
+        {workspace && <span className="inbox-ws">· {workspace.name}</span>}
         <span className="inbox-count">
           {waiting ? `${waiting} waiting on you` : 'nothing waiting'}
           {stale > 0 && ` · ${stale === 1 ? '1 stale draft' : `${stale} stale drafts`}`}
+          {elsewhere > 0 && (
+            <>
+              {' · '}
+              <button type="button" className="inbox-elsewhere" title="Switch to All" onClick={() => setWorkspace(null)}>
+                {elsewhere} more in other workspaces
+              </button>
+            </>
+          )}
         </span>
       </h1>
       {!mobile && items.length > 0 && (

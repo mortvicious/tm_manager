@@ -7157,6 +7157,26 @@ button.explain-tap:active {
   color: var(--tm-text-muted);
 }
 
+.inbox-ws {
+  font-weight: 400;
+  color: var(--tm-text-muted);
+}
+
+.inbox-elsewhere {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.inbox-elsewhere:hover {
+  color: var(--tm-text);
+}
+
 .inbox-keys {
   margin: calc(var(--tm-space-2) * -1) 0 var(--tm-space-4);
   font-size: var(--tm-text-xs);

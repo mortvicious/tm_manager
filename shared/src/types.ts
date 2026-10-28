@@ -3103,6 +3103,20 @@ export interface InboxInput {
   now?: number;
   /** `inbox.staleDraftDays`; the default when omitted */
   staleDraftDays?: number;
+  /**
+   * The current workspace's repos (docs/workspaces.md): only items whose repo
+   * is in the set are emitted; an item with no repo is always in scope.
+   * `unblocks` still counts every task. Absent/null = every repo.
+   */
+  repoIds?: ReadonlySet<string> | null;
+}
+
+/** The repo an inbox item belongs to, or null (repo-less: in every scope). */
+export function inboxItemRepoId(item: InboxItem): string | null {
+  if (item.kind === 'proposal') return item.proposal.repoId ?? item.task?.repoId ?? null;
+  if (item.kind === 'approval') return item.approval.repoId ?? item.task?.repoId ?? null;
+  if (item.kind === 'feature') return item.feature.repoId ?? null;
+  return item.task.repoId ?? null;
 }
 
 /**
@@ -3131,6 +3145,8 @@ export function buildInbox(input: InboxInput): InboxItem[] {
   const byWeight = (a: { unblocks: number; at: string }, b: { unblocks: number; at: string }) =>
     b.unblocks - a.unblocks || a.at.localeCompare(b.at);
   const seen = new Set<string>();
+  const scope = input.repoIds ?? null;
+  const inScope = (repoId: string | null | undefined) => !scope || repoId == null || scope.has(repoId);
   const out: InboxItem[] = [];
 
   // questions — one item per task, however many it asks
@@ -3224,13 +3240,14 @@ export function buildInbox(input: InboxInput): InboxItem[] {
   // stale agent drafts — oldest filed first, capped (never auto-cancelled or auto-hidden: a surface, not a sweep)
   const days = input.staleDraftDays ?? DEFAULT_SETTINGS['inbox.staleDraftDays'];
   const stale = input.tasks
-    .filter((t) => !seen.has(t.id) && isStaleDraft(t, now, days))
+    .filter((t) => !seen.has(t.id) && isStaleDraft(t, now, days) && inScope(t.repoId))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   for (const t of stale.slice(0, INBOX_STALE_DRAFT_CAP)) {
     const ageDays = Math.floor((now - Date.parse(t.createdAt)) / 86_400_000);
     out.push({ kind: 'stale-draft', key: `stale-draft:${t.id}`, task: t, ageDays, total: stale.length, unblocks: 0 });
   }
-  return out;
+  // the workspace scope: every weight above was counted over ALL tasks; stale drafts are already scoped (cap + total)
+  return scope ? out.filter((i) => inScope(inboxItemRepoId(i))) : out;
 }
 
 // ---- Bulk actions (docs/inbox.md § Bulk actions) ----------------------------
