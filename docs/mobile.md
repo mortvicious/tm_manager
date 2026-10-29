@@ -282,6 +282,7 @@ text stays the tooltip.
   `off` hands the tap back to the row, and select mode passes it (a tap there
   ticks the row). The `+n` chip is left alone: tapping it opens the task, which
   is what its tooltip says.
+- **Timeline rows** (`components/timeline/TimelineStream.tsx`, docs/timeline.md § Phone stream): a long press on a row, or a tap on a predicted row's reason, opens the row's explanation — what the stretch was, or why the task waits and when it is predicted to run — in a sheet with **Open the task**. A plain tap still opens the task.
 - **The task sheet strip** (`BadgeStrip`, `.so-explain`, order −8): the first
   line under the head reads what is happening and what you can do, from the same
   switch.

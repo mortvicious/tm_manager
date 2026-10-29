@@ -1369,3 +1369,39 @@
   backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
   box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-shadow-lg);
 }
+
+/* ---------- timeline: the phone stream (docs/timeline.md § Phone stream) ---------- */
+
+/* NOW floats like the header's capsules (bar material); .main's padding
+   already keeps its sticky top below the floating header */
+[data-design='glass'] .app.mobile .tl-now-divider {
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-glass-bar);
+  -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
+  transition: transform var(--tm-dur-press) var(--tm-ease-spring);
+}
+
+[data-design='glass'] .app.mobile .tl-now-divider:active {
+  transform: scale(var(--tm-press-scale));
+}
+
+/* rows: hairlines and the press highlight of the board's rows */
+[data-design='glass'] .tl-srow {
+  border-bottom-width: 0.5px;
+  transition: background var(--tm-dur-exit) var(--tm-ease-out);
+}
+
+[data-design='glass'] .tl-srow:active {
+  background: var(--tm-fill-press);
+  transition-duration: 0ms;
+  transition-delay: 60ms;
+}
+
+/* inset-grouped rails: each stripe is a rounded pill clear of the row's edges */
+[data-design='glass'] .tl-lane {
+  border-radius: var(--tm-radius-pill);
+  margin-block: var(--tm-space-1);
+}

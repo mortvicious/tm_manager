@@ -8106,8 +8106,7 @@ button.explain-tap:active {
   border-bottom: 1px solid var(--tm-border);
 }
 
-.tl-track:last-child,
-.tl-stream-row:last-child {
+.tl-track:last-child {
   border-bottom: none;
 }
 
@@ -8228,19 +8227,289 @@ button.explain-tap:active {
   min-width: 0;
 }
 
-.tl-stream-row {
+/* ---- the phone stream (docs/timeline.md § Phone stream) ---- */
+
+.tl-stream {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: var(--tm-space-2) var(--tm-space-3);
-  border-bottom: 1px solid var(--tm-border);
-  border-left: 3px solid var(--tm-border);
 }
 
-.tl-stream-meta {
+.tl-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-1) var(--tm-space-3);
+  margin-top: var(--tm-space-3);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+}
+
+.tl-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tl-legend-swatch {
+  width: 4px;
+  height: 12px;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tl-rail);
+}
+
+.tl-srows {
+  overflow: hidden;
+}
+
+.tl-srow {
+  display: flex;
+  align-items: stretch;
+  gap: var(--tm-space-3);
+  min-height: var(--tm-tap);
+  padding: 0 var(--tm-space-3) 0 0;
+  border-bottom: 1px solid var(--tm-border);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  /* a long press explains the row: no selection loupe or callout over it */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.tl-srow:last-child {
+  border-bottom: none;
+}
+
+.tl-srow:active {
+  background: var(--tm-fill-press);
+}
+
+.tl-srow:focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: -2px;
+}
+
+/* the rail: the repo's hue down the left edge; consecutive rows join up.
+   One gutter width for every row (PARALLEL_MAX lanes of 3px), so the text
+   lines up whether the repo has one rail or several lanes. */
+.tl-rail {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  width: 13px;
+  margin-left: var(--tm-space-2);
+}
+
+/* a parallel repo: one thin stripe per lane, the row's own lit */
+.tl-lane {
+  width: 3px;
+  background: color-mix(in srgb, var(--tl-rail) 28%, transparent);
+}
+
+.tl-lane.on {
+  background: var(--tl-rail);
+}
+
+/* a repo with one rail: a single, wider stripe */
+.tl-lane.solo {
+  width: 4px;
+}
+
+.tl-rail.none .tl-lane {
+  background: var(--tm-border);
+}
+
+.tl-srow-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+  padding: var(--tm-space-2) 0;
+}
+
+.tl-srow-title {
+  font-size: var(--tm-text-sm);
+  font-weight: 600;
+  color: var(--tm-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-srow.gone .tl-srow-title {
+  color: var(--tm-text-muted);
+  font-weight: 400;
+}
+
+.tl-srow-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   font-family: var(--tm-font-mono);
   font-size: var(--tm-text-xs);
   color: var(--tm-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* the times read first; the repo name (the rail says it too) gives way */
+.tl-srow-what {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-srow-what .tl-dot {
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
+.tl-srow-repo {
+  flex: 0 1000 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--tm-text-faint);
+}
+
+/* an open (still live) past stretch reads as such */
+.tl-srow.open .tl-srow-meta {
+  color: var(--tm-text);
+}
+
+.tl-reason-tap {
+  align-self: flex-start;
+  max-width: 100%;
+  min-height: var(--tm-tap-dense);
+  margin: calc(-1 * var(--tm-space-1)) 0 calc(-1 * var(--tm-space-2));
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--tm-status-attention);
+  font: inherit;
+  font-size: var(--tm-text-xs);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tl-reason-tap:active {
+  color: var(--tm-text);
+}
+
+/* the in-flow point the page opens at (the divider is sticky, so its own box moves) */
+.tl-now-anchor {
+  height: 0;
+}
+
+/* NOW: sticks to whichever edge the past or the future scrolled it off.
+   Sticky insets count from inside .main's padding, which already clears the
+   floating header (Glass) and the tab bar (--tm-tabbar-clear), so 0 is right
+   in both designs. */
+.tl-now-divider {
+  position: sticky;
+  top: 0;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  min-height: var(--tm-tap);
+  margin: var(--tm-space-4) 0 0;
+  padding: 0 var(--tm-space-3);
+  border: 1px solid var(--tm-accent);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-raised);
+  box-shadow: var(--tm-shadow-sm);
+  color: var(--tm-text);
+  font: inherit;
+  font-size: var(--tm-text-sm);
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tl-now-tag {
+  flex: none;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tm-accent);
+}
+
+.tl-now-clock {
+  flex: none;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
+.tl-now-summary {
+  min-width: 0;
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the explain sheet's body: plain blocks, the Sheet's scroller is the only one */
+.tl-explain .explain-lead {
+  align-items: center;
+  gap: var(--tm-space-2);
+  font-size: var(--tm-text-sm);
+}
+
+.tl-explain-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--tm-space-1) var(--tm-space-3);
+  margin: 0;
+  font-size: var(--tm-text-sm);
+}
+
+.tl-explain-facts dt {
+  color: var(--tm-text-muted);
+  text-transform: capitalize;
+}
+
+.tl-explain-facts dd {
+  margin: 0;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  align-self: center;
+}
+
+.tl-explain-head {
+  margin-top: var(--tm-space-2);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tm-text-faint);
+}
+
+.tl-explain-waits {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  margin: 0;
+  padding-left: var(--tm-space-5);
+  font-size: var(--tm-text-sm);
+  line-height: 1.4;
+}
+
+.tl-explain-waits li.last {
+  color: var(--tm-status-attention);
 }
 
 /* ---------- timeline tracks (docs/timeline.md § Tracks) ---------- */
