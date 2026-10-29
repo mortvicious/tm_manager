@@ -70,7 +70,10 @@ A `TimelineSegment` is one task in one state for a stretch of time:
   - **`runs`.** Worker runs and `review`/`compact` aux runs that overlap the window (`started_at < until`, `ended_at` null or ≥ `since`).
   - **Tasks covered.** Those with a row in the window or a run overlapping it, PLUS every task whose newest `task.transition`/`task.created`/`task.deleted` before the window left it in an open state (`queued`, `running`, `waiting`, `review`; `taskAnchorsBefore`, scoped by that row's repo). Without the second set a task that sat in one state through the whole window (a review waiting days for the human, a long queue) had no row in it and dropped out of the segments and `stateAt`. A task that was `done`/`published`/`failed`/`cancelled`/`draft`/`blocked` at the window's start and untouched inside it is not listed: it has no open segment to show. Neither is a task DELETED before the window: `task.deleted` is an anchor kind for exactly that, or a task deleted from the queue or review would be open in every later window. `task.deleted` rows carry no repo, so the window's deletions are fetched again by task id (`deletionsIn`) and a repo-scoped window still sees them close their segment.
   - **Caps.** Events and runs are capped at `TIMELINE_ROW_CAP` (20 000) each. On a cut, `truncated: true` and the newest rows are kept. `coveredSince` (one ms after the oldest kept row) is then where the segments are complete from. Seeds and clipping start there, not at `since`.
-- **`GET /api/tasks/:id/history`** returns `TaskHistoryResponse`: `{ events, runs, segments, truncated }`. It is the same builder over one task's whole life (its worker runs and the aux runs about it), for the future task panel History tab. An unknown task gets a 404.
+- **`GET /api/tasks/:id/history`** returns `TaskHistoryResponse`: `{ events, runs, segments, dispatches, truncated }`. It is the same builder over one task's whole life (its worker runs and the aux runs about it), for the task panel's History tab (§ Task history). An unknown task gets a 404. The SPA reads it through `api.taskHistory(id)`.
+  - **`events`** are the task's `HISTORY_EVENT_KINDS` rows: the fold's `TIMELINE_EVENT_KINDS` plus `HISTORY_EXTRA_EVENT_KINDS` (retry, undo, wake, paused, transient-retry, stop-failure, auto-compact, killed, the four question kinds, dispatch, publish, pr, worktree, queue, loop, budget, agent create/close, `schedule.overflow-claim`). `run.attention` is left out on purpose: it is raised and cleared on every permission prompt and would drown the strip.
+  - **`segments` are unchanged.** The fold's rows are still fetched by themselves, capped, seeded and clipped exactly as before; the extra kinds are a second query over the same covered span (all time, or from `coveredSince` when the first cut), under the same cap, merged into `events`. `foldInto` returns before touching state for any kind outside `TIMELINE_EVENT_KINDS`, so the extra rows could not move a segment anyway, but the separate query also keeps the cap from cutting the fold's rows sooner. `truncated` is either cut. `/api/timeline` still fetches `TIMELINE_EVENT_KINDS` only.
+  - **`dispatches`** are the task's `tm_dispatches` rows in BOTH directions (`listDispatches({ taskId })`, which already matches either side), oldest first. They are needed because every `task.dispatch` audit row (`created`, `delivered`/`failed`, `cancelled`) is filed under the RECEIVER, with the sender only in `data.fromTaskId`, so a dispatch the task SENT is not among its own rows.
 
 ### Storage
 
@@ -80,6 +83,41 @@ A `TimelineSegment` is one task in one state for a stretch of time:
 - `taskAnchorsBefore(anchorKinds, before, repoIds?)` is new on `Storage`: EVERY task's newest `anchorKinds` row before `before`, filtered by that row's repo (`taskAnchorsSql`). The route keeps the ones that entered an open state. On the live DB (≈16k events, ≈870 tasks) it costs a few ms.
 - `listEvents`' hard cap went from 2 000 to `EVENT_LIST_MAX` (50 000). Every existing caller passes its own limit. The one that asked for more, `reports/service.ts` (`TRANSITION_LIMIT` 20 000), was silently clipped to 2 000 before and now gets what it asks for.
 - **Migration 50** adds `tm_events(repo_id, at)` and `tm_events(kind, at)`. A repo-scoped window now searches `tm_events_repo_at_idx`.
+
+## Task history
+
+`shared/src/task-history.ts`, pure: `buildTaskHistory({ task, events, runs, segments, dispatches?, now? })` turns a `/history` answer into `HistoryStep[]`, oldest first, for the task panel's History tab (and later the timeline). A step is `{ kind, at, end, durationMs, costUsd, tokens, actor, label, detail, runId?, tone }`.
+
+- **Point steps** have `end === at` and `durationMs: 0`. **Open steps** have `end: null`, and their `durationMs` is measured to `now` when it is given, otherwise it is null.
+- **Ties at one instant** put the cause first: created, then retry/undo/release, then queued, then claimed, then the rest in insertion order.
+- **`tone`** is `neutral | info | good | warn | bad`.
+- **`tokens`** is input + output + cache read + cache write of the run(s) behind the step.
+
+**Durations come from segment boundaries** wherever a segment exists. A worker run's worked time is the SUM of its running/fixing stretches. It is never `startedAt..endedAt`, because the PTY stays attachable and idle long after the turn landed. A stretch with no `runId` (a prompt typed into a live session) belongs to the run whose PTY was live at its start. A waiting park in the middle of a run is its own step and is not worked time.
+
+| step | read from |
+|---|---|
+| `created` | `task.created` (actor, source, status). Agent-filed: `task.createdByRun` / `agent.create`'s `runId` as the filing run, `spawnDepth` as depth, and `effectiveStatus`/`note`. |
+| `queued` | `queued` segments. |
+| `claimed` | `data.claim` on the queued → running transition: base / custom queue / overflow. `schedule.overflow-claim` is never written today (overflow is `claim: 'overflow'`), so such a row is a step only when no claim transition sits within 5 s of it. |
+| `run` / `fix` | `tm_runs` worker rows. Handoff and model come from `run.started`. Duration comes from the run's turn segments, cost and tokens from `stats`. Also: exit code, and `killed` (with `run.killed`'s reason) — only for a CUT turn: a `run.killed` row (cancel, undo, kill, stall, pause) or a turn segment still open at `endedAt`. `status: 'killed'` alone is not one, because `followUp` and the landing retire every idle terminal that way. The label is `publish turn` (`label = 'publish'`) or `loop iteration n`. A run is a `fix` when it holds a `fixing` segment or starts within 5 min of a `task.follow-up` with a `reason` (round, red check names). An announcement with no run is a point `fix turn requested`. |
+| `compact` | `compact` aux runs (the resume gate), with cost. |
+| `waiting` | `waiting` segments (subagents/shells, how the park ended). |
+| `review` | `run.reviewed`: verdict, state, findings count, model, fix round, Review now. Skips are `unchanged-diff` / `empty-diff` / `checks-red`. The span is the `review-round` segment closed by the row. Cost is the sum of the `review` aux runs started since the previous round (a Fable→Opus fallback is two runs); `runId` is the last of them. |
+| `checks` | `task.checked`: state, round, results (`name outcome`), stop. The span is the `checks` segment the row closed, or the results' own `durationMs` sum for a loop's in-run checks. |
+| `wake`, `transient`, `stop-failure`, `auto-compact` | `task.wake` (by `action`), `run.transient-retry`, `run.stop-failure`, `run.auto-compact`. |
+| `question` | `question.asked` → `answered` / `expired` (by `questionId`). `answered` with `policy: 'autopilot'` is *auto-picked*. A `question.autopilot` skip adds its reason. The text is the first question, clipped to 120 chars, and the wait time is the span. **`data.answers` is never read**: an answer may be a redacted secret. |
+| `dispatch` | `dispatches`: sent (`→ to8`, `runId` = the sending run) or received (`← from8`), then intent and status, spanning `createdAt..deliveredAt`. Without the list, the receiver's own `task.dispatch` rows give the received ones. The message is not shown. |
+| `queue`, `loop`, `budget`, `closed`, `worktree`, `pr`, `landing`, `land`, `publish`, `shipped` | `task.queue` (add/remove; reorders skipped), `task.loop` (not `started`, which the run says), `task.budget`, `agent.close`, `task.worktree`, `task.pr`, `task.landing`, `task.land`, `task.publish`, `task.shipped`, each labelled by its `action`/`phase`. |
+| `landed` | Transitions to done/published. *auto-landed* when the row carries `landing` and the actor is `orchestrator`. |
+| `retry`, `undo`, `release`, `paused`, `resumed`, `failed`, `cancelled` | `task.retry` (the error it cleared), `task.undo` (`undo` / `release`), a transition with reason `pause all`, `task.paused` (`resumed`), and failed/cancelled transitions. A failure's error is not on its transition: it comes from the next `task.retry`'s `previousError`, else from the task row when that is the current failure. |
+
+`historyTotals(steps, runs, now?)` returns four totals:
+
+- **`wallMs`**: the first step to the last end, or to `now` while a step is open.
+- **`workedMs`**: the sum of the `run`/`fix` steps.
+- **`costUsd`**: every run passed in (worker, reviewer, compaction — `Task.costUsd`'s set).
+- **`attempts`**: worker runs with `resumedFrom` null, i.e. fresh sessions, as `Task.attempts` counts them.
 
 ## SPA
 
@@ -304,6 +342,12 @@ Measured on a `.backup` copy of the live DB through an `app.inject` harness that
   - A task idle in review and a task queued through the whole window are listed and counted by `stateAt`; a published task, a draft and another repo's task are not.
   - A task deleted before the window (from review or the queue) is not listed; one deleted inside it closes at the deletion, scoped or not.
   - `parseTimelineQuery`.
+- `server/src/task-history.test.ts` (`npm test`) covers:
+  - A full life through `buildTaskHistory`: created → claimed → run → review flagged → fix round → review passed → auto-landed done, with segment durations (not the idle PTY's `endedAt`), run and reviewer costs, and `historyTotals`.
+  - Idle terminals retired as `status: 'killed'` (followUp, landing) read as normal turns; a `run.killed` row or a turn open at `endedAt` reads killed.
+  - Agent-filed creation with depth. A question answered, and one expired after an autopilot skip, with the answer text appearing in no step. A usage-limit stop-failure, park and wake. A transient retry and an auto-compact. A failed marker whose error comes from the retry. Undo and release. Dispatches sent and received, and the received-only fallback.
+  - Checks/waiting/PR/landing/publish/shipped points, and an overflow claim.
+  - `loadTaskHistory` on a temp SQLite DB: it returns the extra kinds (never `run.attention` or `task.edited`) and both dispatch directions, its `segments` deep-equal the pre-widening loader's for the same rows (untruncated and at cap 2), and `loadTimeline` still returns only the fold's kinds.
 - Against a `.backup` copy of the live DB, through an `app.inject` harness that registers only these routes:
   - 24 h / 7 d / 30.9 d windows answered in 57–549 ms, untruncated (≈4.7k events over 30 days).
   - 40 days and a non-ISO `since` returned 400, and `repoIds=` returned empty.

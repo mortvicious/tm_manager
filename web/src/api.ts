@@ -44,6 +44,7 @@ import type {
   UsageSnapshot,
   TaskMovePlace,
   TaskDiffResponse,
+  TaskHistoryResponse,
 } from '@tm/shared';
 
 // Only user-editable fields — status/error/resultSummary are machine-owned and
@@ -372,6 +373,8 @@ export const api = {
     req<{ resumable: boolean; sessionId: string | null }>('GET', `/api/tasks/${id}/resumable`),
   // The task's own change, the reviewer's scope, per file (docs/task-diff.md)
   taskDiff: (id: string) => req<TaskDiffResponse>('GET', `/api/tasks/${id}/diff`),
+  /** one task's whole life: rows, runs, segments, dispatches — `buildTaskHistory` turns it into History steps (docs/timeline.md § Task history) */
+  taskHistory: (id: string) => req<TaskHistoryResponse>('GET', `/api/tasks/${id}/history`),
   taskFiles: (id: string) => req<{ name: string; size: number; mtime: string }[]>('GET', `/api/tasks/${id}/files`),
   uploadTaskFiles: async (id: string, files: File[]) => {
     const fd = new FormData();

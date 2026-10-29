@@ -6,6 +6,7 @@ import {
   ACCURACY_CONTROL_KINDS,
   ACCURACY_DEFAULT_DAYS,
   buildTaskSegments,
+  HISTORY_EXTRA_EVENT_KINDS,
   replayClaimSteps,
   type ScheduleAccuracy,
   sortEvents,
@@ -139,16 +140,39 @@ export async function loadTimeline(storage: Storage, q: TimelineQuery): Promise<
   };
 }
 
+/**
+ * One task's whole life (docs/timeline.md § API, § Task history). The fold's
+ * rows are fetched, capped and seeded exactly as before, so `segments` is the
+ * timeline's own answer; the History strip's extra kinds are a second query
+ * over the same covered span, under the same cap, merged into `events`.
+ */
 export async function loadTaskHistory(storage: Storage, taskId: string, createdAt: string, now: string, cap = TIMELINE_ROW_CAP): Promise<TaskHistoryResponse> {
   const rows = await storage.listEvents({ kinds: [...TIMELINE_EVENT_KINDS], taskId, limit: cap + 1 });
   const since = rows.length && rows[rows.length - 1].at < createdAt ? rows[rows.length - 1].at : createdAt;
   const { events, truncated, coveredSince } = capEvents(rows, cap, since);
   const seeds = truncated ? await seedEvents(storage, [taskId], coveredSince) : [];
-  const [own, about] = await Promise.all([storage.listRuns({ taskId }), storage.listRuns({ subjectId: taskId })]);
+  const extraRows = await storage.listEvents({
+    kinds: [...HISTORY_EXTRA_EVENT_KINDS],
+    taskId,
+    ...(truncated ? { since: coveredSince } : {}),
+    limit: cap + 1,
+  });
+  const extra = capEvents(extraRows, cap, coveredSince);
+  const [own, about, dispatches] = await Promise.all([
+    storage.listRuns({ taskId }),
+    storage.listRuns({ subjectId: taskId }),
+    storage.listDispatches({ taskId }),
+  ]);
   const runs = [...own, ...about.filter((r) => r.mode === 'aux')].filter(timelineRun);
-  const all = sortEvents([...seeds, ...events]);
-  const segments = buildTaskSegments(all, runs, { since: coveredSince, until: now, now })[taskId] ?? [];
-  return { events: all, runs, segments, truncated };
+  const folded = sortEvents([...seeds, ...events]);
+  const segments = buildTaskSegments(folded, runs, { since: coveredSince, until: now, now })[taskId] ?? [];
+  return {
+    events: sortEvents(dedupe([...folded, ...extra.events])),
+    runs,
+    segments,
+    dispatches: [...dispatches].sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0)),
+    truncated: truncated || extra.truncated,
+  };
 }
 
 /** a replay result is reused this long per `days` (the log it grades moves by minutes, not by renders) */

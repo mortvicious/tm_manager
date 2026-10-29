@@ -22,7 +22,7 @@
  * is relabelled in place. Only the OPEN segment is ever relabelled, so a live
  * fold and a batch build agree.
  */
-import type { AuditEvent, AuditKind, Run, TaskStatus } from './types.ts';
+import type { AuditEvent, AuditKind, Dispatch, Run, TaskStatus } from './types.ts';
 
 export type TimelineSegmentKind =
   | 'queued'
@@ -77,6 +77,39 @@ export const TIMELINE_EVENT_KINDS: readonly AuditKind[] = [
   'task.deleted',
 ];
 
+/**
+ * What `GET /api/tasks/:id/history` fetches: the fold's kinds plus the rows
+ * the task panel's History strip (`buildTaskHistory`, shared/src/task-history.ts)
+ * reads. `run.attention` is left out on purpose — it is raised and cleared on
+ * every permission prompt and would drown the strip. The fold ignores every
+ * kind outside `TIMELINE_EVENT_KINDS`, so the extra rows never move a segment.
+ */
+export const HISTORY_EXTRA_EVENT_KINDS: readonly AuditKind[] = [
+  'task.retry',
+  'task.undo',
+  'task.wake',
+  'task.paused',
+  'run.transient-retry',
+  'run.stop-failure',
+  'run.auto-compact',
+  'run.killed',
+  'question.asked',
+  'question.answered',
+  'question.autopilot',
+  'question.expired',
+  'task.dispatch',
+  'task.publish',
+  'task.pr',
+  'task.worktree',
+  'task.queue',
+  'task.loop',
+  'task.budget',
+  'agent.create',
+  'agent.close',
+  'schedule.overflow-claim',
+];
+export const HISTORY_EVENT_KINDS: readonly AuditKind[] = [...TIMELINE_EVENT_KINDS, ...HISTORY_EXTRA_EVENT_KINDS];
+
 /** `/api/timeline` window bound and row cap (events and runs each) */
 export const TIMELINE_MAX_DAYS = 31;
 export const TIMELINE_ROW_CAP = 20_000;
@@ -96,9 +129,13 @@ export interface TimelineResponse {
 
 /** what `GET /api/tasks/:id/history` answers */
 export interface TaskHistoryResponse {
+  /** `HISTORY_EVENT_KINDS` rows of the task, oldest first (seeds included) */
   events: AuditEvent[];
   runs: Run[];
+  /** the fold over the `TIMELINE_EVENT_KINDS` rows only — exactly the timeline's segments */
   segments: TimelineSegment[];
+  /** `tm_dispatches` rows the task sent OR received, oldest first — `task.dispatch` audit rows are filed under the RECEIVER only, so the sent side is not in `events` */
+  dispatches: Dispatch[];
   truncated: boolean;
 }
 
