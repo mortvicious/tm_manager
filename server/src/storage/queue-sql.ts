@@ -190,6 +190,9 @@ export type QueueReorderPlan =
  *   (marks stamped in the same millisecond) does it reach back before `min`,
  *   by the fewest ms that keep every mark distinct — never forward, where a
  *   later "Add to queue" click must still land behind.
+ *
+ * JS twin: planQueueDrop (shared/src/queue-drop.ts) predicts these marks for a
+ * timeline drag before the server answers; edit together.
  */
 export function planQueueReorder(
   task: { id: string; status: string; custom_queue_at: string | null },

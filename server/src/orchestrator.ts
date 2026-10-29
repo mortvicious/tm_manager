@@ -2177,7 +2177,11 @@ export class Orchestrator implements OrchestratorApi {
     }
   }
 
-  /** Claim queued tasks while below the concurrency cap (event-driven, single-flight). */
+  /**
+   * Claim queued tasks while below the concurrency cap (event-driven, single-flight).
+   * JS twin: predictSchedule (shared/src/schedule.ts) replays this pass order over
+   * virtual time for the timeline; edit together (docs/timeline.md § Prediction).
+   */
   maybeSchedule(): void {
     if (this.scheduling) {
       // A wakeup arriving mid-loop must not be dropped (review F7).

@@ -212,6 +212,10 @@ Each count equals the shared `buildInbox` run on the snapshot. Pressing the hint
 
 Verified (phase 3, Board) with Playwright at 1400 px and 393 px. A scratch build was served from `ctx.route`, `GET /api/workspaces` was faked with Neko = [neko-vite-new, neko-nest], and every non-GET was aborted. Under All the board rendered rows from other repos (15 on desktop, 11 on phone). On `?ws=neko` it rendered 29 and 22 rows, none outside the workspace, with the `workspace: Neko` chip. With the global key set to task-manager, the new-task default was neko-vite-new (the first repo). With `tm.newTask.repo.ws-neko` = neko-nest it was neko-nest. With that key set to task-manager (no longer in the workspace) it went back to neko-vite-new. Clearing the chip dropped `?ws`, restored the All rows, and the default became the global task-manager. `tm.board` was byte-identical before, across reloads and after. There were no page errors.
 
+### Timeline (`web/src/pages/Timeline.tsx`)
+
+`/timeline` fetches `GET /api/timeline?repoIds=` with the workspace's repos and folds only their live rows, so the past and the NOW counts are scoped. The prediction is NOT computed per workspace: `predictSchedule` runs over the whole board, because the claim order, the worker cap and the repo holds are global, and only its OUTPUT is cut to the workspace (repo-less slots always shown). A task in another workspace can therefore be the reason a scoped ghost waits, and the reason names it. Drags reorder the real, global queues. See docs/timeline.md § Data path and § Prediction.
+
 ## What is not scoped
 
 A workspace changes what the SPA SHOWS and nothing the server DOES (decisions.md 2026-10-28, view scopes):

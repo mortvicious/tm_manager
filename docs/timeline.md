@@ -1,8 +1,23 @@
 # Timeline
 
-The timeline shows what every task did over a window: when it waited in the queue, ran, parked, sat in a review round or the checks, was fixed, idled in review and landed. Later phases add "now" and a predicted future. It reads the audit log (`tm_events`) and `tm_runs`; it writes nothing.
+`/timeline` shows every task of the current workspace in time order: the PAST rebuilt from the audit log, a moving NOW, and a PREDICTED future with an ETA and the reason each item waits. Predicted points of queued tasks can be dragged to reorder the real queues, and a cursor scrubs or plays back the past. Desktop draws horizontal per-repo tracks, the phone one vertical stream. It is a new view BESIDE the legacy Board, which is frozen (docs/decisions.md 2026-10-29). Everything but a drag is a read.
 
-This document covers **phase 1 (data foundations)**: the shared segment builder and the range API. It also covers the **prediction accuracy replay** (§ Prediction accuracy), which grades the schedule simulator against the claims the server actually made. There is no SPA view yet.
+Files: `shared/src/timeline.ts` (the fold), `shared/src/schedule.ts` (the simulator and the duration baseline, docs/schedule.md), `shared/src/schedule-accuracy.ts` (the replay), `shared/src/queue-drop.ts` (drag → move), `server/src/routes/timeline.ts` + `routes/schedule.ts`, `web/src/timeline.ts` (`useTimeline`), `web/src/pages/Timeline.tsx` and `web/src/components/timeline/`.
+
+## Data path
+
+```
+tm_events + tm_runs ──GET /api/timeline──▶ foldEvents (shared) ──▶ segments ──▶ tracks / stream
+        │                                       ▲                       │
+        └── /ws/events event.appended, run.* ───┘ foldEvent / foldRun   └─▶ stateAt(T) · segmentAt
+tasks, repos, features, live runs, status, /api/schedule/baseline ──▶ predictSchedule (in the SPA) ──▶ ghosts
+```
+
+1. **Rows.** The past is the audit log (`TIMELINE_EVENT_KINDS`: `task.created`, `task.transition`, `run.started`, `task.follow-up`, `run.reviewed`, `task.checked`, `task.review-requested`, `task.waiting`, the land rows `task.land`/`task.landing`/`task.shipped`, `task.deleted`) plus `tm_runs` (worker, `review` and `compact` runs). Nothing new is written for the timeline except the Stop hook's `reviewState`/`checkState` on its landing's transition data (§ Where each kind comes from).
+2. **One pure fold** (§ Segments). `buildTaskSegments` is exactly `foldEvent` over id-sorted rows, then `timelineSegments` clips to the window. The server runs it for `GET /api/tasks/:id/history`; `GET /api/timeline` (§ Range API) returns the raw rows plus a seed per task, and the SPA folds them.
+3. **Live** (§ `useTimeline`). The hook subscribes to `/ws/events` before it fetches, folds every later `event.appended` / `run.*` through the SAME `foldEvent`/`foldRun`, and never refetches on an event — only on a new window, a workspace switch, `reload()` or a socket reconnect. NOW ticks every 30 s and on every folded row.
+4. **`stateAt(segments, T)`** buckets every task at an instant (`running` — fixing included — `waiting`, `checking`, `inReview`, `queued`, `landed`). The live counts on NOW read it at `now`; the scrub cursor (§ Scrub and playback) reads it at T, with `segmentAt` per task for the segment that holds T.
+5. **The future** is computed IN THE BROWSER (§ Prediction) from state the SPA already holds, so a drag re-predicts with no round trip. The server runs the same function only to grade it (§ Prediction accuracy).
 
 ## Segments
 
@@ -100,7 +115,7 @@ A time cursor over the past, on both shapes (`components/timeline/scrub.tsx`, `u
 
 - **State.** `at === null` is LIVE (the cursor is NOW). A **drag** is a look: it scrubs while the pointer is down and returns to live on release. A **playback session** — Play, Pause, or a keyboard step — PINS the cursor: it stays where it was left until **Now** is pressed or playback reaches NOW. The cursor is clamped to [NOW − `TIMELINE_MAX_DAYS`, NOW].
 - **Reading.** The shared `stateAt(tl.segments, T)` — the same buckets as the live counts — plus `segmentAt` per task for the segment that holds T. The chip (`chipText`) reads `14:20 — 2 running, 1 checking, 1 in review, 5 landed` (empty buckets left out, `nothing live` when all are; queued is not a "where it was" set and is not counted). The held-segment set keeps its identity while it is the same set, so memoised tracks do not re-render on every frame.
-- **Desktop** (`TimelineTracks`). Drag the NOW pill, or press anywhere on the axis's time area (touch too: the axis is `touch-action: none`; empty track still pans). While scrubbing, a second line marks T, the NOW line and pill stay drawn but quieter, the bar holding each task's segment at T (an active part, its idle tail, or its landed marker) is outlined, everything else — the rest of the past and every ghost — recedes, and the chip replaces the live counts in the toolbar. A drag pushed past the view's left edge steps the cursor back 2 % of a viewport per move and pans the view under it; at the canvas's start it goes before the window and the hook extends it. The handle is a focusable `role="slider"`: ←/→ step 5 min (Shift ×10) and pin; Escape/End return to live. **Play** starts at the viewport's left edge (never before the window) and the view follows the cursor once it passes 80 % of the viewport; ×1/×10/×60/×600 is a segmented control.
+- **Desktop** (`TimelineTracks`). Drag the NOW pill, or press anywhere on the axis's time area (touch too: the axis is `touch-action: none`; empty track still pans). While scrubbing, a second line marks T, the NOW line and pill stay drawn but quieter, the bar holding each task's segment at T (an active part, its idle tail, or its landed marker) is outlined, everything else — the rest of the past and every ghost — recedes, and the chip replaces the live counts in the toolbar. A drag pushed past the view's left edge steps the cursor back 2 % of a viewport per move and pans the view under it; at the canvas's start it goes before the window and the hook extends it. The handle is a focusable `role="slider"`: ←/→ step 5 min (Shift ×10) and pin, and a step that leaves the viewport brings the view along (cursor at 20 %), as playback does; Escape/End return to live. **Play** starts at the viewport's left edge (never before the window) and the view follows the cursor once it passes 80 % of the viewport; ×1/×10/×60/×600 is a segmented control.
 - **Phone** (`TimelineStream`). A bar stuck to the bottom of `.main`'s padding (above the tab bar; the NOW divider's sticky `bottom` is the bar's measured height, `--tl-scrub-h`, so the two never overlap): Play/Pause, a range slider, a speed button cycling ×1 → ×10 → ×60 → ×600, and **Now**. The slider runs from one window's length (at least 6 h) BEFORE the loaded start to NOW, the part not loaded yet hatched; its range is frozen while a finger is on it, so an extension under the drag does not change what the thumb means. Release anywhere (a `window` `pointerup`/`pointercancel` — off the slider the input gets none) returns to live; the slider's own `change` at release is ignored, only a KEY step pins. While scrubbing, the bar lists the sets at T (running · waiting · checking · in review · landed, three titles each + `+n`, a tap opens the task) above the chip, and the past list shows the newest 60 rows UP TO T, the ones holding T lit and the rest dimmed. **Play** starts at the later of the window's start and 24 h back.
 - **Playback** is a `requestAnimationFrame` loop: each frame advances the cursor by the real elapsed time × speed and stops at NOW, which returns to live. Paused while a drag is in progress.
 - **Designs.** Tokens only (`.tl-scrub*`, `.tlt-cursor*` in `theme.css`; the cursor is `--tm-text`, distinct from NOW's accent). Glass (`glass.css`): the phone bar wears the bar material like the NOW divider, the chip the glass button fill, a lit row the press fill. The slider thumb is the Glass `--tm-knob`, falling back to the raised surface in Classic.
@@ -131,6 +146,74 @@ Predicted points of QUEUED tasks drag to reorder the real queues (`components/ti
   - refused, nothing sent: one in each queue (`separate orders; Add/Remove from queue moves it over`), different priorities in the global queue (`claim order is priority first … change the priority instead` — no key change can cross it), and one group under different parents (`before/after` would re-parent).
 - **The ghost** follows the pointer (kept on screen) with the hint — or the refusal, in the failed colour — and the ETA the drop would give: `starts 08:51 (in 1h 41m) · was 09:19`, from `preview()` once per target, not per pixel. The target draws its side as an accent edge (left/right on the tracks, top/bottom in the stream), a refusal as a red outline. Letting go over a refusal toasts it too — on a phone the finger covered the ghost.
 - **Optimistic, then reconciled.** On drop the plan's patch goes through `applyOptimistic` (a `sortOrder` midpoint beside the target among its siblings; for the custom queue a mark midpoint, or the waiting set renumbered across its span — the shape of `planQueueReorder`), so the prediction re-renders at once. A patch is dropped when the server's row moves past it — `updatedAt` OR a patched field differs, because a reorder writes `sort_order`/`custom_queue_at` and leaves `updated_at` alone — i.e. on the confirming `task.updated`; after a success the caller also clears it after 4 s (a no-op answer, or rows the client renumbered and the server did not). A refusal (a 409 from either route) removes it at once and toasts the server's reason.
+
+- **The custom-queue rule** (docs/queue.md § Reordering). The custom queue's order IS `custom_queue_at`, its FIFO mark, so a reorder rewrites that column and nothing else: the moved member gets the millisecond midpoint between its new neighbours (one row), and only when they are tied or < 2 ms apart is the waiting set renumbered evenly inside its CURRENT [min, max] span — never later than max, where the next Add to queue click must still land behind. `CUSTOM_QUEUE_HEAD_ORDER` and its twin `customQueueWaiting` already sort on the column, so no claim SQL changed. Running, review and blocked members keep their marks; `updated_at` is not bumped.
+- **Why refusals, not silent fixes.** A drop the server's claim order cannot express is refused before anything is sent, with the reason, rather than mapped to a nearby move that would change something else: crossing a priority would need a priority edit (hidden power from a drag), crossing queues is Add/Remove from queue, and a sibling move between different parents would regroup the task. Past and running points never drag, and unscheduled rows (draft, held, blocked parents) have no slot to drag.
+
+## Prediction
+
+`predictSchedule(input)` (`shared/src/schedule.ts`; full reference docs/schedule.md § Simulator) runs in a `useMemo` in `useTimeline` over the WHOLE board, and only its output is cut to the workspace. It is pure and runs client-side on purpose (docs/decisions.md 2026-10-29): the SPA already holds every input, a drag re-predicts on the next frame through `preview()`/`applyOptimistic`, and no server endpoint or cache can go stale. The server imports the same function only for the accuracy replay.
+
+### What it mirrors
+
+It replays `Orchestrator.maybeSchedule` over virtual time — at each instant something changes (a predicted work segment ends, a round settles, a wake falls due) it runs one claim pass in the server's order, starts what that pass would start, and re-runs the pass at the same instant (up to 4 times), as each settled turn calls `maybeSchedule` again:
+
+1. **Pause all** (`orchestrator.paused`): nothing starts, no verify round settles, every candidate waits `paused`.
+2. **Paused-turn markers** (`paused_turn` `resume|publish|land`) resume first, oldest first, within `orchestrator.concurrency`.
+3. **Custom queue**, independent of the queue switch: `customQueueWaiting` FIFO, `queue_held_at` skipped, push-failing repos skipped, `FEATURE_CLAIM_GATE`, `CUSTOM_QUEUE_HEAD_WHERE` (one head per repo, `customQueueHoldsRepo`, the agent-filed member's FILER hold) and the pump's `repoBusy`.
+4. **Loops** in `loop_state = 'next'`, within the cap.
+5. **Global claim** (queue switch on, day fuse not tripped): `compareClaimOrder` (priority, then `MANUAL_CLAIM_ORDER`: the group root's `sort_order`, root first, own key), `FEATURE_CLAIM_GATE` (`isFeatureTaskBlocking`), `REPO_EXCLUSIVE_GATE` (`holdsRepoForClaim` + `repoHasRoom`/`repoParallelCap`, so a `pr` repo admits up to `parallel` worktree holders and never one beside a checkout holder).
+6. **Overflow**: one child per live, non-idle creating run, past the cap (`FEATURE_OVERFLOW_GATE`).
+7. **Wake sweep** (`agent.autoWake`): `review`/`failed` rows with `wake_at` resume at `wake_at` + 90 s, earliest first, within the cap, ignoring the repo gate as `wakeDue` does.
+
+After each predicted work segment the row is moved the way the Stop hook moves it: `review` with checks due (`verifyOpen`) when the repo has checks the task selects, then a review round when `task.review ?? review.enabled`, each holding the repo but no worker lane; then `effectiveLanding` decides: `supervised` stays in `review`, `on-green` → `done` (a worktree task stays in `review`, PR ready), `auto-publish` → a 3-min publish turn → `published`. So a predicted landing frees a repo or opens a feature phase exactly where the real row write would.
+
+### Twins to edit together
+
+The simulator is a JS twin of the claim SQL. Each SQL fragment and shared twin carries a `JS twin: predictSchedule` comment (`planQueueReorder` a `JS twin: planQueueDrop` one); editing one without the others makes the prediction lie silently (the accuracy replay is how you would notice):
+
+| SQL / server | JS twin the simulator calls |
+| --- | --- |
+| `queue-sql.ts` `REPO_EXCLUSIVE_GATE`, `repoHasRoom`, `repoCapSql`, `heldBy` | `holdsRepoForClaim`, `repoHasRoom`, `repoParallelCap`, `customQueueHoldsRepo`, `verifyOpen` (shared) |
+| `queue-sql.ts` `CUSTOM_QUEUE_HEAD_WHERE`, `CUSTOM_QUEUE_HEAD_ORDER` | `customQueueWaiting`, the filer hold inside `predictSchedule` |
+| `feature-sql.ts` `FEATURE_CLAIM_GATE`, `FEATURE_OVERFLOW_GATE` | `isFeatureTaskBlocking` (moved to shared; `feature-sql.ts` re-exports it) |
+| `group.ts` `MANUAL_CLAIM_ORDER` | `compareClaimOrder` |
+| `Orchestrator.maybeSchedule` pass order, `wakeDue` | the pass above, `SCHEDULE_WAKE_DELAY_MS` |
+| `queue-sql.ts` `planQueueReorder` (the reorder endpoint) | `planQueueDrop`'s custom-queue patch (`shared/src/queue-drop.ts`) |
+
+### Durations
+
+Every length is WORKED time, never wall time — a session that sat idle in review for hours is not "long". The baseline is `GET /api/schedule/baseline` (`durationBaseline`, docs/schedule.md § Baseline; cached 1 h server-side, fetched hourly by the SPA): per repo with ≥ 10 landed tasks in 90 days, else all repos, else `SCHEDULE_DEFAULT_LINE` (work 20 min / p75 35, review 8, checks 4).
+
+- **Worked time** of a task = the sum over its worker runs of `runWorkedMs`: start → the run's first `run.stats-final` (its first idle), else its exit — the Dashboard's own rule.
+- **A fresh work segment** (claim, resume, wake, loop iteration) is the repo's `workMs.median`.
+- **Review and check rounds** are the medians of landed tasks' review aux runs (`startedAt → endedAt`) and of `task.checked` stages (sum of the serial checks' `durationMs`).
+- **A live turn's remaining time** comes from the board's progress % (`taskProgress`, docs/task-progress.md), rescaled to its WORK band (`pct / 70 × 100` — the bar's 70–100 are checks, review and landing, which the simulator adds as their own segments): `elapsed × (100/pct − 1)`, clamped to [1 min, `workMs.p75`]. With no usable % (none, 0, or past the work band — a fix turn) it is `median − elapsed`, at least 1 min. A publish run is 3 min − elapsed.
+
+### How prediction can be wrong, and why
+
+The simulator predicts what the server will do if NOTHING new happens: no human click, no new task, no surprise verdict. It is faithful to the claim rules (the replay below), and its errors come from the world, not the rules:
+
+- **Human clicks.** Run now, Proceed, Retry, Undo start, Cancel, a follow-up typed into a live session and a manual Publish all start or end turns the moment they are pressed. Run now in particular takes a worker lane outside the claim order, pushing every later ghost back by one turn.
+- **Priority and order edits.** Claim order is priority first. A priority edit or a board move re-predicts at once, but a FUTURE edit cannot be foreseen. The accuracy replay uses each task's CURRENT priority and sort order (it has no history of them), so it measures rule fidelity, not this drift.
+- **Review fix rounds.** A clean verdict is assumed. A flagged round sends findings back into the same session (`review.maxRounds`, default 1): one more work turn plus one more review round, all holding the repo.
+- **Check reds.** Green is assumed. A red check resumes the session with a fix turn, up to `checks.maxRounds` (3) times, each followed by another check stage — the worst case is several times the predicted verify round.
+- **Dispatch turns taking slots.** A `needs_action` dispatch resumes its target's session and counts in `activeWorkers()` like any turn, so it takes a lane the simulator gave to the next claim. Dispatches are not modelled at all.
+- **Agent-filed tasks that do not exist yet.** About 70 % of tasks are agent-filed (828 tasks, 2026-10-28), and none of them exists before its filer runs. A filed overflow child or custom-queue member can start ahead of ghosts already on the timeline.
+- **Budget fuses.** `budget.dayUsd` is not on `OrchestratorStatus`, so the SPA leaves `dayBudgetReached` unset and keeps predicting global claims after the fuse trips. `budget.taskUsd` refusing an automatic turn (a fix turn, auto-publish) is not foreseen either.
+- **The CLI's own wake timing.** A usage-limit wake is predicted at `wake_at` + 90 s. In reality the CLI auto-continues at the reset + 30–90 s, the server takes over 3 min later if nothing moved, a weekly limit hands the task to the human after 3 wakes, and `resolveWakeAt` may pick the later of two reset times — any of these moves the ETA by minutes to days.
+- **Progress % on long tasks.** The remaining time is clamped to the repo's p75, so a task that runs long keeps reading "ends in a few minutes" and its ETA slides forward on every tick. A todo list the agent extends mid-turn makes the % go flat; the output-token reading is held at 67 % above the repo's p90 ("longer than usual"), which freezes the estimate exactly when it matters most.
+- **Baseline bias.** The fresh-segment length is one median per repo. The measured median error is about 20 min either way, and it ran SHORT over the last 14 days because recent tasks are longer than the 90-day median.
+- **Not modelled on purpose** (docs/schedule.md § Durations): a blocked split parent resolving, a feature pausing after a failure, a loop beyond its next iteration, the PTY hard cap, in-process follow-on holds.
+
+**Measured** (`GET /api/schedule/accuracy`, live API, 2026-10-29; method and the 2026-10-28 run in § Prediction accuracy):
+
+| window | claims matched | contested matched | duration n | median abs error | median signed | median predicted / actual |
+| --- | --- | --- | --- | --- | --- | --- |
+| 14 d | **135 / 135 (100 %)** | 124 / 124 | 257 | **21.4 min** | −16.0 min (short) | 44.6 / 53.3 min |
+| 31 d | **198 / 199 (99.5 %)** | 165 / 166 | 459 | **17.9 min** | −3.8 min | 44.6 / 37.9 min |
+
+Read it as: WHICH task runs next is right essentially every time (every claim in both windows was a custom-queue claim — the global switch was off, so `base`/`overflow` have only unit-test coverage), and WHEN it starts is good to about ±20 min per queued task ahead of it, compounding along a queue. The one miss is a pre-2026-09-28 rule graded against today's twin (§ Measured).
 
 ## Prediction accuracy
 
@@ -254,3 +337,9 @@ Measured on a `.backup` copy of the live DB through an `app.inject` harness that
   - Scrolled to the canvas's start, one 40-move drag over the repo column → exactly ONE extra `/api/timeline` request (the older gap only, `until` = the old start), `since` moved a window back and the view kept its place; a further push past the view's edge stepped the cursor back with the view, the cursor line staying at the time area's left edge.
   - Hour zoom, ×600, Play: the cursor advanced 05:12 → 05:33 in 2 s, Pause held it (05:54 after 1.5 s), Play resumed from there and on reaching NOW the chip disappeared and the handle read `now …` (live).
   - Phone 393×852 (touch, iPhone UA): dragging the slider listed the sets at T (running / in review / landed with titles), lit 15 rows of the past list (cut at T) and dimmed 45; a drag on into the hatched part made ONE extension request for the whole drag (the slider's frozen range); releasing off the slider returned to live; the speed button cycled ×60 → ×600 → ×1, Play advanced the chip and **Now** returned to live.
+- **Phase 6, the whole feature in a real browser** (2026-10-29, Claude in Chrome over a throwaway API from the task's worktree: its own fresh `server/data`, port 5195, started as a one-shot command with a stub `claude` on `PATH` that only sleeps; three scratch repos; seven past tasks seeded as `task.transition` rows 2.5–9 h back, two live stub runs holding alpha and beta, four global and three custom-queue tasks queued). The extension's screenshots timed out, so everything was read off the DOM, with real mouse and key input:
+  - **Desktop 1440×900, Glass.** Three repo rows, all 9 bars (5 done, 1 failed, 1 in review, 2 live), the NOW pill and line, the counts `2 running · 0 waiting · 0 checks · 1 in review · 7 queued`, and 7 ghosts, each labelled with ETA and reason (`all 2 worker slots busy`, `waits for beta: R2 live beta running`, `waits for gamma: C2 custom gamma in review round`).
+  - **Drag.** G3 → before G2 sent `/move`: `sort_order` 12.5 between G1 (12) and G2 (13), one `task.moved` row, and the ghosts re-predicted at once (G3 ~12:26, G2 ~12:54). G1 → onto Hi prio (priority 0 vs 1) toasted `claim order is priority first … change the priority instead`, and nothing was written.
+  - **Scrub.** Shift+← on the focused handle pinned the cursor. At 02:26 the chip read `02:26 — 1 running`, the bar holding T (Fix login redirect, 02:10–02:50) was lit and the rest dimmed; Escape returned to `now …` with nothing dimmed. **Fixed here:** keyboard steps used to leave the cursor off-screen (x = −2056 px), where the lit bar was culled. A step that leaves the viewport now brings the view along, like playback.
+  - **Desktop, Classic.** The same rows, bars, ghosts and counts in the Classic tokens. Dragging C3 → before C1 sent `queue-move`: the waiting set was renumbered inside its [min, max] span (C3 .478, C1 .509, C2 .541) with one `task.queue { action: 'reorder', renumbered: 3 }` row.
+  - **Phone 393×852** (an iframe at that width, since the window will not go below 500 px; `.app.mobile`). Classic: 47 stream rows, the NOW divider with counts, predicted rows with `waited: …` reasons, 7 grips, and the scrub bar. A mouse drag of G2 onto G3's top half sent `/move` (G2 → 12.25). Slider key steps pinned at `Oct 28 11:18 — nothing live`, then at `02:22 — 1 running`, with Fix login redirect listed under running and past rows lit or dimmed. Glass: the divider and scrub bar carry `blur(24px) saturate(1.8)`; Play advanced 11:19 → 11:28 at ×60, and **Now** restored all 47 rows. The touch hold itself was covered with CDP touches in the drag phase above. No console errors.

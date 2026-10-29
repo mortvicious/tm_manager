@@ -343,6 +343,10 @@ same pure function, `planQueueReorder` in `storage/queue-sql.ts`.
   member's calls this route (docs/timeline.md § Drag the future); a drop
   between a member and a global-queue task is refused there, since the two
   queues are separate orders.
+  `planQueueDrop` (`shared/src/queue-drop.ts`) is this function's JS twin for
+  the optimistic patch: edit together. Where each queued task is predicted to
+  start, and why it waits, is the timeline's simulator (docs/timeline.md
+  § Prediction), a JS twin of the claim SQL in this document.
 
 Verified on a copy of the live DB through `app.inject`. Three members across
 two repos were reordered three ways; after each move the `peekCustomQueue`

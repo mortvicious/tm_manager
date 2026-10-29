@@ -342,8 +342,13 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
       // the cursor handle: arrows step a pinned cursor, Escape / End go back to live
       const stepMs = CURSOR_STEP * (e.shiftKey ? 10 : 1);
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        scrub.step((scrub.at ?? tl.now) + (e.key === 'ArrowLeft' ? -stepMs : stepMs));
+        const t = Math.min(tl.now, (scrub.at ?? tl.now) + (e.key === 'ArrowLeft' ? -stepMs : stepMs));
+        scrub.step(t);
         e.preventDefault();
+        // a step that leaves the viewport brings the view along, as playback does
+        const el = scroller.current;
+        const cx = el && pxPerMs > 0 ? x(t) - el.scrollLeft : 0;
+        if (el && (cx < 0 || cx > viewW)) el.scrollLeft = Math.max(0, x(t) - viewW * (1 - FOLLOW_AT));
       } else if (e.key === 'Escape' || e.key === 'End') {
         scrub.live();
         e.preventDefault();
