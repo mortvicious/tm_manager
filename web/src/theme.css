@@ -8417,7 +8417,8 @@ button.explain-tap:active {
 .tl-now-divider {
   position: sticky;
   top: 0;
-  bottom: 0;
+  /* stops above the scrub bar, which is stuck to the bottom edge (its measured height) */
+  bottom: var(--tl-scrub-h, 0px);
   z-index: 3;
   display: flex;
   align-items: center;
@@ -9002,3 +9003,272 @@ button.explain-tap:active {
 .tlt-card-foot {
   font-size: var(--tm-text-xs);
 }
+
+/* ---------- timeline: the time cursor (docs/timeline.md § Scrub and playback) ---------- */
+
+/* what the cursor reads at T, in both views */
+.tl-scrub-chip {
+  min-width: 0;
+  padding: 0 var(--tm-space-2);
+  border: 1px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-bg-inset);
+  color: var(--tm-text);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tlt-bar .tl-scrub-chip {
+  margin-left: auto;
+}
+
+/* desktop: the axis is the cursor's rail; the NOW pill is its handle while live */
+.tlt-axis .tlt-lanes {
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.tlt-cursor-handle {
+  z-index: 3;
+  pointer-events: auto;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.tlt-cursor-handle:focus-visible {
+  outline: 2px solid var(--tm-text);
+  outline-offset: 2px;
+}
+
+.tlt-cursor-handle.scrub {
+  background: var(--tm-text);
+  color: var(--tm-bg);
+}
+
+/* NOW stays drawn behind a scrubbed cursor, quieter */
+.tlt-now-pill.past {
+  opacity: 0.55;
+}
+
+.tlt-now.past {
+  opacity: 0.4;
+}
+
+.tlt-cursor {
+  position: absolute;
+  top: var(--tm-tl-axis-h);
+  bottom: 0;
+  z-index: 2;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--tm-text);
+  pointer-events: none;
+}
+
+/* while scrubbing: what holds T is outlined, the rest of the past and the future recede */
+.tlt-scroller.scrubbing :is(.tlt-item, .tlt-tail, .tlt-marker, .tlt-ghost) {
+  transition: opacity var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.tlt-scroller.scrubbing .tlt-ghost,
+.tlt-item.dim,
+.tlt-tail.dim,
+.tlt-marker.dim {
+  opacity: 0.25;
+}
+
+.tlt-item.at {
+  box-shadow: 0 0 0 2px var(--tm-text);
+}
+
+.tlt-tail.at {
+  box-shadow: inset 0 0 0 1px var(--tm-text);
+  border-radius: var(--tm-radius-sm);
+}
+
+.tlt-marker.at {
+  box-shadow: 0 0 0 2px var(--tm-text);
+}
+
+/* phone: rows holding T are lit, the others recede */
+.tl-srow.at {
+  background: var(--tm-accent-subtle);
+}
+
+.tl-stream.scrubbing .tl-srow.dim {
+  opacity: 0.45;
+}
+
+/* the phone's scrub bar: stuck to the bottom of .main's padding, which already clears the tab bar */
+.tl-scrub {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-4);
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-raised);
+  box-shadow: var(--tm-shadow-md);
+}
+
+.tl-scrub.active {
+  border-color: var(--tm-text-muted);
+}
+
+.tl-scrub-head {
+  display: flex;
+  min-width: 0;
+}
+
+/* the phone has the width for the whole reading: wrap it rather than cut the counts */
+.tl-scrub-head .tl-scrub-chip {
+  border-radius: var(--tm-radius-sm);
+  white-space: normal;
+}
+
+.tl-scrub-hint {
+  font-size: var(--tm-text-xs);
+}
+
+.tl-scrub-sets {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  font-size: var(--tm-text-xs);
+}
+
+.tl-scrub-set {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  min-width: 0;
+}
+
+.tl-scrub-set-label {
+  flex: none;
+  color: var(--tm-text-muted);
+}
+
+.tl-scrub-set-titles {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-scrub-title {
+  /* inline, not inline-block, so the line's ellipsis can cut inside a title */
+  display: inline;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--tm-text);
+  font: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tl-scrub-title:disabled {
+  color: var(--tm-text-faint);
+  cursor: default;
+}
+
+.tl-scrub-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+}
+
+.tl-scrub-btn {
+  flex: none;
+  min-height: var(--tm-tap-dense);
+}
+
+/* the slider: the part before the loaded window is hatched (fetched when the cursor reaches it) */
+.tl-scrub-track {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  min-height: var(--tm-tap);
+}
+
+.tl-scrub-track::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: var(--tm-space-1);
+  transform: translateY(-50%);
+  border-radius: var(--tm-radius-pill);
+  background:
+    linear-gradient(to right, transparent var(--loaded), var(--tm-border) var(--loaded)),
+    repeating-linear-gradient(135deg, var(--tm-border) 0 var(--tm-space-1), transparent var(--tm-space-1) var(--tm-space-2));
+  pointer-events: none;
+}
+
+.tl-scrub-range {
+  position: relative;
+  width: 100%;
+  height: var(--tm-tap);
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  touch-action: none;
+  cursor: ew-resize;
+}
+
+.tl-scrub-range::-webkit-slider-runnable-track {
+  background: transparent;
+}
+
+.tl-scrub-range::-moz-range-track {
+  background: transparent;
+}
+
+.tl-scrub-range::-webkit-slider-thumb {
+  width: var(--tm-space-5);
+  height: var(--tm-space-5);
+  border: 2px solid var(--tm-accent);
+  border-radius: var(--tm-radius-pill);
+  /* the Glass knob; Classic has no knob token, so its raised surface */
+  background: var(--tm-knob, var(--tm-bg-raised));
+  box-shadow: var(--tm-knob-shadow, var(--tm-shadow-sm));
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.tl-scrub-range::-moz-range-thumb {
+  width: var(--tm-space-5);
+  height: var(--tm-space-5);
+  border: 2px solid var(--tm-accent);
+  border-radius: var(--tm-radius-pill);
+  /* the Glass knob; Classic has no knob token, so its raised surface */
+  background: var(--tm-knob, var(--tm-bg-raised));
+  box-shadow: var(--tm-knob-shadow, var(--tm-shadow-sm));
+}
+
+.tl-scrub.active .tl-scrub-range::-webkit-slider-thumb {
+  border-color: var(--tm-text);
+}
+
+.tl-scrub.active .tl-scrub-range::-moz-range-thumb {
+  border-color: var(--tm-text);
+}
+
+.tl-scrub-range:focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: 2px;
+  border-radius: var(--tm-radius-pill);
+}
+

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type Ref, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
 import {
   repoParallelCap,
   stateAt,
@@ -7,6 +7,7 @@ import {
   type Task,
   type TimelineSegment,
   type TimelineSegmentKind,
+  type TimelineStateAt,
 } from '@tm/shared';
 import { useApp } from '../../state.tsx';
 import type { UseTimeline } from '../../timeline.ts';
@@ -26,6 +27,7 @@ import {
   span,
   type Lookup,
 } from './format.ts';
+import { SCRUB_SPEEDS, ScrubChip, useScrub, type Scrub } from './scrub.tsx';
 
 /** the newest past rows a phone shows above NOW */
 const PAST_MAX = 60;
@@ -64,11 +66,29 @@ const SEGMENT_WHAT: Record<TimelineSegmentKind, string> = {
  * task, a long press — or a tap on the reason — explains the row in a Sheet.
  * A queued task's predicted row has a grip: hold it, then drag the row above
  * or below another to reorder the real queue (TimelineDrag.tsx).
+ * A sticky scrub bar at the bottom moves a time cursor over the past: rows
+ * holding T are lit, the sets at T are listed above the slider, release (or
+ * NOW) returns to live, play replays the day at ×N.
  */
 export function TimelineStream({ tl, names, onOpenTask }: { tl: UseTimeline; names: Lookup; onOpenTask: (id: string) => void }) {
   const { repos, loaded } = useApp();
   const [explain, setExplain] = useState<Explained | null>(null);
   const dnd = useTimelineDrag(tl, 'y');
+  const scrub = useScrub(tl);
+  const scrubbing = scrub.at !== null;
+  const held = scrub.reading?.held ?? null;
+  // the bar's height, so the sticky NOW divider stops above it instead of under it
+  const bar = useRef<HTMLDivElement>(null);
+  const [barH, setBarH] = useState(0);
+  useLayoutEffect(() => {
+    const el = bar.current;
+    if (!el) return;
+    const measure = () => setBarH(el.offsetHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const past = useMemo(
     () =>
@@ -77,7 +97,10 @@ export function TimelineStream({ tl, names, onOpenTask }: { tl: UseTimeline; nam
         .sort((a, b) => Date.parse(a.start) - Date.parse(b.start) || a.taskId.localeCompare(b.taskId)),
     [tl.segments],
   );
-  const shown = past.slice(-PAST_MAX);
+  // scrubbing: the newest rows up to the cursor, so the stretches holding T are on screen
+  const cut = scrub.at === null ? past.length : past.findIndex((s) => Date.parse(s.start) > scrub.at!);
+  const upTo = cut === -1 ? past.length : cut;
+  const shown = past.slice(Math.max(0, upTo - PAST_MAX), upTo);
   const scheduled = tl.predicted.filter((p) => p.scheduled);
   const unscheduled = tl.predicted.filter((p) => !p.scheduled);
   const scheduledShown = scheduled.slice(0, FUTURE_MAX);
@@ -120,7 +143,7 @@ export function TimelineStream({ tl, names, onOpenTask }: { tl: UseTimeline; nam
   const rail = (repoId: string | null, lane: number | null) => <Rail rail={repoId ? rails.get(repoId) : undefined} lane={lane} />;
 
   return (
-    <div className="tl-stream">
+    <div className={`tl-stream${held ? ' scrubbing' : ''}`} style={{ '--tl-scrub-h': `${barH}px` } as CSSProperties}>
       {legend.length > 0 && (
         <div className="tl-legend" aria-label="Repo rails">
           {legend.map((id) => (
@@ -135,10 +158,14 @@ export function TimelineStream({ tl, names, onOpenTask }: { tl: UseTimeline; nam
 
       <div className="section-head">
         Past <span className="count">{past.length}</span>
-        {past.length > shown.length && <span className="muted tl-head-note">newest {shown.length}</span>}
+        {scrubbing ? (
+          <span className="muted tl-head-note">up to {clock(scrub.at!, tl.now)}</span>
+        ) : (
+          past.length > shown.length && <span className="muted tl-head-note">newest {shown.length}</span>
+        )}
       </div>
       {shown.length === 0 ? (
-        <div className="panel tl-empty muted">{tl.loading ? 'Loading…' : 'Nothing happened in this window.'}</div>
+        <div className="panel tl-empty muted">{tl.loading || (scrubbing && tl.extending) ? 'Loading…' : scrubbing ? 'Nothing happened before this point.' : 'Nothing happened in this window.'}</div>
       ) : (
         <div className="panel tl-srows">
           {shown.map((s, i) => (
@@ -159,6 +186,7 @@ export function TimelineStream({ tl, names, onOpenTask }: { tl: UseTimeline; nam
               }
               repo={names.repo(s.repoId)}
               open={s.end === null}
+              at={held ? held.has(s) : null}
             />
           ))}
         </div>
@@ -215,6 +243,7 @@ export function TimelineStream({ tl, names, onOpenTask }: { tl: UseTimeline; nam
       )}
 
       <TimelineDragGhost drag={dnd.drag} tl={tl} />
+      <ScrubBar ref={bar} scrub={scrub} tl={tl} names={names} onOpenTask={onOpenTask} />
 
       {explain && (
         <ExplainRowSheet
@@ -324,6 +353,7 @@ function StreamRow({
   open = false,
   predicted = false,
   drag,
+  at = null,
 }: {
   /** a draggable predicted row: its drop id, drop class and grip */
   drag?: { id: string; cls: string; grip: ReactNode };
@@ -337,13 +367,15 @@ function StreamRow({
   reason?: ReactNode;
   open?: boolean;
   predicted?: boolean;
+  /** scrubbing: this row's stretch holds the cursor (null = live) */
+  at?: boolean | null;
 }) {
   const press = useLongPress(onExplain);
   return (
     <div
       role="button"
       tabIndex={0}
-      className={`tl-srow${open ? ' open' : ''}${predicted ? ' predicted' : ''}${known ? '' : ' gone'}${drag ? ` draggable${drag.cls}` : ''}`}
+      className={`tl-srow${open ? ' open' : ''}${predicted ? ' predicted' : ''}${known ? '' : ' gone'}${drag ? ` draggable${drag.cls}` : ''}${at === null ? '' : at ? ' at' : ' dim'}`}
       data-tl-drop={drag?.id}
       aria-label={known ? `${title} — open the task` : `${title} — explain`}
       {...press.handlers}
@@ -377,6 +409,145 @@ function StreamRow({
 }
 
 /** "starts 14:05 (in 12m) · ~38m", a running one "ends 14:43 (in 12m)" */
+// ---- the scrub bar ---------------------------------------------------------------
+
+const MIN = 60_000;
+const DAY = 24 * 60 * MIN;
+/** the sets the bar lists at T, in order; at most this many titles per line before `+n` */
+const AT_LINES: [keyof TimelineStateAt, string, TimelineSegmentKind][] = [
+  ['running', 'running', 'running'],
+  ['waiting', 'waiting', 'waiting'],
+  ['checking', 'checking', 'checks'],
+  ['inReview', 'in review', 'review-round'],
+  ['landed', 'landed', 'landed'],
+];
+const AT_TITLES = 3;
+
+/**
+ * The phone's cursor: one sticky bar under the stream (docs/timeline.md §
+ * Scrub and playback). The slider runs from one window's length BEFORE the
+ * loaded start (bounded by `TIMELINE_MAX_DAYS`) to NOW; its range is frozen
+ * while a finger is on it, so an extension under the drag does not move the
+ * thumb's meaning. The part not loaded yet is hatched.
+ */
+function ScrubBar({
+  ref,
+  scrub,
+  tl,
+  names,
+  onOpenTask,
+}: {
+  ref: Ref<HTMLDivElement>;
+  scrub: Scrub;
+  tl: UseTimeline;
+  names: Lookup;
+  onOpenTask: (id: string) => void;
+}) {
+  const sinceMs = Date.parse(tl.since);
+  const originMs = Date.parse(tl.origin);
+  const liveMin = Math.max(scrub.floor, sinceMs - Math.max(DAY / 4, tl.now - originMs));
+  const frozen = useRef<number | null>(null);
+  if (!scrub.dragging) frozen.current = null;
+  // a finger released anywhere ends the look — off the slider too, where the input gets no pointerup
+  const { dragging, end } = scrub;
+  useEffect(() => {
+    if (!dragging) return;
+    const up = () => end();
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+    return () => {
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+    };
+  }, [dragging, end]);
+  const min = frozen.current ?? liveMin;
+  const max = tl.now;
+  const value = scrub.at ?? max;
+  const loadedPct = max > min ? Math.min(100, Math.max(0, ((sinceMs - min) / (max - min)) * 100)) : 0;
+  const reading = scrub.reading;
+  const nextSpeed = SCRUB_SPEEDS[(SCRUB_SPEEDS.indexOf(scrub.speed) + 1) % SCRUB_SPEEDS.length];
+  // the slider's own `change` at release arrives after the drag ended: only a KEY step may pin the cursor
+  const byKey = useRef(false);
+  const start = () => {
+    byKey.current = false;
+    frozen.current = liveMin;
+    scrub.begin(value);
+  };
+  const onChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const t = Number(e.target.value);
+    // a finger moves the look; a keyboard step pins the cursor
+    if (scrub.dragging) scrub.move(t);
+    else if (byKey.current) scrub.step(t);
+  };
+  return (
+    <div ref={ref} className={`tl-scrub${reading ? ' active' : ''}`}>
+      {reading && (
+        <div className="tl-scrub-sets">
+          {AT_LINES.map(([k, label, kind]) => {
+            const ids = reading.state[k];
+            if (!ids.length) return null;
+            return (
+              <div key={k} className="tl-scrub-set">
+                <span className="tl-dot" style={{ background: SEGMENT_COLOR[kind] }} />
+                <span className="tl-scrub-set-label">{label}</span>
+                <span className="tl-scrub-set-titles">
+                  {ids.slice(0, AT_TITLES).map((id, i) => (
+                    <span key={id}>
+                      {i > 0 && ', '}
+                      <button type="button" className="tl-scrub-title" disabled={!names.task(id)} onClick={() => onOpenTask(id)}>
+                        {names.title(id)}
+                      </button>
+                    </span>
+                  ))}
+                  {ids.length > AT_TITLES && <span className="muted"> +{ids.length - AT_TITLES}</span>}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div className="tl-scrub-head">
+        {reading ? (
+          <ScrubChip chip={reading.chip} loading={reading.outside && tl.extending} />
+        ) : (
+          <span className="tl-scrub-hint muted">Drag to scrub the past</span>
+        )}
+      </div>
+      <div className="tl-scrub-controls">
+        <button
+          type="button"
+          className="btn tl-scrub-btn"
+          aria-pressed={scrub.playing}
+          onClick={() => (scrub.playing ? scrub.pause() : scrub.play(Math.min(Math.max(sinceMs, max - DAY), max - MIN)))}
+        >
+          {scrub.playing ? 'Pause' : 'Play'}
+        </button>
+        <span className="tl-scrub-track" style={{ '--loaded': `${loadedPct}%` } as CSSProperties}>
+          <input
+            type="range"
+            className="tl-scrub-range"
+            min={min}
+            max={max}
+            step={MIN}
+            value={Math.min(max, Math.max(min, value))}
+            aria-label="Time cursor"
+            aria-valuetext={reading ? reading.chip : `live, ${clock(max, max)}`}
+            onPointerDown={start}
+            onKeyDown={() => (byKey.current = true)}
+            onChange={onChange}
+          />
+        </span>
+        <button type="button" className="btn tl-scrub-btn" aria-label={`Playback speed ×${scrub.speed}, tap for ×${nextSpeed}`} onClick={() => scrub.setSpeed(nextSpeed)}>
+          ×{scrub.speed}
+        </button>
+        <button type="button" className={`btn tl-scrub-btn${scrub.at !== null ? ' primary' : ''}`} disabled={scrub.at === null} onClick={scrub.live}>
+          Now
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function slotEta(p: PredictedSlot, now: number): string {
   if (!p.scheduled) return '';
   const last = p.after.length ? p.after[p.after.length - 1].end : p.end;

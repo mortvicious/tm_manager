@@ -6,6 +6,7 @@ import {
   initTimeline,
   predictSchedule,
   TIMELINE_EVENT_KINDS,
+  TIMELINE_MAX_DAYS,
   timelineSegments,
   type AuditEvent,
   type PredictedSlot,
@@ -136,8 +137,12 @@ export interface UseTimeline {
   segments: Record<string, TimelineSegment[]>;
   /** epoch ms of NOW, moved by the tick and by every folded event */
   now: number;
-  /** the window actually shown (since = the answer's `coveredSince`) */
+  /** the window actually shown (since = the answer's `coveredSince`, moved back by `ensureCovered`) */
   since: string;
+  /** the `since` the caller asked for — stable across extensions, what a view keys its first placement on */
+  origin: string;
+  /** an `ensureCovered` fetch is in flight */
+  extending: boolean;
   until: string;
   live: boolean;
   loading: boolean;
@@ -163,7 +168,24 @@ export interface UseTimeline {
   applyOptimistic(patch: OptimisticPatch): () => void;
   clearOptimistic(): void;
   reload(): void;
+  /**
+   * Make the past cover epoch ms `t` (a scrub cursor left of `since`): fetch
+   * ONLY the older gap once and merge it into the fold. Cheap to call every
+   * frame — a covered `t`, or one the fetch in flight already covers, is a
+   * no-op; a further one waits for it and then fetches the rest. Bounded by
+   * `TIMELINE_MAX_DAYS` back from now; refused for a truncated window (the
+   * cap already cut rows, so an older gap would leave a hole).
+   */
+  ensureCovered(t: number): void;
 }
+
+/**
+ * How far past the asked instant an extension fetches: at least this, and at
+ * least the window's own length — a scrub that keeps going (the phone slider
+ * reaches one window back) is then one fetch, not a chain of them.
+ */
+const EXTEND_PAD_MS = 3 * 3600_000;
+const DAY_MS = 24 * 3600_000;
 
 const TIMELINE_KINDS: ReadonlySet<string> = new Set(TIMELINE_EVENT_KINDS);
 /** the runs the server's timeline carries (routes/timeline.ts `timelineRun`) */
@@ -202,6 +224,17 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
 
   // the window+scope the fold holds: a new one starts empty, a reload keeps showing the old rows
   const foldKey = useRef<string | null>(null);
+  // every row folded for this window, by id — an extension refolds older + these
+  // (an older row cannot be appended to a fold, the fold is oldest-first)
+  const raw = useRef<{ events: Map<string, AuditEvent>; runs: Map<string, Run> }>({ events: new Map(), runs: new Map() });
+  // the window's start after extensions (null = the answer's own `coveredSince`)
+  const [extSince, setExtSince] = useState<string | null>(null);
+  const [extending, setExtending] = useState(false);
+  const ext = useRef<{ key: string; inFlight: number | null; want: number | null; from: number | null }>({ key: '', inFlight: null, want: null, from: null });
+  const keep = (events: readonly AuditEvent[], runs: readonly Run[]) => {
+    for (const e of events) raw.current.events.set(e.id, e);
+    for (const r of runs) raw.current.runs.set(r.id, r);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -211,6 +244,10 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
       setFold(initTimeline());
       setMeta(null);
     }
+    // a refetch replaces the rows and the extension (it asks from `win.since` again)
+    ext.current = { key, inFlight: null, want: null, from: null };
+    setExtSince(null);
+    setExtending(false);
     // Subscribed BEFORE the fetch: rows that arrive while it is in flight are
     // buffered and folded after the answer. `foldEvent` drops an id at or
     // below the newest folded one, so a row the answer already had is a no-op.
@@ -233,13 +270,20 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
       if (e.type === 'event.appended') {
         if (buffered) buffered.events.push(e.event);
         else {
-          setFold((s) => (relevantEvent(e.event, s) ? foldEvent(s, e.event) : s));
+          setFold((s) => {
+            if (!relevantEvent(e.event, s)) return s;
+            keep([e.event], []);
+            return foldEvent(s, e.event);
+          });
           bumpNow();
         }
       } else if (e.type === 'run.started' || e.type === 'run.updated' || e.type === 'run.exited') {
         if (!relevantRun(e.run)) return;
         if (buffered) buffered.runs.push(e.run);
-        else setFold((s) => foldRun(s, e.run));
+        else {
+          keep([], [e.run]);
+          setFold((s) => foldRun(s, e.run));
+        }
       }
       // `task.updated` needs no fold: it moves the app's task rows, which the
       // prediction below reads
@@ -252,11 +296,19 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
       .then((res) => {
         if (cancelled) return;
         let state = foldEvents(res.events, res.runs);
+        raw.current = { events: new Map(), runs: new Map() };
+        keep(res.events, res.runs);
         const pending = buffered!;
         buffered = null;
-        for (const r of pending.runs) if (relevantRun(r)) state = foldRun(state, r);
+        for (const r of pending.runs) {
+          if (!relevantRun(r)) continue;
+          keep([], [r]);
+          state = foldRun(state, r);
+        }
         for (const e of [...pending.events].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
-          if (relevantEvent(e, state)) state = foldEvent(state, e);
+          if (!relevantEvent(e, state)) continue;
+          keep([e], []);
+          state = foldEvent(state, e);
         }
         setFold(state);
         setMeta({ coveredSince: res.coveredSince, truncated: res.truncated });
@@ -277,7 +329,55 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
     // scopeKey stands for `scope`; nonce is reload()
   }, [win.since, fixedUntil, live, scopeKey, nonce, bumpNow]);
 
-  const since = meta?.coveredSince ?? win.since;
+  const since = extSince ?? meta?.coveredSince ?? win.since;
+
+  // ---- extending the past (a scrub cursor left of `since`) ----
+  const extRef = useRef({ since, truncated: false, scope, key: '' });
+  extRef.current = { since, truncated: meta?.truncated ?? false, scope, key: foldKey.current ?? '' };
+  const ensureCovered = useCallback((t: number) => {
+    const cur = extRef.current;
+    const e = ext.current;
+    if (!meta || cur.truncated || e.key !== cur.key) return; // not answered yet / cut by the cap / a stale key
+    const floor = Date.now() - TIMELINE_MAX_DAYS * DAY_MS + 60_000;
+    // the start this extension reached, before React re-renders with it
+    const sinceMs = Math.min(Date.parse(cur.since), e.from ?? Infinity);
+    if (t >= sinceMs || sinceMs <= floor) return;
+    if (e.inFlight !== null) {
+      // the fetch in flight covers it, or this waits for it and asks for the rest
+      if (t < e.inFlight) e.want = Math.min(e.want ?? Infinity, t);
+      return;
+    }
+    const from = Math.max(floor, t - Math.max(EXTEND_PAD_MS, Date.now() - Date.parse(win.since)));
+    e.inFlight = from;
+    setExtending(true);
+    const until = new Date(sinceMs).toISOString();
+    api
+      .timeline({ since: new Date(from).toISOString(), until, repoIds: cur.scope ?? undefined })
+      .then((res) => {
+        if (ext.current !== e) return; // a refetch replaced the window meanwhile
+        keep(res.events, res.runs);
+        // older + everything already folded (live rows included), oldest first by id
+        setFold(foldEvents([...raw.current.events.values()], [...raw.current.runs.values()]));
+        // a cap on the older gap moves the start only as far as it covered
+        const reached = res.coveredSince < until ? res.coveredSince : until;
+        e.from = Date.parse(reached);
+        setExtSince(reached);
+      })
+      .catch(() => {
+        // a blip: the cursor just stays outside; the next move past `since` asks again
+      })
+      .finally(() => {
+        if (ext.current !== e) return;
+        e.inFlight = null;
+        setExtending(false);
+        const next = e.want;
+        e.want = null;
+        // `e.from` already holds the start just fetched, so the re-check needs no render
+        if (next !== null) setTimeout(() => ensureCoveredRef.current(next), 0);
+      });
+  }, [meta, win.since]);
+  const ensureCoveredRef = useRef(ensureCovered);
+  ensureCoveredRef.current = ensureCovered;
   const nowIso = new Date(now).toISOString();
   const until = fixedUntil ?? nowIso;
   const segments = useMemo(
@@ -389,6 +489,8 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
     segments,
     now,
     since,
+    origin: win.since,
+    extending,
     until,
     live,
     loading,
@@ -401,6 +503,7 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
     applyOptimistic,
     clearOptimistic,
     reload,
+    ensureCovered,
   };
 }
 

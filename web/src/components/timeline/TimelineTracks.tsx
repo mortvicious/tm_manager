@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { stateAt, type PredictedSlot, type Task } from '@tm/shared';
+import { stateAt, type PredictedSlot, type Task, type TimelineSegment } from '@tm/shared';
 import { useApp } from '../../state.tsx';
 import type { UseTimeline } from '../../timeline.ts';
 import { useWorkspace } from '../../workspace.ts';
@@ -21,6 +21,7 @@ import {
 import { buildTrackLayout, segmentAt, type TrackBar, type TrackGhost, type TrackRow } from './layout.ts';
 import { IconGrip } from '../Icons.tsx';
 import { dropClassFor, slotDraggable, TimelineDragGhost, useTimelineDrag, type TimelineDropView, type TimelineGripProps } from './TimelineDrag.tsx';
+import { SCRUB_SPEEDS, ScrubChip, useScrub, type Scrub } from './scrub.tsx';
 
 /**
  * The desktop timeline (docs/timeline.md § Tracks): one horizontal track per
@@ -33,6 +34,9 @@ import { dropClassFor, slotDraggable, TimelineDragGhost, useTimelineDrag, type T
  * ctrl/⌘-wheel), pan (drag empty track, horizontal scroll). Geometry is TIME
  * (`layout.ts`, pure); this maps it to px and draws only what intersects the
  * visible window (± half a viewport), so a week of a busy board stays cheap.
+ * The time CURSOR (`scrub.ts`): drag the NOW handle or anywhere on the axis to
+ * scrub the past — the bars holding T are lit, the rest dimmed, a chip counts
+ * them — release returns to live; play/pause replays the view at ×N.
  */
 
 const MIN = 60_000;
@@ -59,6 +63,12 @@ const TICK_STEPS = [5 * MIN, 10 * MIN, 15 * MIN, 30 * MIN, HOUR, 2 * HOUR, 3 * H
 const NOW_PILL_CLEAR_PX = 56;
 /** the narrowest gap between two axis labels (px) */
 const TICK_MIN_PX = 76;
+/** a keyboard step of the cursor; with Shift ×10 */
+const CURSOR_STEP = 5 * MIN;
+/** a scrub pushed past the view's left edge steps back this share of a viewport per move */
+const EDGE_STEP = 0.02;
+/** while playing, the view follows a cursor that leaves the viewport's last fifth */
+const FOLLOW_AT = 0.8;
 
 type Hit = { type: 'bar'; bar: TrackBar } | { type: 'marker'; bar: TrackBar } | { type: 'ghost'; ghost: TrackGhost };
 interface Hover {
@@ -159,23 +169,29 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
   // ---- scroll position: NOW in view at first, a zoom keeps its anchor ----
   const pending = useRef<{ t: number; viewX: number } | null>(null);
   const positionedFor = useRef<string | null>(null);
+  const prevT0 = useRef(t0);
   useLayoutEffect(() => {
     const el = scroller.current;
+    const moved = prevT0.current - t0;
+    prevT0.current = t0;
     if (!el || pxPerMs <= 0) return;
     let target: number | null = null;
-    if (positionedFor.current !== tl.since) {
-      positionedFor.current = tl.since;
+    if (positionedFor.current !== tl.origin) {
+      positionedFor.current = tl.origin;
       target = (tl.now - t0) * pxPerMs - viewW * NOW_AT;
     } else if (pending.current) {
       target = (pending.current.t - t0) * pxPerMs - pending.current.viewX;
+    } else if (moved !== 0) {
+      // the window's start moved (an extension to the left, a capped answer): keep the same time in view
+      target = el.scrollLeft + moved * pxPerMs;
     }
     pending.current = null;
     if (target !== null) {
       el.scrollLeft = Math.max(0, target);
       setScrollLeft(el.scrollLeft);
     }
-    // t0/now are read at the moment of positioning, on purpose
-  }, [tl.since, spanMs, viewW, pxPerMs]);
+    // now is read at the moment of positioning, on purpose
+  }, [tl.origin, t0, spanMs, viewW, pxPerMs]);
 
   const zoomTo = useCallback(
     (next: number, viewX: number) => {
@@ -194,11 +210,26 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
     const nowX = x(tl.now) - el.scrollLeft;
     zoomTo(span, nowX >= 0 && nowX <= viewW ? nowX : viewW / 2);
   };
+  const scrub = useScrub(tl);
   const jumpToNow = () => {
+    scrub.live();
     const el = scroller.current;
     if (!el) return;
     el.scrollTo({ left: Math.max(0, x(tl.now) - viewW * NOW_AT), behavior: 'smooth' });
   };
+  /** play over the visible part: from the viewport's left edge (never before the window, never at NOW) */
+  const playFromView = () => {
+    const el = scroller.current;
+    const left = el && pxPerMs > 0 ? t0 + el.scrollLeft / pxPerMs : t0;
+    scrub.play(Math.min(Math.max(t0, left), tl.now - spanMs * 0.05));
+  };
+  // while playing, the view follows the cursor
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el || !scrub.playing || scrub.at === null || pxPerMs <= 0) return;
+    const cx = x(scrub.at) - el.scrollLeft;
+    if (cx > viewW * FOLLOW_AT || cx < 0) el.scrollLeft = Math.max(0, x(scrub.at) - viewW * (1 - FOLLOW_AT));
+  }, [scrub.at, scrub.playing, x, viewW, pxPerMs]);
 
   // ctrl/⌘-wheel zooms around the pointer; React's wheel listener is passive, so it cannot preventDefault
   const zoomRef = useRef(zoomTo);
@@ -233,6 +264,7 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
 
   // ---- pointer: hover card, click → task, drag on empty track → pan ----
   const pan = useRef<{ id: number; x: number; left: number } | null>(null);
+  const scrubbing = useRef<number | null>(null);
   const hitAt = (target: EventTarget | null) => {
     const el = (target as Element | null)?.closest?.('[data-hit]');
     return el ? (el.getAttribute('data-hit') ?? null) : null;
@@ -242,14 +274,39 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
     return t0 + (clientX - el.getBoundingClientRect().left - labelW + el.scrollLeft) / pxPerMs;
   };
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    // the cursor: its handle, or anywhere on the axis's time area, starts a scrub (touch too)
+    const target = e.target as Element;
+    if (pxPerMs > 0 && (target.closest('.tlt-cursor-handle') || (target.closest('.tlt-axis') && !target.closest('.tlt-label')))) {
+      scrubbing.current = e.pointerId;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setHover(null);
+      scrub.begin(timeAt(e.clientX));
+      e.preventDefault();
+      return;
+    }
     // touch pans natively; a bar or the repo column is not a handle
-    if (e.button !== 0 || e.pointerType === 'touch' || hitAt(e.target) || (e.target as Element).closest('.tlt-label')) return;
+    if (e.pointerType === 'touch' || hitAt(e.target) || target.closest('.tlt-label')) return;
     pan.current = { id: e.pointerId, x: e.clientX, left: e.currentTarget.scrollLeft };
     e.currentTarget.setPointerCapture(e.pointerId);
     setPanning(true);
     setHover(null);
   };
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (scrubbing.current === e.pointerId) {
+      const el = e.currentTarget;
+      const viewX = e.clientX - el.getBoundingClientRect().left - labelW;
+      if (viewX < 0 && el.scrollLeft > 0) {
+        // past the view's left edge: each move steps the cursor back and pans the view under it
+        const t = Math.min(scrub.at ?? tl.now, timeAt(el.getBoundingClientRect().left + labelW)) - spanMs * EDGE_STEP;
+        el.scrollLeft = Math.max(0, x(t) - viewW * EDGE_STEP);
+        scrub.move(t);
+      } else {
+        // left of the canvas at its very start is before the window: the hook extends it (and the view keeps its place)
+        scrub.move(timeAt(e.clientX));
+      }
+      return;
+    }
     if (pan.current) {
       e.currentTarget.scrollLeft = pan.current.left - (e.clientX - pan.current.x);
       return;
@@ -258,6 +315,11 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
     setHover(key ? { key, t: timeAt(e.clientX), x: e.clientX, y: e.clientY } : null);
   };
   const endPan = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (scrubbing.current === e.pointerId) {
+      scrubbing.current = null;
+      scrub.end();
+      return;
+    }
     if (!pan.current || pan.current.id !== e.pointerId) return;
     pan.current = null;
     setPanning(false);
@@ -276,6 +338,18 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
   };
   // bars and ghosts are focusable: Enter / Space opens the task like a click
   const onKeyDown = (e: ReactKeyboardEvent) => {
+    if ((e.target as Element).closest('.tlt-cursor-handle')) {
+      // the cursor handle: arrows step a pinned cursor, Escape / End go back to live
+      const stepMs = CURSOR_STEP * (e.shiftKey ? 10 : 1);
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        scrub.step((scrub.at ?? tl.now) + (e.key === 'ArrowLeft' ? -stepMs : stepMs));
+        e.preventDefault();
+      } else if (e.key === 'Escape' || e.key === 'End') {
+        scrub.live();
+        e.preventDefault();
+      }
+      return;
+    }
     if ((e.key === 'Enter' || e.key === ' ') && open(e.target)) e.preventDefault();
   };
 
@@ -287,6 +361,10 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
   const nowX = x(tl.now);
   const at = useMemo(() => stateAt(tl.segments, tl.now), [tl.segments, tl.now]);
   const hovered = hover ? hits.get(hover.key) : undefined;
+  const reading = scrub.reading;
+  // a cursor before the canvas (the older rows are on their way) sits at its left edge
+  const cursorX = scrub.at === null ? nowX : Math.max(0, x(scrub.at));
+  const held = reading?.held ?? null;
 
   return (
     <div className="tlt">
@@ -304,23 +382,28 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
             </button>
           ))}
         </div>
-        <button type="button" className="btn" onClick={jumpToNow}>
+        <button type="button" className={`btn${scrub.at !== null ? ' primary' : ''}`} onClick={jumpToNow} aria-label={scrub.at !== null ? 'Back to live' : 'Scroll to now'}>
           Now
         </button>
+        <PlayControls scrub={scrub} onPlay={playFromView} />
         <span className="muted tlt-hint">
-          {span(spanMs)} per view · ctrl/⌘-scroll to zoom, drag to pan, drag a ghost's grip to reorder
+          {span(spanMs)} per view · ctrl/⌘-scroll to zoom, drag to pan, drag the axis to scrub, drag a ghost's grip to reorder
         </span>
-        <span className="tlt-now-counts muted">
-          {at.running.length} running · {at.waiting.length} waiting · {at.checking.length} checks · {at.inReview.length} in review ·{' '}
-          {at.queued.length} queued
-        </span>
+        {reading ? (
+          <ScrubChip chip={reading.chip} loading={reading.outside && tl.extending} />
+        ) : (
+          <span className="tlt-now-counts muted">
+            {at.running.length} running · {at.waiting.length} waiting · {at.checking.length} checks · {at.inReview.length} in review ·{' '}
+            {at.queued.length} queued
+          </span>
+        )}
       </div>
       <Legend />
 
       <div className="panel tlt-panel">
         <div
           ref={scroller}
-          className={`tlt-scroller${panning ? ' panning' : ''}`}
+          className={`tlt-scroller${panning ? ' panning' : ''}${held ? ' scrubbing' : ''}`}
           onScroll={onScroll}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -342,16 +425,32 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
               </div>
               <div className="tlt-lanes">
                 {ticks.map((t) =>
-                  // the NOW pill sits on the axis: a label it would cover is left out (its grid line stays)
-                  ready && Math.abs(x(t.at) - nowX) < NOW_PILL_CLEAR_PX ? null : (
+                  // the NOW pill and the cursor sit on the axis: a label they would cover is left out (its grid line stays)
+                  ready && (Math.abs(x(t.at) - nowX) < NOW_PILL_CLEAR_PX || Math.abs(x(t.at) - cursorX) < NOW_PILL_CLEAR_PX) ? null : (
                     <span key={t.at} className={`tlt-tick${t.day ? ' day' : ''}`} style={{ left: x(t.at) }}>
                       {t.label}
                     </span>
                   ),
                 )}
+                {ready && scrub.at !== null && (
+                  <span className="tlt-now-pill past" style={{ left: nowX }}>
+                    {tl.live ? 'now' : 'end'}
+                  </span>
+                )}
                 {ready && (
-                  <span className="tlt-now-pill" style={{ left: nowX }}>
-                    {tl.live ? 'now' : 'end'} {clock(tl.now, tl.now)}
+                  // the cursor's handle: NOW itself while live
+                  <span
+                    className={`tlt-now-pill tlt-cursor-handle${scrub.at !== null ? ' scrub' : ''}`}
+                    style={{ left: cursorX }}
+                    role="slider"
+                    tabIndex={0}
+                    aria-label="Time cursor: drag to scrub the past, arrows step, Escape returns to live"
+                    aria-valuemin={Date.parse(tl.since)}
+                    aria-valuemax={tl.now}
+                    aria-valuenow={scrub.at ?? tl.now}
+                    aria-valuetext={reading ? reading.chip : `live, ${clock(tl.now, tl.now)}`}
+                  >
+                    {scrub.at === null ? `${tl.live ? 'now' : 'end'} ${clock(tl.now, tl.now)}` : clock(scrub.at, tl.now)}
                   </span>
                 )}
               </div>
@@ -369,9 +468,11 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
                 hoverKey={dnd.drag ? null : (hover?.key ?? null)}
                 grip={dnd.gripProps}
                 drop={dnd.view}
+                held={held}
               />
             ))}
-            {ready && <span className="tlt-now" style={{ left: `calc(var(--tm-tl-label-w) + ${nowX}px)` }} aria-hidden />}
+            {ready && <span className={`tlt-now${scrub.at !== null ? ' past' : ''}`} style={{ left: `calc(var(--tm-tl-label-w) + ${nowX}px)` }} aria-hidden />}
+            {ready && scrub.at !== null && <span className="tlt-cursor" style={{ left: `calc(var(--tm-tl-label-w) + ${cursorX}px)` }} aria-hidden />}
           </div>
         </div>
       </div>
@@ -384,6 +485,23 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
 
       <NotScheduled tl={tl} names={names} onOpenTask={onOpenTask} />
     </div>
+  );
+}
+
+function PlayControls({ scrub, onPlay }: { scrub: Scrub; onPlay: () => void }) {
+  return (
+    <>
+      <button type="button" className="btn" aria-pressed={scrub.playing} onClick={() => (scrub.playing ? scrub.pause() : onPlay())}>
+        {scrub.playing ? 'Pause' : 'Play'}
+      </button>
+      <div className="seg" role="group" aria-label="Playback speed">
+        {SCRUB_SPEEDS.map((s) => (
+          <button key={s} type="button" className={`btn ${scrub.speed === s ? 'primary' : ''}`} aria-pressed={scrub.speed === s} onClick={() => scrub.setSpeed(s)}>
+            ×{s}
+          </button>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -424,6 +542,7 @@ const Track = memo(function Track({
   hoverKey,
   grip,
   drop,
+  held,
 }: {
   row: TrackRow;
   x: (t: number) => number;
@@ -435,6 +554,8 @@ const Track = memo(function Track({
   hoverKey: string | null;
   grip: (task: Task) => TimelineGripProps;
   drop: TimelineDropView | null;
+  /** scrubbing: the segment each task is in at the cursor (null = live, nothing dimmed) */
+  held: ReadonlySet<TimelineSegment> | null;
 }) {
   const seen = (from: number, to: number) => to >= visFrom && from <= visTo;
   const bars = ready ? row.bars.filter((b) => seen(b.start, b.extentEnd)) : [];
@@ -457,7 +578,7 @@ const Track = memo(function Track({
           <span key={i} className="tlt-lane-rule" style={vars({ '--lane': i + 1 })} aria-hidden />
         ))}
         {bars.map((b) => (
-          <BarView key={b.key} b={b} x={x} now={now} names={names} hot={hoverKey === b.key || hoverKey === `m:${b.key}`} />
+          <BarView key={b.key} b={b} x={x} now={now} names={names} hot={hoverKey === b.key || hoverKey === `m:${b.key}`} at={held ? barHeld(b, held) : null} />
         ))}
         {ghosts.map((g) => (
           <GhostView key={g.key} g={g} x={x} now={now} names={names} hot={hoverKey === g.key} grip={grip} drop={drop} />
@@ -467,7 +588,13 @@ const Track = memo(function Track({
   );
 });
 
-function BarView({ b, x, now, names, hot }: { b: TrackBar; x: (t: number) => number; now: number; names: Lookup; hot: boolean }) {
+/** the bar holds the segment its task is in at the cursor (an active part, its idle tail, or the landed marker) */
+function barHeld(b: TrackBar, held: ReadonlySet<TimelineSegment>): boolean {
+  return b.segs.some((s) => held.has(s)) || b.tail.some((s) => held.has(s)) || (!!b.marker && held.has(b.marker));
+}
+
+function BarView({ b, x, now, names, hot, at }: { b: TrackBar; x: (t: number) => number; now: number; names: Lookup; hot: boolean; at: boolean | null }) {
+  const scrubClass = at === null ? '' : at ? ' at' : ' dim';
   const left = x(b.start);
   const width = Math.max(BAR_MIN_PX, x(b.end) - left);
   const tail = b.tail.length ? [Date.parse(b.tail[0].start), segmentEnd(b.tail[b.tail.length - 1], now)] : null;
@@ -476,14 +603,14 @@ function BarView({ b, x, now, names, hot }: { b: TrackBar; x: (t: number) => num
     <>
       {tail && (
         <span
-          className={`tlt-tail${hot ? ' hot' : ''}`}
+          className={`tlt-tail${hot ? ' hot' : ''}${scrubClass}`}
           data-hit={b.key}
           style={vars({ left: `${x(tail[0])}px`, width: `${Math.max(BAR_MIN_PX, x(tail[1]) - x(tail[0]))}px`, '--lane': b.lane })}
         />
       )}
       {b.segs.length > 0 && (
         <span
-          className={`tlt-item${b.live ? ' live' : ''}${clipped ? ' clipped' : ''}${hot ? ' hot' : ''}`}
+          className={`tlt-item${b.live ? ' live' : ''}${clipped ? ' clipped' : ''}${hot ? ' hot' : ''}${scrubClass}`}
           data-hit={b.key}
           role="button"
           tabIndex={0}
@@ -502,7 +629,7 @@ function BarView({ b, x, now, names, hot }: { b: TrackBar; x: (t: number) => num
       )}
       {b.marker && (
         <span
-          className={`tlt-marker ${b.marker.kind}${hot ? ' hot' : ''}`}
+          className={`tlt-marker ${b.marker.kind}${hot ? ' hot' : ''}${scrubClass}`}
           data-hit={`m:${b.key}`}
           style={vars({ left: `${x(Date.parse(b.marker.start))}px`, '--lane': b.lane, '--c': OUTCOME_COLOR[b.outcome] })}
         />
