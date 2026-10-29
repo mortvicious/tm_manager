@@ -3397,3 +3397,5 @@ export * from './schedule-accuracy.ts';
 export * from './timeline.ts';
 // Dragging predicted points: a drop → the real queue mutation (docs/timeline.md § Drag the future)
 export * from './queue-drop.ts';
+// A task's own change split per file (docs/task-diff.md)
+export * from './diff.ts';

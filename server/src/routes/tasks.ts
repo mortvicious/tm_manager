@@ -21,6 +21,7 @@ import { LOOP_LEDGER } from '../loop.ts';
 import { broadcast } from '../events.ts';
 import { LANDING_FROM_BROWSER, landingNeedsBrowser } from './repos.ts';
 import type { Storage } from '../storage/types.ts';
+import type { TaskChangeResult } from '../app-types.ts';
 import {
   ENQUEUE_FROM,
   MOVE_PLACES,
@@ -116,6 +117,9 @@ function legacyLanding<T extends { autoPublish?: boolean; landing?: LandingTier 
   if (autoPublish) return { ...rest, landing: 'auto-publish' };
   return current === 'auto-publish' ? { ...rest, landing: null } : rest;
 }
+
+/** how long one read of a task's diff answers repeat requests (same updatedAt) */
+const DIFF_CACHE_MS = 5_000;
 
 export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
   // The shared action layer (server/src/task-actions.ts) — the same functions
@@ -326,6 +330,39 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     if (!app.orchestrator) return reply.code(503).send({ error: 'orchestrator not ready' });
     const sessionId = await app.orchestrator.resumableSessionId(id);
     return { resumable: sessionId !== null, sessionId };
+  });
+
+  // The task's own change, the reviewer's scope, split per file (docs/task-diff.md).
+  // Read-only, so no Origin. Single-flight per task plus a short cache keyed by
+  // the row's updatedAt: several open tabs share one set of git processes.
+  const diffReads = new Map<string, { updatedAt: string; doneAt: number | null; read: Promise<TaskChangeResult> }>();
+  const fresh = (e: { doneAt: number | null }, now: number) => e.doneAt === null || now - e.doneAt <= DIFF_CACHE_MS;
+  app.get('/api/tasks/:id/diff', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const task = await storage.getTask(id);
+    if (!task) return reply.code(404).send({ error: 'task not found' });
+    const orchestrator = app.orchestrator;
+    if (!orchestrator) return reply.code(503).send({ error: 'orchestrator not ready' });
+    const now = Date.now();
+    for (const [key, e] of diffReads) if (!fresh(e, now)) diffReads.delete(key);
+    let entry = diffReads.get(task.id);
+    if (!entry || entry.updatedAt !== task.updatedAt) {
+      // an in-flight read is never dropped by the sweep; the window counts from its END
+      const mine: { updatedAt: string; doneAt: number | null; read: Promise<TaskChangeResult> } = {
+        updatedAt: task.updatedAt,
+        doneAt: null,
+        read: orchestrator.taskChange(task.id),
+      };
+      diffReads.set(task.id, mine);
+      mine.read.then(
+        () => (mine.doneAt = Date.now()),
+        () => diffReads.get(task.id) === mine && diffReads.delete(task.id), // a failed read is never cached
+      );
+      entry = mine;
+    }
+    const result = await entry.read;
+    if (!result.ok) return reply.code(result.code).send({ error: result.error });
+    return result.change;
   });
 
   // Deliverable files the agent saved to TM_ARTIFACTS_DIR for this task.

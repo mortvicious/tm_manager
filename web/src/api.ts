@@ -43,6 +43,7 @@ import type {
   Task,
   UsageSnapshot,
   TaskMovePlace,
+  TaskDiffResponse,
 } from '@tm/shared';
 
 // Only user-editable fields — status/error/resultSummary are machine-owned and
@@ -369,6 +370,8 @@ export const api = {
     req<Task>('POST', `/api/tasks/${id}/proceed`, { message: message ?? null }),
   resumable: (id: string) =>
     req<{ resumable: boolean; sessionId: string | null }>('GET', `/api/tasks/${id}/resumable`),
+  // The task's own change, the reviewer's scope, per file (docs/task-diff.md)
+  taskDiff: (id: string) => req<TaskDiffResponse>('GET', `/api/tasks/${id}/diff`),
   taskFiles: (id: string) => req<{ name: string; size: number; mtime: string }[]>('GET', `/api/tasks/${id}/files`),
   uploadTaskFiles: async (id: string, files: File[]) => {
     const fd = new FormData();

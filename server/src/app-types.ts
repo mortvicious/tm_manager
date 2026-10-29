@@ -1,6 +1,8 @@
-import type { Task, TaskStatus } from '@tm/shared';
+import type { Task, TaskDiffResponse, TaskStatus } from '@tm/shared';
 
 export type ActionResult = { task: Task } | { error: string; code: number };
+/** `Orchestrator.taskChange`: the change, or 404 (no task) / 409 (repo gone) with the reason. */
+export type TaskChangeResult = { ok: true; change: TaskDiffResponse } | { ok: false; code: 404 | 409; error: string };
 
 export interface OrchestratorApi {
   maybeSchedule(): void;
@@ -44,6 +46,8 @@ export interface OrchestratorApi {
   proceed(taskId: string, message?: string | null, actor?: string): Promise<ActionResult>;
   /** Session id "proceed" would continue, or null when there is none. */
   resumableSessionId(taskId: string): Promise<string | null>;
+  /** The task's own change, the reviewer's scope, split per file — read-only (docs/task-diff.md). */
+  taskChange(taskId: string): Promise<TaskChangeResult>;
   /** Re-evaluate a task's dependents after it reached a terminal status: its
    *  split parent AND, when it belongs to one, its feature's phase gate. */
   resolveCompletion(child: Task, actor?: string): Promise<void>;

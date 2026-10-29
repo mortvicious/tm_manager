@@ -28,9 +28,10 @@ import {
   type ReviewState,
   type Run,
   type Task,
+  type TaskDiffResponse,
   type TaskStatus,
 } from '@tm/shared';
-import type { ActionResult, OrchestratorApi } from './app-types.ts';
+import type { ActionResult, OrchestratorApi, TaskChangeResult } from './app-types.ts';
 
 /**
  * The Stop route's replay of a shell park (routes/internal.ts `settleStop`).
@@ -87,7 +88,7 @@ import {
   type ShippedCheck,
 } from './git.ts';
 import { aux } from './claude/aux.ts';
-import { fileDigests, headAt, readHeadBase, reviewWorkerChange, workerDiff, type ChangeScope } from './claude/review.ts';
+import { fileDigests, headAt, readHeadBase, reviewWorkerChange, taskChangeRead, workerDiff, type ChangeScope } from './claude/review.ts';
 import { summarizeRun, summarizeTranscript, type TranscriptSummary } from './claude/stats.ts';
 import { killBackgroundShells, shellEntries } from './claude/shells.ts';
 import { BackgroundShells } from './claude/background-shells.ts';
@@ -3754,6 +3755,61 @@ export class Orchestrator implements OrchestratorApi {
     const task = await this.storage.getTask(taskId);
     if (!task?.repoId) return null;
     return (await this.findResumableRun(taskId, task.repoId, task.workdir))?.sessionId ?? null;
+  }
+
+  /**
+   * The task's own change for the task panel's Diff tab (docs/task-diff.md):
+   * exactly `changeScope`'s rules, read by `taskChangeRead`, which never
+   * writes to git. Deliberately NOT `taskRepo()` — that re-creates an evicted
+   * worktree. A worktree that is gone is read from the checkout by trailer
+   * only (the eviction WIP commit carries it), uncommitted not read, and the
+   * answer says `evicted`. A task that never ran (no base, no trailer commits)
+   * is `kind: 'none'` with no files — the checkout's dirty tree is not its.
+   */
+  async taskChange(taskId: string): Promise<TaskChangeResult> {
+    const task = await this.storage.getTask(taskId);
+    if (!task) return { ok: false, code: 404, error: 'task not found' };
+    const repo = task.repoId ? await this.storage.getRepo(task.repoId) : null;
+    if (!repo) return { ok: false, code: 409, error: 'the task has no repo (or its repo was removed)' };
+    if (!fs.existsSync(repo.path)) return { ok: false, code: 409, error: `repo folder is missing: ${repo.path}` };
+    const landed = !!task.workdir && task.status === 'published';
+    const treeGone = !!task.workdir && !fs.existsSync(task.workdir);
+    const evicted = treeGone && !landed;
+    let scope = await this.changeScope(task, repo);
+    if (evicted) scope = { ...scope, branchRange: false, soleWorker: false, includeUncommitted: false };
+    if (!task.baseSha) scope = { ...scope, includeUncommitted: false };
+    const cwd = task.workdir && !treeGone ? taskWorkdir(task, repo) : repo.path;
+    const read = await taskChangeRead({ ...repo, path: cwd }, scope);
+    const kind: TaskDiffResponse['scope']['kind'] =
+      scope.branchRange && scope.baseSha
+        ? 'branch-range'
+        : read.attribution === 'trailer'
+          ? landed
+            ? 'landed'
+            : 'trailer'
+          : read.attribution === 'base'
+            ? 'base-range'
+            : 'none';
+    return {
+      ok: true,
+      change: {
+        taskId: task.id,
+        scope: {
+          kind,
+          baseSha: scope.baseSha,
+          branch: task.branch ?? null,
+          includeUncommitted: scope.includeUncommitted,
+          attribution: read.attribution,
+          evicted,
+        },
+        commits: read.commits,
+        files: read.files,
+        stat: read.stat,
+        truncated: read.truncated,
+        untrackedCapped: read.untrackedCapped,
+        readAt: new Date().toISOString(),
+      },
+    };
   }
 
   /** Is this run the publish turn? (Drives the Stop hook's landing status.) */

@@ -1,8 +1,11 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { z } from 'zod';
 import { checkEvidence } from '../checks.ts';
-import type { DiffStat, Repo, ReviewFinding, ReviewResolution, ReviewVerdict, Task } from '@tm/shared';
+import type { DiffStat, Repo, ReviewFinding, ReviewResolution, ReviewVerdict, Task, TaskDiffFile } from '@tm/shared';
+import { DIFF_FILE_PATCH_CAP, UNTRACKED_DIFF_CAP, capDiffFiles, diffFilesStat, splitDiffFiles } from '@tm/shared';
 import {
   READ_ONLY_DISALLOWED,
   READ_ONLY_TOOLS,
@@ -426,6 +429,139 @@ export async function workerDiff(repo: Repo, scope: ChangeScope): Promise<Worker
   const hash = createHash('sha256');
   for (const c of list) hash.update(`${c.sha}\n`);
   return { diff, commits: list, attribution, hash: hash.update(diff).digest('hex'), stat: diffStat(diff) };
+}
+
+/**
+ * A read-only git command for `taskChangeRead`: argv, never a shell, and
+ * `GIT_OPTIONAL_LOCKS=0` so `git diff HEAD` never refreshes (rewrites) the
+ * index the way a plain read may. `ok` lists the exit codes that still mean
+ * success (`git diff --no-index` exits 1 when the files differ).
+ */
+function gitRead(cwd: string, args: string[], ok: number[] = [0]): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      args,
+      { cwd, timeout: 30_000, maxBuffer: 32 * 1024 * 1024, env: { ...cleanEnv(), GIT_OPTIONAL_LOCKS: '0' } },
+      (err, stdout) => {
+        const code = err ? (err as { code?: unknown }).code : 0;
+        resolve(typeof code === 'number' && ok.includes(code) ? String(stdout ?? '') : null);
+      },
+    );
+  });
+}
+
+/** an untracked file bigger than this is listed without reading it */
+const UNTRACKED_READ_MAX = 2 * DIFF_FILE_PATCH_CAP;
+/**
+ * wall-clock budget for the untracked reads: one `git diff --no-index` per
+ * file costs 45–120 ms under tsx (measured), so 200 of them could hold the
+ * panel for 20 s; what is not read in time is listed without a patch
+ */
+const UNTRACKED_READ_BUDGET_MS = 6_000;
+
+export interface TaskChangeRead {
+  commits: TaskCommit[];
+  attribution: CommitAttribution;
+  /** complete list; patches cut to the caps */
+  files: TaskDiffFile[];
+  stat: DiffStat;
+  truncated: boolean;
+  untrackedCapped: boolean;
+}
+
+/**
+ * The same change `workerDiff` hands the reviewer — the task's commits
+ * (`taskCommits`, `committedDiff`, unchanged) and, when the scope includes it,
+ * the uncommitted tree — but split per file for the task panel and WITHOUT
+ * writing to git: no `git add -N` (which is what makes `workerDiff` show
+ * untracked files and is a write to the index), the tree read by
+ * `git diff-index` (the porcelain rewrites a stat-dirty index); untracked files are read one
+ * by one with `git diff --no-index /dev/null <file>` instead, at most
+ * `UNTRACKED_DIFF_CAP` of them within `UNTRACKED_READ_BUDGET_MS` (the rest
+ * listed without a patch, `untrackedCapped`). The
+ * reviewer's diff and hash are untouched by this (docs/task-diff.md).
+ */
+export async function taskChangeRead(repo: Repo, scope: ChangeScope): Promise<TaskChangeRead> {
+  const cwd = repo.path;
+  const { commits, attribution } = await taskCommits(cwd, scope);
+  const parts: string[] = [];
+  if (commits.length) {
+    parts.push(`--- committed (${commits.length} commit${commits.length === 1 ? '' : 's'}) ---`, await committedDiff(cwd, commits), '');
+  }
+  const listedOnly: TaskDiffFile[] = [];
+  let untrackedCapped = false;
+  if (scope.includeUncommitted) {
+    parts.push('--- uncommitted (git diff HEAD) ---');
+    // `git diff-index`, not porcelain `git diff HEAD`: the porcelain refreshes
+    // a stat-dirty index and WRITES it, GIT_OPTIONAL_LOCKS=0 or not (measured,
+    // git 2.52); the plumbing compares contents and leaves the index alone.
+    // `-M` because plumbing does not read diff.renames.
+    parts.push(
+      (await gitRead(cwd, ['diff-index', '-p', '-M', '--no-color', '--ignore-submodules=dirty', 'HEAD', '--', '.', ...DIFF_EXCLUDES])) ?? '',
+    );
+    const others = ((await gitRead(cwd, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ...DIFF_EXCLUDES])) ?? '')
+      .split('\0')
+      .filter(Boolean);
+    untrackedCapped = others.length > UNTRACKED_DIFF_CAP;
+    const patches: string[] = new Array(Math.min(others.length, UNTRACKED_DIFF_CAP)).fill('');
+    let next = 0;
+    const deadline = Date.now() + UNTRACKED_READ_BUDGET_MS;
+    const worker = async () => {
+      while (next < patches.length) {
+        const i = next++;
+        const file = others[i];
+        if (Date.now() > deadline) {
+          untrackedCapped = true;
+          listedOnly.push(untrackedListed(file, true));
+          continue;
+        }
+        let st: fs.Stats | null = null;
+        try {
+          st = fs.lstatSync(path.join(cwd, file));
+        } catch {
+          st = null;
+        }
+        if (!st || st.isDirectory() || st.size > UNTRACKED_READ_MAX) {
+          // a nested repo (`dir/`), a vanished file, or one too big to read
+          listedOnly.push(untrackedListed(file, !!st && !st.isDirectory()));
+          continue;
+        }
+        const patch = await gitRead(cwd, ['diff', '--no-index', '--no-color', '--', '/dev/null', file], [0, 1]);
+        if (patch === null) listedOnly.push(untrackedListed(file, true));
+        else if (!patch.trim()) listedOnly.push(untrackedListed(file, false)); // an empty file: no diff text, still a new file
+        else patches[i] = patch;
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(8, patches.length) }, worker));
+    parts.push(...patches.filter(Boolean));
+    for (const file of others.slice(UNTRACKED_DIFF_CAP)) listedOnly.push(untrackedListed(file, true));
+  }
+  const parsed = splitDiffFiles(parts.join('\n'));
+  const seen = new Set(parsed.map((f) => f.path));
+  const unread = listedOnly.filter((f) => !seen.has(f.path)).sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0));
+  const all = [...parsed, ...unread];
+  const capped = capDiffFiles(all);
+  return {
+    commits: commits.map((c) => ({ sha: c.sha, subject: c.subject })),
+    attribution,
+    files: capped.files,
+    stat: diffFilesStat(capped.files),
+    truncated: capped.truncated || untrackedCapped,
+    untrackedCapped,
+  };
+}
+
+/** An untracked file listed without its content; `cut` = it has content that was not read. */
+function untrackedListed(file: string, cut: boolean): TaskDiffFile {
+  return {
+    path: file.replace(/\/$/, ''),
+    status: 'added',
+    insertions: 0,
+    deletions: 0,
+    binary: false,
+    sections: cut ? [{ source: 'uncommitted', patch: '', truncated: true }] : [],
+  };
 }
 
 export interface ReviewResult {
