@@ -353,6 +353,7 @@ The open task panel is `?task=<id>` on whatever page the path names (`useOpenTas
 - **Swapping** tasks inside the panel (breadcrumb, a related task) replaces the entry, so Back still closes the panel instead of walking every task you looked at.
 - **Closing** a marked entry is `navigate(-1)`, so Forward reopens it. Closing an entry that came with the URL (a link, a push tap, a reload) replaces the parameter away.
 - **Other navigation:** leaving the page drops the parameter and closes the panel, and Back to that entry brings it back. A reload keeps the panel open.
+- **The tab** is `?tab=` beside `?task=` (`usePanelTab` in `App.tsx`; the tabs themselves are `docs/mobile.md` § Task panel tabs). A tab click REPLACES it, never pushes, and keeps the entry's history state, so the `tmTaskPanel` mark survives and Back still closes the panel. A reload keeps the tab. Swapping tasks and closing both drop it, so another task opens on its own tab. An unknown or not-offered value is ignored, not shown and not rewritten. `openTaskFromAnywhere` builds a fresh `?task=` (+ `?ws=`), `withWorkspace`/`replaceWorkspaceParam` only touch `ws`, and `PushBridge`'s short-id rewrite only touches `task`, so all of them leave a present `tab` alone.
 
 `PushBridge` only rewrites a short id to the full one in place (`docs/push.md` § Opening a notification).
 

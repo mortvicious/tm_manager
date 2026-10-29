@@ -1053,9 +1053,31 @@
 }
 
 [data-design='glass'] .slideover-head,
-[data-design='glass'] .so-bar {
+[data-design='glass'] .so-bar,
+[data-design='glass'] .slideover > .so-actions {
   border-bottom: 0.5px solid var(--tm-border);
   background: transparent;
+}
+
+/* the desktop panel's Save footer: a hairline over the pane's own material */
+[data-design='glass'] .slideover > .so-save {
+  border-top: 0.5px solid var(--tm-border);
+  background: transparent;
+}
+
+/* The tab strip is sticky over the scrolling body: the pane's own thick
+   material, so the text passing under it blurs away instead of reading
+   through (the thinner bar material left it legible). On the strip only —
+   never on .main/.header/.app, whose fixed overlays it would trap. */
+[data-design='glass'] .so-tabs {
+  background: var(--tm-glass-thick);
+  -webkit-backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  box-shadow: inset 0 -0.5px 0 var(--tm-border);
+}
+
+[data-design='glass'] .so-tab {
+  font-family: var(--tm-font-display);
 }
 
 [data-design='glass'] .app.mobile .slideover-body > .so-save {

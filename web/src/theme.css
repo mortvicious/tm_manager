@@ -4882,6 +4882,101 @@ tr.repo-open > td {
   display: none;
 }
 
+/* ---- task panel tabs (TaskSlideOver + panelTabs.ts, docs/mobile.md § Task panel tabs) ---- */
+
+/* Desktop: the action row is pinned under the head, outside the scroller,
+   like the phone's bar — reachable from any tab and any scroll position. */
+.slideover > .so-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-3) var(--tm-space-5);
+  border-bottom: 1px solid var(--tm-border);
+}
+
+/* Sticky inside the body's own scroller (desktop: `.slideover-body`; phone:
+   the sheet's one scroller), never a scroller of its own vertically. The
+   negative top reaches past the scroller's padding to its edge, the margins
+   past its sides, so stuck it is a full-width bar the content passes under. */
+.so-tabs {
+  position: sticky;
+  top: calc(-1 * var(--tm-space-5));
+  z-index: 2;
+  flex: none;
+  display: flex;
+  gap: var(--tm-space-1);
+  margin: 0 calc(-1 * var(--tm-space-5));
+  padding: 0 var(--tm-space-5);
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  background: var(--tm-bg-raised);
+  /* the rule under the tabs: an inset shadow, so the active tab's underline paints over it */
+  box-shadow: inset 0 -1px 0 var(--tm-border);
+}
+
+.so-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.so-tab {
+  flex: none;
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--tm-text-muted);
+  font: inherit;
+  font-size: var(--tm-text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  /* the underline moving is the feedback; no grey/blue tap flash on top of it */
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    color var(--tm-dur-fast) var(--tm-ease-out),
+    border-color var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.so-tab:hover {
+  color: var(--tm-text);
+}
+
+.so-tab[aria-selected='true'] {
+  color: var(--tm-text);
+  border-bottom-color: var(--tm-accent);
+}
+
+.so-tab:focus-visible {
+  outline-offset: -2px;
+}
+
+.so-tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-4);
+  min-width: 0;
+}
+
+/* a tab's "nothing here yet" line: only while nothing else in it rendered */
+.so-empty {
+  display: none;
+}
+
+.so-tabpanel:not(:has(> :not(.so-empty, .so-review:empty))) > .so-empty {
+  display: block;
+}
+
+/* Desktop: Save/Discard is the panel's footer, outside the tab content, so an
+   edit made on Overview can be saved from any tab. */
+.slideover > .so-save {
+  justify-content: flex-end;
+  padding: var(--tm-space-3) var(--tm-space-5);
+  border-top: 1px solid var(--tm-border);
+}
+
 /* repo checks of the task's latest change (docs/checks.md) */
 .checks-panel {
   display: flex;
@@ -6264,59 +6359,40 @@ button.explain-tap:active {
 }
 
 /* Reading order on a phone: what happened, then your answer to it, then the
-   task itself. Everything unlisted keeps order 0, i.e. its desktop order. */
-.app.mobile .slideover-body > .group-path {
-  order: -7;
+   task itself — which is now the JSX order, shared with the desktop: the
+   badge's explanation, breadcrumb, alerts, the agent's question and the run's
+   numbers above the tab strip, then the active tab, then Save. No `order`
+   rules: a section moved by `order` would read differently to a screen reader
+   than it looks, and the tabs now group what the old rules pulled up. */
+
+/* the strip: the sheet scroller has no padding of its own, so stuck it sits at
+   the top edge; it reaches past the body's side padding (safe areas included) */
+.app.mobile .slideover-body > .so-tabs {
+  top: 0;
+  margin: 0 calc(-1 * (var(--tm-space-4) + env(safe-area-inset-right, 0px))) 0
+    calc(-1 * (var(--tm-space-4) + env(safe-area-inset-left, 0px)));
+  padding: 0 calc(var(--tm-space-4) + env(safe-area-inset-right, 0px)) 0
+    calc(var(--tm-space-4) + env(safe-area-inset-left, 0px));
 }
 
-.app.mobile .slideover-body > .so-alert {
-  order: -6;
+.app.mobile .so-tab {
+  min-height: var(--tm-tap);
+  padding: 0 var(--tm-space-3);
 }
 
-.app.mobile .slideover-body > .so-question {
-  order: -5;
-}
-
-.app.mobile .slideover-body > .so-stats {
-  order: -4;
-}
-
-.app.mobile .slideover-body > .so-review {
-  order: -3;
-}
-
-/* the check and loop output sit with the review: "checks red" must not send
-   you scrolling past the edit fields to find what failed */
-.app.mobile .slideover-body > :is(.checks-panel, .loop-panel) {
-  order: -3;
-}
-
-.app.mobile .slideover-body > .so-explain {
-  order: -8;
-}
-
-.app.mobile .slideover-body > .so-summary {
-  order: -2;
-}
-
-.app.mobile .slideover-body > .so-followup {
-  order: -1;
-}
-
-/* the bar and the sheet ARE the action row on a phone */
-.app.mobile .slideover-body > .so-actions {
-  display: none;
-}
-
-/* Save rides the bottom edge from anywhere in the panel while there is
-   something to save. Last in the order, so it rests below everything. */
+/* Save rides the bottom edge from any tab and any scroll position while there
+   is something to save. Last in the body, after the tab content, so it rests
+   below everything. */
 .app.mobile .slideover-body > .so-save {
-  order: 50;
   position: sticky;
-  /* sticky insets count from inside the body's bottom padding; reach past it to the edge */
-  bottom: calc(-1 * (var(--tm-space-6) + env(safe-area-inset-bottom, 0px)));
+  /* Sticky insets count from the edge of the SCROLLER — the sheet's, which has
+     no padding — so stuck it sits at 0. The old negative inset (from when the
+     body's padding was thought to count) pushed the bar 32px off-screen. The
+     negative bottom margin eats the body's bottom padding, so at the end of
+     the scroll it rests on the edge too. */
+  bottom: 0;
   z-index: 2;
-  margin: 0 calc(-1 * var(--tm-space-4));
+  margin: 0 calc(-1 * var(--tm-space-4)) calc(-1 * (var(--tm-space-6) + env(safe-area-inset-bottom, 0px)));
   padding: var(--tm-space-2) var(--tm-space-4) calc(var(--tm-space-2) + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--tm-border);
   background: var(--tm-bg-raised);

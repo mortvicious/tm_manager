@@ -26,6 +26,7 @@ import { useTermDock } from './termLayout.ts';
 
 export function App() {
   const [openTask, setOpenTask] = useOpenTask();
+  const [panelTab, setPanelTab] = usePanelTab();
   // nonce so re-opening the already-open terminal still re-expands a compacted drawer;
   // `from` is the panel or Inbox item it replaced, reopened when it closes
   const [openTerminal, setOpenTerminal] = useState<{ runId: string; nonce: number; from?: ReturnTo } | null>(null);
@@ -72,6 +73,8 @@ export function App() {
         <TaskSlideOver
           taskId={openTask}
           onOpenTask={setOpenTask}
+          urlTab={panelTab}
+          onUrlTab={setPanelTab}
           onClose={() => setOpenTask(null)}
           onOpenTerminal={(runId) => {
             // Slide-over closes: its overlay sits above the terminal drawer (review R7).
@@ -111,7 +114,8 @@ type OpenTaskSetter = (next: string | null | ((cur: string | null) => string | n
  * - closing a pushed entry goes Back (Forward reopens it); closing one that
  *   arrived with the URL (a link, a push tap, a reload) replaces it away.
  * Leaving the page drops the param, so the panel closes with it; Back to
- * that entry brings it back.
+ * that entry brings it back. `?tab=` (usePanelTab) belongs to the open task:
+ * a swap or a close drops it, so another task opens on its own tab.
  */
 function useOpenTask(): [string | null, OpenTaskSetter] {
   const { search } = useLocation();
@@ -133,6 +137,7 @@ function useOpenTask(): [string | null, OpenTaskSetter] {
         }
         url.searchParams.delete('task');
       } else url.searchParams.set('task', id);
+      url.searchParams.delete('tab');
       const to = { pathname: url.pathname, search: url.search, hash: url.hash };
       if (cur === null && id !== null) navigate(to, { state: { [PANEL_PUSHED]: true } });
       else navigate(to, { replace: true, state });
@@ -140,6 +145,30 @@ function useOpenTask(): [string | null, OpenTaskSetter] {
     [navigate],
   );
   return [openTask, set];
+}
+
+/**
+ * `?tab=` beside `?task=`: the panel's tab (panelTabs.ts), raw — the panel
+ * validates it. Always REPLACED, never pushed, keeping the entry's history
+ * state, so a tab click is no Back step and the `tmTaskPanel` mark survives:
+ * Back still closes the panel. No-op without an open panel.
+ */
+function usePanelTab(): [string | null, (tab: string | null) => void] {
+  const { search } = useLocation();
+  const navigate = useNavigate();
+  const tab = new URLSearchParams(search).get('tab') || null;
+  const set = useCallback(
+    (next: string | null) => {
+      const url = new URL(window.location.href);
+      if (!url.searchParams.get('task') || (url.searchParams.get('tab') || null) === next) return;
+      if (next) url.searchParams.set('tab', next);
+      else url.searchParams.delete('tab');
+      const state = (window.history.state as { usr?: unknown } | null)?.usr;
+      navigate({ pathname: url.pathname, search: url.search, hash: url.hash }, { replace: true, state });
+    },
+    [navigate],
+  );
+  return [tab, set];
 }
 
 /**

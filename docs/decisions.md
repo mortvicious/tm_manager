@@ -1,5 +1,13 @@
 # Decision log
 
+- **2026-10-29 — The task panel is tabbed: Overview · Review & checks · Terminal, picked by state, remembered per state (`docs/mobile.md` § Task panel tabs, `docs/design.md` § Task URLs)**: task 8d1b19b6, phase 1/3 of the feature *Task panel tabs + per-task history*.
+  - **A re-home, not a redesign.** Every section lives in exactly one tab and no action changed. What happened and what waits on you (head, actions, alerts, the agent's question) sits above the tabs on every tab, so a tab can never hide a decision.
+  - **The default follows the state, a pick is remembered per state.** One global "last tab" would open a running task on Review because the last task was in review. The memory is per bucket in `tm.panelTab`. While the panel is open, the bucket moving (running → review) moves the tab only if the human has not clicked since opening.
+  - **`?tab=` is replaced, never pushed.** Every tab click a Back step would break "Back closes the panel". A swap or a close drops it, so it never names another task's tab.
+  - **The desktop action row is pinned under the head**, outside the scroller, like the phone's bar. It was mid-body; with the body split into tabs it would otherwise belong to none of them.
+  - **The strip is sticky inside the one scroller** (the sheet's on a phone): a second vertical scroller would break the sheet's "drag from anywhere at the top".
+  - **Fixed on the way:** the phone's sticky Save bar sat 32px off-screen (`bottom: -(space-6 + safe area)` assumed the body's padding counted for sticky insets; it is the scroller's edge that counts). Measured in Chromium and WebKit, in the pre-change build too. Now `bottom: 0` plus a negative bottom margin.
+
 - **2026-10-29 — The task panel's diff is a separate, non-mutating read of the reviewer's scope (`docs/task-diff.md`)**: task dc162b07, phase 1/3 of the feature *Task panel tabs + per-task history*.
   - **Not `workerDiff`.** The reviewer's read runs `git add -N` (a write to the index) and its text and hash are what the unchanged-diff gate compares, so it stays byte-for-byte as it was. `taskChangeRead` reuses `taskCommits`/`committedDiff` and reads the rest itself.
   - **`git diff-index`, not `git diff HEAD`.** Measured on git 2.52: porcelain `git diff HEAD` rewrites a stat-dirty `.git/index` even with `GIT_OPTIONAL_LOCKS=0`; the plumbing does not. Untracked files are read per file with `git diff --no-index`, capped at 200 files and a 6 s budget (one spawn is 45–120 ms under tsx); the rest are listed without a patch.

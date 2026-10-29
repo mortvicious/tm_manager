@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import {
   EFFORT_LEVELS,
   GROUP_COLOR_COUNT,
@@ -44,6 +44,17 @@ import { toastError } from '../toast.ts';
 import { useArm } from '../arm.ts';
 import { exitGhost } from '../motion.ts';
 import { BackgroundShellList } from './BackgroundShells.tsx';
+import {
+  PANEL_TAB_LABEL,
+  offeredTabs,
+  panelBucket,
+  pickTab,
+  readTabMemory,
+  rememberTab,
+  tabByKey,
+  type PanelBucket,
+  type PanelTab,
+} from '../panelTabs.ts';
 
 /**
  * One button of the panel's action set. Desktop draws the whole list as one
@@ -263,12 +274,18 @@ export function TaskSlideOver({
   onClose,
   onOpenTask,
   onOpenTerminal,
+  urlTab,
+  onUrlTab,
 }: {
   taskId: string;
   onClose: () => void;
   /** swap the panel to another task (the group breadcrumb) */
   onOpenTask: (id: string) => void;
   onOpenTerminal: (runId: string) => void;
+  /** `?tab=` as the URL has it (App.tsx usePanelTab) — unvalidated */
+  urlTab: string | null;
+  /** replace `?tab=` (null drops it); never a new history entry */
+  onUrlTab: (tab: PanelTab | null) => void;
 }) {
   const { tasks, repos, runs, proposals, dispatches, refresh, questions, settings, orch } = useApp();
   const task = tasks.find((t) => t.id === taskId);
@@ -440,6 +457,41 @@ export function TaskSlideOver({
     [questions, taskId],
   );
   const taskProposals = useMemo(() => proposals.filter((p) => p.taskId === taskId), [proposals, taskId]);
+
+  // The tab (panelTabs.ts, docs/mobile.md § Task panel tabs): the human's click
+  // in THIS open of the panel, else `?tab=`, else the state bucket's
+  // remembered pick, else its default. A breadcrumb swap is a new open: the
+  // click is keyed on the task, and useOpenTask drops `tab` from the URL.
+  const offered = useMemo(offeredTabs, []);
+  const bucket: PanelBucket = task ? panelBucket(task, !!pendingQuestion) : 'idle';
+  const [clicked, setClicked] = useState<{ id: string; tab: PanelTab } | null>(null);
+  const clickedTab = clicked?.id === taskId ? clicked.tab : null;
+  const tabMemory = useMemo(readTabMemory, [bucket, clickedTab]);
+  const tab = pickTab({ clicked: clickedTab, url: urlTab, remembered: tabMemory[bucket], bucket, offered });
+  // The bucket moved under an open panel (running → review): with no click
+  // since it opened, the tab follows the new bucket — so a `?tab=` that came
+  // with the URL (a link, a reload) steps aside, or it would pin the old tab.
+  const seenBucket = useRef<{ id: string; bucket: PanelBucket } | null>(null);
+  useEffect(() => {
+    if (!task) return;
+    const prev = seenBucket.current;
+    seenBucket.current = { id: task.id, bucket };
+    if (prev?.id === task.id && prev.bucket !== bucket && !clickedTab && urlTab !== null) onUrlTab(null);
+  });
+  const tabRefs = useRef<Partial<Record<PanelTab, HTMLButtonElement | null>>>({});
+  const chooseTab = (t: PanelTab) => {
+    setClicked({ id: taskId, tab: t });
+    rememberTab(bucket, t);
+    onUrlTab(t);
+  };
+  // roving focus (WAI-ARIA tabs, automatic activation): arrows/Home/End select and focus
+  const onTabKey = (e: ReactKeyboardEvent) => {
+    const next = tabByKey(e.key, tab, offered);
+    if (!next) return;
+    e.preventDefault();
+    chooseTab(next);
+    tabRefs.current[next]?.focus();
+  };
 
   // Desktop: a real modal dialog (UX review #5, docs/design.md § Desktop
   // dialogs) — focus moves in, Tab stays in, Escape closes, and focus returns
@@ -1036,7 +1088,10 @@ export function TaskSlideOver({
     </div>
   );
 
-  const body = (
+  // Above the tabs, on every tab (docs/mobile.md § Task panel tabs): where the
+  // task stands, what went wrong, and the question waiting on you — in reading
+  // order, which is also the phone's.
+  const above = (
     <>
       {/* a phone cannot hover the badge: what is happening, what you can do
           (docs/mobile.md § Tap to explain) */}
@@ -1052,6 +1107,29 @@ export function TaskSlideOver({
         />
       )}
       <GroupPath task={task} tasks={tasks} onOpen={onOpenTask} />
+      {task.error && (
+        <div className="warn-text so-alert" style={{ whiteSpace: 'pre-wrap' }}>
+          {task.error}
+        </div>
+      )}
+      {retryable && (
+        <div className="hint so-alert">
+          {resumeSession
+            ? 'Retry starts a fresh agent that is told what this attempt hit; Resume (under Follow-up, on the Terminal tab) reopens this agent\'s own session — pick it when the terminal died mid-task, e.g. on the usage limit.'
+            : 'Retry starts a fresh agent that is told what this attempt hit — there is no earlier session to resume.'}
+        </div>
+      )}
+      {task.wakeAt && (
+        <div className="hint so-alert" style={{ color: 'var(--tm-accent)' }}>
+          waiting on the 5h usage window — this task's own session resumes automatically{' '}
+          {fmtWake(task.wakeAt)}
+        </div>
+      )}
+      {task.status === 'queued' && task.queueHeldAt && (
+        <div className="hint so-alert" style={{ color: 'var(--tm-accent)' }}>
+          held by Undo start — it keeps its place, but the queue skips it until you Release it (or Run now)
+        </div>
+      )}
       {pendingQuestion && (
         <div className="qpanel so-question">
           <label className="label">The agent is asking you</label>
@@ -1066,6 +1144,38 @@ export function TaskSlideOver({
           {latestRun && <RunStatsChips run={latestRun} />}
         </div>
       )}
+    </>
+  );
+
+  // Desktop: the whole action list as one wrapping row, pinned under the head;
+  // the run's numbers sit just before Analyze. A phone's bar + ⋯ sheet ARE
+  // this row there.
+  const deskActions = (
+    <div className="so-actions">
+      {actions.map((a) => (
+        <Fragment key={a.id}>
+          {/* the run's cost/context chips sit just before Analyze, as they always have */}
+          {a.id === 'analyze' && <TaskCostChip costUsd={task.costUsd} />}
+          {a.id === 'analyze' && <TaskAttemptsChip attempts={task.attempts} />}
+          {a.id === 'analyze' && latestRun && <RunStatsChips run={latestRun} />}
+          <button
+            className={`btn${isArmed(a) ? ' danger armed' : a.cls ? ` ${a.cls}` : ''}`}
+            title={a.title}
+            disabled={a.disabled}
+            aria-live={a.confirm ? 'polite' : undefined}
+            onClick={() => fires(a) && a.onClick()}
+          >
+            {a.icon}
+            {a.icon ? ' ' : ''}
+            {labelOf(a)}
+          </button>
+        </Fragment>
+      ))}
+    </div>
+  );
+
+  const overview = (
+    <>
       <div>
         <label className="label">Title</label>
         <input className="field" value={title} onChange={(e) => setTitle(e.target.value)} />
@@ -1268,138 +1378,6 @@ export function TaskSlideOver({
         </div>
       )}
 
-      {dirty && (
-        <div className="so-save">
-          <button className="btn ghost" onClick={discard} title="Back to the saved values">
-            Discard
-          </button>
-          <button className="btn primary" onClick={save}>
-            Save changes
-          </button>
-        </div>
-      )}
-
-      {task.error && (
-        <div className="warn-text so-alert" style={{ whiteSpace: 'pre-wrap' }}>
-          {task.error}
-        </div>
-      )}
-      {retryable && (
-        <div className="hint so-alert">
-          {resumeSession
-            ? 'Retry starts a fresh agent that is told what this attempt hit; Resume (under Follow-up) reopens this agent\'s own session — pick it when the terminal died mid-task, e.g. on the usage limit.'
-            : 'Retry starts a fresh agent that is told what this attempt hit — there is no earlier session to resume.'}
-        </div>
-      )}
-      {task.wakeAt && (
-        <div className="hint so-alert" style={{ color: 'var(--tm-accent)' }}>
-          waiting on the 5h usage window — this task's own session resumes automatically{' '}
-          {fmtWake(task.wakeAt)}
-        </div>
-      )}
-      {task.status === 'queued' && task.queueHeldAt && (
-        <div className="hint so-alert" style={{ color: 'var(--tm-accent)' }}>
-          held by Undo start — it keeps its place, but the queue skips it until you Release it (or Run now)
-        </div>
-      )}
-      <LoopPanel task={task} onError={toastError} />
-      <ChecksPanel task={task} onOpenTerminal={onOpenTerminal} />
-      <div className="so-review">
-        <ReviewPanel task={task} />
-      </div>
-      {task.resultSummary && (
-        <div className="so-summary">
-          <Markdown label="Worker's summary" text={task.resultSummary} />
-        </div>
-      )}
-
-      <div className="so-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {actions.map((a) => (
-          <Fragment key={a.id}>
-            {/* the run's cost/context chips sit just before Analyze, as they always have */}
-            {a.id === 'analyze' && <TaskCostChip costUsd={task.costUsd} />}
-            {a.id === 'analyze' && <TaskAttemptsChip attempts={task.attempts} />}
-            {a.id === 'analyze' && latestRun && <RunStatsChips run={latestRun} />}
-            <button
-              className={`btn${isArmed(a) ? ' danger armed' : a.cls ? ` ${a.cls}` : ''}`}
-              title={a.title}
-              disabled={a.disabled}
-              aria-live={a.confirm ? 'polite' : undefined}
-              onClick={() => fires(a) && a.onClick()}
-            >
-              {a.icon}
-              {a.icon ? ' ' : ''}
-              {labelOf(a)}
-            </button>
-          </Fragment>
-        ))}
-      </div>
-
-      {auxRuns.length > 0 && (
-        <div className="aux-runs">
-          <div className="section-head">Review &amp; compaction terminals</div>
-          {auxRuns.map((r) => (
-            <div className="aux-run" key={r.id}>
-              <KindBadge kind={r.kind} />
-              <span className={r.status === 'running' ? 'aux-run-live' : 'muted'}>
-                {r.status === 'running' ? 'live' : r.status === 'killed' ? 'stopped' : r.exitCode === 0 ? 'done' : 'failed'}
-              </span>
-              <span className="mono muted">{new Date(r.startedAt).toLocaleString()}</span>
-              {r.stats && <span className="mono muted">${r.stats.costUsd.toFixed(3)}</span>}
-              <button className="btn" onClick={() => onOpenTerminal(r.id)}>
-                <IconTerminal /> Terminal
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* the agent's background shells (docs/terminals.md § Background shells); renders nothing when none */}
-      <BackgroundShellList taskId={task.id} />
-
-      {(task.status !== 'draft' || latestRun) && (
-        <div className="so-followup">
-          <label className="label">Follow-up</label>
-          <textarea
-            className="field"
-            rows={3}
-            placeholder={
-              resumeSession
-                ? 'New instruction — continues the agent\'s previous session, which still remembers everything'
-                : 'New instruction — re-runs the task with the previous summary as context'
-            }
-            value={followUpMsg}
-            onChange={(e) => setFollowUpMsg(e.target.value)}
-          />
-          <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button
-              className="btn primary"
-              disabled={!followUpMsg.trim() || sendingFollowUp}
-              onClick={() => send(() => api.followUp(task.id, followUpMsg.trim()))}
-            >
-              {sendingFollowUp ? 'Sending…' : 'Send follow-up'}
-            </button>
-            <button
-              className="btn"
-              disabled={!resumeSession || sendingFollowUp}
-              title={
-                resumeSession
-                  ? `Reopen session ${resumeSession.slice(0, 8)} and carry on — use this when the terminal died mid-task (usage limit, dropped connection). Any text above is sent as the instruction.`
-                  : `No agent session to continue — run the task first, or use ${retryable ? 'Retry' : 'Run now'} for a fresh agent`
-              }
-              onClick={() => send(() => api.proceed(task.id, followUpMsg.trim() || undefined))}
-            >
-              <IconPlay /> Resume
-            </button>
-            {resumeSession && (
-              <span className="mono muted" style={{ fontSize: 11 }}>
-                resumes {resumeSession.slice(0, 8)}
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-
       <div className="section-head">Files</div>
       <div
         className={`dropzone ${dragOver ? 'over' : ''}`}
@@ -1471,15 +1449,6 @@ export function TaskSlideOver({
         </div>
       )}
 
-      {dispatches.some((d) => d.fromTaskId === task.id || d.toTaskId === task.id) && (
-        <>
-          <div className="section-head">Dispatches</div>
-          <div className="panel" style={{ padding: '6px 10px' }}>
-            <DispatchStrip taskId={task.id} direction="both" full onOpenTask={onOpenTask} />
-          </div>
-        </>
-      )}
-
       {taskProposals.length > 0 && (
         <>
           <div className="section-head">Proposals</div>
@@ -1489,6 +1458,144 @@ export function TaskSlideOver({
         </>
       )}
     </>
+  );
+
+  // `.so-empty` shows only while nothing else in the tab rendered (theme.css)
+  const reviewTab = (
+    <>
+      <LoopPanel task={task} onError={toastError} />
+      <ChecksPanel task={task} onOpenTerminal={onOpenTerminal} />
+      <div className="so-review">
+        <ReviewPanel task={task} />
+      </div>
+      {task.resultSummary && (
+        <div className="so-summary">
+          <Markdown label="Worker's summary" text={task.resultSummary} />
+        </div>
+      )}
+      <div className="so-empty muted">No loop, checks, review or summary for this task yet.</div>
+    </>
+  );
+
+  const terminalTab = (
+    <>
+      {auxRuns.length > 0 && (
+        <div className="aux-runs">
+          <div className="section-head">Review &amp; compaction terminals</div>
+          {auxRuns.map((r) => (
+            <div className="aux-run" key={r.id}>
+              <KindBadge kind={r.kind} />
+              <span className={r.status === 'running' ? 'aux-run-live' : 'muted'}>
+                {r.status === 'running' ? 'live' : r.status === 'killed' ? 'stopped' : r.exitCode === 0 ? 'done' : 'failed'}
+              </span>
+              <span className="mono muted">{new Date(r.startedAt).toLocaleString()}</span>
+              {r.stats && <span className="mono muted">${r.stats.costUsd.toFixed(3)}</span>}
+              <button className="btn" onClick={() => onOpenTerminal(r.id)}>
+                <IconTerminal /> Terminal
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* the agent's background shells (docs/terminals.md § Background shells); renders nothing when none */}
+      <BackgroundShellList taskId={task.id} />
+
+      {(task.status !== 'draft' || latestRun) && (
+        <div className="so-followup">
+          <label className="label">Follow-up</label>
+          <textarea
+            className="field"
+            rows={3}
+            placeholder={
+              resumeSession
+                ? 'New instruction — continues the agent\'s previous session, which still remembers everything'
+                : 'New instruction — re-runs the task with the previous summary as context'
+            }
+            value={followUpMsg}
+            onChange={(e) => setFollowUpMsg(e.target.value)}
+          />
+          <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              className="btn primary"
+              disabled={!followUpMsg.trim() || sendingFollowUp}
+              onClick={() => send(() => api.followUp(task.id, followUpMsg.trim()))}
+            >
+              {sendingFollowUp ? 'Sending…' : 'Send follow-up'}
+            </button>
+            <button
+              className="btn"
+              disabled={!resumeSession || sendingFollowUp}
+              title={
+                resumeSession
+                  ? `Reopen session ${resumeSession.slice(0, 8)} and carry on — use this when the terminal died mid-task (usage limit, dropped connection). Any text above is sent as the instruction.`
+                  : `No agent session to continue — run the task first, or use ${retryable ? 'Retry' : 'Run now'} for a fresh agent`
+              }
+              onClick={() => send(() => api.proceed(task.id, followUpMsg.trim() || undefined))}
+            >
+              <IconPlay /> Resume
+            </button>
+            {resumeSession && (
+              <span className="mono muted" style={{ fontSize: 11 }}>
+                resumes {resumeSession.slice(0, 8)}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {dispatches.some((d) => d.fromTaskId === task.id || d.toTaskId === task.id) && (
+        <>
+          <div className="section-head">Dispatches</div>
+          <div className="panel" style={{ padding: '6px 10px' }}>
+            <DispatchStrip taskId={task.id} direction="both" full onOpenTask={onOpenTask} />
+          </div>
+        </>
+      )}
+      <div className="so-empty muted">Nothing has run for this task yet.</div>
+    </>
+  );
+
+  const tabStrip = (
+    <div className="so-tabs" role="tablist" aria-label="Task sections" onKeyDown={onTabKey}>
+      {offered.map((t) => (
+        <button
+          key={t}
+          ref={(node) => {
+            tabRefs.current[t] = node;
+          }}
+          type="button"
+          role="tab"
+          id={`so-tab-${t}`}
+          className="so-tab"
+          aria-selected={t === tab}
+          aria-controls={t === tab ? 'so-tabpanel' : undefined}
+          tabIndex={t === tab ? 0 : -1}
+          onClick={() => chooseTab(t)}
+        >
+          {PANEL_TAB_LABEL[t]}
+        </button>
+      ))}
+    </div>
+  );
+
+  // only the active tab is mounted; edit state lives up here, so nothing is lost
+  const tabPanel = (
+    <div className="so-tabpanel" role="tabpanel" id="so-tabpanel" aria-labelledby={`so-tab-${tab}`}>
+      {tab === 'review' ? reviewTab : tab === 'terminal' ? terminalTab : overview}
+    </div>
+  );
+
+  // outside the tab content: an edit made on Overview saves from any tab
+  const saveBar = dirty && (
+    <div className="so-save">
+      <button className="btn ghost" onClick={discard} title="Back to the saved values">
+        Discard
+      </button>
+      <button className="btn primary" onClick={save}>
+        Save changes
+      </button>
+    </div>
   );
 
   // Beside the panel, never inside it: React bubbles the lightbox's portal
@@ -1513,7 +1620,10 @@ export function TaskSlideOver({
             </>
           )}
         >
-          {body}
+          {above}
+          {tabStrip}
+          {tabPanel}
+          {saveBar}
         </Sheet>
         {moreOpen && (
           <Sheet label="Task actions" title={task.title} onClose={() => setMoreOpen(false)}>
@@ -1538,7 +1648,13 @@ export function TaskSlideOver({
       <div className="overlay" ref={exitGhost} onClick={onClose} />
       <div className="slideover" ref={panelNode} role="dialog" aria-modal="true" aria-label={task.title} tabIndex={-1}>
         {head(onClose)}
-        <div className="slideover-body">{body}</div>
+        {deskActions}
+        <div className="slideover-body">
+          {above}
+          {tabStrip}
+          {tabPanel}
+        </div>
+        {saveBar}
       </div>
       {lightbox}
     </>

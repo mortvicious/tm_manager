@@ -552,7 +552,8 @@ mode still wraps, for the swatches.
 ## Task panel
 
 The desktop panel draws its actions as one wrapping row of up to 17 buttons,
-with Delete and Cancel beside the safe ones, after roughly 800px of form. On a
+with Delete and Cancel beside the safe ones — once after roughly 800px of form,
+since 2026-10-29 pinned under the head (§ Task panel tabs). On a
 phone the panel is a full-height sheet (§ Sheets): the same `head`, action bar
 and body JSX as the desktop panel, rearranged — head + bar are the sheet's drag
 handle, the body is its content. Drag it down (from anywhere while at the top)
@@ -582,19 +583,105 @@ to close; × animates out the same way.
   now are disabled while the task's PTY is up, with the same words as the board
   row, because the server's `hasLiveSession()` would 409 them. This applies to
   the desktop row too, where they used to be clickable into an error.
-- **Reading order**, by CSS `order` on the body's flex column, so the JSX is
-  shared: breadcrumb, alerts (the task's own error, wake-up, held — an action's refusal is a toast, § Action errors), the agent's question, run
-  stats, review, the worker's summary, follow-up. Then the title and
-  description, the settings, and the rest in desktop order. What happened comes
-  first, then your answer to it, then the task itself.
-- **Settings fold away.** The settings grid (repo, category, group, preset,
-  review, landing, model, effort, reviewer) sits behind a toggle that shows
-  `repo · model · effort`. The toggle is open for a draft, which is still being
-  written, and closed otherwise.
-- **Save is a sticky bottom bar** while there is something to save. It is last
-  in the order, so it rests below everything. It carries a negative `bottom`
-  because sticky insets count from inside the body's padding. **Discard** sits
-  beside it at its own width and puts the fields back to the task's values.
+- **Reading order** is the JSX order, shared with the desktop (no CSS `order`
+  rules since the tabs, § Task panel tabs): the badge's explanation, the
+  breadcrumb, the alerts (the task's own error, the retry hint, wake-up, held —
+  an action's refusal is a toast, § Action errors), the agent's question and
+  the run's numbers sit above the tab strip on every tab, then the active tab.
+  What happened comes first, then your answer to it, then the task itself.
+- **Settings fold away.** On Overview, the settings grid (repo, category, group,
+  preset, review, landing, model, effort, reviewer) sits behind a toggle that
+  shows `repo · model · effort`. The toggle is open for a draft, which is still
+  being written, and closed otherwise.
+- **Save is a sticky bottom bar** while there is something to save, on every
+  tab: it is the body's last child, after the tab content, never inside it.
+  Its sticky `bottom` is 0, because sticky insets count from the edge of the
+  sheet's scroller, which has no padding. A negative bottom margin eats the
+  body's bottom padding, so at the end of the scroll it rests on the edge too.
+  (Until 2026-10-29 it carried `bottom: -(space-6 + safe area)`, which assumed
+  the body's padding counted, and so put the bar 32px off-screen — Save
+  changes was clipped in both Chromium and WebKit.) **Discard** sits beside it
+  at its own width and puts the fields back to the task's values.
+
+### Task panel tabs
+
+The panel's body is three tabs (2026-10-29, feature *Task panel tabs +
+per-task history*, phase 1). The model already knows two more, `diff` and
+`history`, which later tasks add (`docs/task-diff.md`). Until then they are not
+drawn, and a `?tab=diff` is ignored like any unknown value. Nothing was removed
+and no action changed; every former section lives in exactly one place.
+
+**Above the tabs, on every tab:**
+- the head (status badge, chips, ×);
+- on a phone, the pinned action bar and `⋯`;
+- on the desktop, the whole `so-actions` row with the cost, attempts and run
+  chips. It is pinned directly under the head, outside the scroller, like the
+  phone's bar;
+- the badge strip (phone), the breadcrumb, the alerts;
+- the agent's question (`QuestionForm`);
+- the phone's run numbers.
+
+**The tabs:**
+
+| Tab | Holds |
+|---|---|
+| Overview | title, the agent's brief, description, the Settings toggle and grid, Files (dropzone, thumbnails, lightbox), Proposals |
+| Review & checks | LoopPanel, ChecksPanel, ReviewPanel, then the worker's summary |
+| Terminal | the review & compaction terminals, background shells, Follow-up / Resume, Dispatches |
+
+A tab with nothing to show (a draft that never ran) says so in a muted line,
+`.so-empty`. CSS `:has()` shows it only while nothing else in the tab rendered,
+so it never duplicates the sections' own conditions.
+
+**Which tab opens** (`web/src/panelTabs.ts`, pure):
+- **State bucket.** The task is read into one bucket: `asking` (a pending
+  question, which outranks the status) · `running` (running/waiting) ·
+  `review` · `idle` (draft/queued/blocked) · `finished-ok` (done/published) ·
+  `finished-bad` (failed/cancelled).
+- **Defaults per bucket.** asking → Overview, where the question sits above the
+  title · running → Terminal · review → Review & checks · idle → Overview ·
+  finished-ok → Review & checks · finished-bad → History, which falls back to
+  Overview until History exists.
+- **Precedence** (`pickTab`): the human's click in this open of the panel, then
+  `?tab=` (only if it is a known and offered tab), then the bucket's remembered
+  pick in localStorage `tm.panelTab` (`{bucket: tab}`, validated on read), then
+  the default.
+- **A click** (or arrow key) writes that bucket's memory, never one global
+  choice, and REPLACES `tab` in the URL.
+- **The bucket moves under an open panel** (running → review). With no click
+  since the panel opened, the tab follows to what the new bucket opens on: its
+  memory, else its default. A `?tab=` that came with the URL (a link, a reload)
+  is dropped at that moment, or it would pin the old tab. After a click the tab
+  stays.
+- **A breadcrumb swap is a new open.** The click is keyed on the task id, and
+  `useOpenTask` drops `tab`. Opening a terminal and coming back
+  (§ Returning from a terminal) reopens the panel fresh, so the bucket's memory
+  decides.
+
+**Markup.** `role="tablist"` / `tab` / `tabpanel`, with `aria-selected`,
+`aria-controls` on the active tab and `aria-labelledby` on the panel. Roving
+`tabIndex` with automatic activation: ←/→ move and wrap, Home/End jump, focus
+follows. Only the active tab is mounted. Every edit's state lives in the
+panel, so switching tabs loses nothing, and drafts still survive a close
+(§ Drafts survive a close). Escape works as before: a tab button is not a text
+field, so one Escape closes the panel. The Inbox's keys stand down while a
+panel is open, as before.
+
+**The strip** (`.so-tabs`) is `position: sticky; top: 0` inside the one
+scroller: `.slideover-body` on the desktop, the sheet's
+`react-modal-sheet-content-scroller` on a phone. Its negative side margins and
+the desktop's negative `top` reach past the body's padding, so stuck it is a
+full-width bar the content passes under. It scrolls sideways if it overflows
+(`overflow-x: auto`, scrollbar hidden), and `overflow-y: hidden` keeps it from
+becoming a vertical scroller of its own. With the scroller at its top, a drag
+that starts on the strip still pulls the sheet down. The head drags it
+always, stuck strip or not. In Glass, the strip takes the pane's thick
+material (`--tm-glass-thick`, `--tm-blur-thick`), because the thinner bar
+material left the text passing under it legible. The rule is on the strip
+only, never on `.main`/`.header`/`.app`.
+
+**Desktop Save** is the panel's footer (`.slideover > .so-save`), outside the
+scroller and the tab content.
 
 ### Drafts survive a close
 
