@@ -23,6 +23,7 @@ import { topmostDialog, useDialogFocus } from '../dialogFocus.ts';
 import { confirmMarkPublished, confirmPublish, markPublishedLabel, markPublishedOffered, publishIsPrimary } from '../publish.ts';
 import { useApp } from '../state.tsx';
 import { DispatchStrip } from './DispatchStrip.tsx';
+import { TaskDiff } from './TaskDiff.tsx';
 import { GroupPicker, type GroupChoicePlace } from './GroupPicker.tsx';
 import { IconAnalyze, IconChevron, IconMore, IconPlay, IconPublish, IconQueue, IconStop, IconTerminal, IconX } from './Icons.tsx';
 import { ImageLightbox, type LightboxImage } from './ImageLightbox.tsx';
@@ -1582,7 +1583,7 @@ export function TaskSlideOver({
   // only the active tab is mounted; edit state lives up here, so nothing is lost
   const tabPanel = (
     <div className="so-tabpanel" role="tabpanel" id="so-tabpanel" aria-labelledby={`so-tab-${tab}`}>
-      {tab === 'review' ? reviewTab : tab === 'terminal' ? terminalTab : overview}
+      {tab === 'review' ? reviewTab : tab === 'terminal' ? terminalTab : tab === 'diff' ? <TaskDiff task={task} repo={repos.find((r) => r.id === task.repoId)} /> : overview}
     </div>
   );
 

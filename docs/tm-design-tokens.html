@@ -129,6 +129,13 @@
   /* timeline sub-segments with no status of their own (docs/timeline.md § Tracks) */
   --tm-tl-checks: var(--tm-orange-5);
   --tm-tl-fixing: var(--tm-pink-5);
+  /* the Diff tab's patch lines (TaskDiff.tsx): text over a faint wash of the same hue */
+  --tm-diff-add-fg: var(--tm-green-5);
+  --tm-diff-add-bg: rgba(74, 222, 128, 0.1);
+  --tm-diff-del-fg: var(--tm-red-5);
+  --tm-diff-del-bg: rgba(244, 100, 95, 0.1);
+  --tm-diff-hunk-fg: var(--tm-blue-5);
+  --tm-diff-hunk-bg: rgba(96, 165, 250, 0.08);
   /* one hue per task group; `groupColorSlot` picks the slot (1..7) */
   --tm-group-1: var(--tm-violet-5);
   --tm-group-2: var(--tm-blue-5);
@@ -175,6 +182,12 @@
   --tm-status-attention: var(--tm-violet-7);
   --tm-tl-checks: var(--tm-orange-7);
   --tm-tl-fixing: var(--tm-pink-7);
+  --tm-diff-add-fg: var(--tm-green-7);
+  --tm-diff-add-bg: rgba(21, 128, 61, 0.08);
+  --tm-diff-del-fg: var(--tm-red-7);
+  --tm-diff-del-bg: rgba(185, 28, 28, 0.07);
+  --tm-diff-hunk-fg: var(--tm-blue-7);
+  --tm-diff-hunk-bg: rgba(29, 78, 216, 0.06);
   --tm-group-1: var(--tm-violet-7);
   --tm-group-2: var(--tm-blue-7);
   --tm-group-3: var(--tm-amber-7);
@@ -305,6 +318,12 @@
   --tm-knob: #ffffff;
   --tm-knob-shadow: 0 3px 8px rgba(0, 0, 0, 0.18), 0 3px 1px rgba(0, 0, 0, 0.06);
   --tm-seg-thumb: #636366;
+  --tm-diff-add-fg: #30d158;
+  --tm-diff-add-bg: rgba(48, 209, 88, 0.12);
+  --tm-diff-del-fg: #ff453a;
+  --tm-diff-del-bg: rgba(255, 69, 58, 0.12);
+  --tm-diff-hunk-fg: #64d2ff;
+  --tm-diff-hunk-bg: rgba(100, 210, 255, 0.09);
 }
 
 [data-design='glass'][data-theme='light'] {
@@ -368,6 +387,12 @@
   --tm-knob: #ffffff;
   --tm-knob-shadow: 0 3px 8px rgba(0, 0, 0, 0.15), 0 3px 1px rgba(0, 0, 0, 0.06);
   --tm-seg-thumb: #ffffff;
+  --tm-diff-add-fg: #248a3d;
+  --tm-diff-add-bg: rgba(52, 199, 89, 0.12);
+  --tm-diff-del-fg: #d70015;
+  --tm-diff-del-bg: rgba(255, 59, 48, 0.1);
+  --tm-diff-hunk-fg: #0040dd;
+  --tm-diff-hunk-bg: rgba(0, 122, 255, 0.08);
 }
 
 /* A phone in Glass: iOS's scale (15pt subheadline base, 17pt headline, 34pt
@@ -1019,6 +1044,24 @@ footer .mono { font-family: var(--tm-font-mono); }
   border-radius: var(--tm-radius-pill); background: var(--tm-glass-lens); box-shadow: inset 0 1px 0 var(--tm-glass-specular);
   transform: translateX(100%);
 }
+
+/* ---------- diff lines (the task panel's Diff tab) ---------- */
+.diff-demo {
+  margin: 0;
+  padding: var(--tm-space-2) 0;
+  background: var(--tm-bg-inset);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-sm);
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+}
+.diff-demo span { display: block; padding: 0 var(--tm-space-3); }
+.diff-demo .add { color: var(--tm-diff-add-fg); background: var(--tm-diff-add-bg); }
+.diff-demo .del { color: var(--tm-diff-del-fg); background: var(--tm-diff-del-bg); }
+.diff-demo .hunk { color: var(--tm-diff-hunk-fg); background: var(--tm-diff-hunk-bg); }
 </style>
 </head>
 <body>
@@ -1096,6 +1139,9 @@ footer .mono { font-family: var(--tm-font-mono); }
 
       <p class="eyebrow" style="margin-top: var(--tm-space-6);">semantic (theme-mapped)</p>
       <div class="swatch-grid" id="semanticRamp"></div>
+
+      <p class="eyebrow" style="margin-top: var(--tm-space-6);">diff lines — <code>--tm-diff-add|del|hunk-fg|bg</code></p>
+      <pre class="diff-demo"><span class="hunk">@@ -12,4 +12,5 @@ export function landIfClean(task: Task) {</span><span>   const reason = landingReason(task);</span><span class="del">-  if (!reason) return;</span><span class="add">+  if (!reason) return null;</span><span class="add">+  audit(task, 'landing', reason);</span><span>   return land(task, reason);</span></pre>
     </section>
 
     <section id="status">

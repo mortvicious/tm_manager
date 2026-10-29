@@ -605,11 +605,11 @@ to close; × animates out the same way.
 
 ### Task panel tabs
 
-The panel's body is three tabs (2026-10-29, feature *Task panel tabs +
-per-task history*, phase 1). The model already knows two more, `diff` and
-`history`, which later tasks add (`docs/task-diff.md`). Until then they are not
-drawn, and a `?tab=diff` is ignored like any unknown value. Nothing was removed
-and no action changed; every former section lives in exactly one place.
+The panel's body is four tabs (2026-10-29, feature *Task panel tabs +
+per-task history*: three in phase 1, Diff in phase 2). The model already knows
+one more, `history`, which a later task adds. Until then it is not drawn, and
+a `?tab=history` is ignored like any unknown value. Nothing was removed and no
+action changed; every former section lives in exactly one place.
 
 **Above the tabs, on every tab:**
 - the head (status badge, chips, ×);
@@ -626,6 +626,7 @@ and no action changed; every former section lives in exactly one place.
 | Tab | Holds |
 |---|---|
 | Overview | title, the agent's brief, description, the Settings toggle and grid, Files (dropzone, thumbnails, lightbox), Proposals |
+| Diff | the task's own change, read-only (`TaskDiff.tsx`, `docs/task-diff.md` § The Diff tab): scope line, commits, file list with per-file patches. Never a default — reached by a click or `?tab=diff` |
 | Review & checks | LoopPanel, ChecksPanel, ReviewPanel, then the worker's summary |
 | Terminal | the review & compaction terminals, background shells, Follow-up / Resume, Dispatches |
 

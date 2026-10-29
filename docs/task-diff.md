@@ -79,6 +79,50 @@ per task id plus a 5 s cache keyed by `task.updatedAt` (counted from the end
 of the read; a failed read is not cached), so several tabs share one set of
 git processes. Client: `api.taskDiff(id)`.
 
+## The Diff tab (`web/src/components/TaskDiff.tsx`)
+
+Phase 2 of the feature: the task panel's `diff` tab (`docs/mobile.md` § Task
+panel tabs) renders this response. It is never a tab default; a click or
+`?tab=diff` opens it.
+
+- **Fetching.** `api.taskDiff(id)` when the tab mounts (inactive tabs unmount,
+  so coming back reads again — the route's 5 s cache absorbs it). While open it
+  reads again when the task row's `updatedAt` moves or one of the task's runs
+  exits (`run.exited`), at most once per 5 s: an event inside the window
+  schedules ONE read at its end. **Refresh** reads at once. A response for an
+  older request or another task (breadcrumb swap) is dropped; a failed refresh
+  keeps the last good list under an error line.
+- **Header.** The scope in plain words (`scopeLine`): `3 commits (by Task
+  trailer) + uncommitted`, `2 commits since its base 1a2b3c4d`, `branch
+  tm/ab12cd34 since its fork from origin/staging` (base = `Task.worktreeBase`,
+  else the repo's `baseBranch`), `landed squash on staging`, `evicted worktree:
+  committed work only — 1 commit (by Task trailer)`, `uncommitted changes only —
+  no commits attributed`, `no change yet`. `+ uncommitted` is said only when an
+  uncommitted or untracked file is actually listed. Then the attribution, the
+  `stat` (files, +/−), `readAt` as an age (absolute time in the tooltip) and
+  the commits, oldest first (short sha + subject).
+- **Banners.** `truncated` → a banner that patches were cut at the caps while
+  every file stays listed with full counts; `untrackedCapped` → a note that
+  some untracked files are listed without a patch.
+- **File list.** One row per file: status letter (A/M/D/R/C), `oldPath → path`
+  for a rename/copy, `+n −m` (or `binary`), `cut` when one of its patches was
+  truncated. A tap expands the file; its patch is RENDERED only while expanded.
+  Each section is labelled `committed` / `uncommitted` / `commit <sha7>`;
+  added/deleted/hunk-header lines take `--tm-diff-add|del|hunk-fg|bg`, git's
+  file headers are faint. A binary file or one with no section (an empty new
+  file, an untracked file past the cap) says so instead. Desktop has **Expand
+  all / Collapse all**; the phone has compact rows.
+- **Text only.** Each line is a React text child of a `<span>` in a `<pre>` —
+  never markdown, never `innerHTML`; the patch is untrusted repo bytes.
+- **One scroller.** `.td-patch` is `white-space: pre` with `overflow-x: auto`
+  and `overflow-y: hidden`: a long line scrolls sideways inside its block,
+  while vertically the panel's own scroller moves everything (a nested
+  vertical scroller would break the phone sheet's drag-from-the-top).
+- **Tokens.** `--tm-diff-add-fg/bg`, `--tm-diff-del-fg/bg`,
+  `--tm-diff-hunk-fg/bg` in all four theme blocks (Classic dark/light, Glass
+  dark/light) of `theme.css` and the token sheet (`docs/tm-design-tokens.html`,
+  with a sample under Color); the patch font is `--tm-font-mono`.
+
 ## Verification
 
 `server/src/task-diff.test.ts` (real git in a temp dir): a trailer commit +
@@ -92,3 +136,17 @@ live worktree task → `branch-range` with its uncommitted and untracked files,
 a published worktree task → `landed`, an evicted one → `evicted: true` with its
 directory not re-created, three parallel requests served from one read, and
 the live worktree's index unchanged.
+
+The Diff tab (phase 2) was checked in Playwright Chromium over a scratch
+build, desktop 1440×900 and phone 393×852, Classic and Glass, with every
+non-GET aborted and the diff answered by the real `taskChange` over a DB copy
+(the live API predated the route): a checkout trailer task (36 files, 1
+commit), a live worktree task with tracked and untracked changes (`branch …
+since its fork from origin/main + uncommitted`), a landed one, a draft (`no
+change yet`), an evicted one, and a large diff built by the real
+`taskChangeRead` over a temp repo with a 600 KB file (banner, `cut` row, binary
+note). In every case commits/files matched the response, every `.td-patch`
+was `pre` with `overflow-x: auto; overflow-y: hidden`, no element in the tab
+scrolled vertically, and each patch line was a text-only `<span>`. Committing
+in the worktree with the tab open then pressing Refresh moved the list from
+`+ uncommitted` to the new commit, and `.git/index` was unchanged by every read.

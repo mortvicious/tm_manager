@@ -168,6 +168,13 @@
   /* timeline sub-segments that have no status of their own */
   --tm-tl-checks: var(--tm-orange-5);
   --tm-tl-fixing: var(--tm-pink-5);
+  /* the Diff tab's patch lines (TaskDiff.tsx): text over a faint wash of the same hue */
+  --tm-diff-add-fg: var(--tm-green-5);
+  --tm-diff-add-bg: rgba(74, 222, 128, 0.1);
+  --tm-diff-del-fg: var(--tm-red-5);
+  --tm-diff-del-bg: rgba(244, 100, 95, 0.1);
+  --tm-diff-hunk-fg: var(--tm-blue-5);
+  --tm-diff-hunk-bg: rgba(96, 165, 250, 0.08);
 }
 
 /* ---- semantic: light ---- */
@@ -216,6 +223,12 @@
   --tm-chart-analyze: #6d28d9;
   --tm-tl-checks: var(--tm-orange-7);
   --tm-tl-fixing: var(--tm-pink-7);
+  --tm-diff-add-fg: var(--tm-green-7);
+  --tm-diff-add-bg: rgba(21, 128, 61, 0.08);
+  --tm-diff-del-fg: var(--tm-red-7);
+  --tm-diff-del-bg: rgba(185, 28, 28, 0.07);
+  --tm-diff-hunk-fg: var(--tm-blue-7);
+  --tm-diff-hunk-bg: rgba(29, 78, 216, 0.06);
 }
 
 /* ---- design: Glass (docs/glass.md) ----
@@ -331,6 +344,12 @@
   --tm-knob: #ffffff;
   --tm-knob-shadow: 0 3px 8px rgba(0, 0, 0, 0.18), 0 3px 1px rgba(0, 0, 0, 0.06);
   --tm-seg-thumb: #636366;
+  --tm-diff-add-fg: #30d158;
+  --tm-diff-add-bg: rgba(48, 209, 88, 0.12);
+  --tm-diff-del-fg: #ff453a;
+  --tm-diff-del-bg: rgba(255, 69, 58, 0.12);
+  --tm-diff-hunk-fg: #64d2ff;
+  --tm-diff-hunk-bg: rgba(100, 210, 255, 0.09);
 }
 
 [data-design='glass'][data-theme='light'] {
@@ -396,6 +415,12 @@
   --tm-knob: #ffffff;
   --tm-knob-shadow: 0 3px 8px rgba(0, 0, 0, 0.15), 0 3px 1px rgba(0, 0, 0, 0.06);
   --tm-seg-thumb: #ffffff;
+  --tm-diff-add-fg: #248a3d;
+  --tm-diff-add-bg: rgba(52, 199, 89, 0.12);
+  --tm-diff-del-fg: #d70015;
+  --tm-diff-del-bg: rgba(255, 59, 48, 0.1);
+  --tm-diff-hunk-fg: #0040dd;
+  --tm-diff-hunk-bg: rgba(0, 122, 255, 0.08);
 }
 
 /* A phone in Glass: iOS's scale (15pt subheadline base, 17pt headline, 34pt
@@ -4967,6 +4992,274 @@ tr.repo-open > td {
 
 .so-tabpanel:not(:has(> :not(.so-empty, .so-review:empty))) > .so-empty {
   display: block;
+}
+
+/* ---------- the Diff tab (TaskDiff.tsx, docs/task-diff.md § The Diff tab) ----------
+   One vertical scroller — the panel's. A patch block scrolls SIDEWAYS only
+   (overflow-x), never vertically: a nested vertical scroller would trap the
+   wheel on desktop and break the phone sheet's drag-from-the-top. */
+.td {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-3);
+  min-width: 0;
+}
+
+.td-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+}
+
+.td-scope {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.td-btn {
+  flex-shrink: 0;
+}
+
+.td-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-1) var(--tm-space-4);
+  font-size: var(--tm-text-xs);
+}
+
+.td-plus {
+  color: var(--tm-diff-add-fg);
+}
+
+.td-minus {
+  color: var(--tm-diff-del-fg);
+}
+
+.td-stat .td-plus,
+.td-counts .td-plus,
+.td-counts .td-minus {
+  font-family: var(--tm-font-mono);
+}
+
+.td-banner {
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-border);
+  border-left: 3px solid var(--tm-status-review);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-bg-inset);
+}
+
+.td-note {
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+}
+
+.td-commits {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--tm-text-sm);
+}
+
+.td-commits li {
+  display: flex;
+  gap: var(--tm-space-2);
+  min-width: 0;
+}
+
+.td-sha {
+  flex-shrink: 0;
+  color: var(--tm-text-muted);
+  font-family: var(--tm-font-mono);
+}
+
+.td-subject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.td-tools {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.td-files {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  overflow: hidden;
+}
+
+.td-file + .td-file {
+  border-top: 1px solid var(--tm-border);
+}
+
+.td-file-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  width: 100%;
+  min-width: 0;
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 0;
+  background: transparent;
+  color: var(--tm-text);
+  font: inherit;
+  font-size: var(--tm-text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.td-file-row:hover,
+.td-file.open > .td-file-row {
+  background: var(--tm-bg-inset);
+}
+
+.td-file-row:focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: -2px;
+}
+
+.td-status {
+  flex-shrink: 0;
+  width: 1.4em;
+  font-family: var(--tm-font-mono);
+  font-weight: 700;
+  text-align: center;
+  color: var(--tm-text-muted);
+}
+
+.td-status-added {
+  color: var(--tm-diff-add-fg);
+}
+
+.td-status-deleted {
+  color: var(--tm-diff-del-fg);
+}
+
+.td-status-renamed,
+.td-status-copied {
+  color: var(--tm-diff-hunk-fg);
+}
+
+.td-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--tm-font-mono);
+}
+
+.td-oldpath {
+  color: var(--tm-text-muted);
+}
+
+.td-counts {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--tm-space-2);
+}
+
+.td-file-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2) var(--tm-space-3) var(--tm-space-3);
+  border-top: 1px solid var(--tm-border);
+  min-width: 0;
+}
+
+.td-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  min-width: 0;
+}
+
+.td-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--tm-space-2);
+}
+
+.td-source {
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.td-patch {
+  margin: 0;
+  padding: var(--tm-space-1) 0;
+  background: var(--tm-bg-inset);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-sm);
+  color: var(--tm-text);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  line-height: 1.5;
+  white-space: pre;
+  /* sideways only — see the block comment above */
+  overflow-x: auto;
+  overflow-y: hidden;
+  tab-size: 4;
+}
+
+/* each line spans the block's full scroll width, so its wash runs edge to edge */
+.td-patch > span {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  padding: 0 var(--tm-space-3);
+  box-sizing: border-box;
+}
+
+.td-patch > .td-add {
+  color: var(--tm-diff-add-fg);
+  background: var(--tm-diff-add-bg);
+}
+
+.td-patch > .td-del {
+  color: var(--tm-diff-del-fg);
+  background: var(--tm-diff-del-bg);
+}
+
+.td-patch > .td-hunk {
+  color: var(--tm-diff-hunk-fg);
+  background: var(--tm-diff-hunk-bg);
+}
+
+.td-patch > .td-meta {
+  color: var(--tm-text-faint);
+}
+
+/* phone: compact rows; the expanded patch still scrolls sideways */
+.app.mobile .td-file-row {
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2);
+  font-size: var(--tm-text-xs);
+}
+
+.app.mobile .td-file-body {
+  padding: var(--tm-space-2);
+}
+
+.app.mobile .td-patch > span {
+  padding: 0 var(--tm-space-2);
 }
 
 /* Desktop: Save/Discard is the panel's footer, outside the tab content, so an

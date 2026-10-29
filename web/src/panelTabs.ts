@@ -19,11 +19,12 @@ export const PANEL_TAB_LABEL: Record<PanelTab, string> = {
 };
 
 /**
- * The tabs this build draws. `diff` and `history` are known to the model
- * (URL, memory, defaults) but come with later tasks of the feature; until
- * they are listed here a `?tab=diff` is ignored like any unknown value.
+ * The tabs this build draws. `history` is known to the model (URL, memory,
+ * defaults) but comes with a later task of the feature; until it is listed
+ * here a `?tab=history` is ignored like any unknown value. `diff` is never a
+ * default — it is reached by a click or `?tab=diff`.
  */
-const SHIPPED: ReadonlySet<PanelTab> = new Set<PanelTab>(['overview', 'review', 'terminal']);
+const SHIPPED: ReadonlySet<PanelTab> = new Set<PanelTab>(['overview', 'diff', 'review', 'terminal']);
 
 export function offeredTabs(): PanelTab[] {
   return PANEL_TAB_ORDER.filter((t) => SHIPPED.has(t));
