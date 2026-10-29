@@ -80,6 +80,12 @@
   --tm-space-7: 48px;
   --tm-space-8: 64px;
   --tm-space-9: 96px;
+  /* the desktop timeline tracks (docs/timeline.md § Tracks): one sub-lane, the
+     sticky repo column, the time axis, the hover card's width */
+  --tm-tl-lane-h: 22px;
+  --tm-tl-label-w: 196px;
+  --tm-tl-axis-h: 30px;
+  --tm-tl-card-w: 320px;
 
   /* ---- radius ---- */
   --tm-radius-sm: 4px;
@@ -120,6 +126,9 @@
   --tm-status-published: var(--tm-blue-5);
   --tm-status-failed: var(--tm-red-5);
   --tm-status-attention: var(--tm-violet-5);
+  /* timeline sub-segments with no status of their own (docs/timeline.md § Tracks) */
+  --tm-tl-checks: var(--tm-orange-5);
+  --tm-tl-fixing: var(--tm-pink-5);
   /* one hue per task group; `groupColorSlot` picks the slot (1..7) */
   --tm-group-1: var(--tm-violet-5);
   --tm-group-2: var(--tm-blue-5);
@@ -164,6 +173,8 @@
   --tm-status-published: var(--tm-blue-7);
   --tm-status-failed: var(--tm-red-7);
   --tm-status-attention: var(--tm-violet-7);
+  --tm-tl-checks: var(--tm-orange-7);
+  --tm-tl-fixing: var(--tm-pink-7);
   --tm-group-1: var(--tm-violet-7);
   --tm-group-2: var(--tm-blue-7);
   --tm-group-3: var(--tm-amber-7);

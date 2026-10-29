@@ -382,3 +382,28 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
     reload,
   };
 }
+
+// ---- sub-lanes ------------------------------------------------------------------
+
+/**
+ * Sub-lanes by interval overlap (docs/timeline.md § Tracks): greedy over the
+ * items by start (then end), each into the lowest lane whose last item has
+ * ended by its start. Half-open intervals — an item starting exactly where
+ * another ends shares its lane. `minLanes` is the row's floor (a pr repo's
+ * `parallel`), never a ceiling: an overlap the data really holds gets a lane
+ * of its own rather than being drawn over. Returns each item's lane in the
+ * input order and the row's lane count.
+ */
+export function assignLanes(items: readonly { start: number; end: number }[], minLanes = 1): { lanes: number[]; count: number } {
+  const order = items.map((_, i) => i).sort((a, b) => items[a].start - items[b].start || items[a].end - items[b].end || a - b);
+  const lanes = new Array<number>(items.length);
+  const laneEnd: number[] = [];
+  for (const i of order) {
+    const { start, end } = items[i];
+    let lane = laneEnd.findIndex((e) => e <= start);
+    if (lane === -1) lane = laneEnd.push(0) - 1;
+    laneEnd[lane] = Math.max(start, end);
+    lanes[i] = lane;
+  }
+  return { lanes, count: Math.max(1, minLanes, laneEnd.length) };
+}

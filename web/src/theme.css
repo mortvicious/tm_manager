@@ -98,6 +98,12 @@
   --tm-term-w: min(720px, 38vw);
   /* the desktop board column: rows stay near their own buttons on a wide window */
   --tm-board-max: 1200px;
+  /* the desktop timeline tracks (docs/timeline.md § Tracks): one sub-lane's
+     height, the sticky repo column, the time axis, the hover card's width */
+  --tm-tl-lane-h: 22px;
+  --tm-tl-label-w: 196px;
+  --tm-tl-axis-h: 30px;
+  --tm-tl-card-w: 320px;
   /* Mobile shell (docs/mobile.md). The clearance is 0 on desktop so `.main`
      and `.term-drawer` can read it unconditionally; `.app.mobile` raises it. */
   --tm-tabbar-h: 56px;
@@ -159,6 +165,9 @@
   /* chart series — validated (dataviz six checks) on the dark surface */
   --tm-chart-worker: #0d9488;
   --tm-chart-analyze: #7c3aed;
+  /* timeline sub-segments that have no status of their own */
+  --tm-tl-checks: var(--tm-orange-5);
+  --tm-tl-fixing: var(--tm-pink-5);
 }
 
 /* ---- semantic: light ---- */
@@ -205,6 +214,8 @@
   /* chart series — validated on the light surface */
   --tm-chart-worker: #0d9488;
   --tm-chart-analyze: #6d28d9;
+  --tm-tl-checks: var(--tm-orange-7);
+  --tm-tl-fixing: var(--tm-pink-7);
 }
 
 /* ---- design: Glass (docs/glass.md) ----
@@ -8230,4 +8241,404 @@ button.explain-tap:active {
   font-family: var(--tm-font-mono);
   font-size: var(--tm-text-xs);
   color: var(--tm-text-muted);
+}
+
+/* ---------- timeline tracks (docs/timeline.md § Tracks) ---------- */
+
+.tlt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+}
+
+.tlt-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-3);
+  font-size: var(--tm-text-sm);
+}
+
+.tlt-hint {
+  font-size: var(--tm-text-xs);
+}
+
+.tlt-now-counts {
+  margin-left: auto;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
+.tlt-legend {
+  flex-wrap: wrap;
+  gap: var(--tm-space-1) var(--tm-space-4);
+  margin-bottom: 0;
+}
+
+.tlt-swatch {
+  background: var(--c);
+}
+
+.tlt-swatch.sub {
+  background: repeating-linear-gradient(135deg, var(--c) 0 calc(var(--tm-space-1) / 2), color-mix(in srgb, var(--c) 45%, transparent) calc(var(--tm-space-1) / 2) var(--tm-space-1));
+}
+
+.tlt-swatch.tail {
+  height: var(--tm-space-1);
+  vertical-align: calc(var(--tm-space-1) / 2);
+}
+
+.tlt-swatch.ghost {
+  background: transparent;
+  border: 1px dashed var(--c);
+}
+
+.tlt-panel {
+  overflow: hidden;
+}
+
+.tlt-scroller {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.tlt-scroller.panning {
+  cursor: grabbing;
+}
+
+.tlt-canvas {
+  position: relative;
+  width: calc(var(--tm-tl-label-w) + var(--tlt-w));
+  min-width: 100%;
+}
+
+.tlt-grid {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--tm-tl-label-w);
+  width: var(--tlt-w);
+  pointer-events: none;
+}
+
+.tlt-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--tm-border) 55%, transparent);
+}
+
+.tlt-gridline.day {
+  background: var(--tm-border-strong);
+}
+
+.tlt-row {
+  display: flex;
+  height: calc(var(--tm-tl-lane-h) * var(--lanes, 1) + var(--tm-space-2) * 2);
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.tlt-row:last-of-type {
+  border-bottom: none;
+}
+
+.tlt-row.tlt-axis {
+  height: var(--tm-tl-axis-h);
+}
+
+/* the repo column stays put while the time scrolls under it */
+.tlt-label {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  flex: none;
+  box-sizing: border-box;
+  width: var(--tm-tl-label-w);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: calc(var(--tm-space-1) / 2);
+  padding: 0 var(--tm-space-3);
+  background: var(--tm-bg-raised);
+  border-right: 1px solid var(--tm-border);
+  cursor: default;
+}
+
+.tlt-axis .tlt-label {
+  font-size: var(--tm-text-xs);
+}
+
+.tlt-repo {
+  font-size: var(--tm-text-sm);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tlt-label-meta {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tlt-lanes {
+  position: relative;
+  flex: none;
+  width: var(--tlt-w);
+}
+
+.tlt-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding-left: var(--tm-space-1);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.tlt-tick.day {
+  color: var(--tm-text-muted);
+  font-weight: 600;
+}
+
+.tlt-now-pill {
+  position: absolute;
+  top: 50%;
+  z-index: 2;
+  transform: translate(-50%, -50%);
+  padding: 0 var(--tm-space-2);
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-accent);
+  color: var(--tm-accent-contrast);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.tlt-now {
+  position: absolute;
+  top: var(--tm-tl-axis-h);
+  bottom: 0;
+  z-index: 2;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--tm-accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--tm-accent) 25%, transparent);
+  pointer-events: none;
+}
+
+/* everything on a lane: top = the row's padding + the lane's offset */
+.tlt-item,
+.tlt-tail,
+.tlt-ghost,
+.tlt-marker {
+  position: absolute;
+  top: calc(var(--tm-space-2) + var(--tm-tl-lane-h) * var(--lane, 0));
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.tlt-lane-rule {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--tm-space-2) + var(--tm-tl-lane-h) * var(--lane) - var(--tm-space-1) / 2);
+  border-top: 1px dashed color-mix(in srgb, var(--tm-border) 70%, transparent);
+  pointer-events: none;
+}
+
+.tlt-item,
+.tlt-ghost {
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  height: calc(var(--tm-tl-lane-h) - var(--tm-space-1));
+  border-radius: var(--tm-radius-sm);
+  overflow: hidden;
+}
+
+/* a past bar: filled by how it ended; its verify round and waits striped in their own colour */
+.tlt-item {
+  border: 1px solid var(--c);
+  background: color-mix(in srgb, var(--c) 34%, var(--tm-bg-raised));
+}
+
+.tlt-item.live {
+  border-right-style: dashed;
+  background-image: linear-gradient(to right, transparent 60%, color-mix(in srgb, var(--c) 45%, transparent));
+}
+
+.tlt-item.clipped {
+  border-left-style: dashed;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.tlt-sub {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(
+    135deg,
+    var(--k) 0 var(--tm-space-1),
+    color-mix(in srgb, var(--k) 55%, var(--tm-bg-raised)) var(--tm-space-1) var(--tm-space-2)
+  );
+}
+
+.tlt-item-label {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  padding: 0 var(--tm-space-2);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text);
+  text-shadow: 0 0 var(--tm-space-1) var(--tm-bg-raised);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* the idle stretch a settled review leaves: a thin line under whatever runs next */
+.tlt-tail {
+  z-index: 0;
+  height: calc(var(--tm-tl-lane-h) - var(--tm-space-1));
+  background: linear-gradient(
+    to bottom,
+    transparent calc(50% - var(--tm-space-1) / 2),
+    color-mix(in srgb, var(--tm-text-faint) 70%, transparent) 0,
+    color-mix(in srgb, var(--tm-text-faint) 70%, transparent) calc(50% + var(--tm-space-1) / 2),
+    transparent 0
+  );
+}
+
+.tlt-marker {
+  z-index: 2;
+  width: var(--tm-space-3);
+  height: var(--tm-space-3);
+  margin-left: calc(var(--tm-space-3) / -2);
+  margin-top: calc((var(--tm-tl-lane-h) - var(--tm-space-1) - var(--tm-space-3)) / 2);
+  border: 2px solid var(--tm-bg-raised);
+  border-radius: calc(var(--tm-space-1) / 2);
+  background: var(--c);
+  transform: rotate(45deg);
+}
+
+.tlt-marker:is(.failed, .cancelled) {
+  border-radius: var(--tm-radius-pill);
+  transform: none;
+}
+
+/* predicted: a dashed outline, its checks / review / publish tinted after the work */
+.tlt-ghost {
+  border: 1px dashed var(--tm-text-muted);
+  background: color-mix(in srgb, var(--tm-text-muted) 10%, transparent);
+}
+
+.tlt-ghost.continues {
+  border-color: var(--tm-status-running);
+  background: color-mix(in srgb, var(--tm-status-running) 14%, transparent);
+}
+
+.tlt-ghost-after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed var(--k);
+  background: color-mix(in srgb, var(--k) 20%, transparent);
+}
+
+.tlt-ghost .tlt-item-label {
+  color: var(--tm-text-muted);
+  text-shadow: none;
+}
+
+:is(.tlt-item, .tlt-ghost, .tlt-marker, .tlt-tail).hot,
+:is(.tlt-item, .tlt-ghost):focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: 1px;
+  z-index: 2;
+}
+
+.tlt-card {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  box-sizing: border-box;
+  width: max-content;
+  max-width: var(--tm-tl-card-w);
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-overlay);
+  box-shadow: var(--tm-shadow-md);
+  font-size: var(--tm-text-sm);
+  pointer-events: none;
+}
+
+.tlt-card-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.tlt-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+  font-size: var(--tm-text-xs);
+}
+
+.tlt-card-kind::before {
+  content: '';
+  display: inline-block;
+  width: var(--tm-space-2);
+  height: var(--tm-space-2);
+  margin-right: var(--tm-space-1);
+  border-radius: var(--tm-radius-pill);
+  background: var(--c);
+}
+
+.tlt-card-lines {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: calc(var(--tm-space-1) / 2) var(--tm-space-3);
+  margin: 0;
+  font-size: var(--tm-text-xs);
+}
+
+.tlt-card-lines > div {
+  display: contents;
+}
+
+.tlt-card-lines dt {
+  color: var(--tm-text-muted);
+}
+
+.tlt-card-lines dd {
+  margin: 0;
+  font-family: var(--tm-font-mono);
+  overflow-wrap: anywhere;
+}
+
+.tlt-card-foot {
+  font-size: var(--tm-text-xs);
 }

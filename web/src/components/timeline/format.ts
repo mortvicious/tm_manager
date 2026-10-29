@@ -1,3 +1,4 @@
+import type { BarOutcome } from './layout.ts';
 import type { PredictedSlot, Repo, ScheduleAfter, ScheduleSource, Task, TimelineSegment, TimelineSegmentKind } from '@tm/shared';
 
 /**
@@ -24,12 +25,30 @@ export const SEGMENT_COLOR: Record<TimelineSegmentKind, string> = {
   running: 'var(--tm-status-running)',
   waiting: 'var(--tm-status-attention)',
   'review-round': 'var(--tm-status-review)',
-  checks: 'var(--tm-status-review)',
-  fixing: 'var(--tm-status-attention)',
+  checks: 'var(--tm-tl-checks)',
+  fixing: 'var(--tm-tl-fixing)',
   'idle-in-review': 'var(--tm-text-faint)',
   landed: 'var(--tm-status-done)',
   failed: 'var(--tm-status-failed)',
   cancelled: 'var(--tm-text-faint)',
+};
+
+/** a track bar's fill: how the stretch ended (layout.ts `BarOutcome`) */
+export const OUTCOME_COLOR: Record<BarOutcome, string> = {
+  running: 'var(--tm-status-running)',
+  review: 'var(--tm-status-review)',
+  done: 'var(--tm-status-done)',
+  published: 'var(--tm-status-published)',
+  failed: 'var(--tm-status-failed)',
+  cancelled: 'var(--tm-text-faint)',
+  queued: 'var(--tm-status-queued)',
+};
+
+/** a ghost's stretches after the work */
+export const AFTER_COLOR: Record<ScheduleAfter['kind'], string> = {
+  checks: 'var(--tm-tl-checks)',
+  review: 'var(--tm-status-review)',
+  publish: 'var(--tm-status-published)',
 };
 
 export const SOURCE_LABEL: Record<ScheduleSource, string> = {

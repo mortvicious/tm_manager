@@ -1329,3 +1329,43 @@
 [data-design='glass'] .inbox-row:active {
   background: var(--tm-glass-btn-hover);
 }
+
+/* ---------- timeline tracks (docs/timeline.md § Tracks) ---------- */
+
+/* the sticky repo column is a bar the time scrolls under: frosted, not a solid block on the card */
+[data-design='glass'] .tlt-label {
+  background: var(--tm-glass-bar);
+  -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  border-right-color: var(--tm-glass-rim);
+}
+
+/* on the translucent card a bar mixes with what is behind it, not with Classic's raised grey */
+[data-design='glass'] .tlt-item {
+  background: color-mix(in srgb, var(--c) 38%, transparent);
+}
+
+[data-design='glass'] .tlt-sub {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--k) 0 var(--tm-space-1),
+    color-mix(in srgb, var(--k) 50%, transparent) var(--tm-space-1) var(--tm-space-2)
+  );
+}
+
+[data-design='glass'] .tlt-marker {
+  border-color: var(--tm-glass-rim);
+}
+
+[data-design='glass'] .tlt-item-label {
+  text-shadow: none;
+}
+
+[data-design='glass'] .tlt-card {
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-glass-thick);
+  -webkit-backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-shadow-lg);
+}
