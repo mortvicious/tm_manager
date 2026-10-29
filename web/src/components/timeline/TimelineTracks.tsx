@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { stateAt, type PredictedSlot } from '@tm/shared';
+import { stateAt, type PredictedSlot, type Task } from '@tm/shared';
 import { useApp } from '../../state.tsx';
 import type { UseTimeline } from '../../timeline.ts';
 import { useWorkspace } from '../../workspace.ts';
@@ -19,13 +19,17 @@ import {
   type Lookup,
 } from './format.ts';
 import { buildTrackLayout, segmentAt, type TrackBar, type TrackGhost, type TrackRow } from './layout.ts';
+import { IconGrip } from '../Icons.tsx';
+import { dropClassFor, slotDraggable, TimelineDragGhost, useTimelineDrag, type TimelineDropView, type TimelineGripProps } from './TimelineDrag.tsx';
 
 /**
  * The desktop timeline (docs/timeline.md § Tracks): one horizontal track per
  * workspace repo, time left → right. Past bars (coloured by how the stretch
  * ended, its verify round and waits as sub-segments, an idle tail, a landed /
  * failed marker), the NOW line on the hook's tick, and predicted ghosts after
- * it labelled with the ETA and the wait reason. Zoom hour/day/week (buttons,
+ * it labelled with the ETA and the wait reason — a queued task's ghost has a
+ * grip that drags it beside another to reorder the real queue
+ * (TimelineDrag.tsx). Zoom hour/day/week (buttons,
  * ctrl/⌘-wheel), pan (drag empty track, horizontal scroll). Geometry is TIME
  * (`layout.ts`, pure); this maps it to px and draws only what intersects the
  * visible window (± half a viewport), so a week of a busy board stays cheap.
@@ -48,6 +52,8 @@ const NOW_AT = 0.7;
 const BAR_MIN_PX = 3;
 /** below this width a bar or ghost carries no text */
 const LABEL_MIN_PX = 56;
+/** a draggable ghost is never narrower than its grip */
+const GRIP_MIN_PX = 18;
 const TICK_STEPS = [5 * MIN, 10 * MIN, 15 * MIN, 30 * MIN, HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY];
 /** tick labels this close to NOW (px) would sit under its pill */
 const NOW_PILL_CLEAR_PX = 56;
@@ -126,6 +132,7 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
   const [scrollLeft, setScrollLeft] = useState(0);
   const [hover, setHover] = useState<Hover | null>(null);
   const [panning, setPanning] = useState(false);
+  const dnd = useTimelineDrag(tl, 'x');
 
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -301,7 +308,7 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
           Now
         </button>
         <span className="muted tlt-hint">
-          {span(spanMs)} per view · ctrl/⌘-scroll to zoom, drag to pan
+          {span(spanMs)} per view · ctrl/⌘-scroll to zoom, drag to pan, drag a ghost's grip to reorder
         </span>
         <span className="tlt-now-counts muted">
           {at.running.length} running · {at.waiting.length} waiting · {at.checking.length} checks · {at.inReview.length} in review ·{' '}
@@ -350,16 +357,30 @@ export function TimelineTracks({ tl, names, onOpenTask }: { tl: UseTimeline; nam
               </div>
             </div>
             {layout.rows.map((row) => (
-              <Track key={row.key} row={row} x={x} visFrom={visFrom} visTo={visTo} ready={ready} now={tl.now} names={names} hoverKey={hover?.key ?? null} />
+              <Track
+                key={row.key}
+                row={row}
+                x={x}
+                visFrom={visFrom}
+                visTo={visTo}
+                ready={ready}
+                now={tl.now}
+                names={names}
+                hoverKey={dnd.drag ? null : (hover?.key ?? null)}
+                grip={dnd.gripProps}
+                drop={dnd.view}
+              />
             ))}
             {ready && <span className="tlt-now" style={{ left: `calc(var(--tm-tl-label-w) + ${nowX}px)` }} aria-hidden />}
           </div>
         </div>
       </div>
 
-      {hover && hovered && (
+      {hover && hovered && !dnd.drag && (
         <HoverCard hit={hovered} t={hover.t} x={hover.x} y={hover.y} now={tl.now} names={names} workedMs={layout.workedMs} />
       )}
+
+      <TimelineDragGhost drag={dnd.drag} tl={tl} />
 
       <NotScheduled tl={tl} names={names} onOpenTask={onOpenTask} />
     </div>
@@ -401,6 +422,8 @@ const Track = memo(function Track({
   now,
   names,
   hoverKey,
+  grip,
+  drop,
 }: {
   row: TrackRow;
   x: (t: number) => number;
@@ -410,6 +433,8 @@ const Track = memo(function Track({
   now: number;
   names: Lookup;
   hoverKey: string | null;
+  grip: (task: Task) => TimelineGripProps;
+  drop: TimelineDropView | null;
 }) {
   const seen = (from: number, to: number) => to >= visFrom && from <= visTo;
   const bars = ready ? row.bars.filter((b) => seen(b.start, b.extentEnd)) : [];
@@ -435,7 +460,7 @@ const Track = memo(function Track({
           <BarView key={b.key} b={b} x={x} now={now} names={names} hot={hoverKey === b.key || hoverKey === `m:${b.key}`} />
         ))}
         {ghosts.map((g) => (
-          <GhostView key={g.key} g={g} x={x} now={now} names={names} hot={hoverKey === g.key} />
+          <GhostView key={g.key} g={g} x={x} now={now} names={names} hot={hoverKey === g.key} grip={grip} drop={drop} />
         ))}
       </div>
     </div>
@@ -495,13 +520,32 @@ function ghostLabel(g: TrackGhost, now: number, names: Lookup): string {
   return [eta, why, continues ? null : names.title(p.taskId)].filter(Boolean).join(' · ');
 }
 
-function GhostView({ g, x, now, names, hot }: { g: TrackGhost; x: (t: number) => number; now: number; names: Lookup; hot: boolean }) {
+function GhostView({
+  g,
+  x,
+  now,
+  names,
+  hot,
+  grip,
+  drop,
+}: {
+  g: TrackGhost;
+  x: (t: number) => number;
+  now: number;
+  names: Lookup;
+  hot: boolean;
+  grip: (task: Task) => TimelineGripProps;
+  drop: TimelineDropView | null;
+}) {
+  const task = names.task(g.slot.taskId);
+  const draggable = slotDraggable(g.slot, task);
   const left = x(g.start);
-  const width = Math.max(BAR_MIN_PX, x(g.end) - left);
+  const width = Math.max(draggable ? GRIP_MIN_PX : BAR_MIN_PX, x(g.end) - left);
   return (
     <span
-      className={`tlt-ghost${g.slot.source === 'running' ? ' continues' : ''}${hot ? ' hot' : ''}`}
+      className={`tlt-ghost${g.slot.source === 'running' ? ' continues' : ''}${draggable ? ' draggable' : ''}${hot ? ' hot' : ''}${dropClassFor(drop, g.slot.taskId)}`}
       data-hit={g.key}
+      data-tl-drop={draggable ? g.slot.taskId : undefined}
       role="button"
       tabIndex={0}
       aria-label={`${names.title(g.slot.taskId)}, predicted: ${ghostLabel(g, now, names)}`}
@@ -512,6 +556,11 @@ function GhostView({ g, x, now, names, hot }: { g: TrackGhost; x: (t: number) =>
         const sw = x(Date.parse(a.end)) - left - sl;
         return sw < 1 ? null : <span key={a.kind} className="tlt-ghost-after" style={vars({ left: `${sl}px`, width: `${sw}px`, '--k': AFTER_COLOR[a.kind] })} />;
       })}
+      {draggable && task && (
+        <span className="tl-grip" title="Drag beside another predicted task to reorder the queue" aria-hidden="true" {...grip(task)}>
+          <IconGrip />
+        </span>
+      )}
       {width >= LABEL_MIN_PX && <span className="tlt-item-label">{ghostLabel(g, now, names)}</span>}
     </span>
   );

@@ -8838,6 +8838,97 @@ button.explain-tap:active {
   text-shadow: none;
 }
 
+/* ---------- timeline drag (timeline/TimelineDrag.tsx, docs/timeline.md § Drag the future) ---------- */
+/* A queued task's predicted point carries a grip; the drop side is drawn as an
+   accent edge on the time axis (left/right on the tracks, top/bottom in the
+   stream), a refusal as a failed-colour outline. */
+.tl-grip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--tm-text-faint);
+  cursor: grab;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.tl-grip:hover {
+  color: var(--tm-text);
+}
+
+/* touch arms after a hold (TaskDrag.tsx HOLD_MS): a flick that starts on the grip stays a scroll */
+@media (pointer: coarse) {
+  .tl-grip {
+    touch-action: manipulation;
+  }
+}
+
+.tlt-ghost .tl-grip {
+  position: relative;
+  z-index: 1;
+  align-self: stretch;
+  width: var(--tm-space-3);
+  margin-left: calc(var(--tm-space-1) / 2);
+}
+
+.tlt-ghost.draggable .tlt-item-label {
+  padding-left: 0;
+}
+
+.tl-srow .tl-grip {
+  align-self: stretch;
+  width: var(--tm-space-5);
+  margin-left: calc(-1 * var(--tm-space-2));
+  margin-right: calc(-1 * var(--tm-space-2));
+}
+
+.tlt-ghost.tl-dragging,
+.tl-srow.tl-dragging {
+  opacity: 0.4;
+}
+
+.tlt-ghost.tl-drop-before {
+  box-shadow: inset 3px 0 0 var(--tm-accent);
+}
+
+.tlt-ghost.tl-drop-after {
+  box-shadow: inset -3px 0 0 var(--tm-accent);
+}
+
+.tl-srow.tl-drop-before {
+  box-shadow: inset 0 2px 0 var(--tm-accent);
+}
+
+.tl-srow.tl-drop-after {
+  box-shadow: inset 0 -2px 0 var(--tm-accent);
+}
+
+.tlt-ghost.tl-drop-refused,
+.tl-srow.tl-drop-refused {
+  box-shadow: inset 0 0 0 1px var(--tm-status-failed);
+}
+
+.tl-drag-ghost .eta {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-drag-ghost.refused .hint {
+  white-space: normal;
+}
+
+/* the horizontal place is computed (kept on screen); only the drop below the pointer stays */
+.tl-drag-ghost {
+  transform: translateY(var(--tm-space-3));
+}
+
 :is(.tlt-item, .tlt-ghost, .tlt-marker, .tlt-tail).hot,
 :is(.tlt-item, .tlt-ghost):focus-visible {
   outline: 2px solid var(--tm-accent);

@@ -4,12 +4,15 @@ import {
   stateAt,
   type PredictedSlot,
   type Repo,
+  type Task,
   type TimelineSegment,
   type TimelineSegmentKind,
 } from '@tm/shared';
 import { useApp } from '../../state.tsx';
 import type { UseTimeline } from '../../timeline.ts';
+import { IconGrip } from '../Icons.tsx';
 import { Sheet, SheetAction } from '../Sheet.tsx';
+import { dropClassFor, slotDraggable, TimelineDragGhost, useTimelineDrag, type TimelineDropView, type TimelineGripProps } from './TimelineDrag.tsx';
 import {
   AFTER_LABEL,
   clock,
@@ -59,10 +62,13 @@ const SEGMENT_WHAT: Record<TimelineSegmentKind, string> = {
  * its repo's rail (one hue per repo); a parallel repo's rail is split into its
  * lanes with the row's own lane lit. Opens scrolled to NOW; a tap opens the
  * task, a long press — or a tap on the reason — explains the row in a Sheet.
+ * A queued task's predicted row has a grip: hold it, then drag the row above
+ * or below another to reorder the real queue (TimelineDrag.tsx).
  */
 export function TimelineStream({ tl, names, onOpenTask }: { tl: UseTimeline; names: Lookup; onOpenTask: (id: string) => void }) {
   const { repos, loaded } = useApp();
   const [explain, setExplain] = useState<Explained | null>(null);
+  const dnd = useTimelineDrag(tl, 'y');
 
   const past = useMemo(
     () =>
@@ -179,7 +185,17 @@ export function TimelineStream({ tl, names, onOpenTask }: { tl: UseTimeline; nam
       ) : (
         <div className="panel tl-srows">
           {scheduledShown.map((p) => (
-            <SlotStreamRow key={p.taskId} p={p} tl={tl} names={names} rail={rail(p.repoId, lanes.get(p.taskId) ?? null)} onOpenTask={onOpenTask} onExplain={() => setExplain({ kind: 'slot', p })} />
+            <SlotStreamRow
+              key={p.taskId}
+              p={p}
+              tl={tl}
+              names={names}
+              rail={rail(p.repoId, lanes.get(p.taskId) ?? null)}
+              onOpenTask={onOpenTask}
+              onExplain={() => setExplain({ kind: 'slot', p })}
+              grip={dnd.gripProps}
+              drop={dnd.view}
+            />
           ))}
           {scheduled.length > scheduledShown.length && <div className="tl-empty muted">+{scheduled.length - scheduledShown.length} more</div>}
         </div>
@@ -197,6 +213,8 @@ export function TimelineStream({ tl, names, onOpenTask }: { tl: UseTimeline; nam
           </div>
         </>
       )}
+
+      <TimelineDragGhost drag={dnd.drag} tl={tl} />
 
       {explain && (
         <ExplainRowSheet
@@ -221,6 +239,8 @@ function SlotStreamRow({
   rail,
   onOpenTask,
   onExplain,
+  grip,
+  drop,
 }: {
   p: PredictedSlot;
   tl: UseTimeline;
@@ -228,11 +248,29 @@ function SlotStreamRow({
   rail: ReactNode;
   onOpenTask: (id: string) => void;
   onExplain: () => void;
+  /** scheduled rows only: the drag (unscheduled rows are never dragged) */
+  grip?: (task: Task) => TimelineGripProps;
+  drop?: TimelineDropView | null;
 }) {
   const reason = p.waits.length ? p.waits[p.waits.length - 1].text : null;
+  const task = names.task(p.taskId);
+  const draggable = !!grip && slotDraggable(p, task);
   return (
     <StreamRow
       rail={rail}
+      drag={
+        draggable && task && grip
+          ? {
+              id: p.taskId,
+              cls: dropClassFor(drop ?? null, p.taskId),
+              grip: (
+                <span className="tl-grip" title="Hold, then drag above or below another predicted task to reorder the queue" aria-hidden="true" {...grip(task)}>
+                  <IconGrip />
+                </span>
+              ),
+            }
+          : undefined
+      }
       title={names.title(p.taskId)}
       known={!!names.task(p.taskId)}
       onOpen={() => onOpenTask(p.taskId)}
@@ -285,7 +323,10 @@ function StreamRow({
   reason,
   open = false,
   predicted = false,
+  drag,
 }: {
+  /** a draggable predicted row: its drop id, drop class and grip */
+  drag?: { id: string; cls: string; grip: ReactNode };
   rail: ReactNode;
   title: string;
   known: boolean;
@@ -302,7 +343,8 @@ function StreamRow({
     <div
       role="button"
       tabIndex={0}
-      className={`tl-srow${open ? ' open' : ''}${predicted ? ' predicted' : ''}${known ? '' : ' gone'}`}
+      className={`tl-srow${open ? ' open' : ''}${predicted ? ' predicted' : ''}${known ? '' : ' gone'}${drag ? ` draggable${drag.cls}` : ''}`}
+      data-tl-drop={drag?.id}
       aria-label={known ? `${title} — open the task` : `${title} — explain`}
       {...press.handlers}
       onClick={() => {
@@ -321,6 +363,7 @@ function StreamRow({
       }}
     >
       {rail}
+      {drag?.grip}
       <span className="tl-srow-body">
         <span className="tl-srow-title">{title}</span>
         <span className="tl-srow-meta">

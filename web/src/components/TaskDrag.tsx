@@ -44,14 +44,15 @@ export interface DragState {
 
 /** Fraction of a row's height that reads as "beside" rather than "into". */
 const EDGE = 0.3;
+/** The gesture constants are shared with the timeline's drag (timeline/TimelineDrag.tsx). */
 /** Pixels the pointer must travel before a press on the grip becomes a drag. */
-const SLOP = 4;
+export const SLOP = 4;
 /** Touch: how long the grip must be held before it arms, and how far the finger may wander meanwhile. */
-const HOLD_MS = 350;
-const TOUCH_SLOP = 8;
+export const HOLD_MS = 350;
+export const TOUCH_SLOP = 8;
 /** Distance from the scroll container's edge that auto-scrolls, and the speed. */
-const SCROLL_EDGE = 48;
-const SCROLL_STEP = 14;
+export const SCROLL_EDGE = 48;
+export const SCROLL_STEP = 14;
 
 /** The parent a drop would give `moving` — the server's `moveTask` resolution. */
 export function dropParent(place: DropZone, target: Task): string | null {
@@ -125,7 +126,7 @@ export function dropHint(tasks: Task[], drag: DragState): string {
   }
 }
 
-function scrollParent(el: HTMLElement | null): HTMLElement {
+export function scrollParent(el: HTMLElement | null): HTMLElement {
   for (let n = el?.parentElement; n; n = n.parentElement) {
     const oy = getComputedStyle(n).overflowY;
     if ((oy === 'auto' || oy === 'scroll') && n.scrollHeight > n.clientHeight) return n;

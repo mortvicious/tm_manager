@@ -339,6 +339,10 @@ same pure function, `planQueueReorder` in `storage/queue-sql.ts`.
 - **Guard.** The route has the same guard as `POST /api/tasks/:id/move`: no
   `Origin` requirement. Reordering only changes which waiting member runs
   first.
+- **From the timeline.** Dragging a member's predicted point beside another
+  member's calls this route (docs/timeline.md § Drag the future); a drop
+  between a member and a global-queue task is refused there, since the two
+  queues are separate orders.
 
 Verified on a copy of the live DB through `app.inject`. Three members across
 two repos were reordered three ways; after each move the `peekCustomQueue`

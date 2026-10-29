@@ -88,11 +88,13 @@ function useTick(ms: number): [number, () => void] {
 // ---- optimistic patches -------------------------------------------------------
 
 /**
- * Task fields a drag may change before the server answers (phase 4 reorders
- * the global and custom queues). Each entry is dropped by itself once the
- * server's row moves past the one it was applied over (`updatedAt` differs),
- * so a confirmed move never lingers and a refused one is cleared by its
- * caller through the returned function.
+ * Task fields a drag may change before the server answers (the timeline's
+ * drag reorders the global and custom queues, docs/timeline.md § Drag the
+ * future). Each entry is dropped by itself once the server's row moves past
+ * the one it was applied over — its `updatedAt` OR any field the patch sets
+ * differs (a reorder writes `sort_order` / `custom_queue_at` and leaves
+ * `updated_at` alone) — so a confirmed move never lingers, and a refused one
+ * is cleared by its caller through the returned function.
  */
 export type OptimisticTaskPatch = Partial<Pick<Task, 'sortOrder' | 'priority' | 'customQueueAt' | 'queueHeldAt' | 'status'>>;
 export interface OptimisticPatch {
@@ -101,15 +103,20 @@ export interface OptimisticPatch {
 
 interface PatchEntry {
   patch: OptimisticTaskPatch;
-  /** the server row's `updatedAt` it was applied over */
+  /** the server row it was applied over: `updatedAt` + the patched fields (`rowPrint`) */
   over: string;
   seq: number;
+}
+
+/** the server row's reading of what a patch touches: a change in any of them means the server answered */
+function rowPrint(t: Task, patch: OptimisticTaskPatch): string {
+  return JSON.stringify([t.updatedAt, ...Object.keys(patch).map((k) => t[k as keyof OptimisticTaskPatch] ?? null)]);
 }
 
 function patchedTasks(tasks: Task[], entries: Record<string, PatchEntry[]>): Task[] {
   if (!Object.keys(entries).length) return tasks;
   return tasks.map((t) => {
-    const list = entries[t.id]?.filter((e) => e.over === t.updatedAt);
+    const list = entries[t.id]?.filter((e) => e.over === rowPrint(t, e.patch));
     if (!list?.length) return t;
     return Object.assign({}, t, ...list.map((e) => e.patch)) as Task;
   });
@@ -147,6 +154,12 @@ export interface UseTimeline {
    * the unscheduled with their reason
    */
   predicted: PredictedSlot[];
+  /**
+   * The same prediction (whole board, unsorted, not cut to the workspace)
+   * with `patch` laid over `tasks` — what a drop WOULD predict, for the drag
+   * ghost's ETA. Nothing is applied.
+   */
+  preview(patch: OptimisticPatch): PredictedSlot[];
   applyOptimistic(patch: OptimisticPatch): () => void;
   clearOptimistic(): void;
   reload(): void;
@@ -284,7 +297,7 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
         for (const [taskId, p] of Object.entries(patch.tasks)) {
           const t = byId.get(taskId);
           if (!t) continue;
-          next[taskId] = [...(next[taskId] ?? []), { patch: p, over: t.updatedAt, seq: id }];
+          next[taskId] = [...(next[taskId] ?? []), { patch: p, over: rowPrint(t, p), seq: id }];
         }
         return next;
       });
@@ -305,11 +318,12 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
   useEffect(() => {
     setPatches((cur) => {
       if (!Object.keys(cur).length) return cur;
-      const at = new Map(tasks.map((t) => [t.id, t.updatedAt]));
+      const byId = new Map(tasks.map((t) => [t.id, t]));
       let changed = false;
       const next: Record<string, PatchEntry[]> = {};
       for (const [taskId, list] of Object.entries(cur)) {
-        const kept = list.filter((e) => at.get(taskId) === e.over);
+        const t = byId.get(taskId);
+        const kept = t ? list.filter((e) => rowPrint(t, e.patch) === e.over) : [];
         if (kept.length !== list.length) changed = true;
         if (kept.length) next[taskId] = kept;
       }
@@ -321,11 +335,11 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
   // ---- the predicted future ----
   const { repos, features, runs, activity, commands, orch, settings } = app;
   const progressBase = useProgressBaseline();
-  const allPredicted = useMemo(() => {
+  const predictOver = useCallback((rows: Task[]) => {
     const liveRuns = runs.filter((r) => r.status === 'running');
     // the same reading as the board row's bar, floor included (progress.ts)
     const progress: Record<string, number | null> = {};
-    for (const t of effectiveTasks) {
+    for (const t of rows) {
       if (t.status === 'running' || t.status === 'waiting') progress[t.id] = computeProgress(t, runs, activity, progressBase)?.pct ?? null;
     }
     const repoChecks: Record<string, string[]> = {};
@@ -334,11 +348,11 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
       (repoChecks[c.repoId] ??= []).push(c.name);
     }
     // the runs that filed a task (`createdByRun`), so an agent-filed member's filer is known after its run ended
-    const filers = new Set(effectiveTasks.map((t) => t.createdByRun).filter((id): id is string => !!id));
+    const filers = new Set(rows.map((t) => t.createdByRun).filter((id): id is string => !!id));
     const runTaskIds: Record<string, string> = {};
     for (const r of runs) if (filers.has(r.id) && r.taskId) runTaskIds[r.id] = r.taskId;
     return predictSchedule({
-      tasks: effectiveTasks,
+      tasks: rows,
       repos,
       features,
       // the live status outranks the settings snapshot, which is read once per refresh
@@ -357,7 +371,13 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
       runTaskIds,
       now,
     });
-  }, [effectiveTasks, repos, features, runs, activity, commands, orch, settings, progressBase, base, now]);
+  }, [repos, features, runs, activity, commands, orch, settings, progressBase, base, now]);
+  const allPredicted = useMemo(() => predictOver(effectiveTasks), [predictOver, effectiveTasks]);
+  const preview = useCallback(
+    (patch: OptimisticPatch) =>
+      predictOver(effectiveTasks.map((t) => (patch.tasks[t.id] ? ({ ...t, ...patch.tasks[t.id] } as Task) : t))),
+    [predictOver, effectiveTasks],
+  );
   const predicted = useMemo(() => {
     const sc = scope ? new Set(scope) : null;
     const mine = sc ? allPredicted.filter((p) => p.repoId === null || sc.has(p.repoId)) : allPredicted;
@@ -377,6 +397,7 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
     baseline: base,
     tasks: effectiveTasks,
     predicted,
+    preview,
     applyOptimistic,
     clearOptimistic,
     reload,
