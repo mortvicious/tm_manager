@@ -5262,6 +5262,262 @@ tr.repo-open > td {
   padding: 0 var(--tm-space-2);
 }
 
+/* ---- task panel: History tab (TaskHistory.tsx, docs/timeline.md § The History tab) ---- */
+.th {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-3);
+  min-width: 0;
+}
+
+.th-totals {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--tm-space-2);
+  margin: 0;
+}
+
+.th-totals > div {
+  min-width: 0;
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-inset);
+}
+
+.th-totals dt {
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+}
+
+.th-totals dd {
+  margin: 0;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-sm);
+  font-weight: 600;
+}
+
+.th-hint {
+  color: var(--tm-text-muted);
+  font-weight: 400;
+}
+
+/* the proportional strip: the timeline's segment colours, an open stretch striped */
+.th-bar {
+  position: relative;
+  height: var(--tm-space-2);
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-bg-inset);
+  overflow: hidden;
+}
+
+.th-bar-seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 1px;
+  background: var(--k);
+}
+
+.th-bar-seg.open {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--k) 0 var(--tm-space-1),
+    color-mix(in srgb, var(--k) 55%, var(--tm-bg-raised)) var(--tm-space-1) var(--tm-space-2)
+  );
+}
+
+.th-steps {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.th-step {
+  display: grid;
+  /* fixed time and chip columns, so every label starts at one x */
+  grid-template-columns: 3.5em 7em minmax(0, 1fr) auto auto;
+  align-items: start;
+  gap: var(--tm-space-1) var(--tm-space-3);
+  padding: var(--tm-space-2) 0;
+  font-size: var(--tm-text-sm);
+}
+
+/* a step not from today carries its date in the time column */
+.th-steps.dated > .th-step {
+  grid-template-columns: 7.5em 7em minmax(0, 1fr) auto auto;
+}
+
+.th-step + .th-step {
+  border-top: 1px solid var(--tm-border);
+}
+
+.th-time {
+  color: var(--tm-text-muted);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.th-chip {
+  --k: var(--tm-text-muted);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--tm-space-2);
+  border: 1px solid color-mix(in srgb, var(--k) 55%, transparent);
+  border-radius: var(--tm-radius-sm);
+  background: color-mix(in srgb, var(--k) 12%, transparent);
+  color: var(--tm-text);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.th-step > .th-chip {
+  justify-self: start;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.th-tone-info:not(.th-seg) {
+  --k: var(--tm-status-published);
+}
+
+.th-tone-good:not(.th-seg) {
+  --k: var(--tm-status-done);
+}
+
+.th-tone-warn:not(.th-seg) {
+  --k: var(--tm-status-review);
+}
+
+.th-tone-bad:not(.th-seg) {
+  --k: var(--tm-status-failed);
+}
+
+.th-main {
+  min-width: 0;
+}
+
+.th-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.th-detail {
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+  overflow-wrap: anywhere;
+}
+
+.th-actor {
+  color: var(--tm-text-faint);
+}
+
+.th-nums {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  white-space: nowrap;
+}
+
+.th-step.live .th-nums > :first-child,
+.th-step.live .th-figures {
+  color: var(--tm-status-running);
+}
+
+.th-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-1);
+}
+
+.th-btn {
+  padding: 0 var(--tm-space-2);
+  font-size: var(--tm-text-xs);
+}
+
+/* phone: one line a step, tap to expand; the panel's own scroller moves the list */
+.th-step.compact {
+  display: block;
+  padding: 0;
+}
+
+.th-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  width: 100%;
+  min-width: 0;
+  padding: var(--tm-space-2) 0;
+  border: 0;
+  background: transparent;
+  color: var(--tm-text);
+  font: inherit;
+  font-size: var(--tm-text-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.th-row:focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: -2px;
+}
+
+.th-row .th-time {
+  flex-shrink: 0;
+}
+
+.th-dot {
+  --k: var(--tm-text-muted);
+  flex-shrink: 0;
+  width: var(--tm-space-2);
+  height: var(--tm-space-2);
+  border-radius: var(--tm-radius-pill);
+  background: var(--k);
+}
+
+.th-row .th-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-figures {
+  flex-shrink: 0;
+  color: var(--tm-text-muted);
+  font-family: var(--tm-font-mono);
+}
+
+.th-more {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--tm-space-1);
+  padding: 0 0 var(--tm-space-2) var(--tm-space-4);
+  font-size: var(--tm-text-xs);
+}
+
+.th-more-line,
+.th-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-1) var(--tm-space-3);
+}
+
+.app.mobile .th-totals {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 /* Desktop: Save/Discard is the panel's footer, outside the tab content, so an
    edit made on Overview can be saved from any tab. */
 .slideover > .so-save {

@@ -605,11 +605,10 @@ to close; × animates out the same way.
 
 ### Task panel tabs
 
-The panel's body is four tabs (2026-10-29, feature *Task panel tabs +
-per-task history*: three in phase 1, Diff in phase 2). The model already knows
-one more, `history`, which a later task adds. Until then it is not drawn, and
-a `?tab=history` is ignored like any unknown value. Nothing was removed and no
-action changed; every former section lives in exactly one place.
+The panel's body is five tabs (2026-10-29, feature *Task panel tabs +
+per-task history*: three in phase 1, Diff and History in phase 2). Nothing was
+removed and no action changed; every former section lives in exactly one
+place.
 
 **Above the tabs, on every tab:**
 - the head (status badge, chips, ×);
@@ -629,6 +628,7 @@ action changed; every former section lives in exactly one place.
 | Diff | the task's own change, read-only (`TaskDiff.tsx`, `docs/task-diff.md` § The Diff tab): scope line, commits, file list with per-file patches. Never a default — reached by a click or `?tab=diff` |
 | Review & checks | LoopPanel, ChecksPanel, ReviewPanel, then the worker's summary |
 | Terminal | the review & compaction terminals, background shells, Follow-up / Resume, Dispatches |
+| History | the task's life as a live step strip with totals (`TaskHistory.tsx`, `docs/timeline.md` § The History tab). The default for failed/cancelled |
 
 A tab with nothing to show (a draft that never ran) says so in a muted line,
 `.so-empty`. CSS `:has()` shows it only while nothing else in the tab rendered,
@@ -641,8 +641,7 @@ so it never duplicates the sections' own conditions.
   `finished-bad` (failed/cancelled).
 - **Defaults per bucket.** asking → Overview, where the question sits above the
   title · running → Terminal · review → Review & checks · idle → Overview ·
-  finished-ok → Review & checks · finished-bad → History, which falls back to
-  Overview until History exists.
+  finished-ok → Review & checks · finished-bad → History.
 - **Precedence** (`pickTab`): the human's click in this open of the panel, then
   `?tab=` (only if it is a known and offered tab), then the bucket's remembered
   pick in localStorage `tm.panelTab` (`{bucket: tab}`, validated on read), then
@@ -674,7 +673,10 @@ scroller: `.slideover-body` on the desktop, the sheet's
 the desktop's negative `top` reach past the body's padding, so stuck it is a
 full-width bar the content passes under. It scrolls sideways if it overflows
 (`overflow-x: auto`, scrollbar hidden), and `overflow-y: hidden` keeps it from
-becoming a vertical scroller of its own. With the scroller at its top, a drag
+becoming a vertical scroller of its own. The active tab is kept in view
+(`revealTab`: on a tab change and when the button attaches, since a phone sheet
+mounts its content after the effects ran); only the strip's `scrollLeft` moves,
+never `scrollIntoView`, which would scroll the panel or the sheet too. With the scroller at its top, a drag
 that starts on the strip still pulls the sheet down. The head drags it
 always, stuck strip or not. In Glass, the strip takes the pane's thick
 material (`--tm-glass-thick`, `--tm-blur-thick`), because the thinner bar

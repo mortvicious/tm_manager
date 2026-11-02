@@ -24,6 +24,7 @@ import { confirmMarkPublished, confirmPublish, markPublishedLabel, markPublished
 import { useApp } from '../state.tsx';
 import { DispatchStrip } from './DispatchStrip.tsx';
 import { TaskDiff } from './TaskDiff.tsx';
+import { TaskHistory } from './TaskHistory.tsx';
 import { GroupPicker, type GroupChoicePlace } from './GroupPicker.tsx';
 import { IconAnalyze, IconChevron, IconMore, IconPlay, IconPublish, IconQueue, IconStop, IconTerminal, IconX } from './Icons.tsx';
 import { ImageLightbox, type LightboxImage } from './ImageLightbox.tsx';
@@ -270,6 +271,19 @@ function GroupPath({ task, tasks, onOpen }: { task: Task; tasks: Task[]; onOpen:
   );
 }
 
+/**
+ * A phone's tab strip scrolls sideways: keep the active tab in it (History, the
+ * last one, is where failed/cancelled open). Only the strip moves —
+ * scrollIntoView would scroll the panel's own scroller (or the sheet) too.
+ */
+function revealTab(btn: HTMLElement | null | undefined): void {
+  const strip = btn?.parentElement;
+  if (!btn || !strip || strip.scrollWidth <= strip.clientWidth) return;
+  const left = btn.getBoundingClientRect().left - strip.getBoundingClientRect().left + strip.scrollLeft;
+  if (left < strip.scrollLeft) strip.scrollLeft = left;
+  else if (left + btn.offsetWidth > strip.scrollLeft + strip.clientWidth) strip.scrollLeft = left + btn.offsetWidth - strip.clientWidth;
+}
+
 export function TaskSlideOver({
   taskId,
   onClose,
@@ -480,6 +494,7 @@ export function TaskSlideOver({
     if (prev?.id === task.id && prev.bucket !== bucket && !clickedTab && urlTab !== null) onUrlTab(null);
   });
   const tabRefs = useRef<Partial<Record<PanelTab, HTMLButtonElement | null>>>({});
+  useEffect(() => revealTab(tabRefs.current[tab]), [tab]);
   const chooseTab = (t: PanelTab) => {
     setClicked({ id: taskId, tab: t });
     rememberTab(bucket, t);
@@ -1563,6 +1578,8 @@ export function TaskSlideOver({
         <button
           key={t}
           ref={(node) => {
+            // a phone sheet mounts its content after the effects ran: reveal on attach too
+            if (node && t === tab && tabRefs.current[t] !== node) revealTab(node);
             tabRefs.current[t] = node;
           }}
           type="button"
@@ -1583,7 +1600,17 @@ export function TaskSlideOver({
   // only the active tab is mounted; edit state lives up here, so nothing is lost
   const tabPanel = (
     <div className="so-tabpanel" role="tabpanel" id="so-tabpanel" aria-labelledby={`so-tab-${tab}`}>
-      {tab === 'review' ? reviewTab : tab === 'terminal' ? terminalTab : tab === 'diff' ? <TaskDiff task={task} repo={repos.find((r) => r.id === task.repoId)} /> : overview}
+      {tab === 'review' ? (
+        reviewTab
+      ) : tab === 'terminal' ? (
+        terminalTab
+      ) : tab === 'diff' ? (
+        <TaskDiff task={task} repo={repos.find((r) => r.id === task.repoId)} />
+      ) : tab === 'history' ? (
+        <TaskHistory task={task} onOpenTerminal={onOpenTerminal} onOpenTask={onOpenTask} />
+      ) : (
+        overview
+      )}
     </div>
   );
 

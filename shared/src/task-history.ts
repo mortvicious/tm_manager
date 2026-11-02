@@ -67,6 +67,8 @@ export interface HistoryStep {
   label: string;
   detail: string | null;
   runId?: string;
+  /** a dispatch step: the task on the other end (sender or receiver) */
+  relatedTaskId?: string;
   tone: HistoryTone;
 }
 
@@ -466,6 +468,7 @@ export function buildTaskHistory(input: TaskHistoryInput): HistoryStep[] {
         label: sent ? `dispatch sent to ${short(d.toTaskId)}` : `dispatch received from ${short(d.fromTaskId)}`,
         detail: join(d.intent === 'fyi' ? 'fyi' : 'needs action', d.status, d.note),
         ...(sent && d.fromRunId ? { runId: d.fromRunId } : {}),
+        relatedTaskId: sent ? d.toTaskId : d.fromTaskId,
         tone: d.status === 'failed' ? 'bad' : d.status === 'pending' ? 'info' : 'neutral',
       });
     }
@@ -489,6 +492,7 @@ export function buildTaskHistory(input: TaskHistoryInput): HistoryStep[] {
         actor: made.actor,
         label: `dispatch received from ${short(str(made.data?.fromTaskId))}`,
         detail: join(made.data?.intent === 'fyi' ? 'fyi' : made.data?.intent ? 'needs action' : undefined, phase, str(settled?.data?.note)),
+        ...(str(made.data?.fromTaskId) ? { relatedTaskId: made.data!.fromTaskId as string } : {}),
         tone: phase === 'failed' ? 'bad' : phase === 'pending' ? 'info' : 'neutral',
       });
     }
@@ -693,6 +697,7 @@ function finish(d: Draft, now: string | undefined): HistoryStep {
     tone: d.tone,
   };
   if (d.runId) step.runId = d.runId;
+  if (d.relatedTaskId) step.relatedTaskId = d.relatedTaskId;
   return step;
 }
 

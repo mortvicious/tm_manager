@@ -86,7 +86,7 @@ A `TimelineSegment` is one task in one state for a stretch of time:
 
 ## Task history
 
-`shared/src/task-history.ts`, pure: `buildTaskHistory({ task, events, runs, segments, dispatches?, now? })` turns a `/history` answer into `HistoryStep[]`, oldest first, for the task panel's History tab (and later the timeline). A step is `{ kind, at, end, durationMs, costUsd, tokens, actor, label, detail, runId?, tone }`.
+`shared/src/task-history.ts`, pure: `buildTaskHistory({ task, events, runs, segments, dispatches?, now? })` turns a `/history` answer into `HistoryStep[]`, oldest first, for the task panel's History tab (and later the timeline). A step is `{ kind, at, end, durationMs, costUsd, tokens, actor, label, detail, runId?, relatedTaskId?, tone }`; `relatedTaskId` is the task on the other end of a `dispatch` step.
 
 - **Point steps** have `end === at` and `durationMs: 0`. **Open steps** have `end: null`, and their `durationMs` is measured to `now` when it is given, otherwise it is null.
 - **Ties at one instant** put the cause first: created, then retry/undo/release, then queued, then claimed, then the rest in insertion order.
@@ -118,6 +118,18 @@ A `TimelineSegment` is one task in one state for a stretch of time:
 - **`workedMs`**: the sum of the `run`/`fix` steps.
 - **`costUsd`**: every run passed in (worker, reviewer, compaction — `Task.costUsd`'s set).
 - **`attempts`**: worker runs with `resumedFrom` null, i.e. fresh sessions, as `Task.attempts` counts them.
+
+### The History tab
+
+`web/src/components/TaskHistory.tsx`, the task panel's `history` tab (the tab model is `docs/mobile.md` § Task panel tabs; failed/cancelled open on it, `?tab=history` deep-links).
+
+- **Data.** It subscribes to `onServerEvent` BEFORE calling `api.taskHistory(id)` and buffers, until the answer, what concerns the task: `event.appended` rows with its `taskId` and a kind in `HISTORY_EVENT_KINDS`; `run.started|updated|exited` for the runs `/history` carries (`taskId` = the task, or an aux run with `subjectId` = it, worker/review/compact only); `dispatch.updated` with the task on either end. The buffer is merged into the answer by id (a later copy of a run or dispatch replaces the earlier), and after the answer every such row is merged the same way, so nothing is refetched and nothing written during the read is lost.
+- **Segments are re-folded client-side**: `buildTaskSegments` over the merged `TIMELINE_EVENT_KINDS` rows and runs, from the task's creation (or its oldest row, a truncated read's seed) to now — the server's own fold, so a live row moves them as a refetch would. Then `buildTaskHistory` + `historyTotals` (memoised on the rows and `now`). While any step is open, `now` ticks every 10 s, so a running turn's duration grows.
+- **Totals**: wall time (`historyTotals.wallMs`: creation to the last step, or to now while one is open), worked time, cost and attempts. Cost is `Task.costUsd` (every run that ever wrote stats); when the listed runs sum to a different figure (≥ 1¢ off — a pruned run row) the sum is shown beside it as `(steps $x)`. Attempts is the larger of `Task.attempts` and the fresh sessions counted from the runs.
+- **The bar** is the segments laid proportionally over the Wall time span (a done task's open `landed` stretch is cut at its last step), in the timeline's `SEGMENT_COLOR`s; an open stretch is striped like the timeline's sub-segments. Failed/cancelled markers hold no time and are not drawn.
+- **Steps**, oldest first: local time (absolute + relative in the tooltip), a kind chip (the timeline's segment colour where the step stands for a segment, else its `tone`), the shared label (worker/fix turns numbered `· #n`; a dispatch's short id replaced by the other task's title when the board knows it), the detail and actor, duration (`· live` while open), cost, tokens. A run, fix, compaction, review round or question step has a **Terminal** button (`onOpenTerminal(runId)`); an agent-filed task's `created` step opens the filing run's terminal; a dispatch step has **Open task** (`onOpenTask(relatedTaskId)`).
+- **Phone**: one line per step (time · dot · label · duration/cost), tap to expand the chip, relative and absolute time, detail, actor, tokens and the buttons. No scroller of its own: the panel's one scroller moves the list (§ Task panel tabs).
+- **`truncated`** → a note that the oldest history is incomplete.
 
 ## SPA
 
