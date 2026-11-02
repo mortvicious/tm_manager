@@ -32,7 +32,7 @@ import { useIsMobile } from './Layout.tsx';
 import { Markdown } from './Markdown.tsx';
 import { PresetPicker, reviewChoiceOf, reviewValueOf, type ReviewChoice } from './PresetPicker.tsx';
 import { ReviewerFields, reviewIsOn } from './ReviewerPicker.tsx';
-import { RunStatsChips, TaskAttemptsChip, TaskCostChip } from './RunMeta.tsx';
+import { TaskStatsLine } from './RunMeta.tsx';
 import { BadgeStrip, StatusBadge } from './StatusBadge.tsx';
 import { KindBadge, liveReviewRun, runTaskId } from './RunKind.tsx';
 import { ReviewPanel } from './ReviewPanel.tsx';
@@ -262,7 +262,7 @@ function GroupPath({ task, tasks, onOpen }: { task: Task; tasks: Task[]; onOpen:
             <button className="crumb" title={a ? 'Open this task' : 'This ancestor no longer exists'} disabled={!a} onClick={() => onOpen(id)}>
               {a ? a.title : `${id.slice(0, 8)}…`}
             </button>
-            <span className="sep">/</span>
+            <span className="sep" aria-hidden="true">›</span>
           </span>
         );
       })}
@@ -985,83 +985,81 @@ export function TaskSlideOver({
     />
   );
 
-  // the head is the drag handle on a phone; its close button animates the sheet out first
+  // The head is the drag handle on a phone; its close button animates the
+  // sheet out first. Two lines on both (docs/design.md § Task panel head):
+  // where it stands + what it is, then ONE quiet line of where it comes from —
+  // facts as text with separators, colour only where it carries meaning.
+  const repoName = task.repoId ? repos.find((r) => r.id === task.repoId)?.name ?? null : null;
+  const landedFlag = !!task.autoLandedAt && (task.status === 'done' || task.status === 'published');
+  const pushedFlag = !!task.shippedSha && (task.status === 'review' || task.status === 'done');
   const head = (close: () => void) => (
     <div className="slideover-head">
-      <button
-        type="button"
-        className="so-id mono muted"
-        title={`${task.id} — click to copy`}
-        onClick={() =>
-          navigator.clipboard
-            ?.writeText(task.id)
-            .then(() => setIdCopied(true))
-            .catch(() => {})
-        }
-      >
-        {idCopied ? 'copied' : task.id.slice(0, 8)}
-      </button>
-      <StatusBadge
-        status={task.status}
-        attention={latestRun?.needsAttention && task.status === 'running'}
-        question={!!pendingQuestion}
-        reviewState={task.reviewState}
-        checkState={task.checkState}
-        loopState={task.loopState}
-        paused={!!task.pausedTurn}
-        onOpenReviewer={reviewerRun ? () => onOpenTerminal(reviewerRun.id) : undefined}
-      />
-      {/* phones: the title stays in view while the body scrolls under it */}
-      {mobile && <span className="so-title">{task.title}</span>}
-      {/* a phone gives the chips their own line only when they say more than "manual" */}
-      <span
-        className={`so-chips${
-          task.source === 'manual' && !task.category && groupTasks.length < 2 && !task.parentId && !task.createdByRun
-            ? ' plain'
-            : ''
-        }`}
-      >
-        <span className="chip">{task.source}</span>
-        {task.category && <span className="chip" style={{ color: 'var(--tm-accent)' }}>{task.category}</span>}
+      <div className="so-line">
+        <StatusBadge
+          status={task.status}
+          attention={latestRun?.needsAttention && task.status === 'running'}
+          question={!!pendingQuestion}
+          reviewState={task.reviewState}
+          checkState={task.checkState}
+          loopState={task.loopState}
+          paused={!!task.pausedTurn}
+          onOpenReviewer={reviewerRun ? () => onOpenTerminal(reviewerRun.id) : undefined}
+        />
+        {/* the title stays in view on every tab and while the body scrolls under it */}
+        <span className="so-title" title={task.title}>
+          {task.title}
+        </span>
+        <button className="btn ghost so-close" aria-label="Close" onClick={close}>
+          <IconX />
+        </button>
+      </div>
+      <div className="so-meta">
+        <button
+          type="button"
+          className="so-id mono"
+          title={`${task.id} — click to copy`}
+          onClick={() =>
+            navigator.clipboard
+              ?.writeText(task.id)
+              .then(() => setIdCopied(true))
+              .catch(() => {})
+          }
+        >
+          {idCopied ? 'copied' : task.id.slice(0, 8)}
+        </button>
+        {repoName && (
+          <span className="so-meta-item" title="repo">
+            {repoName}
+          </span>
+        )}
+        {task.category && (
+          <span className="so-meta-item so-cat" title="category">
+            {task.category}
+          </span>
+        )}
         {groupTasks.length > 1 && (
           <span
-            className="chip group-chip"
+            className="so-meta-item so-group"
             style={groupTint}
-            title={`task group · ${groupTasks.length} tasks${isRoot ? ' · this is the group root' : ''}`}
+            title={`task group “${groupLabel(groupRoot, task.title)}” · ${groupTasks.length} tasks${isRoot ? ' · this is the group root' : ''}`}
           >
-            {groupLabel(groupRoot, task.title)} · {groupTasks.length}
-          </span>
-        )}
-        {task.parentId && <span className="chip">subtask</span>}
-        {task.autoLandedAt && (task.status === 'done' || task.status === 'published') && (
-          <span
-            className="chip"
-            style={{ color: 'var(--tm-status-done)' }}
-            title={`landed by the orchestrator ${new Date(task.autoLandedAt).toLocaleString()}: checks green, review clean`}
-          >
-            auto-landed
-          </span>
-        )}
-        {task.shippedSha && (task.status === 'review' || task.status === 'done') && (
-          <span
-            className="chip"
-            style={{ color: 'var(--tm-status-published)' }}
-            title={`the agent already pushed ${task.shippedSha.slice(0, 8)}${task.shippedAt ? ` (seen ${new Date(task.shippedAt).toLocaleString()})` : ''} — Mark published records it`}
-          >
-            pushed
+            <span className="so-gdot" aria-hidden="true" />
+            <span className="so-glabel">{isRoot ? 'group root' : groupLabel(groupRoot, task.title)}</span>
+            <span className="so-gcount mono">{groupTasks.length}</span>
           </span>
         )}
         {task.branch && (
           // parallel same-repo tasks (docs/parallel.md): branch + the PR the server keeps as the record
           <span
-            className="chip"
-            style={task.prState === 'merged' ? { color: 'var(--tm-status-published)' } : undefined}
+            className={`so-meta-item so-branch mono${task.prState === 'merged' ? ' merged' : ''}`}
             title={`own worktree ${task.workdir ?? ''} on ${task.branch}${task.worktreeEvictedAt && task.status !== 'published' ? ' — folder evicted while idle, re-created on the next turn' : ''}`}
           >
             {task.branch}
             {task.prUrl && (
               <>
-                {' · '}
+                <span className="so-sep" aria-hidden="true">
+                  ·
+                </span>
                 <a href={task.prUrl} target="_blank" rel="noreferrer">
                   PR #{task.prNumber}
                 </a>
@@ -1071,15 +1069,35 @@ export function TaskSlideOver({
           </span>
         )}
         {task.createdByRun && (
-          <span className="chip" title={`filed by agent run ${task.createdByRun.slice(0, 8)} (depth ${task.spawnDepth})`}>
+          <span className="so-meta-item" title={`filed by agent run ${task.createdByRun.slice(0, 8)} (depth ${task.spawnDepth})`}>
             agent d{task.spawnDepth}
           </span>
         )}
-      </span>
-      <span className="spacer" style={{ flex: 1 }} />
-      <button className="btn ghost" aria-label="Close" onClick={close}>
-        <IconX />
-      </button>
+        {/* "manual" is every task you type yourself — only another source is news */}
+        {task.source !== 'manual' && (
+          <span className="so-meta-item" title="where this task came from">
+            {task.source}
+          </span>
+        )}
+        {landedFlag && (
+          <span
+            className="so-flag"
+            style={{ '--so-flag': 'var(--tm-status-done)' } as CSSProperties}
+            title={`landed by the orchestrator ${new Date(task.autoLandedAt!).toLocaleString()}: checks green, review clean`}
+          >
+            auto-landed
+          </span>
+        )}
+        {pushedFlag && (
+          <span
+            className="so-flag"
+            style={{ '--so-flag': 'var(--tm-status-published)' } as CSSProperties}
+            title={`the agent already pushed ${task.shippedSha!.slice(0, 8)}${task.shippedAt ? ` (seen ${new Date(task.shippedAt).toLocaleString()})` : ''} — Mark published records it`}
+          >
+            pushed
+          </span>
+        )}
+      </div>
     </div>
   );
 
@@ -1123,6 +1141,8 @@ export function TaskSlideOver({
         />
       )}
       <GroupPath task={task} tasks={tasks} onOpen={onOpenTask} />
+      {/* the numbers: read, never acted on — one quiet line, not chips beside the actions */}
+      <TaskStatsLine costUsd={task.costUsd} attempts={task.attempts} run={latestRun ?? null} />
       {task.error && (
         <div className="warn-text so-alert" style={{ whiteSpace: 'pre-wrap' }}>
           {task.error}
@@ -1152,40 +1172,27 @@ export function TaskSlideOver({
           <QuestionForm question={pendingQuestion} />
         </div>
       )}
-      {/* phones: the run's numbers ride at the top, since the action row they sit in is gone */}
-      {mobile && (latestRun || task.costUsd >= 0.01 || task.attempts >= 1) && (
-        <div className="so-stats">
-          <TaskCostChip costUsd={task.costUsd} />
-          <TaskAttemptsChip attempts={task.attempts} />
-          {latestRun && <RunStatsChips run={latestRun} />}
-        </div>
-      )}
     </>
   );
 
-  // Desktop: the whole action list as one wrapping row, pinned under the head;
-  // the run's numbers sit just before Analyze. A phone's bar + ⋯ sheet ARE
-  // this row there.
+  // Desktop: the whole action list as one wrapping row, pinned under the head
+  // — actions only; the numbers moved to the stats line. A phone's bar + ⋯
+  // sheet ARE this row there.
   const deskActions = (
     <div className="so-actions">
       {actions.map((a) => (
-        <Fragment key={a.id}>
-          {/* the run's cost/context chips sit just before Analyze, as they always have */}
-          {a.id === 'analyze' && <TaskCostChip costUsd={task.costUsd} />}
-          {a.id === 'analyze' && <TaskAttemptsChip attempts={task.attempts} />}
-          {a.id === 'analyze' && latestRun && <RunStatsChips run={latestRun} />}
-          <button
-            className={`btn${isArmed(a) ? ' danger armed' : a.cls ? ` ${a.cls}` : ''}`}
-            title={a.title}
-            disabled={a.disabled}
-            aria-live={a.confirm ? 'polite' : undefined}
-            onClick={() => fires(a) && a.onClick()}
-          >
-            {a.icon}
-            {a.icon ? ' ' : ''}
-            {labelOf(a)}
-          </button>
-        </Fragment>
+        <button
+          key={a.id}
+          className={`btn${isArmed(a) ? ' danger armed' : a.cls ? ` ${a.cls}` : ''}`}
+          title={a.title}
+          disabled={a.disabled}
+          aria-live={a.confirm ? 'polite' : undefined}
+          onClick={() => fires(a) && a.onClick()}
+        >
+          {a.icon}
+          {a.icon ? ' ' : ''}
+          {labelOf(a)}
+        </button>
       ))}
     </div>
   );

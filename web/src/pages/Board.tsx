@@ -1,4 +1,16 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent as ReactClipboardEvent,
+  type CSSProperties,
+  type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react';
 import {
   EFFORT_LEVELS,
   MODEL_OPTIONS,
@@ -38,7 +50,10 @@ import { LoopChip, LoopFields, loopInput } from '../components/LoopPanel.tsx';
 import { GroupHead } from '../components/GroupHead.tsx';
 import { GroupPicker } from '../components/GroupPicker.tsx';
 import { LandingPicker } from '../components/LandingPicker.tsx';
-import { IconChevron, IconPlus } from '../components/Icons.tsx';
+import { AttachFiles, mergeAttachments, pastedFiles } from '../components/AttachFiles.tsx';
+import { IconChevron, IconPlus, IconX } from '../components/Icons.tsx';
+import { useDialogFocus } from '../dialogFocus.ts';
+import { exitGhost } from '../motion.ts';
 import { useIsMobile } from '../components/Layout.tsx';
 import {
   PresetChip,
@@ -132,11 +147,39 @@ const loadLastRepo = (workspaceId: string | null): string => {
   }
 };
 
+/**
+ * N opens New task on a desktop board — never while typing, in a terminal, or
+ * under another dialog (the task panel, a question, the search).
+ */
+function useNewTaskHotkey(onOpen: () => void, enabled: boolean) {
+  const ref = useRef(onOpen);
+  ref.current = onOpen;
+  useEffect(() => {
+    if (!enabled) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || e.repeat) return;
+      if (e.key !== 'n' || e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = e.target instanceof Element ? e.target : null;
+      if (el?.closest('.xterm, input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+      if (document.querySelector('[aria-modal="true"], .slideover, .bs-pop, .yarl__root')) return;
+      e.preventDefault();
+      ref.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [enabled]);
+}
+
 function NewTaskForm({
+  open,
+  onOpenChange,
   onCreated,
   mobile = false,
   filterRepoId = null,
 }: {
+  /** the opener lives in the board's head (desktop) or toolbar (phone); the draft survives a close */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   onCreated: () => void;
   mobile?: boolean;
   /** the board's search narrowed to exactly one repo: the repo a new task most likely means */
@@ -149,7 +192,7 @@ function NewTaskForm({
   // the content template picked (docs/inbox.md § Templates) — a form fill, never a link
   const [templateId, setTemplateId] = useState('');
   const template = templates.find((t) => t.id === templateId) ?? null;
-  const [open, setOpen] = useState(false);
+  const setOpen = onOpenChange;
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [acceptance, setAcceptance] = useState('');
@@ -168,12 +211,17 @@ function NewTaskForm({
   const [loopGoal, setLoopGoal] = useState('');
   const [loopMaxIt, setLoopMaxIt] = useState('');
   const [loopBudget, setLoopBudget] = useState('');
+  // files attached before the task exists (docs/design.md § Attached files):
+  // uploaded right after the create, before the task is queued or run
+  const [files, setFiles] = useState<File[]>([]);
+  const [fileErr, setFileErr] = useState<string | null>(null);
   const reviewOn = reviewIsOn(reviewValueOf(review), settings);
   const [start, setStart] = useState<StartMode>('draft');
   // phones fold everything after Repo away, like the task panel's Settings
   const [moreOpen, setMoreOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [dropping, setDropping] = useState(false);
   const { tasks } = useApp();
   const knownCategories = [...new Set(tasks.map((t) => t.category).filter(Boolean))] as string[];
 
@@ -185,6 +233,18 @@ function NewTaskForm({
     setChecks(template && id ? templateChecksFor(template, checkNames(id)) : null);
     // never leave "Run now" lit on a task that has nowhere to run
     if (!id) setStart('draft');
+  };
+  const addFiles = (incoming: File[]) => {
+    if (incoming.length === 0) return;
+    const next = mergeAttachments(files, incoming);
+    setFiles(next.files);
+    setFileErr(next.error);
+  };
+  const onPaste = (e: ReactClipboardEvent<HTMLElement>) => {
+    const pasted = pastedFiles(e.clipboardData);
+    if (pasted.length === 0) return;
+    e.preventDefault();
+    addFiles(pasted);
   };
 
   // An open form with no repo starts from the board's one-repo filter, else
@@ -209,20 +269,20 @@ function NewTaskForm({
     // pickRepo is a fresh closure every render; these are what decide the default
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, repoId, repos, filterRepoId, workspace]);
-  const openForm = () => setOpen(true);
 
-  // Phones: a compact toolbar button, and the form opens as a full-screen
-  // sheet instead of pushing every list down by a screen and a half.
-  const opener = mobile ? (
-    <button className="btn primary new-task-btn" aria-expanded={open} onClick={openForm}>
-      <IconPlus /> New
-    </button>
-  ) : (
-    <button className="btn primary" onClick={openForm}>
-      + New task
-    </button>
-  );
-  if (!open) return opener;
+  // Desktop dialog: focus moves in (the title field) and Tab stays in; it goes
+  // back to the New task button on close (docs/design.md § Desktop dialogs).
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const dialogNode = useCallback((node: HTMLDivElement | null) => {
+    dialogRef.current = node;
+    const ghost = exitGhost(node);
+    return () => {
+      dialogRef.current = null;
+      ghost?.();
+    };
+  }, []);
+  useDialogFocus(dialogRef, !mobile && open);
+  if (!open) return null;
 
   // Queue and Run need somewhere to run; without a repo the row would be
   // created and then 409 on the second call, so the control is not offered.
@@ -252,8 +312,8 @@ function NewTaskForm({
   };
 
   const submit = async () => {
-    // Two round-trips now, so a double click is a real duplicate risk.
-    if (busy) return;
+    // Up to three round-trips now, so a double click is a real duplicate risk.
+    if (busy || !title.trim()) return;
     const loop = isLoop ? loopInput(loopGoal, loopMaxIt, loopBudget) : null;
     if (typeof loop === 'string') {
       setErr(loop);
@@ -292,6 +352,7 @@ function NewTaskForm({
     }
     // The row exists from here on: clear the fields before anything else can
     // fail, so a second Create cannot file the same task twice.
+    const pending = files;
     repoTouched.current = false;
     if (repoId) {
       try {
@@ -316,6 +377,22 @@ function NewTaskForm({
     setLoopGoal('');
     setLoopMaxIt('');
     setLoopBudget('');
+    setFiles([]);
+    setFileErr(null);
+    // The files go in BEFORE the task can start: a fresh agent lists its
+    // artifacts dir when it spawns. A failed upload keeps it a draft.
+    if (pending.length > 0) {
+      try {
+        await api.uploadTaskFiles(task.id, pending);
+      } catch (e) {
+        setErr(
+          `Created as a draft, but the files did not upload (${(e as Error).message}) — add them in the task's Files section${effectiveStart !== 'draft' ? ', then start it' : ''}.`,
+        );
+        setBusy(false);
+        onCreated();
+        return;
+      }
+    }
     if (effectiveStart !== 'draft') {
       try {
         await api.taskAction(task.id, effectiveStart === 'run' ? 'run-now' : 'enqueue');
@@ -336,29 +413,28 @@ function NewTaskForm({
   };
 
   const startRow = (
-    <>
-      <label className="label">On create</label>
-      <div className="start-row">
-        {START_MODES.map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            className={`btn start-btn${effectiveStart === m.id ? ' on' : ''}`}
-            aria-pressed={effectiveStart === m.id}
-            disabled={m.id !== 'draft' && !canStart}
-            title={m.id !== 'draft' && !canStart ? 'Pick a repo first — a task needs one to run' : m.title}
-            onClick={() => setStart(m.id)}
-          >
-            {m.label}
-            <span className="start-hint">{m.hint}</span>
-          </button>
-        ))}
-      </div>
-    </>
+    <div className="start-row" role="radiogroup" aria-label="On create">
+      {START_MODES.map((m) => (
+        <button
+          key={m.id}
+          type="button"
+          role="radio"
+          className={`btn start-btn${effectiveStart === m.id ? ' on' : ''}`}
+          aria-checked={effectiveStart === m.id}
+          disabled={m.id !== 'draft' && !canStart}
+          title={m.id !== 'draft' && !canStart ? 'Pick a repo first — a task needs one to run' : m.title}
+          onClick={() => setStart(m.id)}
+        >
+          {m.label}
+          <span className="start-hint">{m.hint}</span>
+        </button>
+      ))}
+    </div>
   );
+  const createLabel = effectiveStart === 'run' ? 'Create & run' : effectiveStart === 'queue' ? 'Create & queue' : 'Create';
   const createBtn = (
-    <button className="btn primary" disabled={busy || !title.trim()} onClick={submit}>
-      {effectiveStart === 'run' ? 'Create & run' : effectiveStart === 'queue' ? 'Create & queue' : 'Create'}
+    <button className="btn primary nt-create" disabled={busy || !title.trim()} onClick={submit}>
+      {busy ? 'Creating…' : createLabel}
     </button>
   );
   // what the folded options hold, so a template's or preset's fill is not invisible
@@ -374,223 +450,359 @@ function NewTaskForm({
     .filter(Boolean)
     .join(' · ');
 
-  const form = (
-    <div className={`panel new-task-panel${mobile ? ' in-sheet' : ''}`} style={mobile ? undefined : { padding: 14, maxWidth: 640 }}>
-      <div className="form-grid">
-        {templates.length > 0 && (
-          <div className="wide">
-            <label className="label">Template</label>
-            <div className="template-row">
-              <button
-                type="button"
-                className={`btn pick-btn${!template ? ' on' : ''}`}
-                aria-pressed={!template}
-                onClick={() => pickTemplate(null)}
-              >
-                none
-              </button>
-              {templates.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className={`btn pick-btn${template?.id === t.id ? ' on' : ''}`}
-                  aria-pressed={template?.id === t.id}
-                  title={[t.title && `title: ${t.title}`, t.preset && `preset: ${t.preset}`].filter(Boolean).join(' · ') || undefined}
-                  onClick={() => pickTemplate(t)}
-                >
-                  {t.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        <div className="wide">
-          <label className="label">Title</label>
-          <input
-            className="field"
-            autoFocus
-            placeholder={template?.title.trim() ? `pattern: ${template.title.includes('{}') ? template.title : `${template.title.trim()} {}`}` : undefined}
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-          {template?.title.trim() && title.trim() && <div className="hint">Files as: {finalTitle}</div>}
-        </div>
-        <div className="wide">
-          <label className="label">Description</label>
-          <textarea className="field" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
-        </div>
-        <div>
-          <label className="label">Repo</label>
-          <select
-            className="field"
-            value={repoId}
-            onChange={(e) => {
-              repoTouched.current = true;
-              pickRepo(e.target.value);
-            }}
-          >
-            <option value="">— none —</option>
-            {repos.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name}
-                {r.role ? ` (${r.role})` : ''}
-              </option>
-            ))}
-          </select>
-        </div>
-        {mobile && (
-          <button
-            type="button"
-            className="so-settings-toggle wide"
-            aria-expanded={moreOpen}
-            onClick={() => setMoreOpen((v) => !v)}
-          >
-            <span className={`caret ${moreOpen ? '' : 'closed'}`}>
-              <IconChevron />
-            </span>
-            <span className="label">More options</span>
-            <span className="so-settings-sum mono">{moreSummary}</span>
-          </button>
-        )}
-        {(!mobile || moreOpen) && (
-          <>
-            <div>
-              <label className="label">Category</label>
-              <input
-                className="field"
-                list="tm-categories"
-                placeholder="UI, Estimator… (optional)"
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-              />
-              <datalist id="tm-categories">
-                {knownCategories.map((c) => (
-                  <option key={c} value={c} />
-                ))}
-              </datalist>
-            </div>
-            <div className="wide">
-              <label className="done-check" title="iterate on a goal in fresh agent sessions over a progress ledger until the checks are green and the goal is met (docs/loops.md)">
-                <input type="checkbox" checked={isLoop} onChange={(e) => setIsLoop(e.target.checked)} /> Loop task — iterate
-                toward a goal in fresh sessions
-              </label>
-            </div>
-            {isLoop && (
-              <LoopFields
-                goal={loopGoal}
-                maxIterations={loopMaxIt}
-                budgetUsd={loopBudget}
-                onGoal={setLoopGoal}
-                onMaxIterations={setLoopMaxIt}
-                onBudgetUsd={setLoopBudget}
-              />
-            )}
-            <DoneFields
-              repoId={repoId || null}
-              acceptance={acceptance}
-              checks={checks}
-              onAcceptance={setAcceptance}
-              onChecks={setChecks}
-            />
-            <div className="wide">
-              <label className="label">Group</label>
-              {/* a new row takes the global max key, so any choice lands at the END
-                  of its group — "append" and "under the root" are the same write */}
-              <GroupPicker
-                tasks={tasks}
-                repoId={repoId || null}
-                value={parentId || null}
-                onChange={(id) => setParentId(id ?? '')}
-                repoName={(id) => repos.find((r) => r.id === id)?.name}
-              />
-            </div>
-            <div className="wide">
-              <label className="label">Preset</label>
-              <PresetPicker
-                model={model}
-                effort={effort}
-                review={review}
-                onApply={(p) => {
-                  setModel(p.model);
-                  setEffort(p.effort);
-                  setReview(reviewChoiceOf(p.review));
-                }}
-              />
-            </div>
-            <div>
-              <label className="label">Model override</label>
-              <select className="field mono" value={model} onChange={(e) => setModel(e.target.value)}>
-                <option value="">auto (router)</option>
-                {/* a preset can set a model the list does not offer (codex-free, a custom preset's id) */}
-                {(model && !MODEL_OPTIONS.includes(model) ? [model, ...MODEL_OPTIONS] : MODEL_OPTIONS).map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="label">Effort override</label>
-              <select className="field mono" value={effort} onChange={(e) => setEffort(e.target.value)}>
-                <option value="">default (config)</option>
-                {EFFORT_LEVELS.map((l) => (
-                  <option key={l} value={l}>
-                    {l}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="label">Adversarial review</label>
-              <select className="field" value={review} onChange={(e) => setReview(e.target.value as ReviewChoice)}>
-                <option value="default">default (config)</option>
-                <option value="on">review this</option>
-                <option value="off">skip (small task)</option>
-              </select>
-            </div>
-            {reviewOn && (
-              <ReviewerFields
-                model={reviewModel}
-                effort={reviewEffort}
-                onModel={setReviewModel}
-                onEffort={setReviewEffort}
-                settings={settings}
-              />
-            )}
-            {/* a task made here is the human's own (source manual) — never external */}
-            <LandingPicker value={landing} onChange={setLanding} repo={repos.find((r) => r.id === repoId)} external={false} />
-          </>
-        )}
-        {!mobile && <div className="wide">{startRow}</div>}
-      </div>
-      {!mobile && (
-        <>
-          {err && <div className="warn-text" style={{ marginTop: 8 }}>{err}</div>}
-          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-            {createBtn}
-            <button className="btn" onClick={() => setOpen(false)}>
-              Cancel
-            </button>
-          </div>
-        </>
-      )}
+  const templateRow = templates.length > 0 && (
+    <div className="template-row" role="group" aria-label="Template">
+      <button
+        type="button"
+        className={`btn pick-btn${!template ? ' on' : ''}`}
+        aria-pressed={!template}
+        onClick={() => pickTemplate(null)}
+      >
+        none
+      </button>
+      {templates.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          className={`btn pick-btn${template?.id === t.id ? ' on' : ''}`}
+          aria-pressed={template?.id === t.id}
+          title={[t.title && `title: ${t.title}`, t.preset && `preset: ${t.preset}`].filter(Boolean).join(' · ') || undefined}
+          onClick={() => pickTemplate(t)}
+        >
+          {t.name}
+        </button>
+      ))}
     </div>
   );
-  if (!mobile) return form;
-  return (
+
+  const titleField = (
+    <div className="wide">
+      <label className="label" htmlFor="nt-title-field">
+        Title
+      </label>
+      <input
+        id="nt-title-field"
+        className="field nt-title-field"
+        autoFocus
+        data-autofocus
+        placeholder={
+          template?.title.trim()
+            ? `pattern: ${template.title.includes('{}') ? template.title : `${template.title.trim()} {}`}`
+            : 'What should be done?'
+        }
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        onPaste={onPaste}
+      />
+      {template?.title.trim() && title.trim() && <div className="hint">Files as: {finalTitle}</div>}
+    </div>
+  );
+  const descriptionField = (
+    <div className="wide">
+      <label className="label" htmlFor="nt-desc-field">
+        Description
+      </label>
+      <textarea
+        id="nt-desc-field"
+        className="field nt-desc-field"
+        rows={mobile ? 4 : 7}
+        placeholder="Context, links, what you expect — paste a screenshot here to attach it"
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+        onPaste={onPaste}
+      />
+    </div>
+  );
+  const filesField = (
+    <div className="wide">
+      <label className="label">
+        Files{files.length > 0 ? ` · ${files.length}` : ''}
+      </label>
+      <AttachFiles
+        files={files}
+        error={fileErr}
+        compact={mobile}
+        onAdd={addFiles}
+        onRemove={(i) => {
+          setFiles((f) => f.filter((_, j) => j !== i));
+          setFileErr(null);
+        }}
+      />
+    </div>
+  );
+  const repoField = (
+    <div className="wide">
+      <label className="label" htmlFor="nt-repo-field">
+        Repo
+      </label>
+      <select
+        id="nt-repo-field"
+        className="field"
+        value={repoId}
+        onChange={(e) => {
+          repoTouched.current = true;
+          pickRepo(e.target.value);
+        }}
+      >
+        <option value="">— none —</option>
+        {repos.map((r) => (
+          <option key={r.id} value={r.id}>
+            {r.name}
+            {r.role ? ` (${r.role})` : ''}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+  const categoryField = (
+    <div className="wide">
+      <label className="label">Category</label>
+      <input
+        className="field"
+        list="tm-categories"
+        placeholder="UI, Estimator… (optional)"
+        value={category}
+        onChange={(e) => setCategory(e.target.value)}
+      />
+      <datalist id="tm-categories">
+        {knownCategories.map((c) => (
+          <option key={c} value={c} />
+        ))}
+      </datalist>
+    </div>
+  );
+  const loopFields = (
     <>
-      {opener}
+      <div className="wide">
+        <label
+          className="done-check"
+          title="iterate on a goal in fresh agent sessions over a progress ledger until the checks are green and the goal is met (docs/loops.md)"
+        >
+          <input type="checkbox" checked={isLoop} onChange={(e) => setIsLoop(e.target.checked)} /> Loop task — iterate
+          toward a goal in fresh sessions
+        </label>
+      </div>
+      {isLoop && (
+        <LoopFields
+          goal={loopGoal}
+          maxIterations={loopMaxIt}
+          budgetUsd={loopBudget}
+          onGoal={setLoopGoal}
+          onMaxIterations={setLoopMaxIt}
+          onBudgetUsd={setLoopBudget}
+        />
+      )}
+    </>
+  );
+  const doneFields = (
+    <DoneFields repoId={repoId || null} acceptance={acceptance} checks={checks} onAcceptance={setAcceptance} onChecks={setChecks} />
+  );
+  const groupField = (
+    <div className="wide">
+      <label className="label">Group</label>
+      {/* a new row takes the global max key, so any choice lands at the END
+          of its group — "append" and "under the root" are the same write */}
+      <GroupPicker
+        tasks={tasks}
+        repoId={repoId || null}
+        value={parentId || null}
+        onChange={(id) => setParentId(id ?? '')}
+        repoName={(id) => repos.find((r) => r.id === id)?.name}
+      />
+    </div>
+  );
+  const agentFields = (
+    <>
+      <div className="wide">
+        <label className="label">Preset</label>
+        <PresetPicker
+          model={model}
+          effort={effort}
+          review={review}
+          onApply={(p) => {
+            setModel(p.model);
+            setEffort(p.effort);
+            setReview(reviewChoiceOf(p.review));
+          }}
+        />
+      </div>
+      <div>
+        <label className="label">Model</label>
+        <select className="field mono" value={model} onChange={(e) => setModel(e.target.value)}>
+          <option value="">auto (router)</option>
+          {/* a preset can set a model the list does not offer (codex-free, a custom preset's id) */}
+          {(model && !MODEL_OPTIONS.includes(model) ? [model, ...MODEL_OPTIONS] : MODEL_OPTIONS).map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className="label">Effort</label>
+        <select className="field mono" value={effort} onChange={(e) => setEffort(e.target.value)}>
+          <option value="">default (config)</option>
+          {EFFORT_LEVELS.map((l) => (
+            <option key={l} value={l}>
+              {l}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="wide">
+        <label className="label">Adversarial review</label>
+        <select className="field" value={review} onChange={(e) => setReview(e.target.value as ReviewChoice)}>
+          <option value="default">default (config)</option>
+          <option value="on">review this</option>
+          <option value="off">skip (small task)</option>
+        </select>
+      </div>
+      {reviewOn && (
+        <ReviewerFields model={reviewModel} effort={reviewEffort} onModel={setReviewModel} onEffort={setReviewEffort} settings={settings} />
+      )}
+      {/* a task made here is the human's own (source manual) — never external */}
+      <LandingPicker value={landing} onChange={setLanding} repo={repos.find((r) => r.id === repoId)} external={false} />
+    </>
+  );
+
+  if (mobile) {
+    return (
       <FullSheet label="New task" title="New task" onClose={() => setOpen(false)}>
-        {form}
+        <div className="panel new-task-panel in-sheet">
+          <div className="form-grid">
+            {templateRow && (
+              <div className="wide">
+                <label className="label">Template</label>
+                {templateRow}
+              </div>
+            )}
+            {titleField}
+            {descriptionField}
+            {filesField}
+            {repoField}
+            <button
+              type="button"
+              className="so-settings-toggle wide"
+              aria-expanded={moreOpen}
+              onClick={() => setMoreOpen((v) => !v)}
+            >
+              <span className={`caret ${moreOpen ? '' : 'closed'}`}>
+                <IconChevron />
+              </span>
+              <span className="label">More options</span>
+              <span className="so-settings-sum mono">{moreSummary}</span>
+            </button>
+            {moreOpen && (
+              <>
+                {categoryField}
+                {loopFields}
+                {doneFields}
+                {groupField}
+                {agentFields}
+              </>
+            )}
+          </div>
+        </div>
         {/* On create + Create ride the bottom edge from anywhere in the form;
             the sheet's × is the cancel */}
         <div className="new-task-foot">
+          <label className="label">On create</label>
           {startRow}
           {!canStart && <div className="hint">Queue and Run now need a repo.</div>}
           {err && <div className="warn-text">{err}</div>}
           {createBtn}
         </div>
       </FullSheet>
+    );
+  }
+
+  // Desktop: a centred dialog — what the task IS on the left, how it runs on
+  // the right, and one footer for when it starts (docs/design.md § New task).
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.defaultPrevented || e.nativeEvent.isComposing) return;
+    if (e.key === 'Escape') {
+      // the draft stays: reopening brings it back
+      e.preventDefault();
+      setOpen(false);
+    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      void submit();
+    }
+  };
+  const hasFiles = (e: ReactDragEvent) => e.dataTransfer.types.includes('Files');
+  return (
+    <>
+      <div className="overlay nt-overlay" ref={exitGhost} onClick={() => setOpen(false)} />
+      <div
+        className={`nt-dialog${dropping ? ' dropping' : ''}`}
+        ref={dialogNode}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="nt-dialog-title"
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
+        // anywhere in the dialog takes a dropped file, not only the drop zone
+        onDragOver={(e) => {
+          if (!hasFiles(e)) return;
+          e.preventDefault();
+          setDropping(true);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropping(false);
+        }}
+        onDrop={(e) => {
+          setDropping(false);
+          if (!e.dataTransfer.files.length) return;
+          e.preventDefault();
+          addFiles([...e.dataTransfer.files]);
+        }}
+      >
+        <div className="nt-head">
+          <h2 id="nt-dialog-title" className="nt-heading">
+            New task
+          </h2>
+          {templateRow}
+          <span className="spacer" />
+          <button type="button" className="btn ghost" aria-label="Close" title="Close — the draft is kept" onClick={() => setOpen(false)}>
+            <IconX />
+          </button>
+        </div>
+        <div className="nt-body">
+          <div className="nt-main form-grid">
+            {titleField}
+            {descriptionField}
+            {filesField}
+            {doneFields}
+            {loopFields}
+          </div>
+          <div className="nt-side form-grid" role="group" aria-label="Where and how it runs">
+            <div className="wide nt-sec">Where it goes</div>
+            {repoField}
+            {categoryField}
+            {groupField}
+            <div className="wide nt-sec">Who works on it</div>
+            {agentFields}
+          </div>
+        </div>
+        <div className="nt-foot">
+          <span className="label nt-foot-label">On create</span>
+          {startRow}
+          <span className="nt-foot-msg">
+            {err ? (
+              <span className="warn-text">{err}</span>
+            ) : !canStart ? (
+              <span className="hint">Queue and Run now need a repo.</span>
+            ) : null}
+          </span>
+          <kbd className="nt-kbd" title="Create from anywhere in the dialog">
+            ⌘↵
+          </kbd>
+          <button type="button" className="btn ghost" onClick={() => setOpen(false)}>
+            Cancel
+          </button>
+          {createBtn}
+        </div>
+      </div>
     </>
   );
 }
@@ -880,6 +1092,10 @@ export function BoardPage({
     setPrefs((p) => ({ ...p, ...absorbTyped(p.tokens, p.text, searchCtx) }));
   };
   useSearchHotkey(openSearch, !searchOpen);
+  // New task (docs/design.md § New task): one dialog/sheet, opened from the
+  // head's button or N on a desktop; closing keeps the draft for next time
+  const [newOpen, setNewOpen] = useState(false);
+  useNewTaskHotkey(() => setNewOpen(true), !mobile && !newOpen);
   /** A tree's group chip filters the board to that group, replacing any other group. */
   const filterToGroup = (id: string) =>
     setPrefs((p) => ({ ...p, tokens: [...p.tokens.filter((t) => t.kind !== 'group'), { kind: 'group', value: id }] }));
@@ -1511,19 +1727,37 @@ export function BoardPage({
           <div className="board-toolbar">
             {trigger}
             {selectToggle}
-            <NewTaskForm onCreated={refresh} mobile filterRepoId={filterRepoId} />
+            <button className="btn primary new-task-btn" aria-expanded={newOpen} onClick={() => setNewOpen(true)}>
+              <IconPlus /> New
+            </button>
           </div>
           {chips}
         </>
       ) : (
         <>
-          <h1 className="page-title">
-            Board
-            <span style={{ flex: 1 }} />
-            {trigger}
-            {selectToggle}
-            {focusToggle}
-          </h1>
+          {/* the head: title left, the tools right — the search gives way first
+              on a narrow window (docs/design.md § Board head) */}
+          <div className="board-head">
+            <h1 className="page-title">Board</h1>
+            <div className="board-tools">
+              {trigger}
+              {selectToggle}
+              {focusToggle}
+              <button
+                type="button"
+                className="btn primary new-task-open"
+                aria-haspopup="dialog"
+                aria-expanded={newOpen}
+                title="New task (N)"
+                onClick={() => setNewOpen(true)}
+              >
+                <IconPlus /> New task
+                <kbd className="nt-key" aria-hidden="true">
+                  N
+                </kbd>
+              </button>
+            </div>
+          </div>
           {chips}
         </>
       )}
@@ -1554,7 +1788,7 @@ export function BoardPage({
           onOpenTask={onOpenTask}
         />
       )}
-      {!mobile && <NewTaskForm onCreated={refresh} filterRepoId={filterRepoId} />}
+      <NewTaskForm open={newOpen} onOpenChange={setNewOpen} onCreated={refresh} mobile={mobile} filterRepoId={filterRepoId} />
       <DragGhost drag={drag} tasks={tasks} />
       {/* An empty list before the first successful load means "never heard
           from the server", not "no tasks" (docs/mobile.md § Server offline). */}

@@ -1087,6 +1087,50 @@
   backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
 }
 
+/* New task on a desktop: the question modal's material, a calmer entrance
+   (a 1000px pane growing in from 112% would sweep the whole window) */
+[data-design='glass'] .nt-dialog {
+  border: 1px solid var(--tm-glass-rim);
+  border-radius: var(--tm-radius-xl);
+  background: var(--tm-glass-thick);
+  -webkit-backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-shadow-lg);
+  animation: tm-dialog-in var(--tm-dur-spring) var(--tm-ease-spring);
+}
+
+[data-design='glass'] .nt-dialog.dropping {
+  border-color: var(--tm-accent);
+  box-shadow:
+    inset 0 1px 0 var(--tm-glass-specular),
+    0 0 0 3px var(--tm-accent-subtle),
+    var(--tm-shadow-lg);
+}
+
+[data-design='glass'] .nt-head,
+[data-design='glass'] .nt-foot {
+  border-color: var(--tm-border);
+  border-width: 0.5px;
+  background: transparent;
+}
+
+[data-design='glass'] .nt-side {
+  border-left: 0.5px solid var(--tm-border);
+  background: var(--tm-glass-card);
+}
+
+[data-design='glass'] .att-item {
+  border: 0.5px solid var(--tm-glass-rim);
+  background: var(--tm-glass-card);
+}
+
+@keyframes tm-dialog-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.97);
+  }
+}
+
 /* an agent's question: an alert that pops in from slightly too big */
 [data-design='glass'] .qmodal {
   overflow: hidden;
@@ -1232,6 +1276,10 @@
 }
 
 [data-design='glass'] .qmodal.tm-exit {
+  animation: tm-alert-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
+}
+
+[data-design='glass'] .nt-dialog.tm-exit {
   animation: tm-alert-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
 }
 

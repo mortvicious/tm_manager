@@ -375,6 +375,8 @@ function buildWorkerPrompt(opts: {
    * gate compacted the session (the summary may have dropped it).
    */
   doneNote?: string;
+  /** The `## Attached files` block (attachments.ts), fresh prompts only. */
+  filesNote?: string;
   /** With `followUp`: the `Previous run summary`. Without: the `Previous attempt` block of a retry. */
   previousSummary?: string;
   /**
@@ -433,6 +435,8 @@ function buildWorkerPrompt(opts: {
         opts.sharedNote && !isPublishTurn ? `${opts.sharedNote}\n\n` : '',
         `# Task: ${task.title}`,
         task.description ? `\n${task.description}` : '',
+        // what the human attached is part of the task itself
+        opts.filesNote && !isPublishTurn ? `\n\n${opts.filesNote}` : '',
         // right under the task it defines, above any follow-up and the rules
         opts.doneNote && !isPublishTurn ? `\n\n${opts.doneNote}` : '',
         opts.loop && !isPublishTurn ? `\n\n${opts.loop.note}` : '',
@@ -560,6 +564,11 @@ export function buildWorkerInvocation(opts: {
    * fresh prompt carries it — a resumed session already has it.
    */
   doneNote?: string;
+  /**
+   * The files in the task's artifacts dir (`attachedFilesNote`, docs/design.md
+   * § Attached files). Fresh prompts only, like `doneNote`.
+   */
+  filesNote?: string;
   /** the task's effective landing tier (`effectiveLanding`) — decides the ship gate */
   landing: LandingTier;
   /** the task's effective push policy (`effectivePushPolicy`) — the ship rule when the gate does not hold */
@@ -603,6 +612,7 @@ export function buildWorkerInvocation(opts: {
       dispatchNote: opts.dispatchNote,
       sharedNote: opts.shared?.note,
       doneNote: opts.doneNote,
+      filesNote: opts.resumeSessionId ? undefined : opts.filesNote,
       previousSummary: opts.previousSummary,
       loop: opts.resumeSessionId ? undefined : opts.loop,
       shipGate: shipHeldForReview(task, settings, opts.landing),
@@ -816,6 +826,7 @@ export function buildWorkerInvocation(opts: {
     dispatchNote: opts.dispatchNote,
     sharedNote: opts.shared?.note,
     doneNote: opts.doneNote,
+    filesNote: opts.resumeSessionId ? undefined : opts.filesNote,
     previousSummary: opts.previousSummary,
     loop: opts.resumeSessionId ? undefined : opts.loop,
     shipGate: shipHeldForReview(task, settings, opts.landing),

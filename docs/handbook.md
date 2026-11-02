@@ -18,7 +18,7 @@ down the pill reads `stopped` and the button becomes **Start server**; on a phon
 the same reading and button sit in a banner at the top of the page.
 
 1. **Repos** → add a local path (`~/Development/my-app`) with a role note ("backend", "frontend").
-2. **Board** → **+ New task** — title, description, repo. Model/effort overrides are optional; leave them on *auto (router)*, or click a **Preset** to set model, effort and adversarial review in one go:
+2. **Board** → **+ New task** (or press **N**) — title, description, repo; drop, pick or paste files (screenshots) into it and the agent is told to read them before it plans. ⌘↵ creates, Esc closes and keeps the draft. Model/effort overrides are optional; leave them on *auto (router)*, or click a **Preset** to set model, effort and adversarial review in one go:
 
    | Preset | Model | Effort | Adversarial review |
    |---|---|---|---|

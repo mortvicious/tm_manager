@@ -131,6 +131,7 @@ import {
 } from './budget.ts';
 import { MAX_LIVE_SESSIONS, pidLooksLikeOurs, type SessionManager } from './pty/session-manager.ts';
 import { artifactsRoot } from './config.ts';
+import { attachedFilesNote, readAttachedFiles } from './attachments.ts';
 import type { Storage } from './storage/types.ts';
 import { QuestionAutopilot } from './questions-autopilot.ts';
 import { QuestionService } from './questions.ts';
@@ -3505,6 +3506,9 @@ export class Orchestrator implements OrchestratorApi {
         dispatchNote: [retargetNote, fyi.note].filter(Boolean).join('\n\n') || undefined,
         shared,
         doneNote: doneNote ?? undefined,
+        // what the human attached (docs/design.md § Attached files): a fresh prompt names it
+        filesNote:
+          resumeSessionId || purpose === 'publish' ? undefined : (attachedFilesNote(readAttachedFiles(artifactsDir)) ?? undefined),
         landing: effectiveLanding(task, repo),
         pushPolicy: effectivePushPolicy(task, repo),
         resumeSessionId,

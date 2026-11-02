@@ -487,7 +487,11 @@ phone, before the first task.
 - **New task** is a `FullSheet` (a full-height sheet). It no longer pushes every
   list down by a screen and a half. Closing it keeps what was typed. The phone
   form is built for quick capture:
-  - Title, description and Repo are always shown. Everything after Repo
+  - Title, description, **Files** and Repo are always shown. Files is a
+    button that opens the system picker (camera roll, Files); picked files
+    show as thumbnail rows with ×, are uploaded right after the create and
+    before Queue/Run now, and a failed upload leaves the task a draft
+    (`docs/design.md` § Desktop chrome, Attached files). Everything after Repo
     (category, loop, definition of done, group, preset, model, effort, review,
     reviewer, landing) sits in a **More options** fold. The fold uses the task
     panel's Settings toggle, and its summary names what it holds (e.g. `auto
@@ -559,9 +563,12 @@ and body JSX as the desktop panel, rearranged — head + bar are the sheet's dra
 handle, the body is its content. Drag it down (from anywhere while at the top)
 to close; × animates out the same way.
 
-- **A pinned header**: grip, then status · title · close, with the chips on a second line
-  that scrolls sideways. The chip line is dropped when it would only say
-  "manual".
+- **A pinned header**: grip, then status · title · close, with the meta line
+  under it (2026-11-02, `docs/design.md` § Desktop chrome): repo · category ·
+  group · branch · agent depth · non-manual source as plain `·`-separated
+  text, auto-landed / pushed as the only pills. On a phone it is ONE row
+  that scrolls sideways, without the id (not worth the width), and it is
+  hidden when nothing else is left.
 - **A pinned action bar** under it holds up to three actions, then `⋯`. They come
   from ONE `PanelAction[]` list that the desktop row renders too, in the same
   order and with the same classes, so what a status offers cannot drift between
@@ -622,14 +629,16 @@ removed and no action changed; every former section lives in exactly one
 place.
 
 **Above the tabs, on every tab:**
-- the head (status badge, chips, ×);
+- the head (status line + meta line);
 - on a phone, the pinned action bar and `⋯`;
-- on the desktop, the whole `so-actions` row with the cost, attempts and run
-  chips. It is pinned directly under the head, outside the scroller, like the
-  phone's bar;
-- the badge strip (phone), the breadcrumb, the alerts;
-- the agent's question (`QuestionForm`);
-- the phone's run numbers.
+- on the desktop, the whole `so-actions` row — buttons only since
+  2026-11-02. It is pinned directly under the head, outside the scroller,
+  like the phone's bar;
+- the badge strip (phone), the breadcrumb, then the stats line (`TaskStatsLine`:
+  Σ cost · attempts · last run's elapsed, model, effort, cost, tokens, ctx %),
+  the same on both shapes;
+- the alerts;
+- the agent's question (`QuestionForm`).
 
 **The tabs:**
 

@@ -19,6 +19,7 @@ import { Explainable } from './Explain.tsx';
 import {
   IconBoard,
   IconBook,
+  IconChevron,
   IconShared,
   IconChat,
   IconConfig,
@@ -113,9 +114,14 @@ function OrchestratorSwitch() {
       <span className="track" aria-hidden="true">
         <span className="knob" />
       </span>
-      <span>
-        {armed ? `Start queue? ${mobile ? 'tap' : 'click'} again` : orch.enabled ? 'Queue running' : 'Queue stopped'}
-      </span>
+      {armed ? (
+        <span>Start queue? {mobile ? 'tap' : 'click'} again</span>
+      ) : (
+        // a tight header keeps "Queue": the knob already says running or stopped
+        <span>
+          Queue<span className="hd-long">{orch.enabled ? ' running' : ' stopped'}</span>
+        </span>
+      )}
     </button>
   );
 }
@@ -170,7 +176,12 @@ function PauseButton() {
           ? `${paused ? 'Continue' : 'Pause all'}? ${again} again`
           : paused
             ? `▶ Continue${owed ? ` (${owed})` : ''}`
-            : '⏸ Pause all'}
+            : (
+                // one inline box: as a flex item of its own, " all" would lose its space to the gap
+                <span>
+                  ⏸ Pause<span className="hd-long"> all</span>
+                </span>
+              )}
     </button>
   );
 }
@@ -242,7 +253,7 @@ function UsagePill() {
   const { fiveHour, week, weekFable } = usage as Partial<UsageSnapshot>;
   if (!fiveHour || !week || !weekFable) {
     return (
-      <span className="runcount" title={`estimated 5h usage · routing to ${usage.routedModel}`}>
+      <span className="runcount usage-pill" title={`estimated 5h usage · routing to ${usage.routedModel}`}>
         5h {Math.round(usage.pct)}% · {usage.routedModel.replace('claude-', '')}
       </span>
     );
@@ -258,11 +269,19 @@ function UsagePill() {
     `routing to ${usage.routedModel}`,
   ].join(' · ');
   return (
-    <span className="runcount" title={title}>
-      <UsageSegment label="5h" w={fiveHour} threshold={usage.threshold} /> ·{' '}
-      <UsageSegment label="wk" w={week} threshold={usage.threshold} /> ·{' '}
-      <UsageSegment label="fable" w={weekFable} threshold={usage.threshold} /> ·{' '}
-      {usage.routedModel.replace('claude-', '')}
+    <span className="runcount usage-pill" title={title}>
+      {/* a tight header drops the tail first, then the week (useHeaderFit) */}
+      <UsageSegment label="5h" w={fiveHour} threshold={usage.threshold} />
+      <span className="usage-wk">
+        {' · '}
+        <UsageSegment label="wk" w={week} threshold={usage.threshold} />
+      </span>
+      <span className="usage-extra">
+        {' · '}
+        <UsageSegment label="fable" w={weekFable} threshold={usage.threshold} />
+        {' · '}
+        {usage.routedModel.replace('claude-', '')}
+      </span>
     </span>
   );
 }
@@ -314,7 +333,12 @@ function useServerStart() {
   return { stopped, canStart, blocked, busyAgents, auxLive, downReason, startTitle, starting, err, setErr, start };
 }
 
-function ServerControl() {
+/**
+ * `panel`: the desktop header's Server menu (ServerMenu) lays the same
+ * controls out as a column, with the rebuild report inline instead of a
+ * popover of its own. The phone's More sheet keeps the row.
+ */
+function ServerControl({ panel = false }: { panel?: boolean }) {
   const { connected, bootedAt, orch, commandRuns, shells, host, refreshHost } = useApp();
   const { stopped, canStart, blocked, busyAgents, auxLive, downReason, startTitle, starting, err, setErr, start } =
     useServerStart();
@@ -363,7 +387,10 @@ function ServerControl() {
     }, 8000);
   };
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+    <span
+      className={panel ? 'server-panel' : undefined}
+      style={panel ? undefined : { display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}
+    >
       <span
         className="runcount"
         title={
@@ -418,11 +445,84 @@ function ServerControl() {
           {restarting ? 'Restarting…' : blocked ? 'Agents working' : 'Restart server'}
         </button>
       )}
-      <RebuildButton blocked={blocked} busyAgents={busyAgents} />
+      <RebuildButton blocked={blocked} busyAgents={busyAgents} inline={panel} />
       {err && (
         <span className="warn-text mono" title={err} style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {err}
         </span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * The desktop header's server corner (docs/design.md § App header): one
+ * button — the connection dot, the uptime, or what the rebuild job is doing —
+ * over a menu holding Restart server and Rebuild & restart. Three loose
+ * buttons here were what pushed a 14-inch header onto three rows. A stopped
+ * API keeps Start server one click away, in the header itself.
+ */
+function ServerMenu() {
+  const { connected, bootedAt, host } = useApp();
+  const { stopped, starting } = useServerStart();
+  const { job: followed, mine, dismissed } = useRebuild();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  if (stopped || starting) return <ServerControl />;
+  const job = followed ?? host?.rebuild ?? null;
+  const rebuilding = !!job && (rebuildRunning(job) || (mine && job.state === 'done'));
+  const failed = job?.state === 'failed' && job.finishedAt !== dismissed;
+  const stale = !!host?.host.stale;
+  const uptime = (() => {
+    if (!bootedAt) return '';
+    const m = Math.max(0, Math.floor((Date.now() - new Date(bootedAt).getTime()) / 60000));
+    return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
+  })();
+  const label = rebuilding
+    ? (REBUILD_STEP[job!.state] ?? 'Working…')
+    : failed
+      ? 'Rebuild failed'
+      : stale
+        ? 'Front door stale'
+        : connected
+          ? `up ${uptime}`
+          : 'offline';
+  const tone = !connected || rebuilding ? 'busy' : failed || stale ? 'warn' : 'up';
+  return (
+    <span className="cmd-wrap server-menu" ref={wrapRef}>
+      <button
+        type="button"
+        className={`btn ghost server-btn${open ? ' on' : ''}${tone === 'warn' ? ' warn-text' : ''}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={connected ? `server up ${uptime} — restart, rebuild` : 'reconnecting to server…'}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className={`server-dot ${tone}`} aria-hidden="true" />
+        {label}
+        <span className={`caret${open ? '' : ' closed'}`} aria-hidden="true">
+          <IconChevron />
+        </span>
+      </button>
+      {open && (
+        <div className="cmd-pop server-pop" role="dialog" aria-label="Server">
+          <ServerControl panel />
+        </div>
       )}
     </span>
   );
@@ -447,7 +547,7 @@ const REBUILD_STEP: Record<string, string> = {
  * restarts, and presses Continue only if the pause was its own. While it
  * drains, a flag opens what it waits for and a Cancel.
  */
-function RebuildButton({ blocked, busyAgents }: { blocked: boolean; busyAgents: number }) {
+function RebuildButton({ blocked, busyAgents, inline = false }: { blocked: boolean; busyAgents: number; inline?: boolean }) {
   const { host, orch } = useApp();
   const { job: followed, mine, dismissed } = useRebuild();
   const mobile = useIsMobile();
@@ -544,7 +644,7 @@ function RebuildButton({ blocked, busyAgents }: { blocked: boolean; busyAgents: 
     </div>
   );
   return (
-    <span className="cmd-wrap rebuild-wrap">
+    <span className={`cmd-wrap rebuild-wrap${inline ? ' inline' : ''}`}>
       <button
         type="button"
         className={`btn ghost rebuild-btn${armed ? ' armed' : ''}`}
@@ -591,6 +691,11 @@ function RebuildButton({ blocked, busyAgents }: { blocked: boolean; busyAgents: 
           <Sheet label={draining ? 'Draining' : failed ? 'Rebuild failed' : 'Front door stale'} onClose={() => setOpen(false)} zIndex={38}>
             {details}
           </Sheet>
+        ) : inline ? (
+          // already inside the Server menu: a popover of a popover would be clipped by it
+          <div className="rebuild-inline" role="region" aria-label="Rebuild & restart">
+            {details}
+          </div>
         ) : (
           <div className="cmd-pop rebuild-pop" role="dialog" aria-label="Rebuild & restart">
             {details}
@@ -727,6 +832,45 @@ function navClass({ isActive }: { isActive: boolean }) {
   return `nav-link ${isActive ? 'active' : ''}`;
 }
 
+/**
+ * Keeps the desktop header on ONE row (docs/design.md § App header): while its
+ * content is wider than the bar, it steps through `data-fit` levels, each a
+ * token the CSS reads with `~=` — 1 drops the usage pill's tail, 2 shortens
+ * the queue / pause / question labels and the workspace name, 3 drops the
+ * week reading and the inbox word, 4 the usage pill. Measured, not a media
+ * query: the docked terminal, a long workspace name or a question chip all
+ * change what fits, and `container-type` would make the header the containing
+ * block of the fixed overlays it holds (the emulator). Writes the attribute
+ * directly, so a refit never re-renders the header.
+ */
+const HEADER_FIT_LEVELS = 4;
+function useHeaderFit(ref: { current: HTMLElement | null }, enabled: boolean) {
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled) return;
+    const fit = () => {
+      let tokens = '';
+      el.dataset.fit = '';
+      for (let level = 1; level <= HEADER_FIT_LEVELS && el.scrollWidth > el.clientWidth + 1; level++) {
+        tokens = tokens ? `${tokens} ${level}` : String(level);
+        el.dataset.fit = tokens;
+      }
+    };
+    fit();
+    // the bar's size (window, docked terminal) and its content (a chip appears,
+    // the usage pill loads, a label changes) both move the line
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    const mo = new MutationObserver(fit);
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+      delete el.dataset.fit;
+    };
+  }, [ref, enabled]);
+}
+
 /** The address this page was actually served from — it is the one a phone needs. */
 function servedFrom() {
   return window.location.host;
@@ -801,7 +945,8 @@ function QuestionChip() {
       title={`${n} agent question${n === 1 ? '' : 's'} waiting for your answer`}
       onClick={nudgeQuestions}
     >
-      <span className="dot" /> {n} {n === 1 ? 'question' : 'questions'}
+      <span className="dot" /> {n}
+      <span className="hd-long"> {n === 1 ? 'question' : 'questions'}</span>
     </button>
   );
 }
@@ -990,6 +1135,8 @@ export function Layout({
   // Glass's row cascade runs only while a section is entering (glass.css § motion):
   // a reorder moves rows, and a moved row would replay an always-on animation.
   const mainRef = useRef<HTMLElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
+  useHeaderFit(headerRef, !mobile);
   const section = pathname.split('/')[1] ?? '';
   useLayoutEffect(() => {
     const main = mainRef.current;
@@ -1018,7 +1165,7 @@ export function Layout({
       )}
       {/* Glass only: the blur the page scrolls under (glass.css § the shell) */}
       <div className="edge-top" aria-hidden="true" />
-      <header className="header">
+      <header className="header" ref={headerRef}>
         {/* the phone's title is the workspace switcher; the desktop's sits before the queue switch */}
         <WorkspaceSwitcher mobile={mobile} />
         {!mobile && <OrchestratorSwitch />}
@@ -1039,7 +1186,7 @@ export function Layout({
           <ConnDot />
         ) : (
           <>
-            <ServerControl />
+            <ServerMenu />
             <CommandsLauncher onOpenTerminal={onOpenTerminal} />
             <EmulatorLauncher />
             <ThemeToggle />

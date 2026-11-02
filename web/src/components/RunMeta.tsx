@@ -48,26 +48,54 @@ export function TaskAttemptsChip({ attempts, quiet = false }: { attempts: number
   );
 }
 
-export function RunStatsChips({ run }: { run: Run }) {
-  const s = run.stats;
-  return (
-    <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-      <span className="chip">
-        <Elapsed since={run.startedAt} until={run.endedAt} />
+/**
+ * The task's numbers and its latest run's, as ONE quiet line at the top of the
+ * task panel (docs/design.md § Task panel head) — read, never acted on, so they
+ * are text with separators rather than more chips beside the action buttons.
+ */
+export function TaskStatsLine({ costUsd, attempts, run }: { costUsd: number; attempts: number; run: Run | null }) {
+  const s = run?.stats;
+  const task = [
+    costUsd >= 0.01 && (
+      <span key="cost" className="so-stat" title="this task so far: every agent turn, plus its reviews and compactions">
+        Σ ${costUsd.toFixed(2)}
       </span>
-      {run.model && <span className="chip">{run.model.replace('claude-', '')}</span>}
-      {run.effort && <span className="chip">effort {run.effort}</span>}
-      {s && (
-        <>
-          <span className="chip" title="estimated from transcript usage">${s.costUsd.toFixed(3)}</span>
-          <span className="chip">
-            {Math.round((s.inputTokens + s.outputTokens) / 1000)}k tok
+    ),
+    attempts >= 1 && (
+      <span
+        key="attempts"
+        className="so-stat"
+        title="fresh agent sessions this task has had (Retry, Run now, a fresh follow-up); resumes are not counted"
+      >
+        {attempts === 1 ? '1 attempt' : `${attempts} attempts`}
+      </span>
+    ),
+  ].filter(Boolean);
+  if (!run && task.length === 0) return null;
+  return (
+    <div className="so-stats">
+      {task}
+      {run && (
+        <span className="so-stat-run" title="the latest agent run">
+          <span className="so-stat-label">last run</span>
+          <span className="so-stat">
+            <Elapsed since={run.startedAt} until={run.endedAt} />
           </span>
-          <span className="chip" title="share of the model's context window used">
-            ctx {Math.round(contextPctOf(s, run.model))}%
-          </span>
-        </>
+          {run.model && <span className="so-stat">{run.model.replace('claude-', '')}</span>}
+          {run.effort && <span className="so-stat">{run.effort}</span>}
+          {s && (
+            <>
+              <span className="so-stat" title="estimated from transcript usage">
+                ${s.costUsd.toFixed(2)}
+              </span>
+              <span className="so-stat">{Math.round((s.inputTokens + s.outputTokens) / 1000)}k tok</span>
+              <span className="so-stat" title="share of the model's context window used">
+                ctx {Math.round(contextPctOf(s, run.model))}%
+              </span>
+            </>
+          )}
+        </span>
       )}
-    </span>
+    </div>
   );
 }
