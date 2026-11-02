@@ -2464,6 +2464,13 @@ export interface OrchestratorStatus {
    * passes again. A server predating it omits it.
    */
   pushHealth?: RepoPushHealth[];
+  /**
+   * Worktree tasks the server is landing right now (`publishWorktree`:
+   * rebase, checks, push — docs/parallel.md § Land). In memory, broadcast when
+   * a land starts and ends; the SPA reads it as the `publishing` badge
+   * (docs/mobile.md § Action feedback). A server predating it omits it.
+   */
+  landing?: string[];
 }
 
 /** What a failed git network command says about its cause (`classifyGitFailure`). */

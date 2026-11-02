@@ -1927,7 +1927,15 @@ export class Orchestrator implements OrchestratorApi {
       aux: aux().liveCount(),
       shellWaits: this.shellWaitTasks(),
       pushHealth: pushHealth.list(),
+      landing: [...this.landing],
     };
+  }
+
+  /** Fire-and-forget `orchestrator.status` broadcast, for in-memory state the SPA renders. */
+  private broadcastStatusSoon(): void {
+    void this.status()
+      .then((status) => broadcast({ type: 'orchestrator.status', status }))
+      .catch(() => {});
   }
 
   async setEnabled(enabled: boolean, actor = 'human'): Promise<void> {
@@ -4024,6 +4032,9 @@ export class Orchestrator implements OrchestratorApi {
     }
     if (this.landing.has(taskId)) return { error: 'the task is already landing', code: 409 };
     this.landing.add(taskId);
+    // every tab and the phone read `OrchestratorStatus.landing` as a `publishing`
+    // badge (docs/mobile.md § Action feedback): a land runs inside the request
+    this.broadcastStatusSoon();
     // the idle terminal goes first: a prompt typed into it mid-rebase would
     // start a turn on a tree the land is rewriting. Run marked `killed` BEFORE
     // the PTY dies (as `endStalledRun` does), so the exit path never cancels
@@ -4059,7 +4070,10 @@ export class Orchestrator implements OrchestratorApi {
       }, this.landRedTree.get(taskId) ?? null).catch((e): LandResult => ({ kind: 'failed', error: String((e as Error)?.message ?? e).slice(0, 300) }));
       if (landed.kind === 'landed') await fastForwardCheckout(this.storage, repo, task).catch(() => {});
       return landed;
-    }).finally(() => this.landing.delete(taskId));
+    }).finally(() => {
+      this.landing.delete(taskId);
+      this.broadcastStatusSoon();
+    });
 
     if (res.kind === 'landed') {
       this.conflictRounds.delete(taskId);

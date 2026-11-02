@@ -16,6 +16,7 @@ import { useApp } from '../state.tsx';
 import { useWorkspace } from '../workspace.ts';
 import type { ReturnTo } from '../returnTo.ts';
 import { toastError } from '../toast.ts';
+import { runTaskAction, type TaskActionId } from '../pending.ts';
 import {
   IconAnalyze,
   IconCheck,
@@ -186,6 +187,10 @@ export function useInboxActs(nav: InboxNav) {
       const open = (t: Task | null): InboxAct[] =>
         t ? [{ key: 'o', label: 'Open', hint: 'the task panel', run: () => nav.onOpenTask(t.id) }] : [];
       const then = (p: Promise<unknown>) => p.then(() => refresh());
+      // a task action: in flight on every surface, then a confirmation
+      // toast (src/pending.ts); a refusal still reaches the runner's toast
+      const track = (t: Task, a: TaskActionId, call: () => Promise<unknown>) =>
+        runTaskAction(t, a, call).then((r) => (r === undefined ? undefined : refresh()));
       switch (item.kind) {
         case 'question':
           return open(item.task);
@@ -236,7 +241,7 @@ export function useInboxActs(nav: InboxNav) {
                 tone: item.ready ? 'primary' : undefined,
                 icon: <IconPublish />,
                 confirm: () => confirmMarkPublished(t),
-                run: () => then(api.taskAction(t.id, 'mark-published')),
+                run: () => track(t, 'mark-published', () => api.taskAction(t.id, 'mark-published')),
               }
             : {
                 key: 'p',
@@ -246,13 +251,13 @@ export function useInboxActs(nav: InboxNav) {
                 disabled: !t.repoId,
                 icon: <IconPublish />,
                 confirm: () => confirmPublish(t),
-                run: () => then(api.taskAction(t.id, 'publish')),
+                run: () => track(t, 'publish', () => api.taskAction(t.id, 'publish')),
               };
           const done: InboxAct = {
             key: 'd',
             label: 'Mark done',
             hint: 'closes without pushing',
-            run: () => then(api.taskAction(t.id, 'complete')),
+            run: () => track(t, 'complete', () => api.taskAction(t.id, 'complete')),
           };
           const fixes: InboxAct[] = flagged
             ? [
@@ -262,7 +267,7 @@ export function useInboxActs(nav: InboxNav) {
                   hint: 'the same session applies the blocker/major fixes',
                   tone: 'primary',
                   icon: <IconAnalyze />,
-                  run: () => then(api.applyReview(t.id)),
+                  run: () => track(t, 'apply-review', () => api.applyReview(t.id)),
                 },
               ]
             : [];
@@ -279,14 +284,14 @@ export function useInboxActs(nav: InboxNav) {
             label: 'Retry',
             hint: 'a fresh agent, told what the last attempt hit',
             tone: limit ? undefined : 'primary',
-            run: () => then(api.taskAction(item.task.id, 'retry')),
+            run: () => track(item.task, 'retry', () => api.taskAction(item.task.id, 'retry')),
           };
           const resume: InboxAct = {
             key: 'p',
             label: 'Resume',
             hint: 'the same session, where the usage limit stopped it',
             tone: 'primary',
-            run: () => then(api.proceed(item.task.id)),
+            run: () => track(item.task, 'proceed', () => api.proceed(item.task.id)),
           };
           return [...(limit ? [resume, retry] : [retry]), ...open(item.task)];
         }
@@ -297,7 +302,7 @@ export function useInboxActs(nav: InboxNav) {
               label: 'Unblock',
               hint: 'move the parent to review as it stands',
               tone: 'primary',
-              run: () => then(api.taskAction(item.task.id, 'unblock')),
+              run: () => track(item.task, 'unblock', () => api.taskAction(item.task.id, 'unblock')),
             },
             ...open(item.task),
           ];
@@ -338,14 +343,14 @@ export function useInboxActs(nav: InboxNav) {
               hint: `off this list for ${keepDays} days, still on the board`,
               tone: 'primary',
               icon: <IconCheck />,
-              run: () => then(api.keepDraft(t.id)),
+              run: () => track(t, 'keep', () => api.keepDraft(t.id)),
             },
             {
               key: 'h',
               label: 'Hide',
               hint: "off the board's sections and this list (Board › Hidden brings it back)",
               icon: <IconEye />,
-              run: () => then(api.taskAction(t.id, 'hide')),
+              run: () => track(t, 'hide', () => api.taskAction(t.id, 'hide')),
             },
             {
               key: 'x',
@@ -353,7 +358,7 @@ export function useInboxActs(nav: InboxNav) {
               hint: 'close it as cancelled — stale draft triage',
               tone: 'danger',
               confirm: () => window.confirm(`Cancel “${t.title}”? It is closed as cancelled (stale draft triage).`),
-              run: () => then(api.cancelTask(t.id, CANCEL_STALE_REASON)),
+              run: () => track(t, 'cancel', () => api.cancelTask(t.id, CANCEL_STALE_REASON)),
             },
             ...open(t),
           ];
@@ -364,14 +369,19 @@ export function useInboxActs(nav: InboxNav) {
   );
 }
 
-/** Runs one act at a time per surface; a refusal goes to the shared toast. */
+/**
+ * Runs one act at a time per surface; a refusal goes to the shared toast. The
+ * pressed act reads "Publish…" until it answers (`labelOf`).
+ */
 export function useActRunner() {
   const [busy, setBusy] = useState<string | null>(null);
+  const [busyAct, setBusyAct] = useState<string | null>(null);
   const run = useCallback(
     async (itemKey: string, act: InboxAct, onDone?: () => void) => {
       if (act.disabled || busy) return;
       if (act.confirm && !act.confirm()) return;
       setBusy(itemKey);
+      setBusyAct(`${itemKey}:${act.key}`);
       try {
         await act.run();
         onDone?.();
@@ -379,11 +389,16 @@ export function useActRunner() {
         toastError(e, act.label);
       } finally {
         setBusy(null);
+        setBusyAct(null);
       }
     },
     [busy],
   );
-  return { busy, run };
+  const labelOf = useCallback(
+    (itemKey: string, act: InboxAct) => (busyAct === `${itemKey}:${act.key}` ? `${act.label}…` : act.label),
+    [busyAct],
+  );
+  return { busy, run, labelOf };
 }
 
 /** One row: kind tag, title, repo, the one-line summary. */
@@ -737,7 +752,7 @@ const ACT_ICON: Record<InboxAct['key'], ReactNode> = {
 /** One item's sheet, stacked above the list: detail, then the actions. */
 export function InboxItemSheet({ item, nav, onClose }: { item: InboxItem; nav: InboxNav; onClose: () => void }) {
   const actsFor = useInboxActs(nav);
-  const { busy, run } = useActRunner();
+  const { busy, run, labelOf } = useActRunner();
   return (
     <Sheet label={itemTitle(item)} title={itemTitle(item)} onClose={onClose} zIndex={36}>
       <div className="inbox-sheet-meta">
@@ -749,7 +764,7 @@ export function InboxItemSheet({ item, nav, onClose }: { item: InboxItem; nav: I
           <SheetAction
             key={a.key}
             icon={a.icon ?? ACT_ICON[a.key]}
-            label={a.label}
+            label={labelOf(item.key, a)}
             hint={a.hint}
             tone={a.tone}
             disabled={a.disabled || busy !== null}

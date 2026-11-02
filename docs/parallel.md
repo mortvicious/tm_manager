@@ -226,7 +226,10 @@ task a prompt just moved): until the land returns `followUp` (so dispatch
 delivery too) refuses it, `startWorker` puts any other start back in `review`,
 a prompt typed into the terminal moves nothing, the eviction skips it, and the
 restart guard (`restart-check`, so Rebuild & restart's drain) waits for it. A rebase a crash left
-half-done is aborted before anything else.
+half-done is aborted before anything else. The landing set is published as
+`OrchestratorStatus.landing` and broadcast when a land starts and ends, so
+every surface shows the task as **publishing** for the whole land
+(`docs/mobile.md` § Action feedback).
 
 1. leftovers committed under the trailer;
 2. fetch + rebase onto `origin/<default>` — a conflict is aborted and handed

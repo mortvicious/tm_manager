@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { exitGhost } from '../motion.ts';
-import { dismissToast, TOAST_MS, UNDO_MS, useToasts, type Toast } from '../toast.ts';
+import { dismissToast, DONE_MS, TOAST_MS, UNDO_MS, useToasts, type Toast } from '../toast.ts';
 import { IconX } from './Icons.tsx';
 
 /**
@@ -35,7 +35,7 @@ function ToastItem({ toast }: { toast: Toast }) {
   const [held, setHeld] = useState(false);
   useEffect(() => {
     if (held || toast.sticky) return;
-    const t = setTimeout(() => dismissToast(toast.id), toast.tone === 'info' ? UNDO_MS : TOAST_MS);
+    const t = setTimeout(() => dismissToast(toast.id), toast.brief ? DONE_MS : toast.tone === 'info' ? UNDO_MS : TOAST_MS);
     return () => clearTimeout(t);
   }, [toast.id, toast.seq, held, toast.sticky]);
   return (

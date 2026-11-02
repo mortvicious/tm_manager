@@ -25,12 +25,16 @@ export interface Toast {
   key?: string;
   /** stays until acted on or dismissed (a new build waiting for a reload) */
   sticky?: boolean;
+  /** a confirmation glanced at, not read: gone after DONE_MS */
+  brief?: boolean;
 }
 
 /** errors are read, not glanced at: long enough for a two-line 409 reason */
 export const TOAST_MS = 9000;
 /** long enough to notice a drop went wrong and reach for Undo */
 export const UNDO_MS = 8000;
+/** "Published “…”": long enough to catch from the corner of the eye */
+export const DONE_MS = 4000;
 const MAX = 3;
 
 let toasts: Toast[] = [];
@@ -98,6 +102,19 @@ export function toastInfo(key: string, text: string): void {
   toasts = [
     ...toasts.filter((t) => t.key !== key),
     { id: nextId++, text, title: null, seq: 0, tone: 'info' as const, key },
+  ].slice(-MAX);
+  emit();
+}
+
+/**
+ * An action went through (docs/mobile.md § Action feedback): "Published …",
+ * "Queued …". Keyed per task, so a second action on the same task replaces
+ * the first confirmation instead of stacking.
+ */
+export function toastDone(key: string, text: string): void {
+  toasts = [
+    ...toasts.filter((t) => t.key !== key),
+    { id: nextId++, text, title: null, seq: 0, tone: 'info' as const, key, brief: true },
   ].slice(-MAX);
   emit();
 }

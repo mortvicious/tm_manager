@@ -25,6 +25,12 @@ export interface BadgeInput {
   loopState?: LoopState | null;
   /** Pause all suspended this task's turn; Continue resumes it (docs/pause.md) */
   paused?: boolean;
+  /**
+   * A publish is under way (`publishBusy` in src/pending.ts): `publishing` —
+   * the press is in flight or the agent's publish turn is working; `landing` —
+   * the server is landing the task's worktree branch (docs/parallel.md).
+   */
+  busy?: 'publishing' | 'landing' | null;
 }
 
 export interface BadgeReading extends Explanation {
@@ -61,12 +67,13 @@ const PLAIN: Record<TaskStatus, { what: string; todo?: string }> = {
  * running, before the reviewer) and `checks red` (the fix loop ended with a
  * failing check); a `running` task fixing red checks reads `fixing checks`. A
  * loop task between iterations (docs/loops.md) reads `loop checks` / `next
- * iteration`. `asks you` and `needs attention` come first, from the live run.
+ * iteration`. `asks you` and `needs attention` come first, from the live run;
+ * `publishing` next, from the publish press, turn or worktree land.
  *
  * One switch for the badge, its tooltip, its phone sheet and the task sheet's
  * "what's happening" strip, so the three can never disagree.
  */
-export function badgeReading({ status, attention, question, reviewState, checkState, loopState, paused }: BadgeInput): BadgeReading {
+export function badgeReading({ status, attention, question, reviewState, checkState, loopState, paused, busy }: BadgeInput): BadgeReading {
   const r = (label: string, c: string, what: string, todo?: string, reviewer?: boolean): BadgeReading => ({
     label,
     cls: c,
@@ -83,6 +90,23 @@ export function badgeReading({ status, attention, question, reviewState, checkSt
       's-attention',
       'The agent is stopped at a prompt in its terminal (a permission dialog, usually) and cannot go on by itself.',
       'Open the terminal and answer the prompt.',
+    );
+  // the human just pressed Publish: say so until it settles (docs/mobile.md § Action feedback)
+  if (busy === 'landing')
+    return r(
+      'publishing',
+      's-publishing',
+      'The server is landing this change: rebasing the branch onto the default branch, re-running the checks if it moved, and pushing.',
+      'Nothing to do — it reads published when the land finishes, or the reason lands in the task panel.',
+    );
+  if (busy === 'publishing')
+    return r(
+      'publishing',
+      's-publishing',
+      status === 'running'
+        ? 'The agent is committing and pushing this work in its own terminal.'
+        : 'Publish was pressed — the server is starting it.',
+      'Nothing to do — it reads published when the push is confirmed, or drops back to review with the reason.',
     );
   if (paused && (status === 'review' || status === 'failed'))
     return r(

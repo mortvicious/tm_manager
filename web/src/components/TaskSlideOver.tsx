@@ -43,6 +43,7 @@ import { LandingPicker } from './LandingPicker.tsx';
 import { QuestionForm } from './QuestionModal.tsx';
 import { Sheet, SheetAction } from './Sheet.tsx';
 import { toastError } from '../toast.ts';
+import { ACTION_TITLE, publishBusy, runTaskAction, usePendingAction, type TaskActionId } from '../pending.ts';
 import { useArm } from '../arm.ts';
 import { exitGhost } from '../motion.ts';
 import { BackgroundShellList } from './BackgroundShells.tsx';
@@ -83,6 +84,9 @@ interface PanelAction {
    */
   confirm?: string;
   onClick: () => void;
+  /** the task action it runs — while one is in flight (src/pending.ts) the
+   *  pressed button says so ("Publishing…") and the others wait */
+  act?: TaskActionId;
 }
 
 /**
@@ -304,6 +308,8 @@ export function TaskSlideOver({
 }) {
   const { tasks, repos, runs, proposals, dispatches, refresh, questions, settings, orch } = useApp();
   const task = tasks.find((t) => t.id === taskId);
+  // an action pressed on ANY surface is in flight (src/pending.ts)
+  const pend = usePendingAction(taskId);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [acceptance, setAcceptance] = useState('');
@@ -634,16 +640,17 @@ export function TaskSlideOver({
     panelDrafts.delete(task.id);
   };
 
-  const action = async (
-    a: Parameters<typeof api.taskAction>[1],
-  ) => {
+  // Every task action: in flight on every surface until the server answers,
+  // then a confirmation toast, or the refusal (docs/mobile.md § Action feedback)
+  const track = async (a: TaskActionId, call: () => Promise<unknown>, then = true) => {
     try {
-      await api.taskAction(task.id, a);
-      await refresh();
+      const r = await runTaskAction(task, a, call);
+      if (r !== undefined && then) await refresh();
     } catch (e) {
-      toastError(e);
+      toastError(e, ACTION_TITLE[a]);
     }
   };
+  const action = (a: Parameters<typeof api.taskAction>[1]) => track(a, () => api.taskAction(task.id, a));
 
   const analyze = async () => {
     if (!task.repoId) {
@@ -883,17 +890,11 @@ export function TaskSlideOver({
         : task.status === 'review'
           ? 'Run the adversarial reviewer over the current diff now — blocker/major findings go back to the live session to fix'
           : 'Run the adversarial reviewer over the current diff now — the verdict is recorded, the status stays',
-      onClick: async () => {
-        try {
-          // No refresh(): the round can settle (empty/unchanged diff)
-          // within ms, and a full list read in flight across that
-          // write lands after the WS row and pins a stale `pending`.
-          // The `task.updated` broadcasts carry both steps in order.
-          await api.reviewNow(task.id);
-        } catch (e) {
-          toastError(e);
-        }
-      },
+      // No refresh(): the round can settle (empty/unchanged diff) within
+      // ms, and a full list read in flight across that write lands after
+      // the WS row and pins a stale `pending`. The `task.updated`
+      // broadcasts carry both steps in order.
+      onClick: () => void track('review', () => api.reviewNow(task.id), false),
     });
   }
   if (['review', 'done', 'failed'].includes(task.status)) {
@@ -904,14 +905,7 @@ export function TaskSlideOver({
       title: task.reviewSummary
         ? 'Send the review findings back to a worker to fix'
         : 'Adversarially review this task and fix what it finds',
-      onClick: async () => {
-        try {
-          await api.applyReview(task.id);
-          await refresh();
-        } catch (e) {
-          toastError(e);
-        }
-      },
+      onClick: () => void track('apply-review', () => api.applyReview(task.id)),
     });
   }
   if (task.status === 'blocked') {
@@ -935,14 +929,7 @@ export function TaskSlideOver({
       destructive: true,
       title: "Close the agent's terminal session (task status is unchanged; asks for a second press)",
       confirm: `Stop agent? ${again}`,
-      onClick: async () => {
-        try {
-          await api.stopAgent(task.id);
-          await refresh();
-        } catch (e) {
-          toastError(e);
-        }
-      },
+      onClick: () => void track('stop-agent', () => api.stopAgent(task.id)),
     });
   }
   // Hidden tasks (docs/design.md § Hidden tasks): a working task stays visible.
@@ -954,9 +941,35 @@ export function TaskSlideOver({
   actions.push({ id: 'analyze', label: 'Analyze', icon: <IconAnalyze />, title: 'A read-only session reads the repo and proposes how to split or solve this task', onClick: analyze });
   actions.push({ id: 'delete', label: 'Delete', cls: 'danger', destructive: true, title: 'Delete the task (asks first)', onClick: del });
 
+  // which task action each button runs, for the in-flight state
+  const ACT_OF: Record<string, TaskActionId> = {
+    enqueue: retryable ? 'retry' : 'enqueue',
+    queue: 'queue',
+    unqueue: 'unqueue',
+    'run-now': 'run-now',
+    release: 'release',
+    'stop-waiting': 'stop-waiting',
+    undo: 'undo',
+    cancel: 'cancel',
+    dequeue: 'cancel',
+    'mark-published': 'mark-published',
+    publish: 'publish',
+    complete: 'complete',
+    'review-now': 'review',
+    'apply-review': 'apply-review',
+    unblock: 'unblock',
+    'stop-agent': 'stop-agent',
+    hide: 'hide',
+    unhide: 'unhide',
+  };
+  for (const a of actions) a.act = ACT_OF[a.id];
+  /** the pressed one reads "Publishing…"; every other task action waits for it */
+  const inFlight = (a: PanelAction) => !!pend && !!a.act && pend.action === a.act;
+  const held = (a: PanelAction) => !!a.disabled || (!!pend && !!a.act);
+
   const armKey = (a: PanelAction) => `${task.id}:${a.id}`;
   const isArmed = (a: PanelAction) => !!a.confirm && arm.armed === armKey(a);
-  const labelOf = (a: PanelAction) => (isArmed(a) ? a.confirm! : a.label);
+  const labelOf = (a: PanelAction) => (inFlight(a) ? pend!.verb : isArmed(a) ? a.confirm! : a.label);
   /** true when this press runs the action; a `confirm` action's first press only arms it */
   const fires = (a: PanelAction) => !a.confirm || arm.press(armKey(a));
 
@@ -975,7 +988,7 @@ export function TaskSlideOver({
       label={labelOf(a)}
       hint={a.title}
       tone={a.destructive || isArmed(a) ? 'danger' : undefined}
-      disabled={a.disabled}
+      disabled={held(a)}
       onClick={() => {
         // the arming press keeps the sheet open, so the second lands on the same row
         if (!fires(a)) return;
@@ -992,6 +1005,7 @@ export function TaskSlideOver({
   const repoName = task.repoId ? repos.find((r) => r.id === task.repoId)?.name ?? null : null;
   const landedFlag = !!task.autoLandedAt && (task.status === 'done' || task.status === 'published');
   const pushedFlag = !!task.shippedSha && (task.status === 'review' || task.status === 'done');
+  const busy = publishBusy(task, taskRuns, orch, pend);
   const head = (close: () => void) => (
     <div className="slideover-head">
       <div className="so-line">
@@ -1003,6 +1017,7 @@ export function TaskSlideOver({
           checkState={task.checkState}
           loopState={task.loopState}
           paused={!!task.pausedTurn}
+          busy={busy}
           onOpenReviewer={reviewerRun ? () => onOpenTerminal(reviewerRun.id) : undefined}
         />
         {/* the title stays in view on every tab and while the body scrolls under it */}
@@ -1106,13 +1121,14 @@ export function TaskSlideOver({
       {bar.map((a, i) => (
         <button
           key={a.id}
-          className={`btn${i === 0 && !(publishHeld && a.id === 'complete') ? ' primary' : ''}`}
-          disabled={a.disabled}
+          className={`btn${i === 0 && !(publishHeld && a.id === 'complete') ? ' primary' : ''}${inFlight(a) ? ' in-flight' : ''}`}
+          disabled={held(a)}
+          aria-busy={inFlight(a) || undefined}
           onClick={() => fires(a) && a.onClick()}
         >
           {a.icon}
           {a.icon ? ' ' : ''}
-          {isArmed(a) ? a.confirm : (a.short ?? a.label)}
+          {inFlight(a) ? pend!.verb : isArmed(a) ? a.confirm : (a.short ?? a.label)}
         </button>
       ))}
       <button className="btn so-more" aria-expanded={moreOpen} aria-label="More actions" onClick={() => setMoreOpen(true)}>
@@ -1138,6 +1154,7 @@ export function TaskSlideOver({
           checkState={task.checkState}
           loopState={task.loopState}
           paused={!!task.pausedTurn}
+          busy={busy}
         />
       )}
       <GroupPath task={task} tasks={tasks} onOpen={onOpenTask} />
@@ -1183,9 +1200,10 @@ export function TaskSlideOver({
       {actions.map((a) => (
         <button
           key={a.id}
-          className={`btn${isArmed(a) ? ' danger armed' : a.cls ? ` ${a.cls}` : ''}`}
+          className={`btn${isArmed(a) ? ' danger armed' : a.cls ? ` ${a.cls}` : ''}${inFlight(a) ? ' in-flight' : ''}`}
           title={a.title}
-          disabled={a.disabled}
+          disabled={held(a)}
+          aria-busy={inFlight(a) || undefined}
           aria-live={a.confirm ? 'polite' : undefined}
           onClick={() => fires(a) && a.onClick()}
         >

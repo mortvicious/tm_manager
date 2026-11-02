@@ -31,7 +31,7 @@ import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { useWorkspace } from '../workspace.ts';
 import { PushHealthBanner } from '../components/PushHealthBanner.tsx';
-import { toastError, toastUndo } from '../toast.ts';
+import { toastDone, toastError, toastUndo } from '../toast.ts';
 import {
   absorbTyped,
   buildHaystacks,
@@ -68,6 +68,7 @@ import { liveReviewRun } from '../components/RunKind.tsx';
 import { TaskAttemptsChip, TaskCostChip } from '../components/RunMeta.tsx';
 import { FullSheet } from '../components/Sheet.tsx';
 import { StatusBadge } from '../components/StatusBadge.tsx';
+import { publishBusy, usePendingActions } from '../pending.ts';
 import { Explainable } from '../components/Explain.tsx';
 import { verdictChip } from '../components/ReviewPanel.tsx';
 import { DragGhost, undoMove, useTaskDrag, type DropZone } from '../components/TaskDrag.tsx';
@@ -409,6 +410,11 @@ function NewTaskForm({
     }
     setBusy(false);
     setOpen(false);
+    // the form closes over a board the new row may be off-screen on
+    toastDone(
+      `task:${task.id}`,
+      `Created “${task.title}”${effectiveStart === 'run' ? ' — starting' : effectiveStart === 'draft' ? ' as a draft' : ' — queued'}`,
+    );
     onCreated();
   };
 
@@ -964,7 +970,9 @@ export function BoardPage({
   onOpenTask: (id: string) => void;
   onOpenTerminal: (runId: string) => void;
 }) {
-  const { tasks, repos, runs, settings, refresh, dispatches, questions, features, loaded, connected } = useApp();
+  const { tasks, repos, runs, settings, refresh, dispatches, questions, features, loaded, connected, orch } = useApp();
+  // actions in flight on any surface: the row's badge reads `publishing` (src/pending.ts)
+  const pendingActs = usePendingActions();
   const { workspace, inScope, setWorkspace } = useWorkspace();
   // default ON so the board is coloured before /api/config answers, matching
   // DEFAULT_SETTINGS['board.groupColors']
@@ -1543,6 +1551,7 @@ export function BoardPage({
           checkState={t.checkState}
           loopState={t.loopState}
           paused={!!t.pausedTurn}
+          busy={publishBusy(t, runs, orch, pendingActs.get(t.id))}
           explain={!selecting}
           onOpenReviewer={(() => {
             const rv = liveReviewRun(runs, t.id);

@@ -4,6 +4,7 @@ import { api } from '../api.ts';
 import { confirmMarkPublished, confirmPublish, markPublishedLabel, markPublishedOffered, publishIsPrimary } from '../publish.ts';
 import { useApp } from '../state.tsx';
 import { toastError } from '../toast.ts';
+import { ACTION_TITLE, runTaskAction, usePendingAction, type TaskActionId } from '../pending.ts';
 import { useArm } from '../arm.ts';
 import { IconCheck, IconEye, IconGrip, IconMore, IconPlay, IconPublish, IconQueue, IconStop, IconTerminal, IconX } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
@@ -28,20 +29,24 @@ function QuickBtn({
   label,
   className,
   disabled,
+  inFlight,
   onClick,
   children,
 }: {
   label: string;
   className?: string;
   disabled: boolean;
+  /** this button's action is in flight (src/pending.ts): its icon breathes, its label says so */
+  inFlight?: string | null;
   onClick: (e: MouseEvent) => void;
   children: ReactNode;
 }) {
   return (
-    <span className="quick-wrap" title={label}>
+    <span className="quick-wrap" title={inFlight ?? label}>
       <button
-        className={`btn ghost quick ${className ?? ''}`}
-        aria-label={label}
+        className={`btn ghost quick ${className ?? ''}${inFlight ? ' in-flight' : ''}`}
+        aria-label={inFlight ?? label}
+        aria-busy={inFlight ? true : undefined}
         disabled={disabled}
         onClick={onClick}
       >
@@ -92,7 +97,11 @@ export function TaskRow({
 }) {
   const { runs, tasks, activity, refresh, orch } = useApp();
   const mobile = useIsMobile();
-  const [busy, setBusy] = useState(false);
+  // one action at a time per TASK, whichever surface pressed it (src/pending.ts)
+  const pend = usePendingAction(task.id);
+  const busy = !!pend;
+  /** the in-flight wording when `a` is the action under way, for that one button */
+  const flying = (...a: TaskActionId[]) => (pend && a.includes(pend.action) ? pend.verb : null);
   const [sheet, setSheet] = useState(false);
   // taking a WAITING member out of the custom queue cancels it (docs/queue.md),
   // so the × arms first and a second press cancels (src/arm.ts)
@@ -108,19 +117,15 @@ export function TaskRow({
   // hasLiveSession() guard that both enqueue and run-now enforce.
   const live = taskRuns.some((r) => r.status === 'running');
 
-  const act = async (e: MouseEvent | null, fn: () => Promise<unknown>) => {
+  const act = async (e: MouseEvent | null, a: TaskActionId, fn: () => Promise<unknown>) => {
     e?.stopPropagation();
-    if (busy) return;
-    setBusy(true);
     try {
-      await fn();
-      await refresh();
+      // in flight on every surface, then a confirmation (docs/mobile.md § Action feedback)
+      if ((await runTaskAction(task, a, fn)) !== undefined) await refresh();
     } catch (e2) {
       // the shared toast (docs/mobile.md § Action errors): a row is too small
       // to hold a 409 reason, and the refused row may be scrolled off by now
-      toastError(e2);
-    } finally {
-      setBusy(false);
+      toastError(e2, ACTION_TITLE[a]);
     }
   };
 
@@ -206,16 +211,16 @@ export function TaskRow({
   // nothing, rather than sit on the row disabled. A disabled button with its
   // reason in a tooltip is exactly what a phone cannot read.
   const openTerm = () => run && onOpenTerminal(run.id);
-  const doRun = (e: MouseEvent | null) => act(e, () => api.taskAction(task.id, 'run-now'));
+  const doRun = (e: MouseEvent | null) => act(e, 'run-now', () => api.taskAction(task.id, 'run-now'));
   const doPublish = (e: MouseEvent | null) => {
     e?.stopPropagation();
     if (shipped) {
       if (!confirmMarkPublished(task)) return;
-      void act(e, () => api.taskAction(task.id, 'mark-published'));
+      void act(e, 'mark-published', () => api.taskAction(task.id, 'mark-published'));
       return;
     }
     if (!confirmPublish(task)) return;
-    void act(e, () => api.taskAction(task.id, 'publish'));
+    void act(e, 'publish', () => api.taskAction(task.id, 'publish'));
   };
   const runnable: TaskStatus[] = ['draft', 'queued', 'failed', 'cancelled'];
   const primary: 'terminal' | 'run' | 'publish' | null =
@@ -274,12 +279,18 @@ export function TaskRow({
             </QuickBtn>
           )}
           {primary === 'run' && (
-            <QuickBtn label="Run now" className="primary-act" disabled={busy} onClick={(e) => doRun(e)}>
+            <QuickBtn label="Run now" className="primary-act" disabled={busy} inFlight={flying('run-now')} onClick={(e) => doRun(e)}>
               <IconPlay />
             </QuickBtn>
           )}
           {primary === 'publish' && (
-            <QuickBtn label={publishLabel} className="primary-act" disabled={busy} onClick={(e) => doPublish(e)}>
+            <QuickBtn
+              label={publishLabel}
+              className="primary-act"
+              disabled={busy}
+              inFlight={flying('publish', 'mark-published')}
+              onClick={(e) => doPublish(e)}
+            >
               <IconPublish />
             </QuickBtn>
           )}
@@ -312,7 +323,7 @@ export function TaskRow({
               {markDone && (
                 <SheetAction
                   icon={<IconPublish />}
-                  label={shipped ? 'Mark published' : 'Publish'}
+                  label={flying('publish', 'mark-published') ?? (shipped ? 'Mark published' : 'Publish')}
                   hint={shipped ? publishLabel : publishIsPrimary(task) ? "Commit and push this work in the agent's own terminal" : publishLabel}
                   tone={publishIsPrimary(task) ? 'primary' : undefined}
                   disabled={busy || !canPublish}
@@ -328,7 +339,7 @@ export function TaskRow({
                   disabled={busy}
                   onClick={() => {
                     if (!arm.press('stop-waiting')) return;
-                    fromSheet(() => void act(null, () => api.taskAction(task.id, 'stop-waiting')))();
+                    fromSheet(() => void act(null, 'stop-waiting', () => api.taskAction(task.id, 'stop-waiting')))();
                   }}
                 />
               )}
@@ -344,7 +355,7 @@ export function TaskRow({
                 label={markDone ? 'Mark done' : 'Mark as ready'}
                 hint={markDone ? 'Close the task without publishing' : readyLabel}
                 disabled={busy || !canReady}
-                onClick={fromSheet(() => void act(null, () => api.taskAction(task.id, markDone ? 'complete' : 'enqueue')))}
+                onClick={fromSheet(() => void act(null, markDone ? 'complete' : 'enqueue', () => api.taskAction(task.id, markDone ? 'complete' : 'enqueue')))}
               />
               <SheetAction
                 icon={inQueue ? <IconX /> : <IconQueue />}
@@ -355,7 +366,7 @@ export function TaskRow({
                 onClick={() => {
                   // the arming tap keeps the sheet open for the second one
                   if (inQueue && !arm.press('unqueue')) return;
-                  fromSheet(() => void act(null, () => api.taskAction(task.id, inQueue ? 'unqueue' : 'queue')))();
+                  fromSheet(() => void act(null, inQueue ? 'unqueue' : 'queue', () => api.taskAction(task.id, inQueue ? 'unqueue' : 'queue')))();
                 }}
               />
               <SheetAction
@@ -363,7 +374,7 @@ export function TaskRow({
                 label={task.hiddenAt ? 'Unhide' : 'Hide'}
                 hint={task.hiddenAt ? 'Back to its usual section' : working ? 'A working task stays visible' : 'Into the dimmed Hidden section, out of Drafts'}
                 disabled={busy || (!task.hiddenAt && working)}
-                onClick={fromSheet(() => void act(null, () => api.taskAction(task.id, task.hiddenAt ? 'unhide' : 'hide')))}
+                onClick={fromSheet(() => void act(null, task.hiddenAt ? 'unhide' : 'hide', () => api.taskAction(task.id, task.hiddenAt ? 'unhide' : 'hide')))}
               />
               <SheetAction
                 icon={<IconMore />}
@@ -429,12 +440,13 @@ export function TaskRow({
             label={stopWaitLabel}
             className={stopWaitArmed ? 'armed' : undefined}
             disabled={busy}
+            inFlight={flying('stop-waiting')}
             onClick={(e) => {
               if (!arm.press('stop-waiting')) {
                 e.stopPropagation();
                 return;
               }
-              void act(e, () => api.taskAction(task.id, 'stop-waiting'));
+              void act(e, 'stop-waiting', () => api.taskAction(task.id, 'stop-waiting'));
             }}
           >
             {stopWaitArmed ? 'Stop?' : <IconStop />}
@@ -444,12 +456,13 @@ export function TaskRow({
           label={queueLabel}
           className={unqueueArmed ? 'armed' : inQueue ? 'queued' : undefined}
           disabled={busy || !canQueue}
+          inFlight={flying('queue', 'unqueue')}
           onClick={(e) => {
             if (inQueue && !arm.press('unqueue')) {
               e.stopPropagation();
               return;
             }
-            void act(e, () => api.taskAction(task.id, inQueue ? 'unqueue' : 'queue'));
+            void act(e, inQueue ? 'unqueue' : 'queue', () => api.taskAction(task.id, inQueue ? 'unqueue' : 'queue'));
           }}
         >
           {unqueueArmed ? 'Cancel?' : inQueue ? <IconX /> : <IconQueue />}
@@ -458,6 +471,7 @@ export function TaskRow({
           <QuickBtn
             label={publishLabel}
             disabled={busy || !canPublish}
+            inFlight={flying('publish', 'mark-published')}
             onClick={(e) => doPublish(e)}
           >
             <IconPublish />
@@ -466,7 +480,8 @@ export function TaskRow({
         <QuickBtn
           label={runLabel}
           disabled={busy || !canRun}
-          onClick={(e) => act(e, () => api.taskAction(task.id, 'run-now'))}
+          inFlight={flying('run-now')}
+          onClick={(e) => act(e, 'run-now', () => api.taskAction(task.id, 'run-now'))}
         >
           <IconPlay />
         </QuickBtn>
@@ -474,7 +489,8 @@ export function TaskRow({
           label={readyLabel}
           className={markDone ? 'affirm' : undefined}
           disabled={busy || !canReady}
-          onClick={(e) => act(e, () => api.taskAction(task.id, markDone ? 'complete' : 'enqueue'))}
+          inFlight={flying('complete', 'enqueue')}
+          onClick={(e) => act(e, markDone ? 'complete' : 'enqueue', () => api.taskAction(task.id, markDone ? 'complete' : 'enqueue'))}
         >
           <IconCheck />
         </QuickBtn>

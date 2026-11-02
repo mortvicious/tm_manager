@@ -811,6 +811,24 @@ textarea {
   pointer-events: none;
 }
 
+/* the pressed action, until the server answers (docs/mobile.md § Action
+   feedback): not dimmed like a refusal — its label says "Publishing…" and its
+   icon breathes; the task's other actions wait dimmed beside it */
+.btn.in-flight:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+
+.btn.in-flight svg {
+  animation: pulse 1.2s var(--tm-ease-in-out) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn.in-flight svg {
+    animation: none;
+  }
+}
+
 .btn.ghost {
   border-color: transparent;
   background: transparent;
@@ -958,7 +976,13 @@ button.badge.badge-link:hover {
   color: var(--tm-status-failed);
 }
 
+/* a publish under way (docs/mobile.md § Action feedback): the published hue, still breathing */
+.badge.s-publishing {
+  color: var(--tm-status-published);
+}
+
 .badge.s-checking .dot,
+.badge.s-publishing .dot,
 .badge.s-autoreview .dot,
 .badge.s-fixing .dot {
   animation: pulse 1.6s var(--tm-ease-in-out) infinite;

@@ -319,6 +319,54 @@ line at the top of a panel you scrolled away from.
   the latest is undoable. Today it carries the board's "Undo move" (`docs/grouping.md`
   § Drag and drop).
 
+## Action feedback
+
+A press that worked used to look exactly like a press that did nothing: the
+panel and rows awaited the POST with no state of their own, and the change only
+showed when the WS row arrived. That gap can be long. A worktree land rebases,
+re-runs the checks and pushes inside the request, and a publish turn first waits
+for the idle session to exit. So every task action now answers three times:
+when it is pressed, while it runs, and when it is done.
+
+- **In flight** (`src/pending.ts`). `runTaskAction(task, action, call)` marks
+  the TASK as having an action under way, in a module store keyed by task id,
+  for the same reason the toasts are a module store: the phone ⋯ sheet closes
+  on the press, and the row re-renders from a new list. Every surface reads the
+  same entry: the panel bar, the ⋯ sheet, the desktop action row, board rows
+  (`TaskRow`) and the Inbox.
+  - The pressed button keeps its full colour, says what it is doing
+    (`ACTION_VERB`: "Publishing…", "Starting…", "Cancelling…"), carries
+    `aria-busy` and has a breathing icon (`.btn.in-flight`; Reduce Motion stops
+    the breathing).
+  - The task's other actions are disabled until it answers. A second press on
+    the same task is dropped, which is also the double-tap guard.
+  - The phone bar keeps its buttons in place: the bar is chosen on `disabled`
+    (a real refusal), not on in-flight.
+  - Inbox acts read "Publish…" through `useActRunner().labelOf`.
+- **The `publishing` badge** (`publishBusy` → `StatusBadge` `busy`, class
+  `s-publishing`, the published hue with a breathing dot). It comes after
+  `asks you`/`needs attention` and before every other reading. Three sources
+  feed it, so it holds for the whole publish, not just the request:
+  1. the press in flight on this tab;
+  2. the agent's publish turn, which is a live, non-idle worker run labelled
+     `publish` while the task is `running`;
+  3. a worktree land the server is running. That is
+     `OrchestratorStatus.landing`, the orchestrator's in-memory `landing` set,
+     broadcast as `orchestrator.status` when a land starts and when it ends
+     (`docs/parallel.md` § Land), so every tab and the phone see it.
+
+  The board row, the panel head and the phone's "what's happening" strip all
+  show it. Its explanation says which of the three sources it is.
+- **Done** (`toastDone`, `brief`, 4s, keyed `task:<id>` so a second action
+  replaces the first). It is read off the row the server answered with: a
+  publish that settled at once (observed, direct, a worktree land) says
+  "Published “…”", and one that started the agent's turn says "Publishing “…”
+  — the agent commits and pushes in its own terminal". Creating a task from the
+  board's form says "Created “…” — queued / starting / as a draft", because the
+  new row may land off-screen.
+- A refusal is still `toastError`, now with the action's name as its lead
+  (`ACTION_TITLE`: "Publish failed: publish held: …").
+
 ## Confirming destructive actions
 
 What kills a run or discards something takes **two presses** (`useArm()` in
