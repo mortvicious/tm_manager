@@ -38,9 +38,9 @@ state a review verdict the same way.
 | `question` | an agent's `AskUserQuestion` is pending (immediately, `Urgency: high`), or the question autopilot picked its Recommended option (normal urgency) | `/?task=<id>`, where the question modal pops |
 | `approval` | an agent requested a human-only action (docs/approvals.md) — immediately, `Urgency: high`, unless the repo pre-approved it; and when an approved action FAILED (`approvalfail-<id>`) | `/inbox` |
 | `attention` | the run is still flagged at the 5s flush (running, not idle) | `/?task=<id>` |
-| `review` | the task is in `review` AND the review settled — and its repo checks too (`docs/checks.md`; the body opens with the check clause): one verdict per change. Also a "Review now" verdict on a non-review task | `/?task=<id>` |
-| `done` | a task that reached `done` without a human: an on-green landing (`autoLandedAt`, `docs/design.md` § Landing tiers — "✅ Auto-landed · <title>", body "auto-landed: <reason>" + the reviewer's summary), or `running`/`waiting` → `done`. A human's Mark done is silent | `/?task=<id>` |
-| `failed` / `blocked` / `published` | the transition, re-read at flush | `/?task=<id>` |
+| `review` | the task is in `review` AND the review settled — and its repo checks too (`docs/checks.md`; the body opens with the check clause): one verdict per change. Also a "Review now" verdict on a non-review task | `/?task=<id>&tab=review` |
+| `done` | a task that reached `done` without a human: an on-green landing (`autoLandedAt`, `docs/design.md` § Landing tiers — "✅ Auto-landed · <title>", body "auto-landed: <reason>" + the reviewer's summary), or `running`/`waiting` → `done`. A human's Mark done is silent | auto-landed `/?task=<id>&tab=review`; otherwise `/?task=<id>` |
+| `failed` / `blocked` / `published` | the transition, re-read at flush | failed `/?task=<id>&tab=history`; blocked/published `/?task=<id>` |
 | `started` | `queued` → `running` (**off by default**) | `/?task=<id>` |
 | `proposal` | a pending proposal (once per id) | its task, or `/` |
 | `feature` | a plan is ready to approve (`proposed`), or the feature `paused` | `/features/<id>` |
@@ -97,6 +97,21 @@ the Board's find-by-id rules (`web/src/taskId.ts`). It waits for the first task
 list to load. An id that resolves to nothing is left unchanged, so a full id whose
 task has not arrived yet still opens when it does. (Until 2026-10-26 the parameter
 was consumed and dropped.)
+
+**The tab** (2026-11-02). A status link names the task panel tab the news is
+about: `taskUrl(id, tab?)` in `server/src/push/notifier.ts` appends
+`&tab=review` to the review-ready, review-verdict and auto-landed pings and
+`&tab=history` to the failed ping (`docs/design.md` § Task panel tabs). A
+question or approval link has no tab: the question block sits above the tabs on
+every tab, and the panel's own state default (`asking` → Overview) applies.
+Everything else (attention, a plain done, blocked, published, started,
+anomaly, proposal) opens on the task's default too. `PushBridge`'s short-id
+rewrite sets only `task` in the full parameter set and the `/` → `/board`
+redirect keeps the query, so `/?task=<short>&tab=review` opens the full task on
+Review & checks. The tab obeys the panel's precedence: a value the build does
+not offer is ignored, and once the task's state bucket moves under the open
+panel the URL tab is dropped. Telegram links into the SPA nowhere, so it has no
+tab. Tested in `server/src/push-notifier.test.ts`.
 
 ## The service worker
 

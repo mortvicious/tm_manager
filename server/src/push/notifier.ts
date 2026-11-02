@@ -39,7 +39,14 @@ const SUMMARY_CLIP = 600;
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const unsettled = (s: ReviewState | null | undefined) => s === 'pending' || s === 'reviewing';
-const taskUrl = (id: string) => `/?task=${encodeURIComponent(id)}`;
+/**
+ * A task's deep link: `?task=<id>` opens its panel, `?tab=` the tab the news is
+ * about (docs/push.md § Opening a notification). No tab = the panel's own
+ * state default; a question or approval needs none (its block sits above the tabs).
+ */
+export type PushTab = 'review' | 'history';
+export const taskUrl = (id: string, tab?: PushTab) =>
+  `/?task=${encodeURIComponent(id)}${tab ? `&tab=${tab}` : ''}`;
 
 interface PendingTask {
   review?: boolean;
@@ -264,8 +271,8 @@ export class PushNotifier {
     const push = this.deps.push;
     const tag = `task-${task.id}`;
     const url = taskUrl(task.id);
-    const send = (kind: Parameters<PushService['deliver']>[0], title: string, body: string) =>
-      push.deliver(kind, { title, body, tag, url });
+    const send = (kind: Parameters<PushService['deliver']>[0], title: string, body: string, tab?: PushTab) =>
+      push.deliver(kind, { title, body, tag, url: taskUrl(task.id, tab) });
     const last = task.reviewRounds[task.reviewRounds.length - 1];
     const reviewerSummary = (task.reviewState === 'passed' || task.reviewState === 'flagged') && last?.summary ? last.summary : null;
 
@@ -297,7 +304,7 @@ export class PushNotifier {
       const body = [verdict, task.error ? `⚠ ${task.error}` : (reviewerSummary ?? task.resultSummary)]
         .filter(Boolean)
         .join('\n');
-      await send('review', `📋 In review · ${task.title}`, clip(body || 'Ready for your review.', SUMMARY_CLIP));
+      await send('review', `📋 In review · ${task.title}`, clip(body || 'Ready for your review.', SUMMARY_CLIP), 'review');
     }
     if (p.reviewedElsewhere && task.status !== 'review' && task.reviewState && !unsettled(task.reviewState)) {
       const verdict = reviewClause(task);
@@ -305,6 +312,7 @@ export class PushNotifier {
         'review',
         `🔍 Reviewed (${task.status}) · ${task.title}`,
         clip([verdict, reviewerSummary].filter(Boolean).join('\n') || 'Review finished.', SUMMARY_CLIP),
+        'review',
       );
     }
     if (p.done && task.status === 'done') {
@@ -312,13 +320,13 @@ export class PushNotifier {
         const body = [`auto-landed: ${landingReason(task) ?? 'landed on its own'}`, reviewerSummary ?? task.resultSummary]
           .filter(Boolean)
           .join('\n');
-        await send('done', `✅ Auto-landed · ${task.title}`, clip(body, SUMMARY_CLIP));
+        await send('done', `✅ Auto-landed · ${task.title}`, clip(body, SUMMARY_CLIP), 'review');
       } else {
         await send('done', `✅ Done · ${task.title}`, clip(task.resultSummary ?? 'Finished.', SUMMARY_CLIP));
       }
     }
     if (p.failed && task.status === 'failed') {
-      await send('failed', `❌ Failed · ${task.title}`, clip(task.error ?? 'The task failed.', SUMMARY_CLIP));
+      await send('failed', `❌ Failed · ${task.title}`, clip(task.error ?? 'The task failed.', SUMMARY_CLIP), 'history');
     }
     if (p.blocked && task.status === 'blocked') {
       await send('blocked', `⛔ Blocked · ${task.title}`, 'Waiting on its subtasks.');

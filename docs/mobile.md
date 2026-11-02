@@ -587,8 +587,19 @@ to close; × animates out the same way.
   rules since the tabs, § Task panel tabs): the badge's explanation, the
   breadcrumb, the alerts (the task's own error, the retry hint, wake-up, held —
   an action's refusal is a toast, § Action errors), the agent's question and
-  the run's numbers sit above the tab strip on every tab, then the active tab.
+  the run's numbers, then the tab strip, then the active tab. All of it is ONE
+  scroller, the sheet's content scroller: the strip is not pinned with the head
+  and bar but `position: sticky; top: 0` inside that scroller, so the top part
+  scrolls away and the strip sticks under the bar while you read a long tab.
   What happened comes first, then your answer to it, then the task itself.
+- **History and Diff are compact on a phone.** History is one line per step
+  (time · dot · label · duration/cost); a tap expands it to the chip, relative
+  and absolute time, detail, actor, tokens and buttons (`docs/timeline.md`
+  § The History tab). Diff's file rows are tighter (`.app.mobile .td-file-row`,
+  `--tm-text-xs`) and have no Expand all / Collapse all; a tapped file's patch
+  scrolls sideways inside its block (`docs/task-diff.md` § The Diff tab).
+  Neither has a vertical scroller of its own, so drag-from-the-top still pulls
+  the sheet.
 - **Settings fold away.** On Overview, the settings grid (repo, category, group,
   preset, review, landing, model, effort, reviewer) sits behind a toggle that
   shows `repo · model · effort`. The toggle is open for a draft, which is still
@@ -855,6 +866,40 @@ compact/breakpoint/run change. The reasoning is in `docs/decisions.md`,
   longer to ingest could still see the Enter arrive early.
 
 ## Verification
+
+**Task panel tabs, push `?tab=` (2026-11-02, phase 3 of *Task panel tabs +
+per-task history*)**: Playwright (Chromium 1243) at 1440×900 and 393×852
+(touch, iPhone UA, `.app.mobile`), Classic and Glass, with the worktree build
+served over the live front door's origin, live API GETs, every non-GET aborted
+(the abort list stayed empty), terminal sockets swallowed, service worker
+blocked. Tasks used: one each in review (settled), failed, running/waiting,
+published and draft. No `pageerror` in any combination.
+
+- `/?task=<id>&tab=review` ended at `/board?task=<id>&tab=review` on Review &
+  checks; `&tab=history` on History; an 8-char short id resolved to the full
+  id and kept `tab=review`. With no tab, review/published opened Review &
+  checks, failed History, draft Overview, running/waiting Terminal (a task
+  with a pending question opened Overview — the `asking` bucket).
+- A row click pushed `?task=`; a tab click only replaced it (`&tab=…`), and one
+  Back closed the panel either way. The legacy `/board` opened the panel from
+  a row click on both shapes.
+- Every tab rendered its sections (Diff: 5–12 `.td-file-row` on tasks with a
+  change, the empty note on failed/draft; History: `.th-steps` + totals). The
+  action set was identical on all five tabs, and the desktop row equalled the
+  phone bar + `⋯` sheet (review 11 = 3 + 8, failed 8 = 2 + 6, draft 6 = 2 + 4,
+  published 4 = 1 + 3, running 5 = 1 + 4).
+- Phone: `.so-tabs` stayed at the scroller's top scrolled to the bottom of long
+  tabs (197/197); page scrollWidth 393 throughout; History `.th-steps.compact`;
+  no Expand all on the phone, present on desktop with more than one file.
+- A title edit on Overview kept `.so-save` visible on History; Discard
+  restored the value.
+- Fixed on the way: `LoopPanel` fetched `/loop/ledger` for every task before its
+  `kind !== 'loop'` return, a 404 on each Review & checks open; it now fetches
+  for loops only.
+- Seen, not from this work: desktop Glass is 33px wider than the viewport
+  (`.header`/`.main`, on `/board` without a panel, older build too).
+- Not verified: WebKit, real touch drags of the sheet, a task with proposals,
+  dispatches or a loop ledger, clicking any action.
 
 **New task foot, contrast, Dynamic Type, chat pane (2026-10-26, UX review
 #15/#16/#25/#26/#27/#28)**: Playwright at 393×852 and 320×640 (touch, iPhone

@@ -158,7 +158,9 @@ export function LoopPanel({ task, onError }: { task: Task; onError: (msg: string
     setBudget(task.loopBudgetUsd != null ? String(task.loopBudgetUsd) : '');
   }, [task.loopMaxIterations, task.loopBudgetUsd]);
   // re-read after every iteration (the ledger is rewritten by each one)
+  // only a loop has a ledger: any other task would 404 on every panel open
   useEffect(() => {
+    if (task.kind !== 'loop') return;
     let live = true;
     api
       .loopLedger(task.id)
@@ -167,7 +169,7 @@ export function LoopPanel({ task, onError }: { task: Task; onError: (msg: string
     return () => {
       live = false;
     };
-  }, [task.id, lastN, task.loopState]);
+  }, [task.id, task.kind, lastN, task.loopState]);
   if (task.kind !== 'loop') return null;
 
   const canContinue =

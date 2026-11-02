@@ -346,6 +346,16 @@ The desktop task panel (`.slideover`) and question modal (`.qmodal`) are modal d
 
 The Inbox's keys stay off while the panel is open (`docs/inbox.md`), and Escape is what brings them back. The desktop head's chips wrap inside the head (`.slideover .so-chips`), so a long group name can no longer push the Close button out of the 560px panel.
 
+### Task panel tabs
+
+The task panel (`components/TaskSlideOver.tsx`, desktop `.slideover` and phone `<Sheet>` alike) is a fixed top part plus five tabs (2026-10-29, feature *Task panel tabs + per-task history*). No section was removed and no action changed: every former section lives in exactly one place, and the action list is still the one `PanelAction[]` both shapes render. The full spec, including markup, keys and the phone strip, is `docs/mobile.md` § Task panel tabs; this is the summary.
+
+- **Above the tabs, on every tab:** the head (status badge, chips, ×); the actions — the desktop's whole `so-actions` row with its cost/attempts/run chips, pinned under the head outside the scroller, or the phone's pinned bar + `⋯` sheet; the badge strip (phone), breadcrumb and alerts; the agent's question (`QuestionForm`); the phone's run numbers. A pending question is therefore visible whatever tab is open, which is why a question push carries no tab.
+- **The tabs.** *Overview*: title, the agent's brief, description, the folded Settings grid, Files, Proposals. *Diff*: the task's own change, read-only (`TaskDiff.tsx`, § Task diff below). *Review & checks*: LoopPanel, ChecksPanel, ReviewPanel, the worker's summary. *Terminal*: review/compaction terminals, background shells, Follow-up / Resume, Dispatches. *History*: the task's life as a live step strip with totals (`TaskHistory.tsx` over the shared `buildTaskHistory`, `docs/timeline.md` § Task history). Only the active tab is mounted; every edit's state lives in the panel, so switching loses nothing.
+- **Which tab opens** (`web/src/panelTabs.ts`, pure). The task is read into a bucket — `asking` (a pending question, outranks the status) · `running` (running/waiting) · `review` · `idle` (draft/queued/blocked) · `finished-ok` (done/published) · `finished-bad` (failed/cancelled) — whose default is Overview · Terminal · Review & checks · Overview · Review & checks · History. Diff is never a default. Precedence (`pickTab`): the human's click in this open of the panel → `?tab=` (only a known, offered tab) → the bucket's remembered pick → the default. When the bucket moves under an open panel with no click since it opened, the tab follows the new bucket and a URL `?tab=` is dropped.
+- **Memory.** A click writes localStorage `tm.panelTab` as `{bucket: tab}` — per bucket, never one global choice — validated on read.
+- **Save** is a single bar across tabs: the desktop panel's footer (`.slideover > .so-save`) and, on a phone, the sticky last child of the body after the tab content — never inside a tab, so an edit made on Overview can be saved from History.
+
 ### Task URLs
 
 The open task panel is `?task=<id>` on whatever page the path names (`useOpenTask` in `App.tsx`; UX review #19). It is the state itself, not a mirror, so a task link can be shared or bookmarked and browser Back closes the panel.
@@ -355,7 +365,13 @@ The open task panel is `?task=<id>` on whatever page the path names (`useOpenTas
 - **Other navigation:** leaving the page drops the parameter and closes the panel, and Back to that entry brings it back. A reload keeps the panel open.
 - **The tab** is `?tab=` beside `?task=` (`usePanelTab` in `App.tsx`; the tabs themselves are `docs/mobile.md` § Task panel tabs). A tab click REPLACES it, never pushes, and keeps the entry's history state, so the `tmTaskPanel` mark survives and Back still closes the panel. A reload keeps the tab. Swapping tasks and closing both drop it, so another task opens on its own tab. An unknown or not-offered value is ignored, not shown and not rewritten. `openTaskFromAnywhere` builds a fresh `?task=` (+ `?ws=`), `withWorkspace`/`replaceWorkspaceParam` only touch `ws`, and `PushBridge`'s short-id rewrite only touches `task`, so all of them leave a present `tab` alone.
 
-`PushBridge` only rewrites a short id to the full one in place (`docs/push.md` § Opening a notification).
+`PushBridge` only rewrites a short id to the full one in place (`docs/push.md` § Opening a notification), so a push link `/?task=<short>&tab=review` opens the full task on Review & checks; the `/` → `/board` redirect passes the query through. Push links carry `tab=review` (review ready, review verdict, auto-landed) or `tab=history` (failed), and none for a question or approval (`docs/push.md` § What pings).
+
+### Task diff
+
+`GET /api/tasks/:id/diff` (`docs/task-diff.md`) is the reviewer's change scope as data: the commits found by the `Task:` trailer (else the base range), and the uncommitted tree when this task owns it, split per file by the shared pure `splitDiffFiles`/`capDiffFiles` into `TaskDiffResponse` (~400 KB per file, 4 MB total; the file list is always complete). The scope comes from `Orchestrator.taskChange` → the private `changeScope`, the same one `workerDiff` reviews; `workerDiff` and its hash are untouched.
+
+**The read never writes to git.** `taskChangeRead` (`claude/review.ts`) does not run `git add -N` (the reviewer's `workerDiff` does, to show untracked files); it reads the tree with `git diff-index` — porcelain `git diff HEAD` rewrites a stat-dirty index even with `GIT_OPTIONAL_LOCKS=0`, which every read here sets — and each untracked file with `git diff --no-index` (≤ 200 files, 6 s budget). An evicted worktree is NOT re-created to answer a GET: its change is read from the main checkout by trailer and the answer says `evicted: true`. The route is single-flight with a 5 s cache keyed on the task's `updatedAt`. The SPA's Diff tab renders it as text only (never markdown, never `innerHTML`).
 
 ### Terminal drawer
 
