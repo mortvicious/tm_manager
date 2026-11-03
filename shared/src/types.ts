@@ -3523,3 +3523,5 @@ export * from './swimlanes.ts';
 export * from './stacks.ts';
 // The Metro board version's pure layout (docs/board-versions.md § Metro)
 export * from './metro.ts';
+// Agent-draft triage: drafts grouped by filer or repo (docs/inbox.md § Draft triage)
+export * from './triage.ts';

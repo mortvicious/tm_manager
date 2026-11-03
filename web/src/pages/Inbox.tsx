@@ -10,6 +10,7 @@ import {
   decisions,
   useActRunner,
   useInbox,
+  useDraftTriage,
   useInboxActs,
   type InboxNav,
 } from '../components/Inbox.tsx';
@@ -35,6 +36,8 @@ export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav 
   const stale = items.length - waiting;
   // what the workspace hides (docs/workspaces.md § Scoped pages): decisions only, like every badge
   const elsewhere = workspace ? decisions(everywhere).length - waiting : 0;
+  // every agent-filed draft in scope, stale or not (docs/inbox.md § Draft triage)
+  const triaged = useDraftTriage().drafts.length;
   const nav = useMemo(() => ({ onOpenTask, onOpenTerminal }), [onOpenTask, onOpenTerminal]);
   const [openKey, setOpenKey] = useState<string | null>(null);
   const open = items.find((i) => i.key === openKey) ?? null;
@@ -61,9 +64,18 @@ export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav 
             </>
           )}
         </span>
+        {(reviews > 0 || triaged > 0) && <span style={{ flex: 1 }} />}
+        {triaged > 0 && (
+          <Link
+            className="btn ghost deck-entry"
+            to={wsHref('/inbox/drafts')}
+            title="every agent-filed draft, grouped by the task that filed it (docs/inbox.md § Draft triage)"
+          >
+            Triage drafts · {triaged}
+          </Link>
+        )}
         {reviews > 0 && (
           <>
-            <span style={{ flex: 1 }} />
             <Link className="btn deck-entry" to={wsHref('/inbox/deck')} title="walk the settled reviews one card at a time (docs/inbox.md § Review deck)">
               Review deck · {reviews}
             </Link>
@@ -203,7 +215,7 @@ function DeskList({ items, nav }: { items: InboxItem[]; nav: InboxNav }) {
           </div>
         );
       })}
-      <StaleDraftsFooter items={items} />
+      <StaleDraftsFooter items={items} triageLink />
     </div>
   );
 }

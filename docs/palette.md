@@ -116,8 +116,9 @@ workspace, and a repo-less item is in every scope.
   deck) and `/inbox/drafts` (Agent drafts). A page is offered only while the
   router knows its path. `App.tsx` builds its `<Routes>` once and hands the same
   element to the palette, which reads it with `createRoutesFromChildren` +
-  `matchRoutes`, so a page that has not shipped yet (here `/inbox/drafts`) is
-  skipped rather than offered as a dead link.
+  `matchRoutes`, so a page that has not shipped yet is skipped rather than
+  offered as a dead link. (`/inbox/drafts` shipped with the draft triage view,
+  docs/inbox.md § Draft triage.)
 
   Pages navigate with `wsHref`. In Glass on a phone, Features and Chat are left
   out of the menus, but the palette still lists them: their routes stay

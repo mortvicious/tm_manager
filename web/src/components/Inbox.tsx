@@ -1,10 +1,12 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   APPROVAL_LABELS,
   DEFAULT_SETTINGS,
   buildInbox,
   publishCaution,
+  triageDrafts,
+  type Triage,
   type DiffStat,
   type InboxItem,
   type InboxKind,
@@ -53,7 +55,22 @@ export function useInbox(all = false): InboxItem[] {
   );
 }
 
-function staleDays(settings: ReturnType<typeof useApp>['settings']): number {
+/**
+ * Every idle agent-filed draft in the current workspace, grouped by filer and
+ * by repo (docs/inbox.md § Draft triage) — the `/inbox/drafts` page and the
+ * Inbox's "Triage drafts · N" links read the same call.
+ */
+export function useDraftTriage(includeHidden = false): Triage {
+  const { tasks, runs, settings } = useApp();
+  const { repoIds } = useWorkspace();
+  const staleDraftDays = staleDays(settings);
+  return useMemo(
+    () => triageDrafts({ tasks, runs, repoIds, includeHidden, staleDraftDays }),
+    [tasks, runs, repoIds, includeHidden, staleDraftDays],
+  );
+}
+
+export function staleDays(settings: ReturnType<typeof useApp>['settings']): number {
   return settings?.['inbox.staleDraftDays'] ?? DEFAULT_SETTINGS['inbox.staleDraftDays'];
 }
 
@@ -66,7 +83,8 @@ export function decisions(items: InboxItem[]): InboxItem[] {
   return items.filter((i) => i.kind !== 'stale-draft');
 }
 
-const CANCEL_STALE_REASON = 'stale draft triage';
+/** recorded on the task.transition audit row of a draft cancelled from triage (Inbox row, /inbox/drafts) */
+export const CANCEL_STALE_REASON = 'stale draft triage';
 
 export const KIND_LABEL: Record<InboxKind, string> = {
   question: 'asks you',
@@ -697,8 +715,10 @@ export function InboxRows({ items, onPick }: { items: InboxItem[]; onPick: (i: I
  * (`POST /api/tasks/bulk`). No bulk Cancel — closing work stays one press per
  * task. Nothing when there are no stale drafts.
  */
-export function StaleDraftsFooter({ items }: { items: InboxItem[] }) {
+export function StaleDraftsFooter({ items, triageLink = false }: { items: InboxItem[]; triageLink?: boolean }) {
   const { refresh, settings } = useApp();
+  const { wsHref } = useWorkspace();
+  const triaged = useDraftTriage().drafts.length;
   const [busy, setBusy] = useState(false);
   const stale = items.filter((i): i is Extract<InboxItem, { kind: 'stale-draft' }> => i.kind === 'stale-draft');
   if (!stale.length) return null;
@@ -728,6 +748,15 @@ export function StaleDraftsFooter({ items }: { items: InboxItem[] }) {
         · older than {staleDays(settings)} days
       </span>
       <span className="inbox-stale-acts">
+        {triageLink && triaged > 0 && (
+          <Link
+            className="btn ghost"
+            to={wsHref('/inbox/drafts')}
+            title="every agent-filed draft, grouped by the task that filed it (docs/inbox.md § Draft triage)"
+          >
+            Triage drafts · {triaged}
+          </Link>
+        )}
         <button type="button" className="btn" disabled={busy} onClick={() => void bulk('keep')}>
           Keep all {stale.length}
         </button>

@@ -284,13 +284,60 @@ nothing is cancelled or hidden without a human press.
   which lands in the `task.transition` audit row's data. The SPA asks first.
 - **Bulk.** Under the stale rows, **Keep all n** / **Hide all n** act on the
   rows LISTED, through `POST /api/tasks/bulk` (`keep` is a bulk action; Hide
-  all asks first). There is deliberately no Cancel all — closing work stays one
-  press per task.
+  all asks first). There is deliberately no Cancel all here — the footer acts
+  on the 10 oldest, an arbitrary cut. A whole pile is judged by its origin on
+  the triage page (§ Draft triage), whose group Cancel needs a second press.
+  The footer and the Inbox header both carry **Triage drafts · N**.
 - **Telegram** rows carry 📌 Keep (`t:keep`) · 🙈 Hide (`t:hide`) · 🚫 Cancel
   (`t:sdx`, cancel with the triage reason) from the stateless action codec —
   mutations, so each press is a `telegram.command` audit row; opening the row
   is an `l:` navigation and is not audited. The last listed row says how many
   more there are.
+
+### Draft triage
+
+The stale list shows ten rows at a time, oldest first, one decision each. A pile
+of agent follow-ups, though, is usually one decision per ORIGIN: "everything the
+auth refactor filed is obsolete". `/inbox/drafts` (`pages/DraftTriage.tsx`) is
+that view. It is reached from **Triage drafts · N** in the Inbox header and in
+the stale-drafts footer. N counts every agent-filed draft in scope, stale or not.
+
+- **Membership and grouping** come from the shared pure `triageDrafts({ tasks,
+  runs, repoIds, includeHidden, now, staleDraftDays })` (`shared/src/triage.ts`,
+  tested by `server/src/triage.test.ts`). A draft is a member when `status ===
+  'draft'` and `isExternalTask`. Hidden drafts are members only with **show
+  hidden**. The repo scope works like the workspace's: `null` = every repo, an
+  EMPTY set = nothing, otherwise the set plus repo-less drafts. The SPA hook is
+  `useDraftTriage` in `components/Inbox.tsx`, which reads `useApp()` and
+  `useWorkspace()`.
+- **By filer** (default; the choice is kept per device in `tm.triage.group`).
+  The key is the filing task: `createdByRun` → that run's `taskId`. Fallback
+  groups:
+  - **filer run unknown** — the run is not in the runs list, or has no task;
+  - **filer task deleted** — the run is known, its task is gone;
+  - **source: \<source>** — external by source (sentry, auto…) with no filing run.
+  
+  The header shows the filer's title, which opens it, plus its `StatusBadge` and
+  its repo.
+- **By repo** — one group per repo.
+- **Order.** Within a group, drafts are oldest filed first. Groups are ordered by
+  size (descending), then by their oldest member. Each row shows title, repo,
+  age in days, and **stale** (`isStaleDraft`, i.e. what the Inbox lists) /
+  **kept** (`inboxKeptUntil` in the future) / **hidden** chips. Clicking the
+  title opens the task panel.
+- **Acts.** Per row and per group: **Keep · Enqueue · Add to queue · Hide ·
+  Cancel**. A hidden row (or a group of only hidden rows) offers **Unhide**
+  instead of Hide. Every press is `POST /api/tasks/bulk`, chunked to `BULK_MAX`,
+  and Cancel carries `reason: 'stale draft triage'` (`CANCEL_STALE_REASON`,
+  exported from `components/Inbox.tsx`, the same constant as the Inbox row's
+  Cancel), which lands on the `task.transition` audit row. Two presses are
+  needed (`useArm`, like BulkBar) for a group's Cancel, Enqueue and Add to
+  queue, and for a single row's Cancel.
+- **Refusals** are per id (`BulkResponse.results`). They are shown under their
+  row until the next press that includes that id, never fatal. A multi-id press
+  also toasts "n of m refused". `refresh()` runs after every press.
+- **Never automatic.** The page decides nothing on its own: no sweep, no timer.
+  Only the workspace scopes it; the orchestrator never reads it.
 
 ### Workspace scope
 

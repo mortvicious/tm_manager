@@ -8920,6 +8920,118 @@ button.explain-tap:active {
   gap: var(--tm-space-2);
 }
 
+/* agent-draft triage (docs/inbox.md § Draft triage): groups by filer or repo, five acts per row and per group */
+.triage-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-3);
+  margin-bottom: var(--tm-space-4);
+}
+
+.triage-hidden {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+  font-size: var(--tm-text-sm);
+  color: var(--tm-text-muted);
+}
+
+.triage-group {
+  margin-bottom: var(--tm-space-4);
+  padding: var(--tm-space-3);
+}
+
+.triage-group-head,
+.triage-row-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2) var(--tm-space-3);
+}
+
+/* title + meta take what is left; the five acts keep one line on the right */
+.triage-main {
+  display: flex;
+  flex: 1 1 320px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-1) var(--tm-space-2);
+  min-width: 0;
+}
+
+.triage-group-head {
+  padding-bottom: var(--tm-space-2);
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.triage-filer,
+.triage-title {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.triage-filer,
+.triage-label {
+  font-weight: 600;
+}
+
+.triage-filer:hover,
+.triage-title:hover {
+  color: var(--tm-accent);
+  text-decoration: underline;
+}
+
+.triage-count,
+.triage-age {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+.triage-acts {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: var(--tm-space-1);
+  margin-left: auto;
+}
+
+.triage-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.triage-row {
+  padding: var(--tm-space-2) 0;
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.triage-row:last-child {
+  border-bottom: 0;
+}
+
+.triage-title {
+  min-width: 0;
+  font-size: var(--tm-text-sm);
+}
+
+.chip.triage-stale {
+  color: var(--tm-status-attention);
+}
+
+.triage-refused {
+  padding-top: var(--tm-space-1);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-status-failed);
+}
+
 /* phone: the rows of the Inbox page and of the header chip's sheet */
 .inbox-rows {
   display: flex;
