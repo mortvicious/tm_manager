@@ -16,6 +16,9 @@ export const planTaskSchema = z.object({
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullish(),
   review: z.boolean().nullish(),
   exitCriteria: z.array(z.string().min(1).max(600)).max(12).nullish(),
+  // "phase.task", 1-based, of an EARLIER task in the plan (docs/task-waits.md
+  // § Feature plans); anything else is dropped by toStoredPlan
+  dependsOn: z.array(z.string().max(20)).max(12).nullish(),
 });
 
 export const planSchema = z.object({
@@ -73,6 +76,7 @@ export const PLAN_JSON_SCHEMA = JSON.stringify({
                 effort: { type: ['string', 'null'], enum: ['low', 'medium', 'high', 'xhigh', 'max', null] },
                 review: { type: ['boolean', 'null'] },
                 exitCriteria: { type: ['array', 'null'], maxItems: 12, items: { type: 'string' } },
+                dependsOn: { type: ['array', 'null'], maxItems: 12, items: { type: 'string' } },
               },
               required: ['title', 'description', 'exitCriteria'],
             },
@@ -153,6 +157,15 @@ export function buildFeatureTaskDescription(
 
 /** Normalizes a validated model plan into the stored shape (stable card ids). */
 export function toStoredPlan(raw: z.infer<typeof planSchema>, idFor: (phase: number, index: number) => string): FeaturePlan {
+  /** "2.1" → the card id of phase 2 task 1 (1-based), only when it comes BEFORE (pi, ti) */
+  const ref = (r: string, pi: number, ti: number): string | null => {
+    const m = /^\s*(\d+)\s*\.\s*(\d+)\s*$/.exec(r);
+    if (!m) return null;
+    const [p, t] = [Number(m[1]) - 1, Number(m[2]) - 1];
+    if (!raw.phases[p]?.tasks[t]) return null;
+    if (p > pi || (p === pi && t >= ti)) return null; // forward or self: could deadlock the phase gate
+    return idFor(p, t);
+  };
   return {
     summary: raw.summary,
     considerations: raw.considerations,
@@ -167,6 +180,7 @@ export function toStoredPlan(raw: z.infer<typeof planSchema>, idFor: (phase: num
         effort: t.effort ?? null,
         review: t.review ?? null,
         exitCriteria: t.exitCriteria ?? [],
+        dependsOn: [...new Set((t.dependsOn ?? []).map((r) => ref(r, pi, ti)).filter((id): id is string => !!id))],
         excluded: false,
       })),
     })),
@@ -215,6 +229,10 @@ export function buildPlanPrompt(opts: {
     `  "exitCriteria" (concrete, checkable statements). Not a vague theme, not a whole subsystem.`,
     `- Optional per-task "category" (a short domain label, reusing labels the repo already uses),`,
     `  "effort" (low|medium|high|xhigh|max) and "review" (false only for genuinely trivial tasks).`,
+    `- Optional per-task "dependsOn": tasks of the SAME phase run in parallel, so when one needs another`,
+    `  same-phase task's change first, list that task as "phase.task" (1-based, e.g. "2.1" = phase 2,`,
+    `  first task). Only an EARLIER task in the plan may be named; it will not start until that one lands.`,
+    `  Earlier phases already finish first — do not list them. Prefer independent tasks.`,
     ``,
     `Rules: do NOT write any files — this is analysis only. Do not spawn more than 3 subagents.`,
     `Do not include boilerplate about subagent caps or docs updates in the descriptions; the server`,
@@ -288,10 +306,14 @@ export function buildPlanReviewPrompt(opts: {
  * caps injected). Used by BOTH storage drivers so approval is identical on
  * SQLite and Postgres.
  */
-export function planCards(feature: Feature): { phase: number; card: FeaturePlanTask; description: string }[] {
+export function planCards(feature: Feature): { phase: number; card: FeaturePlanTask; description: string; dependsOnCards: string[] }[] {
   const plan = feature.analysis;
   if (!plan) return [];
-  const out: { phase: number; card: FeaturePlanTask; description: string }[] = [];
+  const out: { phase: number; card: FeaturePlanTask; description: string; dependsOnCards: string[] }[] = [];
+  // a dependency survives only onto an EARLIER included card (docs/task-waits.md
+  // § Feature plans): an excluded/removed card's edge is dropped, and an edge
+  // onto a later card (a human reorder) could deadlock — never a cycle either
+  const earlier = new Set<string>();
   plan.phases.forEach((p, pi) => {
     for (const card of p.tasks) {
       if (card.excluded) continue;
@@ -299,6 +321,7 @@ export function planCards(feature: Feature): { phase: number; card: FeaturePlanT
       out.push({
         phase: pi,
         card,
+        dependsOnCards: (card.dependsOn ?? []).filter((id) => earlier.has(id)),
         description: buildFeatureTaskDescription(card, {
           featureTitle: feature.title,
           phaseTitle: p.title,
@@ -306,6 +329,7 @@ export function planCards(feature: Feature): { phase: number; card: FeaturePlanT
           phaseCount: plan.phases.length,
         }),
       });
+      earlier.add(card.id);
     }
   });
   return out;

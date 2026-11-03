@@ -19,6 +19,11 @@ Through them you can file follow-up tasks and coordinate work in OTHER repos.
   Say whether you need that agent to DO something (`intent: "needs_action"`)
   or are only telling it something (`intent: "fyi"`) — see below.
 
+- Your next step needs code that ANOTHER task is still writing (a parallel
+  sibling, a backend task you build on): **wait for it** (see Waiting for
+  another task) — your task parks without holding a slot and this session is
+  resumed, with how to merge its change, once it lands.
+
 - Tasks you file for one change belong together: **group them** (see
   Grouping tasks). A task that is already carried out or has been replaced:
   **close it** (see Closing tasks) instead of writing "please mark done" in
@@ -97,7 +102,8 @@ curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
 ```
 
 You can also pass `"category"` and `"review": false` (skip adversarial review for a
-trivial task) directly when creating a task.
+trivial task) directly when creating a task, and `"dependsOn": ["<task id>", …]`
+when it must not START before other tasks land (see Waiting for another task).
 
 Dispatch a message to a related task's agent session (instead of creating a new
 task). The target is an exact task id: one you created, the task that created
@@ -142,6 +148,57 @@ to re-send as `needs_action`. (You can check one you sent with
 `GET /api/agent/dispatches/<id>` if you have other work to finish meanwhile.)
 Write dispatch messages like task descriptions: full contracts, not references
 to your own conversation — the target session cannot see it.
+
+## Waiting for another task
+
+You find that your next step needs code ANOTHER task is still writing — a
+sibling of your feature phase running in parallel, a backend task your
+frontend change builds on. Do not re-implement it and do not poll in a loop:
+**wait for it.** List the active tasks to find its id:
+
+```bash
+curl -s -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/tasks?repo=<name or id, optional>"
+# → { "tasks": [{ "id", "title", "status", "repo", "brief", "branch", "dependsOn", "waitFor" }] }
+```
+
+Then ask to wait, and END YOUR TURN:
+
+```bash
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
+  "$TM_CALLBACK_URL/api/agent/wait" -d '{
+    "task": "<its id>",
+    "reason": "I need its POST /orders handler and the Order type before I can wire the form"
+  }'
+# → { "wait": { "task", "title", "status" }, "note" }
+```
+
+- Do everything you can WITHOUT it first. In the main checkout (no worktree),
+  commit your work in progress before ending the turn — other tasks may work
+  in this checkout while you wait.
+- Ending the turn parks your task as `blocked` (no worker slot, no review, no
+  checks). When that task lands (`done`/`published`) or is cancelled, THIS
+  session is resumed with a message saying so and how to bring its change in
+  (in a worktree: `git fetch origin && git rebase origin/<base>`). After
+  {{waitMaxHours}} hours you are resumed anyway and decide.
+- The target must be within your reach (same rules as closing tasks: your
+  repo, your shared space, your group, filed by/for you) and `queued`,
+  `running`, `waiting`, `review` or `blocked`. A task that already landed is
+  refused — bring its change in now. A draft is refused (it never starts on
+  its own) — ask the human. Waiting on a task that waits on (or depends on)
+  yours is refused: that would deadlock both.
+- Changed your mind before ending the turn: `DELETE /api/agent/wait`.
+
+A task that has NOT STARTED yet can be held back instead — a dependency:
+
+```bash
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
+  "$TM_CALLBACK_URL/api/agent/tasks/<draft or queued task id>/depends-on" -d '{"dependsOn": ["<task id>"]}'
+```
+
+It is not claimed until every task it depends on is `done`, `published` or
+`cancelled` (`[]` clears the list). Use it for tasks you file, and when you
+plan: a task that needs a sibling's change must depend on it rather than run
+beside it.
 
 ## Grouping tasks
 

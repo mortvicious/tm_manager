@@ -274,7 +274,11 @@ export function buildTaskActions(task: Task, ctx: TaskActionContext): TaskAction
     });
   }
   if (task.status === 'blocked') {
-    actions.push({ id: 'unblock', label: 'Unblock', title: 'Stop waiting on its split children and let it run', onClick: () => action('unblock') });
+    actions.push(
+      task.waitFor
+        ? { id: 'unblock', label: 'End wait', title: 'End its wait on the other task now and resume its agent', onClick: () => action('unblock') }
+        : { id: 'unblock', label: 'Unblock', title: 'Stop waiting on its split children and let it run', onClick: () => action('unblock') },
+    );
   }
   if (latestRun) {
     actions.push({

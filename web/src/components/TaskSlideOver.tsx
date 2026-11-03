@@ -12,6 +12,7 @@ import {
   type LandingTier,
   type Proposal,
   type Task,
+  unmetDependency,
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { topmostDialog, useDialogFocus } from '../dialogFocus.ts';
@@ -150,6 +151,14 @@ function fmtWake(iso: string): string {
   const d = new Date(at);
   const clock = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   return d.toDateString() === new Date().toDateString() ? `at ${clock}` : `at ${d.toLocaleDateString()} ${clock}`;
+}
+
+/** "14:05" today, else "3 Nov 14:05" — when a task wait began (docs/task-waits.md) */
+function fmtSince(iso: string): string {
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return '—';
+  const clock = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? clock : `${d.toLocaleDateString()} ${clock}`;
 }
 
 function ProposalCard({ p, onDone }: { p: Proposal; onDone: () => void }) {
@@ -727,6 +736,10 @@ export function TaskSlideOver({
   const landedFlag = !!task.autoLandedAt && (task.status === 'done' || task.status === 'published');
   const pushedFlag = !!task.shippedSha && (task.status === 'review' || task.status === 'done');
   const busy = publishBusy(task, taskRuns, orch, pend);
+  // task waits + declared dependencies (docs/task-waits.md)
+  const taskById = new Map(tasks.map((t) => [t.id, t]));
+  const depOpen = unmetDependency(task, taskById);
+  const waitTarget = task.waitFor ? (taskById.get(task.waitFor.taskId) ?? null) : null;
   const head = (close: () => void) => (
     <div className="slideover-head">
       <div className="so-line">
@@ -739,6 +752,8 @@ export function TaskSlideOver({
           loopState={task.loopState}
           paused={!!task.pausedTurn}
           busy={busy}
+          waitingFor={task.waitFor?.title ?? null}
+          dependsOnOpen={depOpen?.title ?? null}
           onOpenReviewer={reviewerRun ? () => onOpenTerminal(reviewerRun.id) : undefined}
         />
         {/* the title stays in view on every tab and while the body scrolls under it */}
@@ -876,6 +891,8 @@ export function TaskSlideOver({
           loopState={task.loopState}
           paused={!!task.pausedTurn}
           busy={busy}
+          waitingFor={task.waitFor?.title ?? null}
+          dependsOnOpen={depOpen?.title ?? null}
         />
       )}
       <GroupPath task={task} tasks={tasks} onOpen={onOpenTask} />
@@ -897,6 +914,50 @@ export function TaskSlideOver({
         <div className="hint so-alert" style={{ color: 'var(--tm-accent)' }}>
           waiting on the 5h usage window — this task's own session resumes automatically{' '}
           {fmtWake(task.wakeAt)}
+        </div>
+      )}
+      {task.status === 'blocked' && task.waitFor && (
+        <div className="hint so-alert" style={{ color: 'var(--tm-accent)' }}>
+          its agent waits for{' '}
+          <a href="#" onClick={(e) => (e.preventDefault(), onOpenTask(task.waitFor!.taskId))}>
+            {waitTarget?.title ?? task.waitFor.title}
+          </a>{' '}
+          ({waitTarget?.status ?? 'deleted'}) since {fmtSince(task.waitFor.since)} — its own session resumes when that task lands or is cancelled
+          {task.waitFor.reason ? `. Why: ${task.waitFor.reason}` : ''}
+        </div>
+      )}
+      {task.dependsOn.length > 0 && (
+        <div className="hint so-alert">
+          starts after{' '}
+          {task.dependsOn.map((id, i) => {
+            const d = taskById.get(id);
+            const editable = task.status === 'draft' || task.status === 'queued';
+            return (
+              <Fragment key={id}>
+                {i > 0 && ', '}
+                {d ? (
+                  <a href="#" onClick={(e) => (e.preventDefault(), onOpenTask(id))}>
+                    {d.title}
+                  </a>
+                ) : (
+                  <span className="muted">deleted task</span>
+                )}{' '}
+                <span className="muted">({d?.status ?? 'met'})</span>
+                {editable && (
+                  <button
+                    className="btn ghost"
+                    title="Remove this dependency"
+                    aria-label={`Remove dependency on ${d?.title ?? id}`}
+                    onClick={() =>
+                      void api.updateTask(task.id, { dependsOn: task.dependsOn.filter((x) => x !== id) }).then(() => refresh(), (e) => toastError(e))
+                    }
+                  >
+                    ×
+                  </button>
+                )}
+              </Fragment>
+            );
+          })}
         </div>
       )}
       {task.status === 'queued' && task.queueHeldAt && (

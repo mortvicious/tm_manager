@@ -35,7 +35,9 @@ const repoHasRoom = (h: string, holder: string) =>
  * "This task still holds its repo's place" (docs/queue.md § When the next
  * member starts), over a row aliased `a`: it is working (`running`/`waiting`,
  * which also covers a turn inside the resume gate with no live PTY yet),
- * `blocked` on its split children, or in `review` with an automatic review
+ * `blocked` on its split children (NOT a worker parked on another task,
+ * `wait_for` set — docs/task-waits.md: the task it waits for may be the next
+ * member, or one it filed), or in `review` with an automatic review
  * round still open (review_state pending/reviewing/fixing — its findings are
  * about to be typed back into a session in this checkout) or its repo checks
  * still due or running (check_state pending/running, docs/checks.md — they
@@ -52,7 +54,8 @@ const repoHasRoom = (h: string, holder: string) =>
  * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
 const heldBy = (a: string) =>
-  `(${a}.status IN ('running', 'waiting', 'blocked')
+  `(${a}.status IN ('running', 'waiting')
+      OR (${a}.status = 'blocked' AND ${a}.wait_for IS NULL)
       OR ${a}.paused_turn IS NOT NULL
       OR (${a}.status = 'review' AND (${a}.review_state IN ('pending', 'reviewing', 'fixing')
                                        OR ${a}.check_state IN ('pending', 'running'))))`;

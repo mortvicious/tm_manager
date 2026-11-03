@@ -1057,6 +1057,27 @@ export interface Task {
    */
   pausedTurn: PausedTurn | null;
   /**
+   * What this task's worker chose to WAIT for (docs/task-waits.md, migration
+   * 51): the worker called `POST /api/agent/wait` on another task its next
+   * step needs, ended its turn, and the task parked as `blocked` with this
+   * marker — idle, holding neither a worker slot nor its repo. The
+   * orchestrator resumes the task's OWN session once the target settles
+   * (`resumeWaiters`). Set only on `blocked`; every status transition clears
+   * it, so Unblock (= End wait) or any human move ends the wait. null = not
+   * waiting (a `blocked` task without it is a split parent).
+   */
+  waitFor: TaskWait | null;
+  /**
+   * Tasks that must settle (`DEPENDENCY_SETTLED_STATUSES`) before this one may
+   * be CLAIMED (docs/task-waits.md § Declared dependencies, migration 51):
+   * every claim carries `DEPENDS_ON_GATE` (server/src/storage/feature-sql.ts),
+   * JS twin `unmetDependency`. Set at creation (a feature plan's `dependsOn`,
+   * an agent's `POST /api/agent/tasks`) or later (`PATCH /api/tasks/:id`,
+   * `POST /api/agent/tasks/:id/depends-on`). A deleted dependency is met. [] =
+   * none.
+   */
+  dependsOn: string[];
+  /**
    * ISO time the human hid this task (docs/design.md § Hidden tasks): the
    * board leaves it out of every section but its own dimmed "Hidden" one, and
    * the Telegram Drafts tab skips it. Board-only — no claim reads it. Refused
@@ -1221,14 +1242,18 @@ export const CUSTOM_QUEUE_IN_FLIGHT_STATUSES: readonly TaskStatus[] = ['running'
 /**
  * Whether this task still holds its repo's place in the custom queue
  * (docs/queue.md § When the next member starts): working, parked on its
- * subagents, blocked on a split, or in `review` with an automatic review round
+ * subagents, blocked on a split (NOT a worker's wait on another task —
+ * docs/task-waits.md), or in `review` with an automatic review round
  * still open (`REVIEW_BUSY_STATES`). A task whose review has settled — or that
  * was never going to be reviewed — sits in `review` for the human without
  * stopping the queue. JS twin of `CUSTOM_QUEUE_HELD_BY` in
  * server/src/storage/queue-sql.ts — edit together.
  * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
  */
-export function customQueueHoldsRepo(t: Pick<Task, 'status' | 'reviewState' | 'checkState' | 'pausedTurn'>): boolean {
+export function customQueueHoldsRepo(t: Pick<Task, 'status' | 'reviewState' | 'checkState' | 'pausedTurn' | 'waitFor'>): boolean {
+  // a worker parked on another task (docs/task-waits.md) holds nothing: the
+  // task it waits for may be the very next member of this repo
+  if (t.status === 'blocked' && t.waitFor) return !!t.pausedTurn;
   if (CUSTOM_QUEUE_IN_FLIGHT_STATUSES.includes(t.status)) return true;
   if (t.pausedTurn) return true; // Continue owes it a turn here (docs/pause.md)
   return verifyOpen(t);
@@ -1716,6 +1741,75 @@ export type TerminalClickOutside = 'close' | 'compact' | 'nothing';
  *  - `publish` — its publish turn was cut short: Publish again (git decides).
  *  - `land`    — its landing tier would have auto-published: re-run it.
  */
+/**
+ * A worker's wait on another task (docs/task-waits.md): see `Task.waitFor`.
+ */
+export interface TaskWait {
+  /** the task waited for */
+  taskId: string;
+  /** its title when the wait began (the row may be deleted later) */
+  title: string;
+  /** ISO time the wait was requested */
+  since: string;
+  /** the worker's own words: what it needs from that task */
+  reason: string | null;
+  /** the run that asked */
+  runId: string;
+}
+
+/**
+ * Statuses that settle a dependency or a wait (docs/task-waits.md): the
+ * dependency's change is in (`done`/`published`) or will never come
+ * (`cancelled`). `failed` deliberately does NOT settle it — a failed task is
+ * retried, and a dependent started early would build on nothing. Mirrored by
+ * the SQL in `DEPENDS_ON_GATE` (server/src/storage/feature-sql.ts) — edit
+ * together.
+ */
+export const DEPENDENCY_SETTLED_STATUSES: readonly TaskStatus[] = ['done', 'published', 'cancelled'];
+
+/**
+ * The first dependency of `t` that is not settled yet, or null when the task
+ * may be claimed as far as its dependencies go. A dependency missing from
+ * `byId` (deleted) is met. JS twin of `DEPENDS_ON_GATE` in
+ * server/src/storage/feature-sql.ts — edit together.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — edit together.
+ */
+export function unmetDependency(
+  t: Pick<Task, 'dependsOn'>,
+  byId: ReadonlyMap<string, Pick<Task, 'id' | 'status' | 'title'>>,
+): Pick<Task, 'id' | 'status' | 'title'> | null {
+  for (const id of t.dependsOn ?? []) {
+    const d = byId.get(id);
+    if (d && !DEPENDENCY_SETTLED_STATUSES.includes(d.status)) return d;
+  }
+  return null;
+}
+
+/**
+ * Whether making `taskId` depend on (or wait for) `on` would close a cycle:
+ * true when `taskId` is reachable from any of `on` by following each task's
+ * `dependsOn` and `waitFor` edges. Bounded by the task set.
+ */
+export function dependencyCycle(
+  taskId: string,
+  on: readonly string[],
+  byId: ReadonlyMap<string, Pick<Task, 'id' | 'dependsOn' | 'waitFor'>>,
+): boolean {
+  const seen = new Set<string>();
+  const stack = [...on];
+  while (stack.length) {
+    const id = stack.pop()!;
+    if (id === taskId) return true;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const t = byId.get(id);
+    if (!t) continue;
+    stack.push(...(t.dependsOn ?? []));
+    if (t.waitFor) stack.push(t.waitFor.taskId);
+  }
+  return false;
+}
+
 export interface PausedTurn {
   at: string;
   kind: 'resume' | 'publish' | 'land';
@@ -2070,6 +2164,11 @@ export interface FeaturePlanTask {
   /** per-task adversarial review override, mirrors Task.review */
   review?: boolean | null;
   exitCriteria: string[];
+  /**
+   * card ids of EARLIER tasks this one must wait for (docs/task-waits.md §
+   * Feature plans) — become the task's `dependsOn` at approval
+   */
+  dependsOn?: string[];
   /** excluded from approval (card toggled off) */
   excluded?: boolean;
 }
@@ -2179,6 +2278,8 @@ export type AuditKind =
   | 'run.auto-compact'
   /** a failed/cancelled task was started again (Retry / Run now): the error the previous attempt ended on, which the fresh prompt carries */
   | 'task.retry'
+  | 'task.depends-on'
+  | 'task.wait'
   | 'proposal.created'
   | 'proposal.decided'
   | 'feature.created'
@@ -3174,7 +3275,11 @@ export function buildInbox(input: InboxInput): InboxItem[] {
         if (o.featureId === t.featureId && (o.featurePhase ?? 0) > t.featurePhase && open(o)) n++;
       }
     }
-    for (const id of groupAncestors(t)) if (byId.get(id)?.status === 'blocked') n++;
+    for (const id of groupAncestors(t)) if (byId.get(id)?.status === 'blocked' && !byId.get(id)?.waitFor) n++;
+    // workers parked on it, and tasks that may not start before it (docs/task-waits.md)
+    for (const o of input.tasks) {
+      if ((o.status === 'blocked' && o.waitFor?.taskId === t.id) || (open(o) && o.dependsOn?.includes(t.id))) n++;
+    }
     return n;
   };
   const oldest = (a: Task, b: Task) => a.updatedAt.localeCompare(b.updatedAt);
@@ -3249,10 +3354,11 @@ export function buildInbox(input: InboxInput): InboxItem[] {
   // recent failures
   const since = new Date(now - INBOX_FAILED_DAYS * 86_400_000).toISOString();
   taskKind('failed', (t) => t.status === 'failed' && t.updatedAt >= since, () => ({}));
-  // blocked split parents
+  // blocked split parents — a worker parked on another task waits on that
+  // task, not on the human (docs/task-waits.md)
   taskKind(
     'blocked',
-    (t) => t.status === 'blocked',
+    (t) => t.status === 'blocked' && !t.waitFor,
     (t) => {
       const kids = input.tasks.filter((c) => c.parentId === t.id);
       return {

@@ -30,6 +30,7 @@ import {
   type Task,
   type TaskDiffResponse,
   type TaskStatus,
+  type TaskWait,
 } from '@tm/shared';
 import type { ActionResult, OrchestratorApi, TaskChangeResult } from './app-types.ts';
 
@@ -149,6 +150,7 @@ import {
   withRepoLock,
   type EnsureResult,
 } from './worktrees.ts';
+import { dependenciesNote, WAIT_MAX_MS, waitOutcome, waitTurnMessage, type WaitOutcome } from './task-wait.ts';
 import { closePr, confirmMerged, fastForwardCheckout, integratedIn, landedCheck, landWorktree, syncPr, type LandResult } from './land.ts';
 import { probePush, pushHealth } from './push-health.ts';
 import type { RepoPushHealth } from '@tm/shared';
@@ -494,6 +496,17 @@ export class Orchestrator implements OrchestratorApi {
    * the worker slots.
    */
   private readonly dispatchTurnsInFlight = new Map<string, string | null>();
+  /**
+   * Task waits (docs/task-waits.md): runId → the wait its worker asked for
+   * (`POST /api/agent/wait`), applied at that run's next real Stop
+   * (`parkForWait`). In memory: a restart ends the run anyway.
+   */
+  private readonly waitRequests = new Map<string, { waiter: string; wait: TaskWait }>();
+  /** waiters whose resume turn was fired but has not spawned yet: taskId → repoId (like dispatchTurnsInFlight) */
+  private readonly waitResumesInFlight = new Map<string, string>();
+  /** waiters whose budget refusal was already audited (once per park) */
+  private readonly waitBudgetNoted = new Set<string>();
+  private resumingWaiters = false;
   /**
    * Custom queue (docs/queue.md): tasks whose turn just ended and whose
    * follow-on (adversarial review round, auto-publish turn) has not decided yet
@@ -2212,6 +2225,11 @@ export class Orchestrator implements OrchestratorApi {
           // they were working when the pause was pressed, and their markers
           // hold their repos, so only a free slot is missing.
           await this.resumePaused(settings);
+          // Workers parked on another task (docs/task-waits.md) whose wait is
+          // over: a continuation of a session that already exists, like a
+          // dispatch — ahead of any claim, regardless of the queue switch and
+          // the day budget, gated by the slots and the repo.
+          await this.resumeWaiters(settings);
           // `budget.dayUsd` (docs/token-budget.md § Fuses): past today's cap
           // nothing new is CLAIMED — custom queue, global or overflow. Turns
           // already running finish; dispatch delivery (a continuation, gated
@@ -2280,7 +2298,12 @@ export class Orchestrator implements OrchestratorApi {
    * A task can be in both sets, so they are unioned rather than added.
    */
   private activeWorkers(): number {
-    const pending = new Set([...this.gatesInFlight, ...this.dispatchTurnsInFlight.keys(), ...this.pauseResumesInFlight.keys()]);
+    const pending = new Set([
+      ...this.gatesInFlight,
+      ...this.dispatchTurnsInFlight.keys(),
+      ...this.pauseResumesInFlight.keys(),
+      ...this.waitResumesInFlight.keys(),
+    ]);
     return this.sessions.liveCount() + pending.size;
   }
 
@@ -2704,6 +2727,188 @@ export class Orchestrator implements OrchestratorApi {
       holders.set(r.taskId ?? r.id, { workdir: t?.workdir ?? null });
     }
     return !repoHasRoom([...holders.values()], repo);
+  }
+
+  // ---- Task waits (docs/task-waits.md) -------------------------------------
+
+  /** Record a worker's wait, applied at its run's next real Stop. Replaces an earlier request of the same run. */
+  requestWait(runId: string, waiterTaskId: string, wait: TaskWait): void {
+    this.waitRequests.set(runId, { waiter: waiterTaskId, wait });
+  }
+
+  /**
+   * waiter task id → target id of every wait requested but not parked yet —
+   * the overlay `edgeIndex` adds so a cycle through a request is refused
+   * before either side parks (review round 1). A request stays here until its
+   * park is written (`parkForWait`), so no window shows neither.
+   */
+  pendingWaitEdges(): Map<string, string> {
+    return new Map([...this.waitRequests.values()].map((r) => [r.waiter, r.wait.taskId]));
+  }
+
+  /** Withdraw a run's wait request before its Stop; false when there was none. */
+  cancelWaitRequest(runId: string): boolean {
+    return this.waitRequests.delete(runId);
+  }
+
+  waitRequestFor(runId: string): TaskWait | null {
+    return this.waitRequests.get(runId)?.wait ?? null;
+  }
+
+  /**
+   * The Stop route's park for a run that asked to wait: `running|waiting →
+   * blocked` with `waitFor`, no review, no checks (the change is unfinished),
+   * the agent's last words as its summary. Returns null when there was no
+   * request or the task moved meanwhile — the caller then lands normally.
+   * The caller idles the session (slot freed, PTY attachable) and schedules.
+   */
+  async parkForWait(runId: string, taskId: string, lastText: string | null): Promise<Task | null> {
+    const req = this.waitRequests.get(runId);
+    if (!req) return null;
+    const { wait } = req;
+    // the request leaves the map only once `wait_for` is written (or refused),
+    // so the cycle test sees this edge throughout (pendingWaitEdges)
+    const parked = await this.storage.transitionTask(
+      taskId,
+      ['running', 'waiting'],
+      'blocked',
+      'hook',
+      {
+        reviewState: null,
+        checkState: null,
+        waitFor: wait,
+        ...(lastText ? { resultSummary: lastText.slice(0, 4000) } : {}),
+      },
+      { runId, waitFor: wait.taskId },
+    ).finally(() => {
+      if (this.waitRequests.get(runId) === req) this.waitRequests.delete(runId);
+    });
+    if (!parked) return null;
+    this.dropWait(runId);
+    this.waitBudgetNoted.delete(taskId);
+    await this.storage.appendEvent({
+      kind: 'task.wait',
+      actor: 'hook',
+      runId,
+      taskId,
+      repoId: parked.repoId,
+      data: { phase: 'parked', on: wait.taskId, title: wait.title, reason: wait.reason },
+    });
+    return parked;
+  }
+
+  /**
+   * Resume every parked waiter whose wait is over (`waitOutcome`): in its OWN
+   * session (`followUp(…, 'resume', …, ['blocked'])` — the transition clears
+   * `wait_for`), oldest wait first, within the worker slots, never into a repo
+   * another live session holds (`repoBusy`), each through
+   * `budgetAllows(…, 'wait-resume')`. Fired, not awaited, like a dispatch
+   * turn: a resume gate may compact for minutes inside the scheduler's pass.
+   * Pause all is handled by the caller (`maybeSchedule` returns first).
+   */
+  private async resumeWaiters(settings: AppSettings): Promise<void> {
+    if (this.resumingWaiters) return;
+    this.resumingWaiters = true;
+    try {
+      const parked = (await this.storage.listTasks({ status: 'blocked' }))
+        .filter((t) => t.waitFor && t.repoId)
+        .sort((a, b) => a.waitFor!.since.localeCompare(b.waitFor!.since));
+      for (const t of parked) {
+        if (this.waitResumesInFlight.has(t.id)) continue;
+        const target = await this.storage.getTask(t.waitFor!.taskId);
+        const outcome = waitOutcome(t.waitFor!, target, Date.now());
+        if (!outcome) continue;
+        if (await this.repoBusy(t.repoId!, t)) continue;
+        if (!t.workdir && [...this.waitResumesInFlight.values(), ...this.dispatchTurnsInFlight.values()].includes(t.repoId)) continue;
+        if (this.activeWorkers() >= settings['orchestrator.concurrency']) break;
+        const verdict = await this.budgetAllows(t, 'wait-resume', settings);
+        if (!verdict.ok) {
+          // stays parked; a human End wait still resumes it
+          if (!this.waitBudgetNoted.has(t.id)) {
+            this.waitBudgetNoted.add(t.id);
+            await this.refuseOverBudget(t.id, 'wait-resume', verdict);
+          }
+          continue;
+        }
+        this.fireWaitResume(t, target, outcome, 'orchestrator');
+      }
+    } catch (err) {
+      console.error('task-wait resume failed:', err);
+    } finally {
+      this.resumingWaiters = false;
+    }
+  }
+
+  /**
+   * End wait (docs/task-waits.md § End wait): the human ends a wait
+   * now. The session is resumed and told the target's state; without a
+   * resumable session the task just leaves `blocked` for `review`, like the
+   * split parent's Unblock. Awaited — it is a click.
+   */
+  async endTaskWait(taskId: string, actor: string): Promise<ActionResult> {
+    const t = await this.storage.getTask(taskId);
+    if (!t) return { error: 'task not found', code: 404 };
+    if (t.status !== 'blocked' || !t.waitFor) return { error: 'the task is not waiting for another task', code: 409 };
+    if (this.waitResumesInFlight.has(taskId)) return { error: 'the task is already being resumed', code: 409 };
+    const target = await this.storage.getTask(t.waitFor.taskId);
+    const res = await this.waitResume(t, target, 'human', actor);
+    if (!('error' in res)) return res;
+    // no session to resume (or it refused): release the park all the same
+    const moved = await this.storage.transitionTask(taskId, ['blocked'], 'review', actor, { error: null }, { waitEnded: 'human' });
+    if (!moved) return res;
+    broadcast({ type: 'task.updated', task: moved });
+    this.maybeSchedule();
+    return { task: moved };
+  }
+
+  private fireWaitResume(t: Task, target: Task | null, outcome: WaitOutcome, actor: string): void {
+    this.waitResumesInFlight.set(t.id, t.repoId!);
+    void this.waitResume(t, target, outcome, actor)
+      .then(async (res) => {
+        if (!('error' in res)) return;
+        // Could not resume (no session, a race): the task leaves the park
+        // with the reason rather than being retried every pass forever.
+        const moved = await this.storage.transitionTask(t.id, ['blocked'], 'review', 'orchestrator', {
+          error: `wait over (${outcome}) but the session could not be resumed: ${res.error}`,
+        }, { waitEnded: outcome });
+        if (moved) broadcast({ type: 'task.updated', task: moved });
+      })
+      .catch((err) => console.error('task-wait resume turn failed:', err))
+      .finally(() => this.waitResumesInFlight.delete(t.id));
+  }
+
+  /** Type the wait-over message into the waiter's own session (`followUp` from `blocked`). */
+  private async waitResume(t: Task, target: Task | null, outcome: WaitOutcome, actor: string): Promise<ActionResult> {
+    const wait = t.waitFor!;
+    const repo = t.repoId ? await this.storage.getRepo(t.repoId) : null;
+    const sameRepo = !!target && target.repoId === t.repoId;
+    const targetRepo = !sameRepo && target?.repoId ? await this.storage.getRepo(target.repoId) : null;
+    const def = repo ? await defaultBranch(repo, taskWorkdir(t, repo)).catch(() => null) : null;
+    const message = waitTurnMessage({
+      wait,
+      target,
+      outcome,
+      waiterInWorktree: !!t.workdir,
+      sameRepo,
+      targetRepoName: targetRepo?.name ?? null,
+      baseRef: def?.ref ?? null,
+      maxMs: WAIT_MAX_MS,
+    });
+    const res = await this.followUp(t.id, message, actor, 'resume', 'work', ['blocked']);
+    await this.storage.appendEvent({
+      kind: 'task.wait',
+      actor,
+      taskId: t.id,
+      repoId: t.repoId,
+      data: {
+        phase: 'error' in res ? 'resume-failed' : 'resumed',
+        on: wait.taskId,
+        outcome,
+        waitedMs: Date.now() - Date.parse(wait.since),
+        ...('error' in res ? { error: res.error } : {}),
+      },
+    });
+    return res;
   }
 
   /**
@@ -3496,6 +3701,13 @@ export class Orchestrator implements OrchestratorApi {
         (resumeSessionId && handoff.kind !== 'compact') || purpose === 'publish' || loopTurn
           ? null
           : definitionOfDone(task.acceptance, checksForPrompt);
+      // Declared dependencies (docs/task-waits.md): a fresh work prompt says
+      // what landed before it.
+      let depsNote: string | null = null;
+      if (!resumeSessionId && purpose === 'work' && task.dependsOn.length) {
+        const found = (await Promise.all(task.dependsOn.map((id) => this.storage.getTask(id)))).filter((d): d is Task => !!d);
+        depsNote = dependenciesNote(found, task.dependsOn.length - found.length);
+      }
       const loop =
         loopTurn && !resumeSessionId
           ? {
@@ -3511,7 +3723,7 @@ export class Orchestrator implements OrchestratorApi {
         callbackUrl: this.callbackUrl,
         artifactsDir,
         followUp,
-        dispatchNote: [retargetNote, fyi.note].filter(Boolean).join('\n\n') || undefined,
+        dispatchNote: [depsNote, retargetNote, fyi.note].filter(Boolean).join('\n\n') || undefined,
         shared,
         doneNote: doneNote ?? undefined,
         // what the human attached (docs/design.md § Attached files): a fresh prompt names it
@@ -3654,6 +3866,12 @@ export class Orchestrator implements OrchestratorApi {
     actor = 'human',
     mode: 'auto' | 'resume' | 'fresh' = 'auto',
     purpose: 'work' | 'publish' = 'work',
+    /**
+     * `blocked` for the end of a task wait only (docs/task-waits.md): the
+     * same conditional transition then clears `wait_for`. Never offered to a
+     * split parent — the callers check `waitFor` first.
+     */
+    alsoFrom: TaskStatus[] = [],
   ): Promise<ActionResult> {
     const cur = await this.storage.getTask(taskId);
     if (!cur) return { error: 'task not found', code: 404 };
@@ -3711,7 +3929,7 @@ export class Orchestrator implements OrchestratorApi {
       // 'running' included: we may have just killed an idle session whose task
       // was left in 'running' (e.g. a failed live-injection). 'published' too:
       // shipping a task does not end the conversation with its agent.
-      ['draft', 'queued', 'running', 'review', 'published', 'done', 'failed', 'cancelled'],
+      ['draft', 'queued', 'running', 'review', 'published', 'done', 'failed', 'cancelled', ...alsoFrom],
       'running',
       actor,
       {
@@ -4761,6 +4979,7 @@ export class Orchestrator implements OrchestratorApi {
     this.rateLimitStops.delete(runId);
     this.cliWaits.delete(runId);
     this.forgetAttention(runId);
+    this.waitRequests.delete(runId);
     this.childrenInFlight.delete(runId);
     this.dropWait(runId);
     this.shellsSeen.delete(runId);

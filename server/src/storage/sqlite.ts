@@ -485,8 +485,8 @@ export class SqliteStorage implements Storage {
     const place = this.placeSync(id, t.parentId);
     this.db
       .prepare(
-        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, kind, loop_goal, loop_max_iterations, loop_budget_usd, brief, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (${NEXT_SORT_ORDER_SQL}))`,
+        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, kind, loop_goal, loop_max_iterations, loop_budget_usd, brief, depends_on, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (${NEXT_SORT_ORDER_SQL}))`,
       )
       .run(
         id,
@@ -520,6 +520,7 @@ export class SqliteStorage implements Storage {
         t.loopMaxIterations ?? null,
         t.loopBudgetUsd ?? null,
         t.brief ?? null,
+        t.dependsOn?.length ? JSON.stringify([...new Set(t.dependsOn)]) : null,
       );
     const task = rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
     this.appendEventSync({
@@ -847,7 +848,7 @@ export class SqliteStorage implements Storage {
     from: Task['status'][],
     to: Task['status'],
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'pausedTurn' | 'autoLandedAt' | 'loopState' | 'shippedSha' | 'shippedAt'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'pausedTurn' | 'waitFor' | 'autoLandedAt' | 'loopState' | 'shippedSha' | 'shippedAt'>>,
     audit?: Record<string, unknown>,
   ): Promise<Task | null> {
     // Conditional single-statement transition — immune to check-then-set races
@@ -898,6 +899,15 @@ export class SqliteStorage implements Storage {
     } else {
       sets.push('paused_turn = NULL');
     }
+    // A worker's wait on another task (docs/task-waits.md) is the `blocked`
+    // park that sets it: any other move — the resume, Unblock, a cancel —
+    // ends the wait.
+    if (patch && 'waitFor' in patch) {
+      sets.push('wait_for = ?');
+      vals.push(patch.waitFor ? JSON.stringify(patch.waitFor) : null);
+    } else {
+      sets.push('wait_for = NULL');
+    }
     // Hiding (docs/design.md § Hidden tasks) is for a task at rest: any status
     // change makes it visible again, so a hidden task can never be working.
     sets.push('hidden_at = NULL');
@@ -947,6 +957,19 @@ export class SqliteStorage implements Storage {
     });
   }
 
+  async setTaskDependsOn(id: string, dependsOn: string[], actor: string): Promise<Task | null> {
+    return this.inTxn((): Task | null => {
+      const ids = [...new Set(dependsOn)];
+      const r = this.db
+        .prepare(`UPDATE tm_tasks SET depends_on = ?, updated_at = ? WHERE id = ? RETURNING *`)
+        .get(ids.length ? JSON.stringify(ids) : null, now(), id);
+      if (!r) return null;
+      const t = rowToTask(r);
+      this.appendEventSync({ kind: 'task.depends-on', actor, taskId: t.id, repoId: t.repoId, data: { dependsOn: ids } });
+      return t;
+    });
+  }
+
   async resolveChildCompletion(childId: string, parentDoneStatus: 'review' | 'done', actor: string): Promise<Task | null> {
     return this.inTxn((): Task | null => {
       const child = this.db.prepare(`SELECT parent_id FROM tm_tasks WHERE id = ?`).get(childId) as
@@ -963,7 +986,7 @@ export class SqliteStorage implements Storage {
         // Conditional on blocked: a done/review parent with agent-filed
         // children must not get a failure scribbled on it (review R3).
         const r = this.db
-          .prepare(`UPDATE tm_tasks SET error = ?, updated_at = ? WHERE id = ? AND status = 'blocked' RETURNING *`)
+          .prepare(`UPDATE tm_tasks SET error = ?, updated_at = ? WHERE id = ? AND status = 'blocked' AND wait_for IS NULL RETURNING *`)
           .get(`${failed} subtask(s) failed`, now(), child.parent_id);
         if (!r) return null;
         const t = rowToTask(r);
@@ -977,7 +1000,7 @@ export class SqliteStorage implements Storage {
         return t;
       }
       const r = this.db
-        .prepare(`UPDATE tm_tasks SET status = ?, updated_at = ? WHERE id = ? AND status = 'blocked' RETURNING *`)
+        .prepare(`UPDATE tm_tasks SET status = ?, updated_at = ? WHERE id = ? AND status = 'blocked' AND wait_for IS NULL RETURNING *`)
         .get(parentDoneStatus, now(), child.parent_id);
       if (!r) return null;
       const t = rowToTask(r);
@@ -1766,9 +1789,9 @@ export class SqliteStorage implements Storage {
       const cards = planCards(feature);
       if (cards.length === 0) return null;
       const tasks: Task[] = [];
+      const taskOfCard = new Map<string, string>();
       for (const c of cards) {
-        tasks.push(
-          this.insertTaskSync(
+        const task = this.insertTaskSync(
             {
               title: c.card.title,
               description: c.description,
@@ -1782,10 +1805,14 @@ export class SqliteStorage implements Storage {
               review: c.card.review ?? null,
               featureId: feature.id,
               featurePhase: c.phase,
+              // planCards keeps only edges onto EARLIER cards, so each is
+              // already inserted (docs/task-waits.md § Feature plans)
+              dependsOn: c.dependsOnCards.map((id) => taskOfCard.get(id)).filter((id): id is string => !!id),
             },
             actor,
-          ),
-        );
+          );
+        taskOfCard.set(c.card.id, task.id);
+        tasks.push(task);
       }
       const updated = this.transitionFeatureSync(id, ['proposed'], 'approved', actor, { error: null });
       // Unreachable (status was read inside this transaction), but returning

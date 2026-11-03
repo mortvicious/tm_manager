@@ -304,6 +304,44 @@ export function registerInternalRoutes(
         );
         return { ok: true };
       }
+      // The session goes idle: frees the concurrency slot, the PTY stays
+      // attachable; workedMs stops at first idle — chat-idle time is not work
+      // (dashboard A3).
+      const idleRun = async () => {
+        sessions.markIdle(id);
+        const idled = await storage.updateRun(id, { idle: true, needsAttention: false });
+        if (!idled) return;
+        broadcast({ type: 'run.exited', run: idled }); // upserts client-side
+        await storage.appendEvent({
+          kind: 'run.stats-final',
+          actor: 'hook',
+          runId: id,
+          taskId: idled.taskId,
+          repoId: idled.repoId,
+          data: {
+            workedMs: Date.now() - Date.parse(idled.startedAt),
+            costUsd: idled.stats?.costUsd ?? 0,
+            tokens: (idled.stats?.inputTokens ?? 0) + (idled.stats?.outputTokens ?? 0),
+            contextPct: idled.stats?.contextPct ?? 0,
+            model: idled.model,
+            mode: idled.mode,
+          },
+        });
+      };
+      // A worker that asked to wait for another task (docs/task-waits.md)
+      // parks `blocked` instead of landing: its change is unfinished, so no
+      // checks, no review, no landing tier — the session idles (slot and repo
+      // freed) and is resumed once that task settles.
+      if (!publishRun && orchestrator.waitRequestFor(id)) {
+        const parked = await orchestrator.parkForWait(id, run.taskId, info.lastAssistantText);
+        if (parked) {
+          broadcast({ type: 'task.updated', task: parked });
+          await idleRun();
+          broadcast({ type: 'orchestrator.status', status: await orchestrator.status() });
+          orchestrator.maybeSchedule();
+          return { ok: true };
+        }
+      }
       // Repo checks (docs/checks.md) run on this landing before anything
       // else: decided here so the row that says `review` also says checks are
       // `pending`.
@@ -384,27 +422,7 @@ export function registerInternalRoutes(
           });
         }
         broadcast({ type: 'task.updated', task });
-        sessions.markIdle(id); // frees the concurrency slot; PTY stays attachable
-        const idled = await storage.updateRun(id, { idle: true, needsAttention: false });
-        if (idled) {
-          broadcast({ type: 'run.exited', run: idled }); // upserts client-side
-          // workedMs stops at first idle — chat-idle time is not work (dashboard A3)
-          await storage.appendEvent({
-            kind: 'run.stats-final',
-            actor: 'hook',
-            runId: id,
-            taskId: idled.taskId,
-            repoId: idled.repoId,
-            data: {
-              workedMs: Date.now() - Date.parse(idled.startedAt),
-              costUsd: idled.stats?.costUsd ?? 0,
-              tokens: (idled.stats?.inputTokens ?? 0) + (idled.stats?.outputTokens ?? 0),
-              contextPct: idled.stats?.contextPct ?? 0,
-              model: idled.model,
-              mode: idled.mode,
-            },
-          });
-        }
+        await idleRun();
         await orchestrator.resolveCompletion(task, 'hook');
         broadcast({ type: 'orchestrator.status', status: await orchestrator.status() });
         orchestrator.maybeSchedule();

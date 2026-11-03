@@ -84,6 +84,8 @@ function task(id: string, over: Partial<Task> = {}): Task {
     wakeAt: null,
     queueHeldAt: null,
     pausedTurn: null,
+    waitFor: null,
+    dependsOn: [],
     hiddenAt: null,
     inboxKeptUntil: null,
     costUsd: 0,

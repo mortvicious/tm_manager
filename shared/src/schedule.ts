@@ -24,6 +24,7 @@ import {
   effectiveLanding,
   holdsRepoForClaim,
   isFeatureTaskBlocking,
+  unmetDependency,
   repoHasRoom,
   repoParallelCap,
   verifyOpen,
@@ -188,6 +189,7 @@ export type ScheduleWaitCode =
   | 'paused'
   | 'draft'
   | 'blocked'
+  | 'depends'
   | 'held'
   | 'no-repo'
   | 'queue-off'
@@ -427,6 +429,9 @@ export function predictSchedule(input: ScheduleInput): PredictedSlot[] {
 
   /** FEATURE_CLAIM_GATE (full) / FEATURE_OVERFLOW_GATE (overflow): null = passes */
   const featureGate = (c: Task, overflow: boolean): ScheduleWait | null => {
+    // DEPENDS_ON_GATE, AND-ed into both feature gates
+    const dep = unmetDependency(c, byId);
+    if (dep) return { code: 'depends', text: `after ${short(dep.title)} (${dep.status})` };
     if (!c.featureId) return null;
     const f = features.get(c.featureId);
     if (overflow) return f?.status === 'cancelled' ? { code: 'feature', text: `feature ${short(f.title)} is cancelled` } : null;
@@ -609,7 +614,12 @@ export function predictSchedule(input: ScheduleInput): PredictedSlot[] {
         break;
       case 'blocked':
         s.listed = true;
-        addWait(s, W.blocked);
+        addWait(
+          s,
+          row.waitFor
+            ? { code: 'depends', text: `its agent waits for ${short(row.waitFor.title)} (docs/task-waits.md)` }
+            : W.blocked,
+        );
         break;
       case 'queued':
         s.listed = true;

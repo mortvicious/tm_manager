@@ -138,7 +138,9 @@ export async function releaseTask(deps: ActionDeps, taskId: string, actor: strin
 
 /** POST /api/tasks/:id/unblock — blocked → review. */
 export async function unblockTask(deps: ActionDeps, taskId: string, actor: string): Promise<ActionOutcome> {
-  return outcome(await svcUnblock(deps, taskId, actor), (t) => `“${t.title}” is back in review.`);
+  return outcome(await svcUnblock(deps, taskId, actor), (t) =>
+    t.status === 'running' ? `“${t.title}” stopped waiting — its agent carries on.` : `“${t.title}” is back in review.`,
+  );
 }
 
 /** POST /api/tasks/:id/queue — the serial custom queue (docs/queue.md). */

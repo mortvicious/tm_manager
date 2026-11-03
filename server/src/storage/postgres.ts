@@ -493,8 +493,8 @@ export class PostgresStorage implements Storage {
     const ts = now();
     const place = await this.placeWith(c, id, t.parentId);
     await c.query(
-      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, kind, loop_goal, loop_max_iterations, loop_budget_usd, brief, sort_order)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, (${NEXT_SORT_ORDER_SQL}))`,
+      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, kind, loop_goal, loop_max_iterations, loop_budget_usd, brief, depends_on, sort_order)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, (${NEXT_SORT_ORDER_SQL}))`,
       [
         id,
         t.title,
@@ -527,6 +527,7 @@ export class PostgresStorage implements Storage {
         t.loopMaxIterations ?? null,
         t.loopBudgetUsd ?? null,
         t.brief ?? null,
+        t.dependsOn?.length ? JSON.stringify([...new Set(t.dependsOn)]) : null,
       ],
     );
     const r = await c.query(`SELECT * FROM tm_tasks WHERE id = $1`, [id]);
@@ -859,7 +860,7 @@ export class PostgresStorage implements Storage {
     from: Task['status'][],
     to: Task['status'],
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'pausedTurn' | 'autoLandedAt' | 'loopState' | 'shippedSha' | 'shippedAt'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'pausedTurn' | 'waitFor' | 'autoLandedAt' | 'loopState' | 'shippedSha' | 'shippedAt'>>,
     audit?: Record<string, unknown>,
   ): Promise<Task | null> {
     const sets = ['status = ?', 'updated_at = ?'];
@@ -907,6 +908,15 @@ export class PostgresStorage implements Storage {
     } else {
       sets.push('paused_turn = NULL');
     }
+    // A worker's wait on another task (docs/task-waits.md) is the `blocked`
+    // park that sets it: any other move — the resume, Unblock, a cancel —
+    // ends the wait.
+    if (patch && 'waitFor' in patch) {
+      sets.push('wait_for = ?');
+      vals.push(patch.waitFor ? JSON.stringify(patch.waitFor) : null);
+    } else {
+      sets.push('wait_for = NULL');
+    }
     // Any status change unhides (twin of the sqlite driver).
     sets.push('hidden_at = NULL');
     // Any status change ends a stale-draft Keep (twin of the sqlite driver).
@@ -949,6 +959,21 @@ export class PostgresStorage implements Storage {
     });
   }
 
+  async setTaskDependsOn(id: string, dependsOn: string[], actor: string): Promise<Task | null> {
+    return this.tx(async (c, sink) => {
+      const ids = [...new Set(dependsOn)];
+      const r = await c.query(`UPDATE tm_tasks SET depends_on = $1, updated_at = $2 WHERE id = $3 RETURNING *`, [
+        ids.length ? JSON.stringify(ids) : null,
+        now(),
+        id,
+      ]);
+      if (!r.rows[0]) return null;
+      const t = rowToTask(r.rows[0]);
+      await this.appendEventWith(c, { kind: 'task.depends-on', actor, taskId: t.id, repoId: t.repoId, data: { dependsOn: ids } }, sink);
+      return t;
+    });
+  }
+
   async resolveChildCompletion(childId: string, parentDoneStatus: 'review' | 'done', actor: string): Promise<Task | null> {
     return this.tx(async (c, sink) => {
       const childRes = await c.query(`SELECT parent_id FROM tm_tasks WHERE id = $1`, [childId]);
@@ -963,7 +988,7 @@ export class PostgresStorage implements Storage {
       if (failed > 0) {
         // Conditional on blocked — see sqlite driver / review R3.
         const fr = await c.query(
-          `UPDATE tm_tasks SET error = $1, updated_at = $2 WHERE id = $3 AND status = 'blocked' RETURNING *`,
+          `UPDATE tm_tasks SET error = $1, updated_at = $2 WHERE id = $3 AND status = 'blocked' AND wait_for IS NULL RETURNING *`,
           [`${failed} subtask(s) failed`, now(), parentId],
         );
         if (!fr.rows[0]) return null;
@@ -978,7 +1003,7 @@ export class PostgresStorage implements Storage {
         return ft;
       }
       const r = await c.query(
-        `UPDATE tm_tasks SET status = $1, updated_at = $2 WHERE id = $3 AND status = 'blocked' RETURNING *`,
+        `UPDATE tm_tasks SET status = $1, updated_at = $2 WHERE id = $3 AND status = 'blocked' AND wait_for IS NULL RETURNING *`,
         [parentDoneStatus, now(), parentId],
       );
       if (!r.rows[0]) return null;
@@ -1743,9 +1768,9 @@ export class PostgresStorage implements Storage {
       const cards = planCards(feature);
       if (cards.length === 0) return null;
       const tasks: Task[] = [];
+      const taskOfCard = new Map<string, string>();
       for (const card of cards) {
-        tasks.push(
-          await this.insertTaskWith(
+        const task = await this.insertTaskWith(
             c,
             {
               title: card.card.title,
@@ -1758,11 +1783,14 @@ export class PostgresStorage implements Storage {
               review: card.card.review ?? null,
               featureId: feature.id,
               featurePhase: card.phase,
+              // see the sqlite driver: edges onto EARLIER cards only
+              dependsOn: card.dependsOnCards.map((id) => taskOfCard.get(id)).filter((id): id is string => !!id),
             },
             actor,
             sink,
-          ),
-        );
+          );
+        taskOfCard.set(card.card.id, task.id);
+        tasks.push(task);
       }
       const updated = await this.transitionFeatureWith(c, sink, id, ['proposed'], 'approved', actor, { error: null });
       // See the sqlite driver: returning null here would commit orphan tasks.

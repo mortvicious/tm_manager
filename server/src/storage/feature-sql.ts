@@ -15,7 +15,26 @@
  * JS twin: predictSchedule (shared/src/schedule.ts) — the simulated global
  * and custom-queue claims apply this gate; edit together.
  */
-export const FEATURE_CLAIM_GATE = `(
+/**
+ * Declared dependencies (docs/task-waits.md § Declared dependencies): a task
+ * whose `depends_on` (JSON array of task ids) names a task that is not settled
+ * — `done`/`published`/`cancelled`, `DEPENDENCY_SETTLED_STATUSES` in shared —
+ * is not claimable. A deleted dependency has no row and is met. Ids are
+ * UUIDs (no LIKE wildcards), so a quoted-substring match is exact and works
+ * unchanged on both dialects. AND-ed into BOTH gates below, so every claim
+ * (global, custom queue, overflow) carries it. Expects the candidate `t`.
+ * JS twin: `unmetDependency` in shared/src/types.ts and predictSchedule — edit together.
+ */
+export const DEPENDS_ON_GATE = `(
+  t.depends_on IS NULL
+  OR NOT EXISTS (
+    SELECT 1 FROM tm_tasks dep
+    WHERE t.depends_on LIKE '%"' || dep.id || '"%'
+      AND dep.status NOT IN ('done', 'published', 'cancelled')
+  )
+)`;
+
+export const FEATURE_CLAIM_GATE = `(${DEPENDS_ON_GATE} AND (
   t.feature_id IS NULL
   OR (
     EXISTS (SELECT 1 FROM tm_features f WHERE f.id = t.feature_id AND f.status = 'running')
@@ -27,7 +46,7 @@ export const FEATURE_CLAIM_GATE = `(
         AND (lo.status <> 'draft' OR lo.source = 'feature')
     )
   )
-)`;
+))`;
 
 /**
  * Overflow-claim gate (agent-API review R1: a task filed by a LIVE worker may
@@ -38,10 +57,10 @@ export const FEATURE_CLAIM_GATE = `(
  * Expects the candidate row to be aliased `t`.
  * JS twin: predictSchedule (shared/src/schedule.ts) — its overflow step.
  */
-export const FEATURE_OVERFLOW_GATE = `(
+export const FEATURE_OVERFLOW_GATE = `(${DEPENDS_ON_GATE} AND (
   t.feature_id IS NULL
   OR NOT EXISTS (SELECT 1 FROM tm_features f WHERE f.id = t.feature_id AND f.status = 'cancelled')
-)`;
+))`;
 
 /**
  * JS twin of the lower-phase predicate inside FEATURE_CLAIM_GATE, now in

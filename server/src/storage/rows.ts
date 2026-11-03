@@ -167,6 +167,11 @@ export function rowToTask(r: any): Task {
     wakeAt: r.wake_at ?? null,
     queueHeldAt: r.queue_held_at ?? null,
     pausedTurn: safeParse(r.paused_turn, null),
+    waitFor: safeParse(r.wait_for, null),
+    dependsOn: (() => {
+      const v = safeParse<unknown>(r.depends_on, []);
+      return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+    })(),
     hiddenAt: r.hidden_at ?? null,
     inboxKeptUntil: r.inbox_kept_until ?? null,
     costUsd: Number(r.cost_usd ?? 0) || 0,

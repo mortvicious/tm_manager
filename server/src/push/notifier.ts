@@ -229,7 +229,8 @@ export class PushNotifier {
         if (moved) this.mark(t.id, (p) => (p.failed = true));
         break;
       case 'blocked':
-        if (moved) this.mark(t.id, (p) => (p.blocked = true));
+        // a worker parked on another task is automatic, not news (docs/task-waits.md)
+        if (moved && !t.waitFor) this.mark(t.id, (p) => (p.blocked = true));
         break;
       case 'published':
         if (moved) this.mark(t.id, (p) => (p.published = true));
@@ -328,7 +329,7 @@ export class PushNotifier {
     if (p.failed && task.status === 'failed') {
       await send('failed', `❌ Failed · ${task.title}`, clip(task.error ?? 'The task failed.', SUMMARY_CLIP), 'history');
     }
-    if (p.blocked && task.status === 'blocked') {
+    if (p.blocked && task.status === 'blocked' && !task.waitFor) {
       await send('blocked', `⛔ Blocked · ${task.title}`, 'Waiting on its subtasks.');
     }
     if (p.published && task.status === 'published') {

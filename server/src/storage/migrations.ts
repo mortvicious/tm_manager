@@ -812,6 +812,17 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS tm_events_kind_at_idx ON tm_events(kind, at)`,
     ],
   },
+  {
+    id: 51,
+    // Task waits + declared dependencies (docs/task-waits.md): `wait_for` is
+    // the JSON `TaskWait` of a worker parked `blocked` on another task (cleared
+    // by every transition); `depends_on` a JSON array of task ids the claim
+    // gate (`DEPENDS_ON_GATE`) waits on. Both FK-less like the rest.
+    statements: [
+      `ALTER TABLE tm_tasks ADD COLUMN wait_for TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN depends_on TEXT`,
+    ],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */

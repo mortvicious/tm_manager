@@ -76,6 +76,7 @@ export type TaskWrite = Partial<
     | 'loopBudgetUsd'
     | 'groupName'
     | 'groupColor'
+    | 'dependsOn'
   >
 >;
 
@@ -94,11 +95,14 @@ export function normalizeTask(t: Task): Task {
     typeof t.sortOrder === 'number' &&
     Array.isArray(t.reviewRounds) &&
     Array.isArray(t.checkResults) &&
-    Array.isArray(t.loopHistory)
+    Array.isArray(t.loopHistory) &&
+    Array.isArray(t.dependsOn)
   )
     return t;
   return {
     ...t,
+    dependsOn: t.dependsOn ?? [],
+    waitFor: t.waitFor ?? null,
     landing: t.landing ?? null,
     autoLandedAt: t.autoLandedAt ?? null,
     shippedSha: t.shippedSha ?? null,

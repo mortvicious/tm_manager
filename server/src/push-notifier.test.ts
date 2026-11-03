@@ -21,6 +21,8 @@ function task(over: Partial<Task>): Task {
     resultSummary: 'did it',
     error: null,
     pausedTurn: null,
+    waitFor: null,
+    dependsOn: [],
     autoLandedAt: null,
     ...over,
   } as Task;

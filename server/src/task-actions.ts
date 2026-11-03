@@ -1,3 +1,4 @@
+import { DEPENDS_ON_EDITABLE, dependsOnRefusal, edgeIndex } from './task-wait.ts';
 import { GROUP_COLOR_COUNT, LOOP_DEFAULT_MAX_ITERATIONS, LOOP_MAX_ITERATIONS_LIMIT, TASK_MOVE_PLACES, isExternalTask, type EffortLevel, type LandingTier, type TaskMovePlace, type Task, type TaskStatus } from '@tm/shared';
 import type { ActionResult, OrchestratorApi } from './app-types.ts';
 import { broadcast } from './events.ts';
@@ -58,6 +59,8 @@ export interface TaskEdit {
   loopBudgetUsd?: number | null;
   groupName?: string | null;
   groupColor?: number | null;
+  /** declared dependencies (docs/task-waits.md); written by `setTaskDependsOn`, not `updateTask` */
+  dependsOn?: string[];
 }
 
 /**
@@ -172,7 +175,21 @@ export async function editTask(
     const refused = await reparentRefusal(storage, cur, patch.parentId ?? null);
     if (refused) return refused;
   }
-  const task = await storage.updateTask(id, normalizeDone(patch));
+  const { dependsOn, ...fields } = patch;
+  if (dependsOn !== undefined) {
+    const same = dependsOn.length === cur.dependsOn.length && dependsOn.every((d) => cur.dependsOn.includes(d));
+    if (!same) {
+      // dependencies gate the CLAIM; past it they are history (docs/task-waits.md)
+      if (!DEPENDS_ON_EDITABLE.includes(cur.status)) {
+        return err(409, `dependencies apply before a task starts — this one is ${cur.status}`);
+      }
+      const refused = dependsOnRefusal(id, dependsOn, await edgeIndex(storage, () => deps.orchestrator?.pendingWaitEdges() ?? new Map()));
+      if (refused) return err(400, refused);
+      if (!(await storage.setTaskDependsOn(id, dependsOn, actor))) return err(404, 'task not found');
+      deps.orchestrator?.maybeSchedule(); // an emptied list may make it claimable
+    }
+  }
+  const task = Object.keys(fields).length ? await storage.updateTask(id, normalizeDone(fields)) : await storage.getTask(id);
   if (!task) return err(404, 'task not found');
   await storage.appendEvent({
     kind: 'task.edited',
@@ -207,7 +224,7 @@ async function reparentRefusal(storage: Storage, task: Task, parentId: string | 
   // out from under it could leave it waiting on nothing forever.
   if (task.parentId) {
     const from = await storage.getTask(task.parentId);
-    if (from?.status === 'blocked') {
+    if (from?.status === 'blocked' && !from.waitFor) {
       return err(409, 'its parent is blocked waiting on its split children — unblock the parent first');
     }
   }
@@ -478,6 +495,14 @@ export async function reviewTask(deps: TaskActionDeps, id: string, actor: string
 
 /** blocked → review: the explicit "the subtasks are dealt with" move. */
 export async function unblockTask(deps: TaskActionDeps, id: string, actor: string): Promise<ActionResult> {
+  // A worker parked on another task (docs/task-waits.md § End wait):
+  // Unblock ends the wait AND resumes its session, told where things stand.
+  const cur = await deps.storage.getTask(id);
+  if (cur?.status === 'blocked' && cur.waitFor && deps.orchestrator) {
+    const r = await deps.orchestrator.endTaskWait(id, actor);
+    if ('task' in r) broadcast({ type: 'task.updated', task: r.task });
+    return r;
+  }
   const task = await deps.storage.transitionTask(id, ['blocked'], 'review', actor, { error: null });
   if (!task) return err(409, 'task is not blocked');
   broadcast({ type: 'task.updated', task });

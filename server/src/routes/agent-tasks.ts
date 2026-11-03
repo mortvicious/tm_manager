@@ -36,7 +36,7 @@ const moveBody = z.object({ place: z.enum(MOVE_PLACES), targetId: z.string().min
  * HUMAN-written brief names by id, which is how "mark d944970f done" in a
  * manual task authorises a worker in another repo.
  */
-async function reachOf(storage: Storage, run: Run, own: Task | null, target: Task): Promise<string | null> {
+export async function reachOf(storage: Storage, run: Run, own: Task | null, target: Task): Promise<string | null> {
   if (own && target.id === own.id) return 'own task';
   if (target.createdByRun === run.id) return 'filed by you';
   if (own) {
@@ -64,7 +64,7 @@ async function reachOf(storage: Storage, run: Run, own: Task | null, target: Tas
   return null;
 }
 
-const OUT_OF_REACH =
+export const OUT_OF_REACH =
   'not within your reach — you may touch tasks you filed, the task that filed yours, your group, your repo, your shared space, or a task your human-written brief names by id';
 
 export function registerAgentTaskRoutes(
@@ -165,7 +165,7 @@ export function registerAgentTaskRoutes(
                 : null;
       if (parentId && parentId !== task.parentId) {
         const parent = parentId === target.id ? target : await storage.getTask(parentId);
-        if (parent?.status === 'blocked') {
+        if (parent?.status === 'blocked' && !parent.waitFor) {
           return reply.code(409).send({
             error: 'that would put it under a blocked split parent, which waits on every child — agents may not add to one',
           });

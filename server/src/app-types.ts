@@ -17,6 +17,11 @@ export interface OrchestratorApi {
   /** "Undo start" (docs/queue.md § Undo start): stop the running turn and put
    *  the task back in the status it had before it, held if that is `queued`. */
   undoStart(taskId: string, actor?: string): Promise<ActionResult>;
+  /** Task waits (docs/task-waits.md): end a worker's wait on another task
+   *  now and resume its session ("End wait"). */
+  endTaskWait(taskId: string, actor: string): Promise<ActionResult>;
+  /** waiter task id → target id of task waits requested but not parked yet (docs/task-waits.md) */
+  pendingWaitEdges(): Map<string, string>;
   /** Land a turn parked in `waiting` by background shells alone, giving up on
    *  (and killing) those shells (docs/design.md § Waiting). */
   stopWaiting(taskId: string, actor?: string): Promise<ActionResult>;

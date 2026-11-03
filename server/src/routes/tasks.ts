@@ -1,3 +1,4 @@
+import { DEPENDS_ON_MAX, dependsOnRefusal, edgeIndex } from '../task-wait.ts';
 import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -89,6 +90,9 @@ const taskBody = z
     // route rejects both on a task that has a parent.
     groupName: z.string().min(1).max(80).nullish(),
     groupColor: z.number().int().min(1).max(GROUP_COLOR_COUNT).nullish(),
+    // task ids that must settle before this one is claimed
+    // (docs/task-waits.md § Declared dependencies); [] = none
+    dependsOn: z.array(z.string().min(1)).max(DEPENDS_ON_MAX).optional(),
   })
   .strict();
 
@@ -157,6 +161,10 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
     if (loopNeedsBrowser(body, req.headers.origin)) return reply.code(403).send({ error: LOOP_FROM_BROWSER });
     const loopRefused = loopProblem(body);
     if (loopRefused) return reply.code(400).send({ error: loopRefused });
+    if (body.dependsOn?.length) {
+      const depRefused = dependsOnRefusal(null, body.dependsOn, await edgeIndex(storage));
+      if (depRefused) return reply.code(400).send({ error: depRefused });
+    }
     return createTask(deps(), body, 'human');
   });
 

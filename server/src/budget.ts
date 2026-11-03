@@ -25,7 +25,8 @@ export type BudgetTurn =
   | 'transient-resume'
   | 'auto-publish'
   | 'loop-iteration'
-  | 'conflict-round';
+  | 'conflict-round'
+  | 'wait-resume';
 
 /**
  * `loop.budgetUsd` is a loop task's OWN ceiling (`Task.loopBudgetUsd`,
@@ -130,6 +131,7 @@ const KIND_LABEL: Record<BudgetTurn, string> = {
   'auto-publish': 'publish turn (auto-publish landing)',
   'loop-iteration': 'next loop iteration',
   'conflict-round': 'rebase-conflict turn (worktree land)',
+  'wait-resume': 'resume after a task wait',
 };
 
 /**

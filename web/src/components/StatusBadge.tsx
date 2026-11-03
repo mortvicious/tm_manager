@@ -31,6 +31,10 @@ export interface BadgeInput {
    * the server is landing the task's worktree branch (docs/parallel.md).
    */
   busy?: 'publishing' | 'landing' | null;
+  /** `blocked` by its worker's wait on another task: that task's title (docs/task-waits.md) */
+  waitingFor?: string | null;
+  /** `queued` behind a declared dependency that has not landed: its title (docs/task-waits.md) */
+  dependsOnOpen?: string | null;
 }
 
 export interface BadgeReading extends Explanation {
@@ -49,7 +53,10 @@ const PLAIN: Record<TaskStatus, { what: string; todo?: string }> = {
     what: 'The agent ended its turn with a background subagent or shell still running. It resumes on its own when that returns; a shell holds it only for a limited time.',
     todo: 'Nothing to do — it is not waiting on you. If only a shell holds it and the agent no longer needs it, Stop waiting lands it now.',
   },
-  blocked: { what: 'Split into child tasks; it waits for them to finish.', todo: 'Unblock it to run it anyway.' },
+  blocked: {
+    what: 'It waits — for the child tasks it was split into, or (its agent asked) for another task to land.',
+    todo: 'Unblock (End wait) to run it anyway.',
+  },
   review: { what: 'The agent finished its turn; the change waits for you.', todo: 'Read the summary, then Publish, Mark done or Follow up.' },
   published: { what: 'Committed and pushed by the agent that did the work.' },
   done: { what: 'Closed without a push from the task manager.' },
@@ -73,7 +80,18 @@ const PLAIN: Record<TaskStatus, { what: string; todo?: string }> = {
  * One switch for the badge, its tooltip, its phone sheet and the task sheet's
  * "what's happening" strip, so the three can never disagree.
  */
-export function badgeReading({ status, attention, question, reviewState, checkState, loopState, paused, busy }: BadgeInput): BadgeReading {
+export function badgeReading({
+  status,
+  attention,
+  question,
+  reviewState,
+  checkState,
+  loopState,
+  paused,
+  busy,
+  waitingFor,
+  dependsOnOpen,
+}: BadgeInput): BadgeReading {
   const r = (label: string, c: string, what: string, todo?: string, reviewer?: boolean): BadgeReading => ({
     label,
     cls: c,
@@ -134,6 +152,20 @@ export function badgeReading({ status, attention, question, reviewState, checkSt
     return r('fixing checks', 's-running s-fixing', 'The agent is fixing a failing repo check.', 'Nothing to do — the checks re-run when it stops.');
   if (status === 'running' && reviewState === 'fixing')
     return r('fixing', 's-running s-fixing', "The agent is fixing the adversarial reviewer's findings.", 'Nothing to do — it lands in review again.');
+  if (status === 'blocked' && waitingFor)
+    return r(
+      'waits for task',
+      's-waiting',
+      `Its agent needs "${waitingFor}" first, so it ended its turn to wait for it. Its own session resumes once that task lands or is cancelled (or after 24 h).`,
+      'Nothing to do — it is not waiting on you. End wait resumes it now.',
+    );
+  if (status === 'queued' && dependsOnOpen)
+    return r(
+      'after task',
+      cls.queued ?? '',
+      `Queued, but it may not start before "${dependsOnOpen}" lands — a declared dependency.`,
+      'Nothing to do — it starts on its own then. Remove the dependency in the task panel to let it go now.',
+    );
   // the label stays the plain status; the explanation knows the verdict
   if (status === 'review') {
     if (checkState === 'error')

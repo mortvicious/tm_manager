@@ -166,6 +166,14 @@ function PlanColumns({
                     )}
                     {card.effort && <span className="chip mono">{card.effort}</span>}
                     {card.review === false && <span className="chip">no review</span>}
+                    {(card.dependsOn ?? []).map((id) => {
+                      const dep = plan.phases.flatMap((p) => p.tasks).find((c) => c.id === id);
+                      return dep ? (
+                        <span className="chip" key={id} title="starts only after this task lands (docs/task-waits.md)">
+                          after {dep.title}
+                        </span>
+                      ) : null;
+                    })}
                     {card.excluded && <span className="chip">excluded</span>}
                   </div>
                 </>

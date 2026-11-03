@@ -38,6 +38,9 @@ const planCardSchema = z
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullish(),
     review: z.boolean().nullish(),
     exitCriteria: z.array(z.string().max(600)).max(12),
+    // card ids of earlier cards (docs/task-waits.md § Feature plans); approval
+    // drops any that is not an earlier included card
+    dependsOn: z.array(z.string().min(1).max(64)).max(12).optional(),
     excluded: z.boolean().optional(),
   })
   .strict();

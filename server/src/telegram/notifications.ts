@@ -447,7 +447,8 @@ export class TelegramNotifier {
         if (moved) this.mark(t.id, (p) => (p.failed = true));
         break;
       case 'blocked':
-        if (moved) this.mark(t.id, (p) => (p.blocked = true));
+        // a worker parked on another task is automatic, not news (docs/task-waits.md)
+        if (moved && !t.waitFor) this.mark(t.id, (p) => (p.blocked = true));
         break;
       case 'done':
         // Only an on-green landing (docs/design.md § Landing tiers) — it is
@@ -532,7 +533,7 @@ export class TelegramNotifier {
     if (n.failed && p.failed && task.status === 'failed') {
       lines.push(`❌ ${title} <b>failed</b>${task.error ? `: ${escapeHtml(task.error)}` : '.'}`);
     }
-    if (n.blocked && p.blocked && task.status === 'blocked') {
+    if (n.blocked && p.blocked && task.status === 'blocked' && !task.waitFor) {
       lines.push(`⛔ ${title} is <b>blocked</b> (waiting on its subtasks).`);
     }
     if (n.review && p.autoLanded && task.status === 'done' && task.autoLandedAt) {

@@ -15,6 +15,8 @@ import { agentBrief, agentTitle, maxSpawnDepth, perRunCap, QUEUED_AGENT_CEILING 
 import { AGENT_COMMAND_DEFINE_CAP, AGENT_ONE_SHOT_TASK_CAP, registerAgentCommandRoutes } from './agent-commands.ts';
 import { registerAgentSharedRoutes, SHARED_NOTE_RUN_CAP } from './agent-shared.ts';
 import { AGENT_CLOSE_RUN_CAP, registerAgentTaskRoutes } from './agent-tasks.ts';
+import { registerAgentWaitRoutes } from './agent-waits.ts';
+import { DEPENDS_ON_MAX, dependsOnRefusal, edgeIndex, WAIT_MAX_MS } from '../task-wait.ts';
 
 // Agent-facing API (docs/agent-api-design.md, review-hardened R1–R11).
 // Auth: the per-run token from the worker's env. The token IS the identity —
@@ -36,6 +38,8 @@ const createBody = z
     linkToParent: z.boolean().optional(),
     category: z.string().min(1).max(60).optional(),
     review: z.boolean().optional(),
+    // task ids that must land first (docs/task-waits.md § Declared dependencies)
+    dependsOn: z.array(z.string().min(1)).max(DEPENDS_ON_MAX).optional(),
   })
   .strict();
 
@@ -138,6 +142,7 @@ export function registerAgentRoutes(
       .replaceAll('{{maxSpawnDepth}}', String(maxSpawnDepth(settings)))
       .replaceAll('{{sharedNoteRunCap}}', String(SHARED_NOTE_RUN_CAP))
       .replaceAll('{{dispatchRunCap}}', String(DISPATCH_RUN_CAP))
+      .replaceAll('{{waitMaxHours}}', String(WAIT_MAX_MS / 3_600_000))
       .replaceAll('{{dispatchPairCap}}', String(DISPATCH_PAIR_CAP))
       .replaceAll('{{closeRunCap}}', String(AGENT_CLOSE_RUN_CAP))
       .replaceAll('{{commandDefineCap}}', String(AGENT_COMMAND_DEFINE_CAP))
@@ -156,6 +161,8 @@ export function registerAgentRoutes(
   registerAgentTaskRoutes(app, storage, orchestrator, authRun);
   // Repo commands (docs/commands.md § Agent API) — shared dev servers.
   registerAgentCommandRoutes(app, storage, commandRunner, authRun);
+  // Task waits + declared dependencies (docs/task-waits.md) — same prefix too.
+  registerAgentWaitRoutes(app, storage, orchestrator, authRun);
 
   app.post('/api/agent/tasks', async (req, reply) => {
     const run = await authRun(req);
@@ -229,7 +236,8 @@ export function registerAgentRoutes(
     if (body.linkToParent) {
       const resolvedParentId = callerTask?.parentId ?? callerTask?.id ?? null;
       const parent = resolvedParentId ? await storage.getTask(resolvedParentId) : null;
-      if (!parent || parent.status !== 'blocked') {
+      // a split parent — never a worker parked on another task (docs/task-waits.md)
+      if (!parent || parent.status !== 'blocked' || parent.waitFor) {
         return reply
           .code(400)
           .send({ error: 'linkToParent requires a currently-blocked parent (split siblings only) — omit it' });
@@ -240,6 +248,12 @@ export function registerAgentRoutes(
           .send({ error: `linkToParent requires enqueue to be honored (${note ?? 'enqueue not requested'}) — omit it` });
       }
       parentId = parent.id;
+    }
+
+    if (body.dependsOn?.length) {
+      // a new task cannot close a cycle (nothing depends on it yet)
+      const refusal = dependsOnRefusal(null, body.dependsOn, await edgeIndex(storage));
+      if (refusal) return reply.code(400).send({ error: refusal });
     }
 
     const actor = `agent:${run.id.slice(0, 8)}`;
@@ -256,6 +270,7 @@ export function registerAgentRoutes(
         review: body.review ?? null,
         createdByRun: run.id,
         spawnDepth: depth,
+        dependsOn: body.dependsOn ?? null,
         // priority deliberately not settable (R11): agent tasks are always 0
       },
       actor,

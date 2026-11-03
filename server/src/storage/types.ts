@@ -175,6 +175,8 @@ export interface NewTask {
   spawnDepth?: number;
   featureId?: string | null;
   featurePhase?: number | null;
+  /** declared dependencies (docs/task-waits.md § Declared dependencies) */
+  dependsOn?: string[] | null;
 }
 
 export interface NewFeature {
@@ -533,7 +535,7 @@ export interface Storage {
     from: TaskStatus[],
     to: TaskStatus,
     actor: string,
-    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'pausedTurn' | 'autoLandedAt' | 'loopState' | 'shippedSha' | 'shippedAt'>>,
+    patch?: Partial<Pick<Task, 'error' | 'resultSummary' | 'reviewState' | 'checkState' | 'queueHeldAt' | 'pausedTurn' | 'waitFor' | 'autoLandedAt' | 'loopState' | 'shippedSha' | 'shippedAt'>>,
     /** merged into the `task.transition` audit row's data (e.g. a landing's reason) */
     audit?: Record<string, unknown>,
   ): Promise<Task | null>;
@@ -543,6 +545,12 @@ export interface Storage {
    * Any failed → parent stays blocked with error surfaced.
    * Returns the updated parent, or null when nothing changed.
    */
+  /**
+   * Replace a task's declared dependencies (docs/task-waits.md § Declared
+   * dependencies): `depends_on` + `updated_at` and one `task.depends-on` audit
+   * row, outside `updateTask`. The caller validates (existence, cycles).
+   */
+  setTaskDependsOn(id: string, dependsOn: string[], actor: string): Promise<Task | null>;
   resolveChildCompletion(childId: string, parentDoneStatus: 'review' | 'done', actor: string): Promise<Task | null>;
   countChildren(parentId: string): Promise<ChildCounts>;
 
