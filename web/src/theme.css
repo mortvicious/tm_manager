@@ -11451,3 +11451,275 @@ button.explain-tap:active {
 .app.mobile .sl-lname {
   min-height: 32px;
 }
+
+/* ── Board version: Stacks (docs/board-versions.md § Stacks) ──
+   Sections by what needs the human; a group is one stack card (`--g` = its
+   group colour) whose members unfold on a coloured rail. Rows are the board's
+   own .task-row. The Grouping toggle reuses .rm-seg. Tokens only. */
+.st-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  max-width: 960px;
+  padding-bottom: var(--tm-space-8);
+}
+.st-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+}
+.st-sec {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  margin: var(--tm-space-4) 0 var(--tm-space-1);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--tm-text-faint);
+  font: 600 var(--tm-text-xs) var(--tm-font-body);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  text-align: left;
+}
+.st-section:first-child .st-sec {
+  margin-top: 0;
+}
+.st-sec-fold {
+  cursor: pointer;
+}
+.st-sec-fold:hover {
+  color: var(--tm-text-muted);
+}
+.st-sec-fold:focus-visible,
+.st-head:focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: 2px;
+}
+.st-sec-n {
+  font-family: var(--tm-font-mono);
+  letter-spacing: 0;
+}
+.st-caret {
+  display: inline-flex;
+  flex: none;
+  color: var(--tm-text-faint);
+  transform: rotate(-90deg);
+  transition: transform var(--tm-dur-fast) var(--tm-ease-out);
+}
+.st-sec-fold[aria-expanded='true'] .st-caret,
+.st-stack.open .st-caret {
+  transform: none;
+}
+.st-more {
+  align-self: flex-start;
+  font-size: var(--tm-text-xs);
+}
+.st-empty {
+  color: var(--tm-text-muted);
+}
+
+/* a single task: its own raised row */
+.st-list > .st-section > .st-row {
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-raised);
+  overflow: hidden;
+}
+.st-row {
+  border-radius: var(--tm-radius-md);
+}
+.st-row > .task-row {
+  border-bottom: 0;
+}
+
+/* the stack: a card with two paper edges peeking out below while folded */
+.st-stack {
+  position: relative;
+  margin-bottom: var(--tm-space-2);
+  border-radius: var(--tm-radius-md);
+}
+.st-stack::before,
+.st-stack::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  height: 100%;
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-raised);
+}
+.st-stack::before {
+  bottom: -4px;
+  left: 6px;
+  right: 6px;
+  opacity: 0.7;
+}
+.st-stack::after {
+  bottom: -8px;
+  opacity: 0.4;
+}
+.st-stack.open {
+  margin-bottom: 0;
+}
+.st-stack.open::before,
+.st-stack.open::after {
+  display: none;
+}
+.st-card {
+  position: relative;
+  z-index: 1;
+  border: 1px solid color-mix(in srgb, var(--g) 35%, var(--tm-border));
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-raised);
+  overflow: hidden;
+}
+.st-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  width: 100%;
+  padding: 10px var(--tm-space-4);
+  border: 0;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--g) 12%, transparent), transparent 60%);
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.st-head:hover {
+  background-color: var(--tm-bg-overlay);
+}
+.st-head-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.st-name {
+  overflow: hidden;
+  font: 600 var(--tm-text-md) / 1.2 var(--tm-font-display);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.st-now {
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+}
+.st-now em {
+  color: var(--tm-text);
+  font-style: normal;
+}
+.st-pips {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 3px;
+  max-width: 40%;
+}
+.st-pips i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--c);
+}
+.st-pips i.hollow {
+  border: 1.5px solid var(--c);
+  background: none;
+}
+.st-pips-more,
+.st-frac {
+  color: var(--tm-text-faint);
+  font: 600 var(--tm-text-xs) var(--tm-font-mono);
+}
+.st-frac {
+  flex: none;
+  min-width: 34px;
+  text-align: right;
+}
+
+/* unfolded: the members on one rail in the group colour */
+.st-kids {
+  position: relative;
+  padding: var(--tm-space-1) var(--tm-space-1) var(--tm-space-2) 22px;
+  border-top: 1px solid var(--tm-border);
+}
+.st-kids::before {
+  content: '';
+  position: absolute;
+  top: var(--tm-space-1);
+  bottom: var(--tm-space-4);
+  left: 14px;
+  border-left: 2px solid color-mix(in srgb, var(--g) 50%, transparent);
+}
+.st-kids .task-row {
+  padding-top: 6px;
+  padding-bottom: 6px;
+  border-radius: var(--tm-radius-md);
+}
+
+/* flat mode: the group as a dot + name */
+.st-gname {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.st-gdot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--g);
+}
+
+/* the relations affordance (the shared focus layer) */
+.st-focus {
+  color: var(--tm-text-faint);
+}
+.st-focus[aria-pressed='true'] {
+  color: var(--tm-accent);
+}
+
+/* phone: the name keeps the full width; the pips take their own line */
+.app.mobile .st-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'caret text frac'
+    '. pips pips';
+  align-items: start;
+  row-gap: var(--tm-space-2);
+  padding: var(--tm-space-3);
+}
+.app.mobile .st-head > .st-caret {
+  grid-area: caret;
+  padding-top: 2px;
+}
+.app.mobile .st-head-text {
+  grid-area: text;
+}
+.app.mobile .st-pips {
+  grid-area: pips;
+  justify-content: flex-start;
+  max-width: none;
+}
+.app.mobile .st-frac {
+  grid-area: frac;
+  padding-top: 2px;
+}
+.app.mobile .st-kids {
+  padding-left: 16px;
+}
+.app.mobile .st-kids::before {
+  left: 9px;
+}

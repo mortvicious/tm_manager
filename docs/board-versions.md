@@ -171,3 +171,57 @@ There is **no drag**: a column is a status, which is never set by dragging, and 
 - **Hide finished is a time window** (3 days) rather than "no landed cards". The column would otherwise always be empty, and *All* on the real board (hundreds of landed tasks) needs the per-cell cap.
 - **The header row is sticky on the desktop.** On a phone it scrolls away with the page, because the table is the horizontal scroller there.
 - **Lanes fold** from the lane name (the mockup's `.lane.collapsed`). The mockup's per-card repo rule ("differs from `tm`") became "differs from the lane's repo, when the board spans repos".
+
+## Stacks
+
+Shipped in task 61d20bcc as registry id `stacks` ("Stacks" in Versions, listed right after Original). Files: `web/src/pages/board/Stacks.tsx` (the view), `shared/src/stacks.ts` (the pure model, `buildStacks` + `stackSectionOf`, pinned by `server/src/stacks.test.ts`), the `st-*` rules at the end of `theme.css`, and `IconRelations` in `components/Icons.tsx`. It needs no Glass rule of its own: cards, rows and pips read the remapped tokens, and the focus card already has the Glass popover material.
+
+**Sections, by what needs the human.** The order is **Needs you · Working · Up next · Drafts · Landed · Stopped**. Empty sections are left out, and a header counts its items (its tooltip gives the task count).
+- **Needs you** is not a second definition. It is `buildInbox` over the board's own set (`useBoardTasks()`: workspace scope applied, hidden tasks left out), read for its `question`, `approval`, `attention`, `review` and `failed` items, in the inbox's decision order. So a review whose verify round is still open, a review Pause all suspended, and a failure older than the inbox's 7 days are NOT here, exactly as on the Inbox.
+- **Working:** `running`/`waiting`, plus a `review` still in its automatic round (`verifyOpen`).
+- **Up next:** `queued` and `blocked` (split parents), plus a paused `review`.
+- **Drafts:** `draft`.
+- **Landed:** `done`/`published`.
+- **Stopped:** `cancelled`, and a `failed` that has aged out of the inbox.
+- Order within a section:
+  - Needs you: the inbox's order.
+  - Working, Up next and Drafts: queue order, the claim's own (priority, the group root's `sortOrder`, the task's).
+  - Landed and Stopped: newest first.
+- **Landed and Stopped start folded** and show the 20 most recent items once opened, with "Show 20 more". Which of the two are open is stored per device.
+
+**A group is one stack.**
+- Any `groupId` with two or more tasks on the board is ONE card. It sits in the section of its most urgent member, so a group never splits across sections.
+- **Most urgent** is decided in this order:
+  1. the earliest section;
+  2. the inbox position;
+  3. a runnable member before the blocked split parent waiting on it;
+  4. run order.
+- **The card shows:**
+  - the group's name (`groupLabel`; a group whose root is off the board takes its first member's title) and its colour (`groupColorSlot` → `--tm-group-n`, as a tinted border and a gradient);
+  - a **now:** line: that member's title and its state in words (asks you a question · waits for your approval · needs your attention · waits for your review · failed · is running/fixing/checking… from `badgeReading` · is being reviewed · is next/held · waits on its subtasks · is a draft · landed · …), plus "· N more";
+  - **one pip per member in run order** (the tree in pre-order, siblings by `sortOrder`), in that member's status colour. Hollow means still to come (draft, queued, blocked); filled means landed, working or otherwise settled. Pips are capped at 40 (24 on a phone), with "+n";
+  - **landed/total**.
+- Folded, the card draws two paper edges below it.
+- **Unfold in place:** a click on the head (a button, `aria-expanded`) unfolds the card. Every member then sits on one rail in the group colour, indented by its depth in the tree (`TaskRow`'s own nesting elbow). Unfolded stacks are remembered for the session, not stored.
+
+**Stacks / Flat** is a toggle in the head (the `rm-seg` segmented control), stored per device with the open sections in localStorage `tm.stacks`. Flat uses the same sections with every task as its own row. A task whose group has two or more members on the board carries a dot in the group colour and the group's name.
+
+**Rows are the original's.** Each row is `TaskRow`, the same component the original board renders, so the live line, the progress bar, the terminal button and the quick actions (run, publish, queue, mark done, the phone's ⋯ sheet) are identical. Inside it sit `StatusBadge` (fed the same inputs the board feeds it: attention, question, review/check/loop state, paused, publish busy, the live reviewer's terminal) and `ProgressPct`. When the board spans more than one repo, a row also gets a repo chip. A click on a row opens the ordinary task panel.
+
+**Focus.**
+- Every row ends with a **relations** button (`IconRelations`, `aria-pressed`). The button toggles the shared focus layer, which rings the task, outlines its relations, dims the rest and shows the relations card (a `<Sheet>` on a phone). The `itemProps` sit on the row's wrapper.
+- A **folded** stack stands in for its members: it is lit when any member is focused or related, and dimmed otherwise.
+- Focusing a task from the card unfolds the way to it (its stack, a folded section, past the 20-row limit) and scrolls it into view. Unfolding happens only when the focus changes, so folding by hand afterwards is respected.
+
+**Live updates.** The view reads `useApp()` tasks, runs, questions, approvals, proposals and features, which `/ws/events` keeps current. `buildInbox` and `buildStacks` are memoised on them. There is no polling.
+
+**Verified** at 1280 px and at 390 px (phone, `.app.mobile`), in Classic and Glass, on the live board's data. Original was checked as unchanged with Versions set back to it. The screenshots are in the task's artifacts.
+
+**Departures from the mockup.**
+- **A sixth section, Stopped (folded).** The mockup's five sections have no place for a cancelled task, or for a failure the inbox no longer lists. Putting those under Landed would misreport them.
+- **A row click opens the panel, and focus has its own button.** This is the list-like option the version contract allows. The mockup had no focus at all, and the original board's habit is that a click opens the task.
+- **Approvals count as Needs you**, because the inbox lists them. A review in its automatic round, or a paused one, does not.
+- **Blocked split parents stay on the rail.** The mockup hid them, but the parent is the tree's root, a real task with its own actions, and the indentation needs it. Its pip is hollow.
+- **On a phone the pips take their own line under the "now:" text**, and landed/total stays top right. With the mockup's layout a long group name was cut to a few letters next to a large feature's pips.
+- **Pips are capped (+n).** One real feature plan holds 85 tasks.
+

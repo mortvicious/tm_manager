@@ -280,3 +280,13 @@ export const IconEye = ({ off = false }: { off?: boolean }) => (
     {off && <path d="M3 3l18 18" />}
   </svg>
 );
+
+/** A task's relations (the board versions' focus layer, docs/board-versions.md): one node tied to two. */
+export const IconRelations = () => (
+  <svg {...p}>
+    <circle cx="6" cy="12" r="2.5" />
+    <circle cx="18" cy="6" r="2.5" />
+    <circle cx="18" cy="18" r="2.5" />
+    <path d="M8.3 10.9l7.4-3.8M8.3 13.1l7.4 3.8" />
+  </svg>
+);
