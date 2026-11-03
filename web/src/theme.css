@@ -11723,3 +11723,439 @@ button.explain-tap:active {
 .app.mobile .st-kids::before {
   left: 9px;
 }
+
+/* ── Board version: Metro (docs/board-versions.md § Metro) ──
+   Geometry (station spacing 150, lane 70, station r 9) is Metro.tsx's; the
+   slots and lanes come from the shared `layoutMetro`. Every colour is a token:
+   a line's is `--mt-c` (its group slot), a station's `--mt-s` (its status). */
+.mt-key {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+  white-space: nowrap;
+}
+.mt-key svg {
+  margin-right: var(--tm-space-1);
+  vertical-align: middle;
+  overflow: visible;
+}
+.mt-empty {
+  padding: var(--tm-space-4) var(--tm-space-1);
+}
+.mt-more {
+  align-self: flex-start;
+  margin-top: var(--tm-space-1);
+  padding: 2px var(--tm-space-2);
+  font-size: var(--tm-text-xs);
+}
+
+/* desktop map: one scroller, a sticky name column, one svg per line */
+.mt-map {
+  height: max(360px, calc(100dvh - 150px));
+  overflow: auto;
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-bg-raised);
+  overscroll-behavior: contain;
+}
+.mt-inner {
+  position: relative;
+  width: max-content;
+  min-width: 100%;
+}
+.mt-line {
+  display: flex;
+  align-items: flex-start;
+  content-visibility: auto;
+}
+.mt-line + .mt-line {
+  border-top: 1px solid var(--tm-border);
+}
+.mt-name {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  align-self: stretch;
+  width: 200px;
+  padding: var(--tm-space-3) var(--tm-space-4);
+  border-right: 1px solid var(--tm-border);
+  background: var(--tm-bg-raised);
+}
+.mt-name b {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--mt-c);
+  font: 700 var(--tm-text-sm) var(--tm-font-display);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.mt-local .mt-name b {
+  color: var(--tm-text-muted);
+}
+.mt-name span {
+  color: var(--tm-text-faint);
+  font: 500 var(--tm-text-xs) var(--tm-font-mono);
+}
+.mt-svg {
+  display: block;
+  flex: none;
+  overflow: visible;
+}
+
+.mt-rail {
+  fill: none;
+  stroke: var(--mt-c);
+  stroke-linecap: round;
+  transition: opacity var(--tm-dur-fast) var(--tm-ease-out);
+}
+.mt-rail.solid {
+  stroke-width: 6;
+}
+.mt-rail.dashed {
+  opacity: 0.7;
+  stroke-dasharray: 6 6;
+  stroke-linecap: butt;
+  stroke-width: 3;
+}
+.mt-rail.local {
+  stroke: var(--tm-text-faint);
+  stroke-dasharray: 1 7;
+  stroke-width: 2;
+}
+.bf-scope[data-focus-active] .mt-rail {
+  opacity: 0.22;
+}
+
+/* stations (also the key and the phone rows) */
+.mt-dot {
+  fill: var(--mt-s);
+  stroke: var(--tm-bg-raised);
+  stroke-width: 3;
+}
+.mt-dot.hollow {
+  fill: var(--tm-bg-raised);
+  stroke: var(--mt-s);
+  stroke-width: 2.5;
+}
+.mt-dot.draft {
+  stroke-dasharray: 3 2;
+}
+.mt-cut {
+  fill: none;
+  stroke: var(--tm-bg-raised);
+  stroke-linecap: round;
+  stroke-width: 2.4;
+}
+.mt-core {
+  fill: var(--tm-bg-raised);
+}
+.mt-origin {
+  fill: var(--mt-c);
+}
+.mt-pulse {
+  fill: none;
+  stroke: var(--mt-s);
+  stroke-width: 2;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mt-ring 1.6s var(--tm-ease-out) infinite;
+}
+@keyframes mt-ring {
+  from {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.2);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mt-pulse {
+    opacity: 0.6;
+    animation: none;
+    transform: scale(1.5);
+  }
+}
+.mt-st {
+  cursor: pointer;
+  outline: none;
+}
+.mt-hit {
+  fill: transparent;
+}
+.mt-halo {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 2;
+}
+.mt-st:hover .mt-halo {
+  stroke: var(--tm-border-strong);
+}
+.mt-st:focus-visible .mt-halo,
+.mt-st[data-focus='focused'] .mt-halo {
+  stroke: var(--tm-accent);
+  stroke-width: 2.5;
+}
+.mt-st[data-focus='related'] .mt-halo {
+  stroke: var(--tm-accent);
+  stroke-dasharray: 3 3;
+}
+.mt-lbl {
+  fill: var(--tm-text);
+  font: 500 var(--tm-text-xs) var(--tm-font-body);
+}
+.mt-lbl.faint {
+  fill: var(--tm-text-faint);
+}
+/* the relation knob: shown on hover, keyboard focus and on the focused station */
+.mt-rel {
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity var(--tm-dur-fast) var(--tm-ease-out);
+}
+.mt-rel circle {
+  fill: var(--tm-bg-raised);
+  stroke: var(--tm-accent);
+  stroke-width: 1.5;
+}
+.mt-rel path {
+  stroke: var(--tm-accent);
+  stroke-width: 1.5;
+}
+.mt-rel .mt-rel-node {
+  fill: var(--tm-accent);
+  stroke: none;
+}
+.mt-st:hover .mt-rel,
+.mt-st:focus-visible .mt-rel,
+.mt-st[data-focus='focused'] .mt-rel {
+  opacity: 1;
+}
+
+.mt-tip {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-raised);
+  box-shadow: var(--tm-shadow-md);
+  pointer-events: none;
+}
+.mt-tip-title {
+  font-weight: 600;
+}
+.mt-tip-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-1);
+}
+.mt-tip-cost {
+  color: var(--tm-text-faint);
+  font: 500 var(--tm-text-xs) var(--tm-font-mono);
+}
+.mt-tip-hint {
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-xs);
+}
+
+/* phone timetable: a card per line, the line running down the left */
+.mt-tt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-4);
+  padding-bottom: var(--tm-space-6);
+}
+.mt-card {
+  display: flex;
+  flex-direction: column;
+}
+.mt-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--tm-space-2);
+  margin: 0 0 var(--tm-space-2);
+  padding: 0 var(--tm-space-1);
+  font: 700 var(--tm-text-sm) var(--tm-font-display);
+}
+.mt-card-name {
+  overflow: hidden;
+  color: var(--mt-c);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mt-local .mt-card-name {
+  color: var(--tm-text-muted);
+}
+.mt-card-sub {
+  flex: none;
+  color: var(--tm-text-faint);
+  font: 500 var(--tm-text-xs) var(--tm-font-mono);
+}
+.mt-card ol {
+  margin: 0;
+  padding: var(--tm-space-1) 0;
+  border: 1px solid color-mix(in srgb, var(--mt-c) 22%, var(--tm-border));
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-bg-raised);
+  list-style: none;
+  overflow: hidden;
+}
+.mt-row {
+  display: flex;
+  align-items: stretch;
+  min-height: 52px;
+}
+.mt-row[data-focus='focused'] {
+  background: var(--tm-accent-subtle);
+  box-shadow: inset 0 0 0 1px var(--tm-accent);
+}
+.mt-row[data-focus='related'] {
+  box-shadow: inset 0 0 0 1px var(--tm-accent-subtle);
+}
+.mt-row-open {
+  display: flex;
+  flex: 1;
+  align-items: stretch;
+  gap: var(--tm-space-1);
+  min-width: 0;
+  padding: 0 0 0 var(--tm-space-1);
+  border: 0;
+  background: none;
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.mt-row-open:active {
+  background: var(--tm-bg-inset);
+}
+.mt-row-open:focus-visible,
+.mt-row-rel:focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: -2px;
+}
+.mt-row-rail {
+  position: relative;
+  flex: none;
+  width: 48px;
+}
+.mt-row-mark {
+  position: absolute;
+  top: 50%;
+  left: 5px;
+  margin-top: -11px;
+  overflow: visible;
+}
+.mt-row.branch .mt-row-mark {
+  left: 25px;
+}
+/* rails: main at x 16, a branch at x 36; they stop short of the station */
+.mt-trail {
+  position: absolute;
+  width: 0;
+}
+.mt-trail.up {
+  top: 0;
+  bottom: calc(50% + 12px);
+}
+.mt-trail.down {
+  top: calc(50% + 12px);
+  bottom: 0;
+}
+.mt-row.branch .mt-trail.main.up {
+  bottom: 50%;
+}
+.mt-row.branch .mt-trail.main.down {
+  top: 50%;
+}
+.mt-trail.solid {
+  left: 14px;
+  border-left: 4px solid var(--mt-c);
+}
+.mt-trail.dashed {
+  left: 15px;
+  border-left: 2px dashed var(--mt-c);
+  opacity: 0.7;
+}
+.mt-trail.dotted {
+  left: 15px;
+  border-left: 2px dotted var(--tm-text-faint);
+}
+.mt-trail.branch.solid {
+  left: 34px;
+}
+.mt-trail.branch.dashed {
+  left: 35px;
+}
+.mt-elbow {
+  position: absolute;
+  top: 0;
+  height: 50%;
+  border-bottom-left-radius: 10px;
+}
+.mt-elbow.solid {
+  left: 14px;
+  width: 11px;
+  border-bottom: 4px solid var(--mt-c);
+  border-left: 4px solid var(--mt-c);
+}
+.mt-elbow.dashed {
+  left: 15px;
+  width: 10px;
+  border-bottom: 2px dashed var(--mt-c);
+  border-left: 2px dashed var(--mt-c);
+  opacity: 0.7;
+}
+.bf-scope[data-focus-active] :is(.mt-trail, .mt-elbow) {
+  opacity: 0.3;
+}
+.mt-row-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  padding: var(--tm-space-2) 0;
+}
+.mt-row-title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-weight: 500;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.mt-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-1);
+}
+.mt-row-origin {
+  color: var(--tm-text-faint);
+  font: 500 var(--tm-text-xs) var(--tm-font-mono);
+}
+.mt-row-rel {
+  flex: none;
+  width: 44px;
+  border: 0;
+  background: none;
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-lg);
+  cursor: pointer;
+}
+.mt-row-rel[aria-pressed='true'] {
+  color: var(--tm-accent);
+}

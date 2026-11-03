@@ -225,3 +225,45 @@ Shipped in task 61d20bcc as registry id `stacks` ("Stacks" in Versions, listed r
 - **On a phone the pips take their own line under the "now:" text**, and landed/total stays top right. With the mockup's layout a long group name was cut to a few letters next to a large feature's pips.
 - **Pips are capped (+n).** One real feature plan holds 85 tasks.
 
+## Metro
+
+Shipped in task 9eeb6286 as registry id `metro` ("Metro" in Versions). Files: `web/src/pages/board/Metro.tsx` (the view), `shared/src/metro.ts` (the pure layout, `layoutMetro` + `metroRows`, pinned by `server/src/metro.test.ts`), and the `mt-*` rules at the end of `theme.css`. It needed no Glass rule of its own: every colour is a remapped token read through CSS variables (a line's `--mt-c` is `--tm-group-<slot>`, a station's `--mt-s` its status token). The live/all switch reuses Relation map's `rm-seg` control.
+
+**Lines.**
+- **One per group.** A line is a group with two or more tasks shown, in its colour (`groupColorSlot`). Lines run in the queue order of their roots: priority, then the root's key.
+- **Run order.** Stations are the members in run order, sorted by `compareClaimOrder` (the JS twin of `MANUAL_CLAIM_ORDER`), so a line reads the way the queue claims it.
+- **Origin.** A `blocked` split parent is the line's origin: a small dot in the line colour with no label, since the line's name already says it. It is NOT a station. Any other root is the first station.
+- **Branches.** The root's children are the main stations. Every deeper descendant branches off below its top-level station, in run order. A branch drops straight down from its station to its lane, so lanes are chosen right to left: each branch takes the lane below every branch that starts inside its span. No drop ever crosses another branch's rail or station, and a later branch sits nearer the main line. A member whose parent is not shown (hidden, or out of the workspace) hangs off the root level.
+- **Rails.** The rail is solid (6 px) up to the last station that has started (running, waiting, review, blocked, done, published or failed), then dashed (3 px, 70 %). Each branch has its own split. Rails stop short of each station, so a hollow station stays hollow on a translucent surface.
+- **Local stops.** Single tasks (a group of one on the board) sit on a dotted **Local stops** line in run order. It is capped at 16 stations on the desktop and 8 on a phone, with a **+N more** / **show fewer** toggle.
+- **The name column** gives the group's name and `landed/count` (`· split` when the line has an origin). It is sticky while the map scrolls sideways.
+
+**Stations.**
+- done/published: filled.
+- running/waiting: filled, with a pulsing ring. The pulse is static under `prefers-reduced-motion`.
+- review: amber with a centre dot.
+- queued: hollow. draft: dashed hollow.
+- failed: red with an ×. cancelled: faint with an ×.
+- blocked: violet with pause bars. This applies to a split parent that is not a line's root.
+
+Labels are two lines of up to 19 characters, the second ellipsised. The full title is in the hover card.
+
+**Interaction (desktop).**
+- **Hover card.** Hover or keyboard focus shows a card: title, status badge, repo, progress %, cost and a hint.
+- **Click** (or Enter/Space) opens the ordinary task panel.
+- **Focus.** The **⌖ knob** at a station's upper right toggles the shared focus layer. It shows on hover, on keyboard focus and on the focused station; the keyboard equivalent is **R**. The focused station gets an accent ring and related stations a dashed one. The layer dims the rest, and every rail dims to 22 % while something is focused. The relations card navigates, and a refocus scrolls the station into view.
+- Esc or a click on empty map clears the focus (the layer's own rules).
+
+**Phone: a timetable.** There is no map. Each line is a full-width card with the line running down the left: one row per station, branch stations indented under their station with an elbow off the main rail, and the origin as a first row marked `origin · split`. A tap on a row opens the task panel. Its **⌖** button (a 44 px target) focuses the task, which opens the focus layer's neighbours `<Sheet>`. The station key is desktop-only; *live/all* stays.
+
+**Live vs all.** *live* (the default, stored per device in `tm.metro`) shows every group with a live member, whole so the line keeps its shape, plus every live single task. *all* shows the whole board set (`useBoardTasks()`: workspace scope, not hidden). The view reads `useApp()` tasks, runs and dispatches, which `/ws/events` keeps current, so there is no polling. The layout is memoised on the shown set, and each line row is `content-visibility: auto` with its intrinsic size, so off-screen lines cost no layout. Measured on the live board: *all* is 41 lines and about 380 stations, with no page errors.
+
+**Departures from the mockup.**
+- **The ⌖ knob / R is new.** The mockup had a click open the panel and no focus. The brief keeps the click and adds the required focus layer as a dedicated affordance, as the version contract allows a list-like view to do.
+- **Origin only on split lines.** The mockup drew an origin dot on every line. Here it exists only for a `blocked` split parent, which the brief makes the origin. Elsewhere the root is the first station and has no rail before it.
+- **Branches use lanes.** The mockup placed branch stations at 0.9 × spacing per branch, so adjacent branches overlapped. Here each branch's stations sit on whole slots right of their station, in lanes no other branch's drop crosses.
+- **More stations count as started.** The mockup's solid stretch counted only done/published/running/waiting/review. Here failed and blocked count too, since they ran. Cancelled and blocked got glyphs, which the mockup's sample did not need.
+- **Run order uses the claim comparator.** Lines and stations follow `compareClaimOrder` (priority first) rather than the sample's insertion order.
+- **The hover card drops the live narration line**, which the sample's data carried and `Task` does not. It adds progress % instead.
+- **The *live/all* filter and the local-stops cap are new**, for the real board's landed history.
+- **The phone stacks its cards vertically** (one line per screen-width card) rather than paging them sideways, so the timetable scrolls like every other phone list.

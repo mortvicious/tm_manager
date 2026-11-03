@@ -37,6 +37,7 @@ export const BOARD_VERSIONS: readonly BoardVersion[] = [
   { id: 'stacks', label: 'Stacks', component: lazy(() => import('./pages/board/Stacks.tsx')) },
   { id: 'swimlanes', label: 'Swimlanes', component: lazy(() => import('./pages/board/Swimlanes.tsx')) },
   { id: 'relation-map', label: 'Relation map', component: lazy(() => import('./pages/board/RelationMap.tsx')) },
+  { id: 'metro', label: 'Metro', component: lazy(() => import('./pages/board/Metro.tsx')) },
   // A dev-only exercise of the focus layer; Vite drops the branch (and the
   // chunk) from a production build, so it is never listed there.
   ...(import.meta.env.DEV

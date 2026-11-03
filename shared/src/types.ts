@@ -3521,3 +3521,5 @@ export * from './relation-map.ts';
 export * from './swimlanes.ts';
 // The Stacks board version's sections and stacks (docs/board-versions.md § Stacks)
 export * from './stacks.ts';
+// The Metro board version's pure layout (docs/board-versions.md § Metro)
+export * from './metro.ts';
