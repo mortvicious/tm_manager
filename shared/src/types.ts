@@ -3411,3 +3411,5 @@ export * from './diff.ts';
 export * from './task-relations.ts';
 // The Relation map board version's pure layout (docs/board-versions.md § Relation map)
 export * from './relation-map.ts';
+// The Swimlanes board version's pure layout (docs/board-versions.md § Swimlanes)
+export * from './swimlanes.ts';

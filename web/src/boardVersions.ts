@@ -34,6 +34,7 @@ export interface BoardVersion {
  */
 export const BOARD_VERSIONS: readonly BoardVersion[] = [
   { id: 'original', label: 'Original', component: null },
+  { id: 'swimlanes', label: 'Swimlanes', component: lazy(() => import('./pages/board/Swimlanes.tsx')) },
   { id: 'relation-map', label: 'Relation map', component: lazy(() => import('./pages/board/RelationMap.tsx')) },
   // A dev-only exercise of the focus layer; Vite drops the branch (and the
   // chunk) from a production build, so it is never listed there.

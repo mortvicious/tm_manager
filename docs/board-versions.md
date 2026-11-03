@@ -46,7 +46,7 @@ The Board (`web/src/pages/Board.tsx`) stays frozen and is listed as **Original**
 
 ### What shipped (task 894c2360) — how a version plugs in
 
-**Registry** — `web/src/boardVersions.ts`, `BOARD_VERSIONS: { id, label, component }[]` in menu order. Only implemented versions are listed; today that is `original` alone (its `component` is `null`: `BoardRoute` mounts `<BoardPage/>` itself, never through `lazy`). A version task adds ONE entry:
+**Registry** — `web/src/boardVersions.ts`, `BOARD_VERSIONS: { id, label, component }[]` in menu order. Only implemented versions are listed (`original` first; its `component` is `null`: `BoardRoute` mounts `<BoardPage/>` itself, never through `lazy`). A version task adds ONE entry:
 
 ```ts
 { id: 'stacks', label: 'Stacks', component: lazy(() => import('./pages/board/Stacks.tsx')) }
@@ -118,3 +118,56 @@ Shipped in task 17b1af28 as registry id `relation-map` ("Relation map" in Versio
 - The side card is the shared `BoardFocusCard`, at the lower right, rather than the mockup's top-right card. It also lists siblings in the group, which the shared helper reports and the mockup did not.
 - The node has no hover lift (no `transform`). It shows the repo chip only when the map spans more than one repo, not when the repo differs from a default.
 - The *live/all* filter is new. The mockup's 17-task sample had no need for it, but the real board's landed history (about 900 tasks) would bury the live work.
+
+## Swimlanes
+
+Shipped in task c8eca7cd as registry id `swimlanes` ("Swimlanes" in Versions). Files: `web/src/pages/board/Swimlanes.tsx` (the view), `shared/src/swimlanes.ts` (the pure layout, `layoutSwimlanes` + `swimlaneStage`, pinned by `server/src/swimlanes.test.ts`), and the `sl-*` rules at the end of `theme.css`. It needs no Glass rule of its own: the cells, cards and pinned headers read the remapped tokens (the header row layers the inset token over `--tm-bg-raised`, so it stays opaque where Glass makes the inset translucent), and the focus card already has the Glass popover material.
+
+**The table.** A CSS grid: the lane-name column, then one column per stage (`SWIMLANE_STAGES`):
+
+| column | statuses |
+|---|---|
+| Queued | draft, queued |
+| Working | running, waiting |
+| Review | review |
+| Stuck | failed, blocked |
+| Landed | done, published |
+
+`cancelled` is in no column and in no count, as in the mockup. The column header shows how many cards it holds after the finished filter. Every card's badge is the board's own `StatusBadge` with the same inputs as a board row (attention, question, review/check/loop state, paused, publishing), so *auto-review*, *checking*, *checks red* and *fixing* read correctly inside Review and Working, and a live reviewer badge opens its terminal.
+
+**Lanes** — by **group** (the default), **repo** or **feature**, a per-device pick stored with the finished filter in `tm.swimlanes`.
+- **Group:** one lane per group with two or more tasks on the board. A single task joins the shared **Ungrouped** lane at the bottom. The lane is named by `groupLabel` of its root and coloured by `groupColorSlot`. A root that is not on the board (hidden, out of the workspace, or cancelled) still names and colours its lane, through the `rootOf` lookup over every task.
+- **Repo:** lanes are sorted by repo name, with **No repo** last.
+- **Feature:** a single-task feature is still a lane, and **No feature** comes last.
+- **Order:** lanes with live work come first, by their first task's queue order (repo lanes by name). Lanes whose every task has landed follow, newest first.
+- **Lane header:** the name (a button that folds the lane: its cells show only counts; per session), a colour rail, `landed/total landed` (plus ` · feature` for a group that belongs to one), and a segmented status bar, one `flex: n` segment per status in the mockup's order (done, published, review, running, waiting, queued, draft, failed, blocked). The header counts EVERY member, whatever the filter hides.
+
+**Cards.** Each card shows:
+- the title, clamped to 3 lines;
+- the live line (the running worker run's activity, as on a board row);
+- the badge;
+- a repo chip, when the board spans repos and the card's repo differs from the lane's (the group root's repo, the feature's repo, none for the loose lane);
+- the `agent` chip (`createdByRun`);
+- `~%` (`ProgressPct`);
+- a relations button `⌁`.
+
+Inside a cell, cards keep the tree's pre-order (groups by queue key, siblings by `sortOrder`). A child sits right under its parent, indented by the number of its ancestors in the SAME cell (capped at 3), with an elbow mark. A cell shows `SWIMLANE_CELL_CAP` (30) cards, then a `+n more` button that unfolds that cell.
+
+**Hide finished / All.** *Hide finished* (the default) keeps a landed task only while it was updated in the last 3 days (`SWIMLANE_RECENT_MS`) and drops a lane left with nothing to show. *All* shows every task on the board set (`useBoardTasks()`: the workspace scope applied, hidden tasks left out).
+
+**Clicks.** A click on a card opens the ordinary task panel (`onOpenTask`). The **relations button** toggles the shared focus layer (`itemProps` on the card, `toggle` on the button):
+- the focused card is ringed, related cards are outlined, and the rest is dimmed;
+- the relations card sits at the lower right on the desktop and is the neighbours `<Sheet>` on a phone;
+- Esc or a click on empty table space clears it.
+
+There is **no drag**: a column is a status, which is never set by dragging, and reordering stays in Original.
+
+**Phone.** The lane-name column (116 px) stays pinned (`position: sticky; left: 0`). The five stage columns (220 px each) scroll sideways inside the table and snap one column at a time past the pinned names (`scroll-snap-type: x mandatory`, `scroll-padding-left` = the name column). The Lanes and Recent/All controls stay in the head, and the version pick is in Settings → Appearance as for every version.
+
+**Live.** Everything reads `useApp()` (tasks, runs, activity, questions, features), which `/ws/events` keeps current, so there is no polling. The recent-landed cut-off moves with the shared 30-second `useNow()` clock.
+
+**Departures from the mockup.**
+- **A click opens the task.** Focus comes from a dedicated relations button on every card, the affordance the contract allows a list-like version. The mockup has no focus interaction, and the standing rule says a click opens the panel.
+- **Hide finished is a time window** (3 days) rather than "no landed cards". The column would otherwise always be empty, and *All* on the real board (hundreds of landed tasks) needs the per-cell cap.
+- **The header row is sticky on the desktop.** On a phone it scrolls away with the page, because the table is the horizontal scroller there.
+- **Lanes fold** from the lane name (the mockup's `.lane.collapsed`). The mockup's per-card repo rule ("differs from `tm`") became "differs from the lane's repo, when the board spans repos".

@@ -11170,3 +11170,284 @@ button.explain-tap:active {
 .rm-mark-dispatch.pending {
   background: var(--tm-accent-subtle);
 }
+
+/* ── Board version: Swimlanes (docs/board-versions.md § Swimlanes) ──
+   A CSS grid: the lane-name column, then one column per stage. A lane is
+   `display: contents`, so its header and five cells are grid items of one
+   row. The lane names stay pinned (sticky left); on a phone the stage columns
+   scroll sideways and snap one column at a time past the pinned names. */
+.app:not(.mobile) .board.sl-board {
+  max-width: none;
+}
+.sl-wrap {
+  --sl-name-w: 200px;
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-bg-raised);
+  /* clip, not hidden: no scroll box, so the header row sticks to .main */
+  overflow: clip;
+}
+.sl-grid {
+  display: grid;
+  grid-template-columns: var(--sl-name-w) repeat(5, minmax(0, 1fr));
+}
+.sl-lane {
+  display: contents;
+}
+.sl-hcell {
+  position: sticky;
+  /* the sticky box is .main's padding box: sit flush with its top edge */
+  top: calc(-1 * var(--tm-space-5));
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border-bottom: 1px solid var(--tm-border);
+  /* opaque even where the inset token is translucent (Glass) */
+  background: linear-gradient(var(--tm-bg-inset), var(--tm-bg-inset)), var(--tm-bg-raised);
+  color: var(--tm-text-muted);
+  font-family: var(--tm-font-body);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.sl-hcell.sl-hcorner {
+  left: 0;
+  z-index: 4;
+}
+.sl-hn {
+  color: var(--tm-text-faint);
+  font-family: var(--tm-font-mono);
+  text-transform: none;
+}
+.sl-lhead,
+.sl-cell {
+  min-width: 0;
+  min-height: 64px;
+  padding: var(--tm-space-2);
+  border-bottom: 1px solid var(--tm-border);
+}
+.sl-cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  border-left: 1px solid color-mix(in srgb, var(--tm-border) 60%, transparent);
+}
+.sl-lane[data-folded] > .sl-lhead,
+.sl-lane[data-folded] > .sl-cell {
+  min-height: 0;
+}
+.sl-lhead {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  padding-left: var(--tm-space-4);
+  background: color-mix(in srgb, var(--sl-g) 8%, var(--tm-bg-raised));
+}
+.sl-lhead::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: var(--sl-g);
+}
+.sl-lname {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--tm-text);
+  font-family: var(--tm-font-display);
+  font-size: var(--tm-text-sm);
+  font-weight: 600;
+  line-height: 1.25;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.sl-lname:focus-visible,
+.sl-card-open:focus-visible,
+.sl-rel:focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: 1px;
+}
+.sl-lsub {
+  color: var(--tm-text-faint);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  overflow-wrap: anywhere;
+}
+.sl-prog {
+  display: flex;
+  gap: 1px;
+  height: 5px;
+  overflow: hidden;
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-bg-inset);
+}
+.sl-prog i {
+  display: block;
+  min-width: 2px;
+}
+.sl-count {
+  color: var(--tm-text-faint);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+}
+.sl-card {
+  position: relative;
+  margin-left: calc(var(--sl-depth, 0) * 10px);
+  padding: 6px var(--tm-space-2);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-overlay);
+  transition:
+    border-color var(--tm-dur-fast) var(--tm-ease-out),
+    opacity var(--tm-dur-fast) var(--tm-ease-out),
+    box-shadow var(--tm-dur-fast) var(--tm-ease-out);
+}
+.sl-card:hover {
+  border-color: var(--tm-border-strong);
+}
+.sl-card[data-status='failed'] {
+  border-color: color-mix(in srgb, var(--tm-status-failed) 45%, var(--tm-border));
+}
+.sl-card[data-child]::before {
+  content: '';
+  position: absolute;
+  top: 12px;
+  left: -8px;
+  width: 6px;
+  border-top: 1px solid var(--tm-border-strong);
+}
+.sl-card-open {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sl-card-title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-weight: 500;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+.sl-card-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--tm-text-faint);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  line-height: 1.35;
+}
+.sl-card-live .what {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sl-card-live .live-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-accent);
+  animation: pulse 1.8s var(--tm-ease-in-out) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sl-card-live .live-dot {
+    animation: none;
+  }
+}
+.sl-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: var(--tm-space-1);
+}
+.sl-rel {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--tm-radius-sm);
+  background: none;
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-sm);
+  line-height: 1;
+  cursor: pointer;
+}
+.sl-rel:hover {
+  border-color: var(--tm-border);
+  color: var(--tm-text);
+}
+.sl-rel[aria-pressed='true'] {
+  border-color: var(--tm-accent);
+  background: var(--tm-accent-subtle);
+  color: var(--tm-text);
+}
+.sl-more {
+  align-self: flex-start;
+  font-size: var(--tm-text-xs);
+}
+.sl-empty {
+  padding: var(--tm-space-6) var(--tm-space-4);
+}
+
+/* phone: pinned names, the stages scroll sideways a column at a time */
+.app.mobile .sl-wrap {
+  --sl-name-w: 116px;
+  --sl-col-w: 220px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scroll-padding-left: var(--sl-name-w);
+  -webkit-overflow-scrolling: touch;
+}
+.app.mobile .sl-grid {
+  grid-template-columns: var(--sl-name-w) repeat(5, var(--sl-col-w));
+  width: max-content;
+}
+.app.mobile .sl-hcell {
+  /* the wrap scrolls sideways, so it is the sticky box: pin to its top */
+  top: 0;
+  scroll-snap-align: start;
+}
+.app.mobile .sl-hcell.sl-hcorner {
+  scroll-snap-align: none;
+}
+.app.mobile .sl-lhead {
+  padding-left: var(--tm-space-3);
+}
+.app.mobile .sl-rel {
+  width: 32px;
+  height: 32px;
+  font-size: var(--tm-text-md);
+}
+.app.mobile .sl-lname {
+  min-height: 32px;
+}
