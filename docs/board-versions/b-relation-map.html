@@ -1,0 +1,75 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Board v2 · B · Relation map</title><link rel="stylesheet" href="common.css"><script src="data.js"></script>
+<style>
+.canvas{position:relative;border:1px solid var(--tm-border);border-radius:var(--tm-radius-lg);overflow:auto;
+  background:radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--tm-border) 70%,transparent) 1px,transparent 0) 0 0/18px 18px,var(--tm-bg-inset)}
+.stage{position:relative}
+svg{position:absolute;inset:0;pointer-events:none;overflow:visible}
+.band{position:absolute;left:8px;right:8px;border-radius:var(--tm-radius-lg);background:color-mix(in srgb,var(--g) 6%,transparent);border:1px solid color-mix(in srgb,var(--g) 22%,transparent)}
+.band b{position:absolute;top:8px;left:12px;font:600 var(--tm-text-xs) var(--tm-font-display);color:var(--g);letter-spacing:.02em}
+.band span{position:absolute;top:9px;right:12px;font:500 11px var(--tm-font-mono);color:var(--tm-text-faint)}
+.node{position:absolute;width:230px;background:var(--tm-bg-raised);border:1px solid var(--tm-border);border-left:3px solid var(--c);border-radius:var(--tm-radius-md);padding:6px 9px;cursor:pointer;
+  transition:opacity var(--tm-dur-fast),border-color var(--tm-dur-fast),transform var(--tm-dur-fast) var(--tm-ease-out)}
+.node .t{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node .m{display:flex;gap:5px;margin-top:4px;align-items:center}
+.node:hover{transform:translateY(-1px);border-color:var(--tm-border-strong);border-left-color:var(--c)}
+.stage.dim .node{opacity:.22}.stage.dim .node.hi{opacity:1}
+.stage.dim path{opacity:.12}.stage.dim path.hi{opacity:1}
+.node.sel{box-shadow:0 0 0 1px var(--tm-accent),var(--tm-shadow-md)}
+path{fill:none;transition:opacity var(--tm-dur-fast)}
+path.tree{stroke-width:1.6}
+path.filed{stroke:var(--tm-text-muted);stroke-width:1.3;stroke-dasharray:5 4}
+path.disp{stroke:var(--tm-accent);stroke-width:1.6;stroke-dasharray:2 4;animation:flow 1.2s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-12}}
+.lg i{display:inline-block;width:22px;height:0;vertical-align:middle;margin-right:6px;border-top:2px solid var(--tm-group-1)}
+.lg i.f{border-top:2px dashed var(--tm-text-muted)}.lg i.d{border-top:2px dotted var(--tm-accent)}
+.side{position:absolute;right:16px;top:16px;width:250px;background:var(--tm-bg-overlay);border:1px solid var(--tm-border-strong);border-radius:var(--tm-radius-lg);padding:var(--tm-space-3);box-shadow:var(--tm-shadow-md);display:none}
+.side.on{display:block}.side h3{margin:0 0 6px;font:600 var(--tm-text-sm) var(--tm-font-display)}
+.side li{margin:3px 0;color:var(--tm-text-muted)}.side ul{padding-left:16px;margin:4px 0}
+</style></head><body><div class="page">
+<div class="bar"><h1>Board</h1><span class="vtag">v2 · B · relation map</span><span class="spacer"></span>
+<div class="legend lg"><span><i></i>subtask</span><span><i class="f"></i>filed by agent</span><span><i class="d"></i>dispatch</span></div>
+<div class="seg"><button class="on">Columns: depth</button><button>phase</button><button>status</button></div></div>
+<div class="canvas" id="cv"><div class="stage" id="st"><svg id="sv"></svg></div>
+<div class="side" id="side"></div></div>
+<div class="note"><b>Idea.</b> A real graph instead of an indent. Each group is a soft band. Inside it the tree reads left to right: parent, then subtasks. The relations that are invisible today are drawn: a <b>dashed line</b> for "an agent filed this" and an animated <b>dotted line</b> for a dispatch on its way. <b>Click a task</b> to light up its whole neighbourhood (parent, children, filer, dispatch partners) and dim the rest, with a side card that lists them. Columns can switch to feature phase or to status. Best for "why does this exist, and what is it waiting on?" On a phone this becomes a single-task "neighbours" sheet rather than the full canvas.</div>
+</div><script>
+const COLW=270,NH=52,GAP=12,BANDPAD=34,X0=24;
+const st=document.getElementById('st'),sv=document.getElementById('sv');
+let y=16;const pos={};const bands=[...Object.keys(GROUPS),null];
+for(const k of bands){
+  const ts=TASKS.filter(t=>t.group===k);const top=y;let row=0;
+  const kids=id=>ts.filter(t=>t.parent===id);
+  const roots=ts.filter(t=>!t.parent||!ts.some(x=>x.id===t.parent));
+  function place(t,d){const ch=kids(t.id);let r;
+    if(!ch.length){r=row++;}else{const rs=ch.map(c=>place(c,d+1));r=(rs[0]+rs[rs.length-1])/2;}
+    pos[t.id]={x:X0+d*COLW,y:top+BANDPAD+r*(NH+GAP),t};return r;}
+  if(k===null){ // ungrouped: lay out flat across columns, filer -> filed to the right
+    ts.filter(t=>!FILED.some(f=>f[1]===t.id)).forEach(t=>{pos[t.id]={x:X0,y:top+BANDPAD+row*(NH+GAP),t};
+      FILED.filter(f=>f[0]===t.id).forEach(f=>pos[f[1]]={x:X0+COLW,y:top+BANDPAD+row*(NH+GAP),t:byId(f[1])});row++;});
+  } else roots.forEach(r=>place(r,0));
+  const h=BANDPAD+row*(NH+GAP)+4;
+  st.insertAdjacentHTML('beforeend',`<div class="band" style="top:${top}px;height:${h}px;--g:${gcol(k)}"><b>${k?GROUPS[k].name:'Ungrouped'}</b><span>${ts.length} tasks</span></div>`);
+  y=top+h+14;
+}
+st.style.height=y+'px';st.style.width=(X0+3*COLW+40)+'px';
+for(const id in pos){const {x,y,t}=pos[id];
+  st.insertAdjacentHTML('beforeend',`<div class="node s-${t.status}" data-id="${id}" style="left:${x}px;top:${y}px"><div class="t">${t.title}</div><div class="m">${badge(t)}${t.repo!=='tm'?`<span class="chip">${REPOS[t.repo]}</span>`:''}${t.pct?`<span class="chip">~${t.pct}%</span>`:''}</div></div>`);}
+const W=230;let paths='';const edges=[];
+const curve=(a,b,bend=0)=>{const A=pos[a],B=pos[b];
+  if(B.x>A.x){const x1=A.x+W,y1=A.y+NH/2,x2=B.x,y2=B.y+NH/2,mx=(x1+x2)/2;return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;}
+  const x1=A.x+W,y1=A.y+NH/2,x2=B.x+W,y2=B.y+NH/2,o=60+bend;return `M${x1},${y1} C${x1+o},${y1} ${x2+o},${y2} ${x2},${y2}`;};
+TASKS.forEach(t=>{if(t.parent&&pos[t.parent]&&t.group){edges.push([t.parent,t.id]);paths+=`<path class="tree" data-e="${t.parent} ${t.id}" stroke="${gcol(t.group)}" d="${curve(t.parent,t.id)}"/>`;}});
+FILED.forEach(([a,b])=>{edges.push([a,b]);paths+=`<path class="filed" data-e="${a} ${b}" d="${curve(a,b,24)}" transform="translate(0,6)"/>`;});
+DISPATCH.forEach(([a,b])=>{edges.push([a,b]);paths+=`<path class="disp" data-e="${a} ${b}" d="${curve(a,b,48)}" marker-end="url(#ar)" transform="translate(0,-6)"/>`;});
+sv.innerHTML=`<defs><marker id="ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2dd4bf"/></marker></defs>`+paths;
+const side=document.getElementById('side');
+function focus(id){const nb=new Set([id]);edges.forEach(([a,b])=>{if(a===id)nb.add(b);if(b===id)nb.add(a)});
+  st.classList.add('dim');document.querySelectorAll('.node').forEach(n=>{n.classList.toggle('hi',nb.has(n.dataset.id));n.classList.toggle('sel',n.dataset.id===id)});
+  document.querySelectorAll('path[data-e]').forEach(p=>{const [a,b]=p.dataset.e.split(' ');p.classList.toggle('hi',a===id||b===id)});
+  const t=byId(id),par=t.parent&&byId(t.parent),ch=TASKS.filter(x=>x.parent===id),fb=FILED.filter(f=>f[1]===id).map(f=>byId(f[0])),fl=FILED.filter(f=>f[0]===id).map(f=>byId(f[1])),ds=DISPATCH.filter(d=>d[0]===id||d[1]===id);
+  side.innerHTML=`<h3>${t.title}</h3>${badge(t)}<ul>${par?`<li>parent · ${par.title}</li>`:''}${ch.map(c=>`<li>subtask · ${c.title}</li>`).join('')}${fb.map(c=>`<li>filed by · ${c.title}</li>`).join('')}${fl.map(c=>`<li>filed · ${c.title}</li>`).join('')}${ds.map(d=>`<li>⇢ ${d[0]===id?'to':'from'} ${byId(d[0]===id?d[1]:d[0]).title} <span class="faint">(${d[2]})</span></li>`).join('')}</ul>`;side.classList.add('on');}
+document.querySelectorAll('.node').forEach(n=>n.onclick=e=>{e.stopPropagation();focus(n.dataset.id)});
+document.getElementById('cv').onclick=()=>{st.classList.remove('dim');side.classList.remove('on');document.querySelectorAll('.sel').forEach(n=>n.classList.remove('sel'))};
+if(location.hash)focus(location.hash.slice(1));
+</script></body></html>

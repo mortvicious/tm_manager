@@ -1,0 +1,60 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Board v2 · C · Stacks</title><link rel="stylesheet" href="common.css"><script src="data.js"></script>
+<style>
+.list{display:flex;flex-direction:column;gap:10px;max-width:880px}
+.sec{font:600 var(--tm-text-xs) var(--tm-font-body);text-transform:uppercase;letter-spacing:.07em;color:var(--tm-text-faint);margin:14px 0 2px;display:flex;gap:8px}
+.sec .n{font-family:var(--tm-font-mono)}
+.row{display:flex;align-items:center;gap:10px;background:var(--tm-bg-raised);border:1px solid var(--tm-border);border-radius:var(--tm-radius-md);padding:9px 12px}
+.row .t{flex:1;min-width:0}.row .t b{font-weight:500;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .live{font:11px var(--tm-font-mono);color:var(--tm-status-running)}
+.gdot{width:8px;height:8px;border-radius:50%;background:var(--g);flex:none}
+.stack{position:relative;margin-bottom:8px}
+.stack::before,.stack::after{content:'';position:absolute;left:10px;right:10px;height:100%;border:1px solid var(--tm-border);border-radius:var(--tm-radius-md);background:var(--tm-bg-raised);z-index:0}
+.stack::before{bottom:-4px;left:6px;right:6px;opacity:.7}.stack::after{bottom:-8px;opacity:.4}
+.stack.open::before,.stack.open::after{display:none}
+.scard{position:relative;z-index:1;background:var(--tm-bg-raised);border:1px solid color-mix(in srgb,var(--g) 35%,var(--tm-border));border-radius:var(--tm-radius-md);overflow:hidden}
+.shead{display:flex;align-items:center;gap:12px;padding:10px 12px;cursor:pointer;background:linear-gradient(90deg,color-mix(in srgb,var(--g) 12%,transparent),transparent 60%)}
+.shead .nm{font:600 var(--tm-text-md)/1.2 var(--tm-font-display)}
+.shead .now{font-size:var(--tm-text-xs);color:var(--tm-text-muted);margin-top:2px}
+.shead .now em{font-style:normal;color:var(--tm-text)}
+.pips{display:flex;gap:3px;margin-left:auto}
+.pips i{width:10px;height:10px;border-radius:3px;background:var(--c);opacity:.95}
+.pips i.s-draft,.pips i.s-queued{background:none;border:1.5px solid var(--c)}
+.frac{font:600 11px var(--tm-font-mono);color:var(--tm-text-faint);min-width:34px;text-align:right}
+.car{color:var(--tm-text-faint);transition:transform var(--tm-dur-fast)}.open .car{transform:rotate(90deg)}
+.kids{display:none;border-top:1px solid var(--tm-border);padding:6px 6px 8px 22px;position:relative}
+.open .kids{display:block}
+.kids::before{content:'';position:absolute;left:14px;top:4px;bottom:16px;border-left:2px solid color-mix(in srgb,var(--g) 50%,transparent)}
+.kids .row{background:transparent;border-color:transparent;padding:6px 8px}
+.kids .row:hover{background:var(--tm-bg-overlay)}
+.kids .row.d2{margin-left:18px}
+
+</style></head><body><div class="page">
+<div class="bar"><h1>Board</h1><span class="vtag">v2 · C · stacks</span><span class="spacer"></span>
+<div class="seg" id="mode"><button class="on" data-m="stack">Group: stacks</button><button data-m="flat">Flat</button></div></div>
+<div class="list" id="L"></div>
+<div class="note"><b>Idea.</b> The simplest change: <b>grouping is a flag</b> (Stacks / Flat), and a group stops being a header with an indented list. Instead it is one <b>card that looks like a stack</b>. The card shows the group's name and its single most urgent member ("now: <i>Tracks layout</i> waits for your review"). It also carries a pip per task in run order (filled = landed or working, hollow = still to come). The board is sorted by <b>what needs you</b>, not by status bucket. A group sits in the section of its most urgent member, so a group never splits across sections. Click a stack to unfold it in place, with its subtasks on a single coloured rail. Flat mode is the same list with a coloured dot and the group name on each row.</div>
+</div><script>
+const URG={review:0,failed:0,blocked:2,running:1,waiting:1,queued:3,draft:4,done:5,published:5};
+const SECS=[[0,'Needs you'],[1,'Working'],[3,'Up next'],[4,'Drafts'],[5,'Landed']];
+const secOf=u=>u===2?3:u;
+const L=document.getElementById('L');
+const row=(t,extra='')=>`<div class="row ${extra}">${t.group?`<span class="gdot" style="--g:${gcol(t.group)}"></span>`:'<span class="gdot" style="--g:transparent"></span>'}<div class="t"><b>${t.title}</b>${t.live?`<span class="live">● ${t.live}</span>`:''}</div>${t.agent?'<span class="chip">agent</span>':''}${t.repo!=='tm'?`<span class="chip">${REPOS[t.repo]}</span>`:''}${t.pct?`<span class="chip">~${t.pct}%</span>`:''}${badge(t)}</div>`;
+function render(mode){
+  L.className='list m-'+mode;let items=[];
+  if(mode==='flat'){items=TASKS.map(t=>({u:URG[t.status],html:row(t)}));}
+  else{
+    for(const k in GROUPS){const ts=TASKS.filter(t=>t.group===k);const head=[...ts].sort((a,b)=>URG[a.status]-URG[b.status])[0];
+      const u=URG[head.status];const landed=ts.filter(t=>URG[t.status]===5).length;
+      const verb={review:'waits for your review',failed:'failed',running:'is running',waiting:'is waiting',queued:'is next',draft:'is a draft'}[head.status]||head.status;
+      const depth=t=>{let d=0,p=t.parent;while(p&&ts.some(x=>x.id===p)){d++;p=byId(p).parent}return d};
+      const kids=ts.filter(t=>t.status!=='blocked'||!ts.some(x=>x.parent===t.id)).map(t=>row(t,depth(t)>1?'d2':'')).join('');
+      items.push({u,html:`<div class="stack ${k==='tl'?'open':''}" style="--g:${gcol(k)}"><div class="scard"><div class="shead" onclick="this.closest('.stack').classList.toggle('open')"><span class="car">▸</span><div><div class="nm">${GROUPS[k].name}</div><div class="now">now: <em>${head.title}</em> ${verb}${ts.length>1?` · ${ts.length-1} more`:''}</div></div><div class="pips">${ts.map(t=>`<i class="s-${t.status}" title="${t.title}"></i>`).join('')}</div><span class="frac">${landed}/${ts.length}</span></div><div class="kids">${kids}</div></div></div>`});}
+    TASKS.filter(t=>!t.group).forEach(t=>items.push({u:URG[t.status],html:row(t)}));
+  }
+  L.innerHTML=SECS.map(([s,n])=>{const its=items.filter(i=>secOf(i.u)===s);return its.length?`<div class="sec">${n}<span class="n">${its.length}</span></div>`+its.map(i=>i.html).join(''):''}).join('');
+}
+document.querySelectorAll('#mode button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#mode button').forEach(x=>x.classList.toggle('on',x===b));render(b.dataset.m)});
+render(location.hash==='#flat'?'flat':'stack');
+if(location.hash==='#flat')document.querySelectorAll('#mode button').forEach(x=>x.classList.toggle('on',x.dataset.m==='flat'));
+</script></body></html>

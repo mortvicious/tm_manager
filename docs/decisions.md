@@ -1,5 +1,10 @@
 # Decision log
 
+- **2026-11-03 — Board versions: four alternatives to grouping, switchable next to the frozen board (`docs/board-versions.md`)**: task 10e66e3d.
+  - **Grouping today shows one relation, and splits it by status.** A group is drawn inside each status bucket, so one tree appears as 3–4 fragments. "Filed by" and dispatch are text chips, not structure.
+  - **Four directions were mocked up on one sample board**: Swimlanes (group × stage), Relation map (graph with filed-by and dispatch edges), Stacks (a group as one card with its most urgent member, grouping as a flag), and Metro (a group as a line of stations in run order).
+  - **All four ship as versions, and none replaces the original.** The Board freeze (2026-10-29) holds: the original stays untouched, and the versions are switched per device. Every version gets the focus layer from one shared relations helper.
+
 - **2026-11-02 — Desktop re-design: header fit, board head, New task as a dialog with files, a two-line task panel head (`docs/design.md` § Desktop chrome)**: task d95e0ebd.
   - **The Board freeze is amended, for its head only.** 2026-10-29 froze the Board against the Timeline family. This change was asked for by name ("header of board", "new task creation"), so it touches the board head and the New task form. No row, section, sort or grouping moved.
   - **The real 14″ bug was the grid, not the header.** `.app`'s main track was `1fr`, whose minimum is the content's min-content. The header is nowrap, so on 1280–1512px it widened the whole page past the window and clipped every row on the right. `minmax(0, 1fr)` plus `.header { min-width: 0 }` fixes the cause. Shorter labels alone would only have moved the threshold.

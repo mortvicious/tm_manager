@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Board v1 · current (approximation)</title><link rel="stylesheet" href="common.css"><script src="data.js"></script>
+<style>.sec{font:600 var(--tm-text-xs) var(--tm-font-body);text-transform:uppercase;letter-spacing:.07em;color:var(--tm-text-faint);margin:16px 0 6px}
+.panel{background:var(--tm-bg-raised);border:1px solid var(--tm-border);border-radius:var(--tm-radius-lg);max-width:980px}
+.r{display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid var(--tm-border);padding-left:calc(12px + var(--d,0)*22px)}
+.r .t{flex:1}.r .t::before{content:var(--gl,'');color:var(--tm-text-faint);margin-right:6px}
+.grp{border-left:3px solid var(--g)}.gh{padding:5px 12px;font:600 var(--tm-text-xs) var(--tm-font-body);color:var(--g);border-top:1px solid var(--tm-border)}</style></head><body><div class="page">
+<div class="bar"><h1>Board</h1><span class="vtag">v1 · current</span></div><div id="L"></div></div><script>
+const depth=t=>{let d=0,p=t.parent;while(p){d++;p=byId(p).parent}return d};
+const r=t=>`<div class="r" style="--d:${depth(t)};${depth(t)?"--gl:'└'":''}"><span class="t">${t.title}</span>${t.agent?'<span class="chip">agent</span>':''}<span class="chip">${REPOS[t.repo]}</span>${badge(t)}</div>`;
+const B=[['Active',['running','waiting','review']],['Queued',['queued']],['Blocked',['blocked']],['Drafts',['draft']],['Failed',['failed']],['Recent',['done','published']]];
+document.getElementById('L').innerHTML=B.map(([n,ss])=>{const ts=TASKS.filter(t=>ss.includes(t.status));if(!ts.length)return'';let h='',cur=null;
+ const gs=[...new Set(ts.map(t=>t.group))];
+ for(const g of gs){const m=ts.filter(t=>t.group===g);if(g&&m.length>1)h+=`<div class="grp" style="--g:${gcol(g)}"><div class="gh">▾ ${GROUPS[g].name} ${m.length}/${TASKS.filter(t=>t.group===g).length}</div>${m.map(r).join('')}</div>`;else h+=m.map(r).join('')}
+ return `<div class="sec">${n}</div><div class="panel">${h}</div>`}).join('');
+</script></body></html>

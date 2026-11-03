@@ -1,0 +1,71 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Board v2 · D · Metro lines</title><link rel="stylesheet" href="common.css"><script src="data.js"></script>
+<style>
+.map{border:1px solid var(--tm-border);border-radius:var(--tm-radius-lg);background:var(--tm-bg-raised);overflow-x:auto;position:relative}
+svg{display:block}
+.lbl{font:500 11.5px var(--tm-font-body);fill:var(--tm-text)}
+.lbl.f{fill:var(--tm-text-faint)}
+.lname{font:700 14px var(--tm-font-display);}
+.lsub{font:500 10.5px var(--tm-font-mono);fill:var(--tm-text-faint)}
+.st{cursor:pointer}.st:hover circle.o{stroke-width:4}
+.run{animation:ring 1.6s var(--tm-ease-out) infinite;transform-box:fill-box;transform-origin:center}
+@keyframes ring{0%{opacity:.9;transform:scale(1)}100%{opacity:0;transform:scale(2.2)}}
+.tip{position:absolute;pointer-events:none;background:var(--tm-bg-overlay);border:1px solid var(--tm-border-strong);border-radius:var(--tm-radius-md);padding:8px 10px;box-shadow:var(--tm-shadow-md);display:none;min-width:200px}
+.tip b{display:block;font-weight:600;margin-bottom:5px}
+.key{display:flex;gap:16px;flex-wrap:wrap;color:var(--tm-text-muted);font-size:var(--tm-text-xs);align-items:center}
+.key svg{display:inline-block;vertical-align:middle;margin-right:4px}
+</style></head><body><div class="page">
+<div class="bar"><h1>Board</h1><span class="vtag">v2 · D · metro lines</span><span class="spacer"></span>
+<div class="key" id="key"></div></div>
+<div class="map" id="map"><div class="tip" id="tip"></div></div>
+<div class="note"><b>Idea.</b> Every group is a <b>line</b>, and its tasks are <b>stations in run order</b> (sort order, the order the queue will really claim them). The finished part of the line is solid; the stretch still to come is dashed. A subtask of a subtask <b>branches off</b> below its station. A running task pulses, a review sits on an amber station, and a failure is a red stop the line cannot pass. You read the board by shape alone: how far each line has got, where it stopped, and which lines are moving right now. Ungrouped tasks are single stops on the bottom "local" line. Hover shows the task card, and a click opens the panel. On a phone the lines run vertically (a timetable).</div>
+</div><script>
+const SX=150,X0=230,ROWH=96,BR=46;
+const col=s=>({done:'#4ade80',published:'#60a5fa',review:'#f5b83d',running:'#2dd4bf',waiting:'#2dd4bf',failed:'#f4645f',queued:'#9aa0a6',draft:'#6b7178',blocked:'#a78bfa'})[s];
+const HEX=['#a78bfa','#60a5fa','#f5b83d','#f472b6','#4ade80','#fb923c','#a3e635'];
+function station(t,x,y){const c=col(t.status);let g=`<g class="st" data-id="${t.id}">`;
+  if(t.status==='running'||t.status==='waiting')g+=`<circle class="run" cx="${x}" cy="${y}" r="9" fill="none" stroke="${c}" stroke-width="2"/>`;
+  const hollow=['queued','draft'].includes(t.status);
+  g+=`<circle class="o" cx="${x}" cy="${y}" r="9" fill="${hollow?'#141619':c}" stroke="${hollow?c:'#141619'}" stroke-width="${hollow?2.5:3}" ${t.status==='draft'?'stroke-dasharray="3 2"':''}/>`;
+  if(t.status==='failed')g+=`<path d="M${x-4},${y-4}L${x+4},${y+4}M${x+4},${y-4}L${x-4},${y+4}" stroke="#141619" stroke-width="2.4"/>`;
+  if(t.status==='review')g+=`<circle cx="${x}" cy="${y}" r="3" fill="#141619"/>`;
+  const words=t.title.split(' ');let l1='',l2='';for(const w of words){if((l1+' '+w).length<=19&&!l2)l1=(l1+' '+w).trim();else l2=(l2+' '+w).trim()}
+  if(l2.length>19)l2=l2.slice(0,18)+'…';
+  const f=['draft','queued'].includes(t.status)?' f':'';
+  g+=`<text class="lbl${f}" x="${x}" y="${y+26}" text-anchor="middle">${l1}</text><text class="lbl${f}" x="${x}" y="${y+40}" text-anchor="middle">${l2}</text></g>`;return g;}
+let svg='',y=56;const lines=[...Object.keys(GROUPS),null];let maxX=0;
+for(const k of lines){
+  const ts=TASKS.filter(t=>t.group===k);const color=k?HEX[GROUPS[k].color-1]:'#464b52';
+  if(k===null){ // local line: single stops
+    svg+=`<text class="lname" x="24" y="${y+5}" fill="#9aa0a6">Local stops</text><text class="lsub" x="24" y="${y+21}">ungrouped · ${ts.length}</text>`;
+    svg+=`<line x1="${X0-40}" y1="${y}" x2="${X0+(ts.length-1)*SX+40}" y2="${y}" stroke="${color}" stroke-width="2" stroke-dasharray="1 7" stroke-linecap="round"/>`;
+    ts.forEach((t,i)=>svg+=station(t,X0+i*SX,y));maxX=Math.max(maxX,X0+ts.length*SX);y+=ROWH;continue;}
+  const kids=id=>ts.filter(t=>t.parent===id);
+  const root=ts.find(t=>!t.parent);const split=root.status==='blocked';
+  const main=split?kids(root.id):[root,...kids(root.id)];
+  const mainXY=main.map((t,i)=>[t,X0+i*SX]);
+  const landed=t=>['done','published','running','waiting','review'].includes(t.status);
+  let lastSolid=-1;mainXY.forEach(([t],i)=>{if(landed(t))lastSolid=i});
+  const xEnd=X0+(main.length-1)*SX;
+  svg+=`<text class="lname" x="24" y="${y+5}" fill="${color}">${GROUPS[k].name}</text><text class="lsub" x="24" y="${y+21}">${ts.filter(t=>['done','published'].includes(t.status)).length}/${ts.length} landed${split?' · split':''}</text>`;
+  svg+=`<circle cx="${X0-50}" cy="${y}" r="5" fill="${color}"/>`;
+  const sx=lastSolid>=0?X0+lastSolid*SX:X0-50;
+  svg+=`<line x1="${X0-50}" y1="${y}" x2="${sx}" y2="${y}" stroke="${color}" stroke-width="6" stroke-linecap="round"/>`;
+  if(sx<xEnd)svg+=`<line x1="${sx}" y1="${y}" x2="${xEnd}" y2="${y}" stroke="${color}" stroke-width="3" stroke-dasharray="6 6" opacity=".7"/>`;
+  let extra=0;
+  mainXY.forEach(([t,x])=>{const br=TASKS.filter(c=>c.parent===t.id&&c.group===k&&!main.includes(c));
+    br.forEach((c,j)=>{const bx=x+SX*(j+1)*.9,by=y+BR+16;
+      svg+=`<path d="M${x},${y} C${x+30},${y} ${x+20},${by} ${x+60},${by} L${bx},${by}" fill="none" stroke="${color}" stroke-width="3" stroke-dasharray="6 6" opacity=".7"/>`;
+      svg+=station(c,bx,by);extra=BR+30;});});
+  mainXY.forEach(([t,x])=>svg+=station(t,x,y));maxX=Math.max(maxX,xEnd+SX);
+  y+=ROWH+extra;
+}
+const H=y-20,W=Math.max(maxX,1000);
+const map=document.getElementById('map');
+map.insertAdjacentHTML('afterbegin',`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${svg}</svg>`);
+const tip=document.getElementById('tip');
+map.querySelectorAll('.st').forEach(s=>{s.onmouseenter=e=>{const t=byId(s.dataset.id);tip.innerHTML=`<b>${t.title}</b>${badge(t)} <span class="chip">${REPOS[t.repo]}</span>${t.live?`<div class="mono" style="margin-top:6px;color:var(--tm-status-running);font-size:11px">● ${t.live}</div>`:''}${t.cost?`<div class="faint mono" style="margin-top:4px;font-size:11px">$${t.cost.toFixed(2)}</div>`:''}`;
+  const r=map.getBoundingClientRect(),b=s.getBoundingClientRect();tip.style.left=(b.left-r.left+map.scrollLeft+16)+'px';tip.style.top=(b.top-r.top-8)+'px';tip.style.display='block'};s.onmouseleave=()=>tip.style.display='none'});
+const K=[['running','working'],['review','review'],['done','landed'],['queued','next'],['draft','draft'],['failed','failed']];
+document.getElementById('key').innerHTML=K.map(([s,n])=>`<span><svg width="14" height="14">${['queued','draft'].includes(s)?`<circle cx="7" cy="7" r="5" fill="none" stroke="${col(s)}" stroke-width="2"/>`:`<circle cx="7" cy="7" r="6" fill="${col(s)}"/>`}</svg>${n}</span>`).join('');
+</script></body></html>

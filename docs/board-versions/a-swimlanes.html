@@ -1,0 +1,58 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Board v2 · A · Swimlanes</title><link rel="stylesheet" href="common.css"><script src="data.js"></script>
+<style>
+.grid{display:grid;grid-template-columns:200px repeat(5,minmax(0,1fr));border:1px solid var(--tm-border);border-radius:var(--tm-radius-lg);overflow:hidden;background:var(--tm-bg-raised)}
+.hcell{padding:var(--tm-space-2) var(--tm-space-3);font:600 var(--tm-text-xs) var(--tm-font-body);color:var(--tm-text-muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--tm-border);background:var(--tm-bg-inset);display:flex;gap:6px;align-items:center}
+.hcell .n{font-family:var(--tm-font-mono);color:var(--tm-text-faint);text-transform:none}
+.lane{display:contents}
+.lane>div{border-bottom:1px solid var(--tm-border);padding:var(--tm-space-2);min-height:64px}
+.lane>div+div{border-left:1px solid color-mix(in srgb,var(--tm-border) 60%,transparent)}
+.lhead{position:sticky;left:0;z-index:2;padding-left:var(--tm-space-4)!important;background:color-mix(in srgb,var(--g) 8%,var(--tm-bg-raised))}
+.hcell:first-child{position:sticky;left:0;z-index:3}
+.lhead::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--g)}
+.lhead .nm{font:600 var(--tm-text-sm)/1.25 var(--tm-font-display);display:block}
+.lhead .sub{font:500 11px var(--tm-font-mono);color:var(--tm-text-faint);display:block;margin:2px 0 6px}
+.prog{display:flex;height:5px;border-radius:3px;overflow:hidden;background:var(--tm-bg-inset);gap:1px}
+.prog i{display:block;background:var(--c)}
+.card{background:var(--tm-bg-overlay);border:1px solid var(--tm-border);border-radius:var(--tm-radius-md);padding:6px 8px;margin-bottom:6px;position:relative;cursor:pointer;transition:border-color var(--tm-dur-fast)}
+.card:hover{border-color:var(--tm-border-strong)}
+.card .t{font-weight:500;line-height:1.3}
+.card .m{display:flex;gap:5px;align-items:center;margin-top:4px;flex-wrap:wrap}
+.card.child{margin-left:10px}
+.card.child::before{content:'';position:absolute;left:-8px;top:12px;width:6px;border-top:1px solid var(--tm-border-strong)}
+.card .live{font-size:11px;color:var(--tm-status-running);margin-top:3px;font-family:var(--tm-font-mono)}
+.card .live::before{content:'● ';}
+.card.s-failed{border-color:color-mix(in srgb,var(--tm-status-failed) 45%,var(--tm-border))}
+.card.focus{box-shadow:0 0 0 1px var(--tm-accent)}
+.cnt{display:inline-block;font:600 11px var(--tm-font-mono);color:var(--tm-text-faint);padding:2px 6px}
+.lane.collapsed>div:not(.lhead){min-height:0}
+.empty{height:100%;border:1px dashed color-mix(in srgb,var(--tm-border) 70%,transparent);border-radius:var(--tm-radius-md);min-height:40px}
+@media (max-width:760px){
+  .grid{grid-template-columns:150px repeat(5,180px);overflow-x:auto}
+  .wrap{overflow-x:auto;border-radius:var(--tm-radius-lg)}
+}
+</style></head><body><div class="page">
+<div class="bar"><h1>Board</h1><span class="vtag">v2 · A · swimlanes</span><span class="spacer"></span>
+<div class="seg"><button class="on">Lanes: group</button><button>repo</button><button>feature</button></div>
+<div class="seg"><button class="on">Hide finished</button><button>All</button></div></div>
+<div class="wrap"><div class="grid" id="g"></div></div>
+<div class="note"><b>Idea.</b> A 2-D table: each <b>row is a group</b> (task tree, feature, or repo, your pick), and each <b>column is a stage</b>. The eye reads two things at once. Across a row you see how far a group has got. Down a column you see the whole review pile or the whole queue at a glance. The lane header carries a segmented progress bar, so a folded lane still says "2 of 6 landed, 1 flagged". Children sit indented under their parent inside a cell. Ungrouped tasks share one lane at the bottom. On a phone the stage columns scroll sideways while the lane names stay pinned.</div>
+</div><script>
+const COLS=[['Queued',['draft','queued']],['Working',['running','waiting']],['Review',['review']],['Stuck',['failed','blocked']],['Landed',['done','published']]];
+const g=document.getElementById('g');
+g.innerHTML='<div class="hcell">Group</div>'+COLS.map(([n,s])=>`<div class="hcell">${n}<span class="n">${TASKS.filter(t=>s.includes(t.status)).length}</span></div>`).join('');
+const lanes=[...Object.keys(GROUPS),null];
+for(const k of lanes){
+  const ts=TASKS.filter(t=>t.group===k);
+  const tot=ts.length, seg=['done','published','review','running','waiting','queued','draft','failed','blocked'];
+  const bar=seg.map(s=>{const n=ts.filter(t=>t.status===s).length;return n?`<i class="s-${s}" style="flex:${n}"></i>`:''}).join('');
+  const landed=ts.filter(t=>['done','published'].includes(t.status)).length;
+  const head=`<div class="lhead" style="--g:${gcol(k)}"><span class="nm">${k?GROUPS[k].name:'Ungrouped'}</span><span class="sub">${landed}/${tot} landed${k&&GROUPS[k].feature?' · '+GROUPS[k].feature:''}</span><div class="prog">${bar}</div></div>`;
+  const cells=COLS.map(([,s])=>{const cs=ts.filter(t=>s.includes(t.status));
+    if(!cs.length)return '<div></div>';
+    return '<div>'+cs.map(t=>`<div class="card s-${t.status} ${t.parent&&ts.some(x=>x.id===t.parent)?'child':''}">
+      <div class="t">${t.title}</div>${t.live?`<div class="live">${t.live}</div>`:''}
+      <div class="m">${badge(t)}${k===null||t.repo!=='tm'?`<span class="chip">${REPOS[t.repo]}</span>`:''}${t.agent?'<span class="chip">agent</span>':''}${t.pct?`<span class="chip">~${t.pct}%</span>`:''}</div></div>`).join('')+'</div>'}).join('');
+  g.insertAdjacentHTML('beforeend',`<div class="lane">${head}${cells}</div>`);
+}
+</script></body></html>
