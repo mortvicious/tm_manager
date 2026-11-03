@@ -3541,6 +3541,425 @@ table.tbl tr:last-child td {
   margin-top: var(--tm-space-1);
 }
 
+/* ---------- settings versions (docs/settings-versions.md) ---------- */
+
+.settings-version-select {
+  margin-left: var(--tm-space-3);
+}
+
+.cfg-page {
+  max-width: 760px;
+}
+
+.cfg-page.cfg-v-sidebar {
+  max-width: 1040px;
+}
+
+.cfg-err {
+  margin-bottom: var(--tm-space-3);
+}
+
+.cfg-intro {
+  margin-bottom: var(--tm-space-2);
+}
+
+.cfg-label {
+  min-width: 0;
+}
+
+.cfg-label-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+}
+
+.cfg-control,
+.cfg-inline {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+}
+
+.cfg-row.cfg-wide {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--tm-space-2);
+}
+
+.cfg-row.cfg-wide > .cfg-control {
+  display: block;
+}
+
+/* "changed from default": a dot, the default, a reset */
+.cfg-changed {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+}
+
+.cfg-dot {
+  flex: none;
+  width: var(--tm-space-2);
+  height: var(--tm-space-2);
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-accent);
+}
+
+.cfg-dot.unsaved {
+  background: var(--tm-status-attention);
+}
+
+.btn.cfg-reset {
+  padding: 0 var(--tm-space-2);
+  font-size: var(--tm-text-xs);
+}
+
+.chip.cfg-on {
+  color: var(--tm-accent);
+  border-color: var(--tm-accent);
+}
+
+.cfg-count {
+  flex: none;
+  min-width: var(--tm-space-5);
+  padding: 0 var(--tm-space-1);
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-accent-subtle);
+  color: var(--tm-accent);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  text-align: center;
+}
+
+.cfg-search {
+  margin-bottom: var(--tm-space-4);
+}
+
+.cfg-search .field {
+  width: 100%;
+}
+
+.cfg-search.big .field {
+  font-size: var(--tm-text-lg);
+  padding: var(--tm-space-3) var(--tm-space-4);
+}
+
+.cfg-empty {
+  padding: var(--tm-space-5) 0;
+}
+
+/* the unsaved-changes bar rides the bottom of the scroll, above the phone's tab bar */
+.cfg-savebar {
+  position: sticky;
+  bottom: calc(var(--tm-tabbar-clear) + var(--tm-space-3));
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-4);
+  padding: var(--tm-space-2) var(--tm-space-3);
+  background: var(--tm-bg-overlay);
+  border: 1px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-lg);
+  box-shadow: var(--tm-shadow-md);
+}
+
+.cfg-savebar-text {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--tm-text-sm);
+}
+
+/* A · Sidebar sections */
+.cfg-split {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: var(--tm-space-5);
+  align-items: start;
+}
+
+.cfg-rail {
+  position: sticky;
+  top: 0;
+  max-height: calc(100vh - var(--tm-space-8));
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-3);
+}
+
+.cfg-rail-head {
+  padding: 0 var(--tm-space-2) var(--tm-space-1);
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.cfg-rail-item {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  width: 100%;
+  padding: var(--tm-space-1) var(--tm-space-2);
+  border: 0;
+  border-radius: var(--tm-radius-sm);
+  background: transparent;
+  color: var(--tm-text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cfg-rail-item > span:first-child {
+  flex: 1;
+}
+
+.cfg-rail-item:hover {
+  color: var(--tm-text);
+  background: var(--tm-bg-inset);
+}
+
+.cfg-rail-item.active {
+  color: var(--tm-text);
+  background: var(--tm-accent-subtle);
+}
+
+.cfg-anchor {
+  scroll-margin-top: var(--tm-space-3);
+}
+
+/* the mix: the rail's intents page the cards (C), their sections jump (A) */
+.cfg-rail-intent {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  width: 100%;
+  padding: var(--tm-space-1) var(--tm-space-2);
+  border: 0;
+  border-radius: var(--tm-radius-sm);
+  background: transparent;
+  color: var(--tm-text);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cfg-rail-intent > span:first-child {
+  flex: 1;
+}
+
+.cfg-rail-intent:hover {
+  background: var(--tm-bg-inset);
+}
+
+.cfg-rail-intent.active {
+  background: var(--tm-accent-subtle);
+}
+
+.cfg-rail-intent + .cfg-rail-item,
+.cfg-rail-intent ~ .cfg-rail-item {
+  padding-left: var(--tm-space-5);
+}
+
+.cfg-mix-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tm-space-3);
+  margin-bottom: var(--tm-space-3);
+}
+
+.cfg-mix-head h2 {
+  margin: 0;
+  font-family: var(--tm-font-display);
+  font-size: var(--tm-text-lg);
+  font-weight: 600;
+}
+
+.cfg-page.cfg-v-mix {
+  max-width: 1040px;
+}
+
+/* A on a phone: iOS-Settings groups */
+.cfg-ios-group {
+  margin-bottom: var(--tm-space-4);
+}
+
+.cfg-ios-head {
+  padding: 0 var(--tm-space-3) var(--tm-space-1);
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.cfg-ios-list {
+  overflow: hidden;
+}
+
+.cfg-ios-row,
+.cfg-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  width: 100%;
+  min-height: var(--tm-tap);
+  padding: var(--tm-space-2) var(--tm-space-4);
+  border: 0;
+  background: transparent;
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cfg-ios-row + .cfg-ios-row {
+  border-top: 1px solid var(--tm-border);
+}
+
+.cfg-ios-text,
+.cfg-card-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+}
+
+.cfg-ios-text .hint,
+.cfg-card-text .hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cfg-ios-chev {
+  flex: none;
+  display: inline-flex;
+  color: var(--tm-text-faint);
+  transform: rotate(-90deg);
+}
+
+.cfg-saved {
+  margin-bottom: var(--tm-space-2);
+}
+
+/* a section inside a sheet or a card: the container is the panel already
+   (`.app` outranks `.app.mobile .cfg-group` and the Glass panel material) */
+.app :is(.cfg-sheet-body, .cfg-card-body) > .panel.cfg-group {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  padding: 0;
+  margin: 0;
+}
+
+.app :is(.cfg-sheet-body, .cfg-card-body) > .panel.cfg-group > h3:first-child {
+  display: none;
+}
+
+/* B · Basic / Advanced */
+.btn.cfg-more {
+  margin-top: var(--tm-space-2);
+  font-size: var(--tm-text-sm);
+}
+
+/* C · Tabs by intent */
+.cfg-tabs {
+  display: flex;
+  gap: var(--tm-space-1);
+  margin-bottom: var(--tm-space-4);
+  border-bottom: 1px solid var(--tm-border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.cfg-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  flex: none;
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--tm-text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cfg-tab:hover {
+  color: var(--tm-text);
+}
+
+.cfg-tab.active {
+  color: var(--tm-text);
+  border-bottom-color: var(--tm-accent);
+}
+
+/* D · Search first */
+.cfg-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  margin-bottom: var(--tm-space-4);
+}
+
+.cfg-chips .btn {
+  font-size: var(--tm-text-xs);
+}
+
+.cfg-found + .cfg-found {
+  border-top: 1px solid var(--tm-border);
+  padding-top: var(--tm-space-2);
+}
+
+.cfg-found-sec {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tm-text-faint);
+}
+
+/* E · Summary cards */
+.cfg-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+}
+
+.cfg-card {
+  overflow: hidden;
+}
+
+.cfg-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  font-weight: 600;
+}
+
+.cfg-card-chev {
+  flex: none;
+  display: inline-flex;
+  color: var(--tm-text-faint);
+  transition: transform var(--tm-dur-fast);
+}
+
+.cfg-card.open .cfg-card-chev {
+  transform: rotate(180deg);
+}
+
+.cfg-card-body {
+  padding: 0 var(--tm-space-4) var(--tm-space-3);
+  border-top: 1px solid var(--tm-border);
+}
+
 /* a task's repo-check pick (docs/checks.md) */
 .done-checks {
   display: flex;
@@ -7059,6 +7478,20 @@ button.explain-tap:active {
 
 .app.mobile .cfg-row > span {
   width: 100%;
+}
+
+/* settings versions on a phone: the control column is the full width */
+.app.mobile .cfg-row > .cfg-control,
+.app.mobile .cfg-inline {
+  width: 100%;
+}
+
+.app.mobile .cfg-search .field {
+  width: 100% !important;
+}
+
+.app.mobile .cfg-savebar .btn {
+  min-height: var(--tm-tap);
 }
 
 /* ---- tables: the two that stack, and the rest that scroll ---- */

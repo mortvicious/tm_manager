@@ -1,5 +1,13 @@
 # Decision log
 
+- **2026-11-03 — Settings layout: phone = sidebar list in sheets (A), desktop = cards under an intent-paged rail (E + A + C) (`docs/settings-versions.md`)**: task 6ce01eb1. The Config page grew to about 70 controls in one scroll. Five layouts were built as switchable versions over one save path (`useSettingsForm()`) and one descriptor registry (`settingsRegistry.tsx`), and screenshotted in Classic and Glass at 1440 and 390: A sidebar sections, B basic/advanced, C tabs by intent, D search first, E summary cards.
+
+  **Chosen by the user:** a mix. On the phone, A: an iOS-Settings list of sections grouped by intent, each opening in a sheet. On desktop, built for this answer as the `mix` version: A's sticky rail, whose headers are C's five intents, each listing its sections. One intent is on screen at a time, as E's collapsed summary cards that expand in place. A rail click opens the intent, expands the card and scrolls to it, and scroll-spy follows. Search, changed-from-default markers with reset, and the save bar are common to every version.
+
+  **Not chosen:** B's basic set (the `advanced` flag stays in the registry), D's search-first page (its search box is in every version anyway), and tabs or cards alone.
+
+  **Follow-up:** draft 86c520a4 makes `mix` the Config page and removes `original`, the Versions control and the other versions. Until it lands, `original` stays the default, and the mix is the first entry in the `version:` menu.
+
 - **2026-11-03 — ⌘K is the global palette's; the board search keeps `/` (`docs/palette.md`)**: task 3ab226c3, feature *Review deck, global ⌘K palette, agent-draft triage*, phase 1. The palette jumps to tasks, pages, repos, workspaces, features and chats from any page. It shows navigation only for now; its entry model already has an `action` section for the later actions.
 
   **Chosen:** ⌘K / Ctrl K opens the palette everywhere, except inside a terminal or over the open board search. The Board's search moves to `/`. On `/board` the palette's first entry is **Search the board…**, which dispatches the window event `tm-board-search` that `useSearchHotkey` listens for. That keeps `Board.tsx`, which is frozen, unchanged. ⌘K is the platform's "go to anything" key, and `/` is the web's "search this page" key. A task opens through App's `setOpenTask`: it writes the same `?task=` and keeps `?ws=`, as `openTaskFromAnywhere` does, and it also keeps the panel's Back-closes-it history mark. The palette offers only pages the router knows: App hands it its one `<Routes>` element, read with `createRoutesFromChildren` + `matchRoutes`, so a page that has not shipped yet (`/inbox/drafts`) is skipped, not offered as a dead link.

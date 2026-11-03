@@ -213,6 +213,10 @@ above 6:1.
 - **Config is label-over-control.** Every control on that page is sized by an
   inline `width`, so the override is `!important` on `.app.mobile .cfg-row .field`
   rather than ~30 edited call sites on a page this work does not otherwise touch.
+  The page has switchable layouts (`docs/settings-versions.md`); on a phone the
+  Versions control is a row at the top of the page. The registry-driven versions
+  share that rule, stretch `.cfg-control` to the full width, keep a sticky save
+  bar above the tab bar, and open sections as `<Sheet>`s (version A).
 - **Board rows are their own layout** (§ Board). Anything else that reuses
   `.task-row` (the task panel's file list) still wraps, with `.task-main` at
   `flex: 1 1 60%`. Child indent halves to 12px per level, marker included, or

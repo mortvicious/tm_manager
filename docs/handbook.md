@@ -238,6 +238,8 @@ Some decisions are yours: which of two designs, what an ambiguous requirement me
 
 ## Config reference
 
+The page has switchable layouts, picked per device with the **version** menu in its head (on a phone, at the top). Every layout has a search box (label, key or help), a "changed · default X · Reset" marker on every setting off its default, and the same Save. The original keeps the sections below. The others split *Agent* into **Agent**, **Review & checks** and **Sessions**, and add **Per-repo settings**, links to the Repos page (`docs/settings-versions.md`).
+
 | Setting | Meaning |
 |---|---|
 | Appearance | **this device only**, applied as you click (not part of Save): Design **Glass** (iOS Liquid Glass, the default; leaves Features and Chat out of the menus) or **Classic**, and Light or dark: **System** (the default, follows the device), Light or Dark. The sun/moon button in the header flips and pins it. `docs/glass.md` |

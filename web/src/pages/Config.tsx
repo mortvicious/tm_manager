@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
-import { CONCURRENCY_MAX, DEFAULT_SETTINGS, EFFORT_LEVELS, MODEL_OPTIONS, taskPresets, type AppSettings, type SentryTokenStatus } from '@tm/shared';
-import { api } from '../api.ts';
+import type { ReactNode } from 'react';
+import { CONCURRENCY_MAX, DEFAULT_SETTINGS, EFFORT_LEVELS, MODEL_OPTIONS, taskPresets, type AppSettings } from '@tm/shared';
 import { AppearanceSettings } from '../components/AppearanceSettings.tsx';
 import { PresetEditor } from '../components/PresetEditor.tsx';
 import { TemplateEditor } from '../components/TemplateEditor.tsx';
 import { PushSettings } from '../components/PushSettings.tsx';
+import { useSettingsForm } from '../settingsForm.ts';
 import { useApp } from '../state.tsx';
 
 function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
@@ -17,73 +17,27 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
   );
 }
 
-export function ConfigPage() {
-  const [cfg, setCfg] = useState<AppSettings | null>(null);
-  const [syncing, setSyncing] = useState(false);
-  const [syncMsg, setSyncMsg] = useState<string | null>(null);
-  const snapshot = useRef<AppSettings | null>(null);
-  const { repos, refresh } = useApp();
-  const [saved, setSaved] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  // The Sentry token is never read back (it lives in data/config.json): the
-  // page knows set/not set + last 4, and writes only a value typed here.
-  const [tokenStatus, setTokenStatus] = useState<SentryTokenStatus | null>(null);
-  const [tokenDraft, setTokenDraft] = useState('');
-
-  useEffect(() => {
-    api.sentryToken().then(setTokenStatus).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    api
-      .getConfig()
-      .then((c) => {
-        setCfg(c);
-        snapshot.current = c;
-      })
-      .catch((e) => setErr(e.message));
-  }, []);
+/**
+ * The ORIGINAL settings version (docs/settings-versions.md): frozen JSX. Its
+ * state and save path are `useSettingsForm()`, shared with every other
+ * version. `headSlot`/`topSlot` carry the Versions control (desktop head /
+ * phone top) and render nothing when absent.
+ */
+export function ConfigPage({ headSlot, topSlot }: { headSlot?: ReactNode; topSlot?: ReactNode } = {}) {
+  const form = useSettingsForm();
+  const { cfg, set, save, saved, err } = form;
+  const { status: tokenStatus, draft: tokenDraft, setDraft: setTokenDraft, syncing, syncMsg } = form.sentry;
+  const { repos } = useApp();
 
   // The look is this device's own: reachable even while the API is down.
   if (!cfg)
     return (
       <div style={{ maxWidth: 720 }}>
+        {topSlot}
         <AppearanceSettings />
         <div className="muted">{err ?? 'Loading…'}</div>
       </div>
     );
-
-  const set = <K extends keyof AppSettings>(k: K, v: AppSettings[K]) => setCfg({ ...cfg, [k]: v });
-
-  const save = async () => {
-    setErr(null);
-    setSaved(false);
-    try {
-      // Send only the keys this page changed — never clobber machine-owned
-      // state like orchestrator.enabled or stray DB keys (review R11).
-      const diff: Partial<AppSettings> = {};
-      for (const k of Object.keys(cfg) as (keyof AppSettings)[]) {
-        if (snapshot.current && JSON.stringify(cfg[k]) !== JSON.stringify(snapshot.current[k])) {
-          (diff as Record<string, unknown>)[k] = cfg[k];
-        }
-      }
-      delete (diff as Record<string, unknown>)['orchestrator.enabled'];
-      delete (diff as Record<string, unknown>)['orchestrator.paused'];
-      const next = await api.putConfig(diff);
-      setCfg(next);
-      snapshot.current = next;
-      if (tokenDraft.trim()) {
-        setTokenStatus(await api.putSentryToken(tokenDraft.trim()));
-        setTokenDraft('');
-      }
-      // the app state carries settings the UI reacts to (board.groupColors)
-      await refresh();
-      setSaved(true);
-      setTimeout(() => setSaved(false), 1600);
-    } catch (e) {
-      setErr((e as Error).message);
-    }
-  };
 
   const modelChoices = MODEL_OPTIONS.includes(cfg['agent.model'])
     ? MODEL_OPTIONS
@@ -95,11 +49,13 @@ export function ConfigPage() {
     <div style={{ maxWidth: 720 }}>
       <h1 className="page-title">
         Config
+        {headSlot}
         <span style={{ flex: 1 }} />
         <button className="btn primary" onClick={save}>
           {saved ? 'Saved ✓' : 'Save'}
         </button>
       </h1>
+      {topSlot}
       {err && <div className="warn-text" style={{ marginBottom: 10 }}>{err}</div>}
 
       <AppearanceSettings />
@@ -1007,15 +963,7 @@ export function ConfigPage() {
             {tokenStatus?.set && (
               <button
                 className="btn"
-                onClick={async () => {
-                  setErr(null);
-                  try {
-                    setTokenStatus(await api.putSentryToken(''));
-                    setTokenDraft('');
-                  } catch (e) {
-                    setErr((e as Error).message);
-                  }
-                }}
+                onClick={form.sentry.clear}
               >
                 Clear
               </button>
@@ -1071,20 +1019,7 @@ export function ConfigPage() {
           <button
             className="btn primary"
             disabled={syncing}
-            onClick={async () => {
-              setErr(null);
-              setSyncMsg(null);
-              setSyncing(true);
-              try {
-                await save();
-                const r = await api.sentrySync();
-                setSyncMsg(`fetched ${r.fetched} · created ${r.created} task(s) · ${r.skipped} already known`);
-              } catch (e) {
-                setErr((e as Error).message);
-              } finally {
-                setSyncing(false);
-              }
-            }}
+            onClick={form.sentry.sync}
           >
             {syncing ? 'Syncing…' : 'Sync issues now'}
           </button>

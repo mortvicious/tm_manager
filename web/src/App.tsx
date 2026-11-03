@@ -12,7 +12,7 @@ import { ChatPage } from './pages/Chat.tsx';
 import { DashboardPage } from './pages/Dashboard.tsx';
 import { FeaturePage } from './pages/Feature.tsx';
 import { FeaturesPage } from './pages/Features.tsx';
-import { ConfigPage } from './pages/Config.tsx';
+import { ConfigRoute } from './pages/ConfigRoute.tsx';
 import { HandbookPage } from './pages/Handbook.tsx';
 import { InboxPage } from './pages/Inbox.tsx';
 import { QueuePage } from './pages/Queue.tsx';
@@ -71,7 +71,7 @@ export function App() {
       <Route path="/shared" element={<SharedPage onOpenTask={setOpenTask} />} />
       <Route path="/terminals" element={<TerminalsPage onOpenTerminal={openTerm} onOpenTask={setOpenTask} />} />
       <Route path="/repos" element={<ReposPage onOpenTerminal={openTerm} />} />
-      <Route path="/config" element={<ConfigPage />} />
+      <Route path="/config" element={<ConfigRoute />} />
       <Route path="/handbook" element={<HandbookPage />} />
     </Routes>
   );

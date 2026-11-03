@@ -908,6 +908,15 @@
   font-weight: 700;
 }
 
+/* the settings rail sticks BELOW the floating header, like the bulk bar */
+[data-design='glass'] .cfg-rail {
+  top: calc(var(--tm-head-h) + var(--tm-space-2));
+}
+
+[data-design='glass'] :is(.cfg-anchor, .cfg-card) {
+  scroll-margin-top: calc(var(--tm-head-h) + var(--tm-space-3));
+}
+
 /* ---------- overlays ---------- */
 
 [data-design='glass'] .overlay {
