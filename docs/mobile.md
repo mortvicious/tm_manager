@@ -618,7 +618,7 @@ to close; × animates out the same way.
   that scrolls sideways, without the id (not worth the width), and it is
   hidden when nothing else is left.
 - **A pinned action bar** under it holds up to three actions, then `⋯`. They come
-  from ONE `PanelAction[]` list that the desktop row renders too, in the same
+  from ONE `TaskAction[]` list (`buildTaskActions`, `web/src/taskActions.ts`) that the desktop row renders too, in the same
   order and with the same classes, so what a status offers cannot drift between
   the two. The bar picks by `mobilePrimary(live, publishHeld)`:
   `publish, complete, release, unblock, run-now, enqueue, terminal`. With a live
