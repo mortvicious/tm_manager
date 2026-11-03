@@ -157,6 +157,55 @@ server moves, through the queue or ahead of it) and calls the follow-up box's
 Proceed **Resume**. A hint under the error says which to pick. Telegram keeps
 its `/proceed` command and 💬 Proceed button; they are the same call as Resume.
 
+### Review deck
+
+`/inbox/deck` (`pages/ReviewDeck.tsx`, card body `components/ReviewDeckCard.tsx`)
+walks the settled reviews one card at a time, for a sitting where the human
+ships a pile of finished work from the keyboard.
+
+- **Membership and order** are the Inbox's own: `useInbox()` filtered to
+  `kind === 'review'` — never a second ordering, and scoped to the current
+  workspace like every Inbox surface. The header says `n of N` and, inside a
+  workspace, `n more in other workspaces` (a button that switches to All).
+  Nothing left → *Nothing to review* with a link back to the Inbox.
+- **Entry points**: the Inbox header's **Review deck · N** button (shown when
+  the scoped list has at least one review, its link carries `?ws=` through
+  `wsHref`), and the URL itself. The deck's own header links back.
+- **The card** shows the title, id8 and repo; the ready reason
+  (`landingReason`) or else `publishCaution`; the verify gate
+  (`publishGateReason`) when it holds; the landing tier (`effectiveLanding`);
+  a worktree task's branch and PR link; the diff stat; the verdict line
+  (`verdictChip().what`), the `ReviewPanel` (reviewer summary, verdict,
+  findings per round), the `ChecksPanel`, and the diff (`TaskDiff`,
+  `GET /api/tasks/:id/diff`) — mounted for the CURRENT card only, so walking
+  the deck fetches one diff at a time.
+- **The cursor** is keyed by task id. A card that leaves the list (decided
+  here, elsewhere, or by the server) leaves the cursor on the same POSITION,
+  the `lastIndex` rule of the Inbox list, so the next card is under it.
+
+| Key | Act |
+| --- | --- |
+| `j` / `↓`, `k` / `↑` | next / previous card |
+| `p` | Publish — the Inbox's act, so over a flagged review or red checks it asks first (`confirmPublish`). Disabled with the reason while `publishGateReason` holds, and while Mark published is offered (*already pushed — m*) |
+| `m` | Mark published (`confirmMarkPublished`), only when `markPublishedOffered` |
+| `d` | Mark done — closes without pushing |
+| `s` | Send the findings back (flagged only; the Inbox's `f`) |
+| `f` | an inline follow-up field: **Enter** sends it to the task's own session (`api.followUp`), **Escape** closes it. The task goes back to `running` and leaves the deck |
+| `r` | Review now — disabled while a review round or the checks are busy (the task panel's rule) |
+| `x` | Cancel — the first press arms the button (*Cancel? press x again*, `useArm`), the second within 4 s cancels |
+| `o` | the full task panel |
+| `?` | the key list overlay (**Escape** closes it too) |
+
+The keys follow the Inbox list's rules: ignored while typing, in a terminal,
+or under any dialog, sheet, panel or popover (`keyIsOurs`); auto-repeat is
+ignored; an act's key is dead for `ACT_COOLDOWN_MS` after it fired (the arming
+press of `x` excepted) or until the cursor moves; a disabled act toasts its
+reason instead of doing nothing. Acts run through `useActRunner`, so a refusal
+goes to the shared toast and the card stays.
+
+On a phone the deck is the plain card list, every card with its buttons and
+no diff (Open has it); the swipe stack is a later task.
+
 ### Header chip
 
 `InboxChip` (`components/Inbox.tsx`) shows the count, and is hidden at zero.

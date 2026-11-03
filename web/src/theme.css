@@ -8719,6 +8719,139 @@ button.explain-tap:active {
   color: var(--tm-text-faint);
 }
 
+/* the Review deck (docs/inbox.md § Review deck): one settled review at a time */
+.page-title .deck-entry,
+.page-title .deck-back {
+  font-family: var(--tm-font-body);
+  font-size: var(--tm-text-sm);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-decoration: none;
+}
+
+.deck {
+  position: relative;
+}
+
+.deck-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-3);
+  padding: var(--tm-space-4);
+  min-width: 0;
+  scroll-margin-top: var(--tm-space-4);
+}
+
+.deck-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-3);
+}
+
+.deck-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-sm);
+}
+
+.deck-pos {
+  font-variant-numeric: tabular-nums;
+}
+
+.deck-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--tm-space-2);
+  min-width: 0;
+}
+
+.deck-card-title {
+  margin: 0;
+  font-family: var(--tm-font-display);
+  font-size: var(--tm-text-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.deck-card-id {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+.deck-card-what {
+  font-size: var(--tm-text-sm);
+  color: var(--tm-text-muted);
+}
+
+.deck-card .inbox-acts {
+  margin-top: 0;
+}
+
+.deck-follow {
+  display: flex;
+  gap: var(--tm-space-2);
+}
+
+.deck-follow .field {
+  flex: 1;
+  min-width: 0;
+}
+
+.deck-help {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 5;
+  width: calc(var(--tm-space-8) * 5);
+  max-width: 100%;
+  padding: var(--tm-space-4);
+  background: var(--tm-bg-raised);
+  box-shadow: var(--tm-shadow-lg);
+}
+
+.deck-help-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--tm-space-2);
+}
+
+.deck-help dl {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  font-size: var(--tm-text-sm);
+}
+
+.deck-help dl > div {
+  display: flex;
+  gap: var(--tm-space-3);
+}
+
+.deck-help dt {
+  width: var(--tm-space-8);
+  flex: none;
+}
+
+.deck-help dd {
+  margin: 0;
+  color: var(--tm-text-muted);
+}
+
+.deck-help kbd {
+  padding: 0 var(--tm-space-1);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-bg-inset);
+  color: var(--tm-text-faint);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
 /* under the stale drafts (docs/inbox.md § Stale drafts): "N of M" + Keep all / Hide all */
 .inbox-stale-foot {
   display: flex;

@@ -15,6 +15,7 @@ import { ConfigPage } from './pages/Config.tsx';
 import { HandbookPage } from './pages/Handbook.tsx';
 import { InboxPage } from './pages/Inbox.tsx';
 import { QueuePage } from './pages/Queue.tsx';
+import { ReviewDeckPage } from './pages/ReviewDeck.tsx';
 import { SharedPage } from './pages/Shared.tsx';
 import { ReportsPage } from './pages/Reports.tsx';
 import { ReposPage } from './pages/Repos.tsx';
@@ -56,6 +57,7 @@ export function App() {
         <Route path="/dashboard" element={<DashboardPage onOpenTask={setOpenTask} />} />
         <Route path="/board" element={<BoardPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
         <Route path="/inbox" element={<InboxPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} inboxReturn={inboxReturn} />} />
+        <Route path="/inbox/deck" element={<ReviewDeckPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
         <Route path="/queue" element={<QueuePage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
         <Route path="/timeline" element={<TimelinePage onOpenTask={setOpenTask} />} />
         <Route path="/chat" element={<ChatPage />} />

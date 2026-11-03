@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import type { InboxItem } from '@tm/shared';
 import {
   InboxDetail,
@@ -28,7 +29,8 @@ export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav 
   const mobile = useIsMobile();
   const items = useInbox();
   const everywhere = useInbox(true);
-  const { workspace, setWorkspace } = useWorkspace();
+  const { workspace, setWorkspace, wsHref } = useWorkspace();
+  const reviews = items.filter((i) => i.kind === 'review').length;
   const waiting = decisions(items).length;
   const stale = items.length - waiting;
   // what the workspace hides (docs/workspaces.md § Scoped pages): decisions only, like every badge
@@ -59,6 +61,14 @@ export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav 
             </>
           )}
         </span>
+        {reviews > 0 && (
+          <>
+            <span style={{ flex: 1 }} />
+            <Link className="btn deck-entry" to={wsHref('/inbox/deck')} title="walk the settled reviews one card at a time (docs/inbox.md § Review deck)">
+              Review deck · {reviews}
+            </Link>
+          </>
+        )}
       </h1>
       {!mobile && items.length > 0 && (
         <div className="inbox-keys">
@@ -80,10 +90,10 @@ export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav 
 }
 
 /** How long an act's key stays dead after it fired (docs/inbox.md § Keys). */
-const ACT_COOLDOWN_MS = 600;
+export const ACT_COOLDOWN_MS = 600;
 
 /** Keys are ignored while typing, in a terminal, or with any dialog/panel open over the page. */
-function keyIsOurs(e: KeyboardEvent): boolean {
+export function keyIsOurs(e: KeyboardEvent): boolean {
   if (e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return false;
   const el = e.target instanceof Element ? e.target : null;
   if (el?.closest('.xterm, input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return false;

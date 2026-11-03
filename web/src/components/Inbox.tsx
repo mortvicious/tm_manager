@@ -100,7 +100,7 @@ export function lastDiffStat(task: Task): DiffStat | null {
   return [...task.reviewRounds].reverse().find((r) => r.diffStat)?.diffStat ?? null;
 }
 
-function statText(s: DiffStat): string {
+export function statText(s: DiffStat): string {
   return `${s.files} file${s.files === 1 ? '' : 's'} +${s.insertions} −${s.deletions}`;
 }
 
@@ -171,6 +171,9 @@ export interface InboxAct {
   /** resolves when done; throws with the server's refusal */
   run: () => Promise<unknown> | void;
 }
+
+/** What `useActRunner` runs: an act under any surface's own key (the Review deck's are not the Inbox's). */
+export type RunnableAct = Omit<InboxAct, 'key'> & { key: string };
 
 export interface InboxNav {
   onOpenTask: (id: string) => void;
@@ -377,7 +380,7 @@ export function useActRunner() {
   const [busy, setBusy] = useState<string | null>(null);
   const [busyAct, setBusyAct] = useState<string | null>(null);
   const run = useCallback(
-    async (itemKey: string, act: InboxAct, onDone?: () => void) => {
+    async (itemKey: string, act: RunnableAct, onDone?: () => void) => {
       if (act.disabled || busy) return;
       if (act.confirm && !act.confirm()) return;
       setBusy(itemKey);
@@ -395,7 +398,7 @@ export function useActRunner() {
     [busy],
   );
   const labelOf = useCallback(
-    (itemKey: string, act: InboxAct) => (busyAct === `${itemKey}:${act.key}` ? `${act.label}…` : act.label),
+    (itemKey: string, act: RunnableAct) => (busyAct === `${itemKey}:${act.key}` ? `${act.label}…` : act.label),
     [busyAct],
   );
   return { busy, run, labelOf };
@@ -507,7 +510,7 @@ export function InboxDetail({ item }: { item: InboxItem }) {
   }
 }
 
-function Block({ label, children }: { label: string; children: ReactNode }) {
+export function Block({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="inbox-block">
       <span className="label">{label}</span>
