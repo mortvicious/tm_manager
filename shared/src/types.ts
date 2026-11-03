@@ -3407,3 +3407,5 @@ export * from './task-history.ts';
 export * from './queue-drop.ts';
 // A task's own change split per file (docs/task-diff.md)
 export * from './diff.ts';
+// A task's neighbourhood for the board versions' focus layer (docs/board-versions.md § Versions control)
+export * from './task-relations.ts';

@@ -966,9 +966,12 @@ function Section({
 export function BoardPage({
   onOpenTask,
   onOpenTerminal,
+  headSlot,
 }: {
   onOpenTask: (id: string) => void;
   onOpenTerminal: (runId: string) => void;
+  /** the Versions control (docs/board-versions.md); the board's one slot, decisions.md 2026-11-03 */
+  headSlot?: ReactNode;
 }) {
   const { tasks, repos, runs, settings, refresh, dispatches, questions, features, loaded, connected, orch } = useApp();
   // actions in flight on any surface: the row's badge reads `publishing` (src/pending.ts)
@@ -1752,6 +1755,7 @@ export function BoardPage({
               {trigger}
               {selectToggle}
               {focusToggle}
+              {headSlot}
               <button
                 type="button"
                 className="btn primary new-task-open"

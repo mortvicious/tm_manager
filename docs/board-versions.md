@@ -34,7 +34,7 @@ There are more relations between tasks than the board draws today:
 
 ## Versions control
 
-The Board (`web/src/pages/Board.tsx`) stays frozen and is listed as **Original**. Each alternative is a separate page component, registered in one list and picked per device under the `tm.boardVersion` key (`original | stacks | swimlanes | relation-map | metro`; an unknown or unregistered value reads as `original`). This clones the `tm.design` pattern in `web/src/appearance.ts`. The switch is a **Versions** control: a compact menu on the board route on the desktop, and a segmented row in the board's view controls or settings on a phone. Every version reads the same store slices and respects the workspace scope (`useWorkspace()`). A click on a task opens the ordinary task panel. Relations for the focus layer come from ONE shared pure helper (parent, children, filer via `createdByRun`, dispatch partners), so the four versions cannot disagree about what is related.
+The Board (`web/src/pages/Board.tsx`) stays frozen and is listed as **Original**. Each alternative is a separate page component, registered in one list and picked per device. Every version reads the same store slices and respects the workspace scope (`useWorkspace()`). A click on a task opens the ordinary task panel. Relations for the focus layer come from ONE shared pure helper, so the four versions cannot disagree about what is related.
 
 | version id | label | mockup |
 |---|---|---|
@@ -43,3 +43,47 @@ The Board (`web/src/pages/Board.tsx`) stays frozen and is listed as **Original**
 | `swimlanes` | Swimlanes | `board-versions/a-swimlanes.html` |
 | `relation-map` | Relation map | `board-versions/b-relation-map.html` |
 | `metro` | Metro | `board-versions/d-metro.html` |
+
+### What shipped (task 894c2360) — how a version plugs in
+
+**Registry** — `web/src/boardVersions.ts`, `BOARD_VERSIONS: { id, label, component }[]` in menu order. Only implemented versions are listed; today that is `original` alone (its `component` is `null`: `BoardRoute` mounts `<BoardPage/>` itself, never through `lazy`). A version task adds ONE entry:
+
+```ts
+{ id: 'stacks', label: 'Stacks', component: lazy(() => import('./pages/board/Stacks.tsx')) }
+```
+
+The module's default export is the page and takes `BoardVersionProps` (`onOpenTask`, `onOpenTerminal` — the same props as `BoardPage`). In a dev build (`import.meta.env.DEV`) a `dev-focus` placeholder ("Focus test (dev)", `pages/board/DevFocusBoard.tsx`) is listed too, so the control and the focus layer can be tried; Vite drops the branch and its chunk from a production build, where it is never listed.
+
+**Per-device choice** — localStorage `tm.boardVersion`, the `tm.design` pattern of `appearance.ts`: a module store read through `useSyncExternalStore` (`useBoardVersion()` → the `BoardVersion` entry), written by `setBoardVersion(id)` (same tab: listeners; other tabs: the `storage` event; blocked storage: this tab keeps the pick in memory). An unknown or unlisted value reads as `original`, so a device whose pick a later build drops falls back without a migration.
+
+**Routing** — `/board` renders `web/src/pages/BoardRoute.tsx`: `<BoardPage/>` for `original`, the chosen version (inside `<Suspense>`) otherwise. Deep links need nothing per version: `?task=` and `?tab=` belong to App (`useOpenTask`, `usePanelTab`, the global `TaskSlideOver`), `?ws=` to `useWorkspace()`, and switching versions never touches the URL. A version opens a task with its `onOpenTask` prop, as the board does.
+
+**The control** — hidden entirely while `BOARD_VERSIONS.length === 1` (`BOARD_VERSIONS_SWITCHABLE`), so production renders exactly as before.
+- Desktop: `<BoardVersionsControl/>` (`components/BoardVersions.tsx`), a compact `version: <label>` select styled like the board's group/sort selects. On the original board it sits in the board head's tools, after *essentials*, through Board's one new prop `headSlot` — the single edit to the frozen file (decisions.md 2026-11-03). A version renders the same component in its own head. It renders nothing on a phone.
+- Phone (and Settings on the desktop): a **Board version** row in Settings → Appearance (`<BoardVersionsSetting/>`), per device like Design, outside the page's Save.
+
+**Relations helper** — `shared/src/task-relations.ts` (pure, exported from `@tm/shared`, tests in `server/src/task-relations.test.ts`):
+- `buildRelationIndex({ tasks, dispatches?, runs? })` → `{ neighbourhood(id), filerOf(id) }`; `taskNeighbourhood(input, id)` is the one-shot form.
+- `neighbourhood(id)` → `{ taskId, relations: { kind, taskId, dispatches? }[], ids: Set<string> }`, or `null` for a task not in the list. Relations are ordered by `TASK_RELATION_KINDS` (`parent`, `child`, `sibling-in-group`, `filed-by`, `filed`, `dispatch-in`, `dispatch-out`), then by the order of `tasks`; `ids` holds every related task once (a parent that is also the filer is two relations, one id). Headings: `TASK_RELATION_LABELS`.
+- `parent`/`child` read `parentId`; `sibling-in-group` = the same parent (so the same group); a root's siblings are none. `filed-by`/`filed` map `createdByRun` through `runs` (`Run.taskId`; an aux run has none and relates nothing) — the SPA already holds every run in `useApp().runs`, so no new field was needed. Dispatches give one relation per partner and direction, carrying every dispatch between them oldest first; a self-dispatch is dropped.
+- Only tasks IN the list relate: pass the board's own set (`useBoardTasks()` — workspace scope applied, hidden tasks left out), and a partner outside it simply does not appear.
+
+**Focus layer** — `web/src/boardFocus.tsx` + the `bf-*` rules at the end of `theme.css` (tokens only; the card gets the Glass popover material in `glass.css`). A version:
+
+```tsx
+const tasks = useBoardTasks();
+<BoardFocusProvider tasks={tasks}>
+  <BoardFocusScope>{/* the canvas; every task element: */}
+    <button {...focus.itemProps(t.id)} onClick={() => focus.toggle(t.id)}>…</button>
+  </BoardFocusScope>
+  <BoardFocusCard onOpenTask={onOpenTask} />
+</BoardFocusProvider>
+```
+
+- `useBoardFocus()` → `{ focusedId, neighbourhood, index, tasks, focus(id|null), toggle(id), clear(), stateOf(id), itemProps(id) }`. `itemProps` sets `data-focus-id` and, while something is focused, `data-focus="focused|related|dimmed"`; the CSS rings the focused task, outlines the related ones and dims the rest inside `.bf-scope[data-focus-active]`. Edges or extra marks a version draws can key off `stateOf`.
+- Clearing: Esc (not from a field, a dialog, or while the task panel is open — the panel's Esc closes it first; keyboard focus inside the card returns to the task), a click in the scope that lands on no task, no control and not the card, or `toggle` on the focused task. A focused task that leaves the set (hidden, out of scope, deleted) clears itself.
+- `<BoardFocusCard>` lists the relations by kind, with status badges and a dispatch note (`2× · 1 pending`). A relation refocuses that task; **Open** opens the ordinary task panel. Desktop: a card fixed to the viewport's lower right (z-index under the task panel), so it suits any layout. Phone: a `<Sheet>`, whose Open clears the focus so the sheet gives way to the panel.
+- Keyboard: task elements should be buttons (Enter/Space toggles), the card's rows are buttons, the card title is `aria-live`.
+- Whether a click on a task focuses or opens is the version's call. The relation-map mockup focuses on click and opens from the card; a list-like version may focus from a dedicated affordance instead.
+- The original board does NOT get the layer (frozen).
+

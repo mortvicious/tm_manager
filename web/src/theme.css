@@ -10706,3 +10706,142 @@ button.explain-tap:active {
   border-radius: var(--tm-radius-pill);
 }
 
+
+/* ── Board versions: the shared focus layer (docs/board-versions.md § Versions control) ──
+   A version spreads `itemProps(id)` on each task element; these rules key off
+   `data-focus`, so any element shape gets the highlight and the dimming. */
+[data-focus-id] {
+  transition:
+    opacity var(--tm-dur-fast) var(--tm-ease-out),
+    box-shadow var(--tm-dur-fast) var(--tm-ease-out);
+}
+.bf-scope[data-focus-active] [data-focus='dimmed'] {
+  opacity: 0.28;
+}
+[data-focus='focused'] {
+  box-shadow: 0 0 0 1px var(--tm-accent), var(--tm-shadow-md);
+}
+[data-focus='related'] {
+  box-shadow: 0 0 0 1px var(--tm-accent-subtle);
+}
+.bf-card {
+  position: fixed;
+  right: var(--tm-space-5);
+  bottom: var(--tm-space-5);
+  z-index: 25;
+  width: 300px;
+  max-height: 60vh;
+  overflow: auto;
+  padding: var(--tm-space-3);
+  background: var(--tm-bg-overlay);
+  border: 1px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-lg);
+  box-shadow: var(--tm-shadow-md);
+  font-size: var(--tm-text-sm);
+}
+.bf-card.bf-card-sheet {
+  position: static;
+  width: auto;
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  background: none;
+  border: 0;
+  box-shadow: none;
+  font-size: var(--tm-text-md);
+}
+.bf-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--tm-space-2);
+}
+.bf-head h3 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font: 600 var(--tm-text-sm) var(--tm-font-display);
+  overflow-wrap: anywhere;
+}
+.bf-head-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  margin: var(--tm-space-2) 0 var(--tm-space-1);
+}
+.bf-summary {
+  flex: 1;
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-xs);
+}
+.bf-kind h4 {
+  margin: var(--tm-space-3) 0 var(--tm-space-1);
+  color: var(--tm-text-muted);
+  font: 600 var(--tm-text-xs) var(--tm-font-display);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.bf-kind ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.bf-rel,
+.bf-dev-node {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  width: 100%;
+  padding: var(--tm-space-1) var(--tm-space-2);
+  border: 1px solid transparent;
+  border-radius: var(--tm-radius-md);
+  background: none;
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.bf-rel:hover,
+.bf-dev-node:hover {
+  background: var(--tm-bg-inset);
+}
+.bf-rel:focus-visible,
+.bf-dev-node:focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: 1px;
+}
+.bf-rel-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bf-rel-meta {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--tm-space-1);
+}
+.bf-rel-note {
+  color: var(--tm-text-faint);
+  font: 500 var(--tm-text-xs) var(--tm-font-mono);
+}
+.bf-empty {
+  margin: var(--tm-space-2) 0;
+  color: var(--tm-text-faint);
+}
+.app.mobile .bf-rel {
+  min-height: 44px;
+}
+/* the dev-only placeholder version (boardVersions.ts) */
+.bf-dev-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-height: 60vh;
+}
+.bf-dev-node {
+  margin: 2px 0;
+  background: var(--tm-bg-raised);
+  border-color: var(--tm-border);
+}

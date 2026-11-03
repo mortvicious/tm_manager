@@ -1,5 +1,11 @@
 # Decision log
 
+- **2026-11-03 — Board versions control: registry, per-device pick, shared focus layer (`docs/board-versions.md` § Versions control)**: task 894c2360.
+  - **One slot in the frozen Board.** The desktop Versions control belongs in the board head, which only Board.tsx renders, so `BoardPage` gained ONE optional prop, `headSlot`, rendered in the head's tools after *essentials* on the desktop. Nothing else in the file moved; with no version registered the control renders nothing, so the original is unchanged. The alternatives considered — a row above the board (moves the original down) or a portal hunting the head's DOM (breaks silently on any head edit) — were worse.
+  - **The phone switches in Settings → Appearance**, not in the search sheet's View section: that section is built inside Board.tsx and would have been a second edit to the frozen file.
+  - **`createdByRun` resolves through the runs the SPA already holds** (`useApp().runs`, every run, `Run.taskId`), so no `createdByTask` field was added. An aux run has no task and relates nothing.
+  - **The focus layer relates only the board's own set** (scope applied, hidden tasks out): a relation to a task the board does not show could not be highlighted anyway.
+
 - **2026-11-03 — Board versions: four alternatives to grouping, switchable next to the frozen board (`docs/board-versions.md`)**: task 10e66e3d.
   - **Grouping today shows one relation, and splits it by status.** A group is drawn inside each status bucket, so one tree appears as 3–4 fragments. "Filed by" and dispatch are text chips, not structure.
   - **Four directions were mocked up on one sample board**: Swimlanes (group × stage), Relation map (graph with filed-by and dispatch edges), Stacks (a group as one card with its most urgent member, grouping as a flag), and Metro (a group as a line of stations in run order).

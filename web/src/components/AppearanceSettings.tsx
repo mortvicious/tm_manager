@@ -1,3 +1,4 @@
+import { BoardVersionsSetting } from './BoardVersions.tsx';
 import { setDesign, setSchemePref, useLook, type Design, type SchemePref } from '../appearance.ts';
 
 const DESIGNS: { id: Design; label: string }[] = [
@@ -70,6 +71,8 @@ export function AppearanceSettings() {
         </div>
         <Segmented label="Light or dark" value={look.pref} options={SCHEMES} onChange={setSchemePref} />
       </div>
+      {/* the phone's Versions control (docs/board-versions.md); nothing while the original is the only one */}
+      <BoardVersionsSetting />
     </div>
   );
 }

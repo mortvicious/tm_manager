@@ -6,7 +6,7 @@ import { PushBridge } from './components/PushBridge.tsx';
 import { TaskSlideOver } from './components/TaskSlideOver.tsx';
 import { TerminalDrawer } from './components/TerminalDrawer.tsx';
 import { Toasts } from './components/Toasts.tsx';
-import { BoardPage } from './pages/Board.tsx';
+import { BoardRoute } from './pages/BoardRoute.tsx';
 import { ChatPage } from './pages/Chat.tsx';
 import { DashboardPage } from './pages/Dashboard.tsx';
 import { FeaturePage } from './pages/Feature.tsx';
@@ -55,7 +55,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<OpenOnBoard />} />
         <Route path="/dashboard" element={<DashboardPage onOpenTask={setOpenTask} />} />
-        <Route path="/board" element={<BoardPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
+        <Route path="/board" element={<BoardRoute onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
         <Route path="/inbox" element={<InboxPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} inboxReturn={inboxReturn} />} />
         <Route path="/inbox/deck" element={<ReviewDeckPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
         <Route path="/queue" element={<QueuePage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
