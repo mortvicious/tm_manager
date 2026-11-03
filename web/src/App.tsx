@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { Layout } from './components/Layout.tsx';
+import { Palette } from './components/Palette.tsx';
 import { QuestionModal } from './components/QuestionModal.tsx';
 import { PushBridge } from './components/PushBridge.tsx';
 import { TaskSlideOver } from './components/TaskSlideOver.tsx';
@@ -50,27 +51,32 @@ export function App() {
     else if (!openTask) setInboxReturn((cur) => ({ key: from.key, sheet: from.sheet, nonce: (cur?.nonce ?? 0) + 1 }));
   };
 
+  // one table for the router and the ⌘K palette, which offers only pages it knows
+  const routes = (
+    <Routes>
+      <Route path="/" element={<OpenOnBoard />} />
+      <Route path="/dashboard" element={<DashboardPage onOpenTask={setOpenTask} />} />
+      <Route path="/board" element={<BoardRoute onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
+      <Route path="/inbox" element={<InboxPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} inboxReturn={inboxReturn} />} />
+      <Route path="/inbox/deck" element={<ReviewDeckPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
+      <Route path="/queue" element={<QueuePage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
+      <Route path="/timeline" element={<TimelinePage onOpenTask={setOpenTask} />} />
+      <Route path="/chat" element={<ChatPage />} />
+      <Route path="/chat/:id" element={<ChatPage />} />
+      <Route path="/features" element={<FeaturesPage />} />
+      <Route path="/features/:id" element={<FeaturePage onOpenTask={setOpenTask} />} />
+      <Route path="/reports" element={<ReportsPage />} />
+      <Route path="/shared" element={<SharedPage onOpenTask={setOpenTask} />} />
+      <Route path="/terminals" element={<TerminalsPage onOpenTerminal={openTerm} onOpenTask={setOpenTask} />} />
+      <Route path="/repos" element={<ReposPage onOpenTerminal={openTerm} />} />
+      <Route path="/config" element={<ConfigPage />} />
+      <Route path="/handbook" element={<HandbookPage />} />
+    </Routes>
+  );
+
   return (
     <Layout onOpenTerminal={openTerm} onOpenTask={setOpenTask} inboxReturn={inboxReturn}>
-      <Routes>
-        <Route path="/" element={<OpenOnBoard />} />
-        <Route path="/dashboard" element={<DashboardPage onOpenTask={setOpenTask} />} />
-        <Route path="/board" element={<BoardRoute onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
-        <Route path="/inbox" element={<InboxPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} inboxReturn={inboxReturn} />} />
-        <Route path="/inbox/deck" element={<ReviewDeckPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
-        <Route path="/queue" element={<QueuePage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
-        <Route path="/timeline" element={<TimelinePage onOpenTask={setOpenTask} />} />
-        <Route path="/chat" element={<ChatPage />} />
-        <Route path="/chat/:id" element={<ChatPage />} />
-        <Route path="/features" element={<FeaturesPage />} />
-        <Route path="/features/:id" element={<FeaturePage onOpenTask={setOpenTask} />} />
-        <Route path="/reports" element={<ReportsPage />} />
-        <Route path="/shared" element={<SharedPage onOpenTask={setOpenTask} />} />
-        <Route path="/terminals" element={<TerminalsPage onOpenTerminal={openTerm} onOpenTask={setOpenTask} />} />
-        <Route path="/repos" element={<ReposPage onOpenTerminal={openTerm} />} />
-        <Route path="/config" element={<ConfigPage />} />
-        <Route path="/handbook" element={<HandbookPage />} />
-      </Routes>
+      {routes}
       {openTask && (
         <TaskSlideOver
           taskId={openTask}
@@ -96,6 +102,8 @@ export function App() {
       )}
       {/* an agent's question pops up on whatever page is open (docs/questions.md) */}
       <QuestionModal />
+      {/* ⌘K: jump to a task, page, repo, workspace, feature or chat (docs/palette.md) */}
+      <Palette routes={routes} onOpenTask={setOpenTask} />
       {/* service worker + notification taps + ?task=<id> deep links (docs/push.md) */}
       <PushBridge />
       {/* the one place a refused action is reported (docs/mobile.md § Action errors) */}

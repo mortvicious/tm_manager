@@ -541,7 +541,7 @@
   color: var(--tm-status-attention);
 }
 
-[data-design='glass'] .header .conn-dot-btn {
+[data-design='glass'] .header :is(.conn-dot-btn, .pal-btn) {
   width: 40px;
   padding: 0;
 }
@@ -846,7 +846,8 @@
   border-radius: var(--tm-radius-pill);
 }
 
-[data-design='glass'] .bs-pop {
+[data-design='glass'] .bs-pop,
+[data-design='glass'] .pal-pop {
   border: 1px solid var(--tm-glass-rim);
   border-radius: var(--tm-radius-xl);
   background: var(--tm-glass-thick);
@@ -1271,7 +1272,8 @@
   animation: tm-panel-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
 }
 
-[data-design='glass'] .bs-root.tm-exit .bs-pop {
+[data-design='glass'] .bs-root.tm-exit .bs-pop,
+[data-design='glass'] .pal-root.tm-exit .pal-pop {
   animation: tm-fade-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
 }
 

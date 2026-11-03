@@ -2563,12 +2563,15 @@ button.badge.badge-link:hover {
 }
 
 /* open, desktop: a Spotlight panel near the top, centred on the window
-   (above a task panel, so ⌘K works with one open; under an agent's question) */
-.overlay.bs-overlay {
+   (above a task panel; under an agent's question). The ⌘K palette
+   (Palette.tsx, docs/palette.md) is the same panel. */
+.overlay.bs-overlay,
+.overlay.pal-overlay {
   z-index: 37;
 }
 
-.bs-pop {
+.bs-pop,
+.pal-pop {
   position: fixed;
   top: max(10vh, var(--tm-space-8));
   left: 0;
@@ -2845,6 +2848,55 @@ button.badge.badge-link:hover {
   color: var(--tm-text-faint);
   font-size: var(--tm-text-xs);
   white-space: nowrap;
+}
+
+/* the ⌘K palette's lines (Palette.tsx): the board search's options, plus a
+   muted subtitle after the title and a status badge in front of a task */
+.pal-pop:focus-visible {
+  outline: none;
+}
+
+.pal-opt .badge {
+  flex: none;
+}
+
+.pal-sub {
+  margin-left: var(--tm-space-1);
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-xs);
+}
+
+.bs-opt[aria-selected='true'] .pal-sub {
+  color: inherit;
+  opacity: 0.8;
+}
+
+.pal-foot-hint {
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-xs);
+}
+
+/* the phone header's search button, beside the connection dot */
+.pal-btn {
+  min-width: var(--tm-tap-dense);
+  min-height: var(--tm-tap-dense);
+  justify-content: center;
+}
+
+.pal-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* the More sheet's first tile: a button dressed as a nav link, full width */
+.sheet-nav .sheet-search {
+  grid-column: 1 / -1;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 /* row age — right-aligned before the quick actions so ages line up as a column */

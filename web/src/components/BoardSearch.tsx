@@ -10,6 +10,7 @@ import {
   type Suggestion,
 } from '../boardSearch.ts';
 import { exitGhost } from '../motion.ts';
+import { BOARD_SEARCH_EVENT } from '../palette.ts';
 import { IconSearch, IconX } from './Icons.tsx';
 import { Sheet } from './Sheet.tsx';
 
@@ -21,9 +22,11 @@ import { Sheet } from './Sheet.tsx';
  * inside the field, live suggestions under it, the view controls at the foot.
  */
 
-const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
-
-/** `⌘K` / `Ctrl K` anywhere on the board, or `/` when not typing, opens the search. */
+/**
+ * `/` when not typing opens the search, and so does the ⌘K palette's "Search
+ * the board…" (BOARD_SEARCH_EVENT). ⌘K itself is the global palette's
+ * (docs/palette.md § The board).
+ */
 export function useSearchHotkey(onOpen: () => void, enabled: boolean) {
   const ref = useRef(onOpen);
   ref.current = onOpen;
@@ -35,14 +38,19 @@ export function useSearchHotkey(onOpen: () => void, enabled: boolean) {
       // a terminal owns every key typed into it
       if (el?.closest('.xterm')) return;
       const typing = !!el?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])');
-      const cmdK = (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k';
-      const slash = e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey;
-      if (!cmdK && !slash) return;
+      if (e.key !== '/' || typing || e.metaKey || e.ctrlKey || e.altKey) return;
+      // the palette is open over the board: its field has the keys
+      if (document.querySelector('.pal-pop, .pal-sheet')) return;
       e.preventDefault();
       ref.current();
     };
+    const onEvent = () => ref.current();
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener(BOARD_SEARCH_EVENT, onEvent);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener(BOARD_SEARCH_EVENT, onEvent);
+    };
   }, [enabled]);
 }
 
@@ -88,7 +96,7 @@ export function SearchTrigger({
         {summary || (mobile ? 'Search' : 'Search tasks, ids, repos, dates…')}
       </span>
       {count > 0 && <span className="bs-count">{count}</span>}
-      {!mobile && <kbd className="bs-kbd">{isMac ? '⌘K' : 'Ctrl K'}</kbd>}
+      {!mobile && <kbd className="bs-kbd">/</kbd>}
     </button>
   );
 }

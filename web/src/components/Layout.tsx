@@ -16,6 +16,7 @@ import { useWorkspace, WorkspaceGuard } from '../workspace.ts';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { InboxChip, InboxSheet, decisions, useInbox } from './Inbox.tsx';
 import { Explainable } from './Explain.tsx';
+import { openPalette } from '../palette.ts';
 import {
   IconBoard,
   IconBook,
@@ -31,6 +32,7 @@ import {
   IconTimeline,
   IconRepo,
   IconReport,
+  IconSearch,
   IconShell,
   IconSun,
   IconTerminal,
@@ -777,14 +779,14 @@ function OfflineBanner() {
   );
 }
 
-interface NavItem {
+export interface NavItem {
   to: string;
   label: string;
   icon: ReactNode;
 }
 
-/** The sidebar's and the More sheet's order. The app opens on the Board (App.tsx). */
-const NAV: NavItem[] = [
+/** The sidebar's and the More sheet's order, and the ⌘K palette's pages. The app opens on the Board (App.tsx). */
+export const NAV: NavItem[] = [
   { to: '/board', label: 'Board', icon: <IconBoard /> },
   { to: '/inbox', label: 'Inbox', icon: <IconInbox /> },
   { to: '/queue', label: 'Queue', icon: <IconTerminal /> },
@@ -1002,6 +1004,17 @@ function MoreSheet({ onClose, onOpenTerminal }: { onClose: () => void; onOpenTer
   return (
     <Sheet label="Menu" onClose={onClose}>
       <div className="sheet-nav">
+        {/* the ⌘K palette (docs/palette.md): this sheet goes, the palette's comes up */}
+        <button
+          type="button"
+          className="nav-link sheet-search"
+          onClick={() => {
+            onClose();
+            openPalette();
+          }}
+        >
+          <IconSearch /> Search &amp; jump…
+        </button>
         {nav.map((n) => (
           <NavLink key={n.to} to={wsHref(n.to)} className={navClass} onClick={onClose}>
             {n.icon} {n.label}
@@ -1183,7 +1196,12 @@ export function Layout({
         <span className="spacer" />
         {/* the ⋯ menu is the tab bar's More alone; its old slot reads the connection */}
         {mobile ? (
-          <ConnDot />
+          <>
+            <button type="button" className="btn ghost pal-btn" aria-label="Search and jump" onClick={openPalette}>
+              <IconSearch />
+            </button>
+            <ConnDot />
+          </>
         ) : (
           <>
             <ServerMenu />

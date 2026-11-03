@@ -17,9 +17,13 @@ Code: `web/src/boardSearch.ts` holds the rules and is pure (no React, no DOM).
   phone toolbar, before **+ New**. It reads `Search tasks, ids, repos, dates…`
   when idle. While a search is on, it reads what the search narrows by
   (`“login” · status review`), with a count badge.
-- **Open it** by clicking or tapping it. On a desktop `⌘K` / `Ctrl K` also opens
-  it from anywhere on the Board, and so does `/` when the focus is not in a text
-  field. A terminal keeps its keys.
+- **Open it** by clicking or tapping it. On a desktop `/` also opens it from
+  anywhere on the Board when the focus is not in a text field, and the trigger's
+  key hint reads `/`. A terminal keeps its keys. `⌘K` / `Ctrl K` is no longer
+  the board search's: it opens the global palette (`docs/palette.md`), whose
+  first entry on the Board is **Search the board…**, which opens this search
+  through the window event `tm-board-search` (decided 2026-11-03,
+  `docs/palette.md` § The board).
 - **Desktop**: a Spotlight panel near the top of the window, over a scrim. Its
   foot holds the view controls (`group:` and `sort:`), **Reset**, and the key
   hints.
@@ -167,7 +171,7 @@ year's.
 - Playwright (Chromium) against the Vite dev server and the live API, desktop
   1440×900 and an iPhone-sized 393×852 context, in Classic and Glass, with no
   page errors:
-  - Closed, `⌘K`, typing, ↓ + Enter to a chip, the smart filter, Escape back to
+  - Closed, `⌘K` (since 2026-11-03 the palette's key; the board search's is `/`), typing, ↓ + Enter to a chip, the smart filter, Escape back to
     the chips.
   - Phone: tap to open, type, Done.
 - `npm run typecheck` and `npm run build` are clean.
