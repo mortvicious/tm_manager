@@ -3409,3 +3409,5 @@ export * from './queue-drop.ts';
 export * from './diff.ts';
 // A task's neighbourhood for the board versions' focus layer (docs/board-versions.md § Versions control)
 export * from './task-relations.ts';
+// The Relation map board version's pure layout (docs/board-versions.md § Relation map)
+export * from './relation-map.ts';

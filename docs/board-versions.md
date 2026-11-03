@@ -87,3 +87,34 @@ const tasks = useBoardTasks();
 - Whether a click on a task focuses or opens is the version's call. The relation-map mockup focuses on click and opens from the card; a list-like version may focus from a dedicated affordance instead.
 - The original board does NOT get the layer (frozen).
 
+
+## Relation map
+
+Shipped in task 17b1af28 as registry id `relation-map` ("Relation map" in Versions). Files: `web/src/pages/board/RelationMap.tsx` (the view), `shared/src/relation-map.ts` (the pure layout, `layoutRelationMap` + `cullRelationMap`, pinned by `server/src/relation-map.test.ts`), and the `rm-*` rules at the end of `theme.css`. It needed no Glass rule of its own: nodes, bands and the list read the remapped tokens, and the focus card already has the Glass popover material.
+
+**Desktop: the canvas.**
+- **Bands.** There is one band per group with two or more tasks on the map, in queue order (the root's `sortOrder`) and tinted with the group's colour (`groupColorSlot`). A group whose root is not on the map still gets a band, labelled "Group". Single tasks go in a final **Ungrouped** band, where a filed task sits one column right of its filer, as in the mockup.
+- **Tree.** Inside a band the tree reads left to right: a parent, then its subtasks ordered by `sortOrder`. In **depth** mode (the default) it is a tidy tree: leaves take rows and each parent is centred vertically over its children. **Phase** (`featurePhase`, "no phase" first) and **status** (draft · queued · running · review · blocked · landed · stopped) modes place the column by that key, compacted to the columns in use, and give every task its own row in tree order, because a parent and its child can share a column there. Those two modes have sticky column headers. The column mode and the live/all pick are stored per device in `tm.relationMap`.
+- **Edges.**
+  - **Subtask:** solid, in the group colour.
+  - **Filed by an agent:** dashed and muted, drawn from `RelationIndex.filerOf`, the shared helper's `createdByRun` → `Run.taskId`. They cross bands when the filer sits elsewhere.
+  - **Dispatch:** dotted accent with an arrowhead, one edge per direction for each task pair (its tooltip gives the count). It is animated while any dispatch on the edge is `pending` (the animation stops under `prefers-reduced-motion`); a delivered, failed or cancelled one is drawn at 45 %.
+  - An edge whose target is not further right loops out to the right, as in the mockup.
+- **Focus.** Focus is the main interaction and comes from the shared layer: a click toggles focus (`itemProps` + `toggle`). The ring, the outline on related tasks and the dimming are the layer's own. The map also dims every edge not touching the focused task to 12 %. The relations card navigates, and focusing a task that is off screen scrolls it into view smoothly. **A double-click, ⌘/Ctrl+Enter or the card's Open** opens the ordinary task panel.
+- **Pan.** Drag empty canvas with a mouse; the click that ends a drag is swallowed so it does not clear the focus. Scrolling and trackpads work natively. There is no zoom (the brief made it optional).
+- **Live vs all.** *live* (the default) shows:
+  - every group that still has a live member, in full so its tree stays intact;
+  - every live single task;
+  - a landed single task one filed-by or dispatch hop from a live task.
+
+  *all* shows the whole board set (`useBoardTasks()`: workspace scope, not hidden). The focus card lists relations against the whole set either way.
+- **Performance.** The layout is memoised on (tasks shown, relation index, dispatches, column mode) and costs O(n log n). The canvas renders only the bands, nodes and edges inside the viewport plus one 400 px chunk of margin each way, and the viewport is snapped to that grid, so scrolling re-renders only when it crosses a chunk line. Measured on the live board's *all* set (a canvas about 59,000 px tall), about 30 nodes are mounted at any scroll position.
+- **Live updates.** The map reads `useApp()` tasks, runs and dispatches, which `/ws/events` keeps current. There is no polling.
+
+**Phone: no canvas.** The view is a list of the same bands, with rows in tree pre-order (`order`), indented by depth with an elbow mark. Each row carries its status badge, a dashed `filed` mark, a dotted `⇢` dispatch mark (filled while pending) and the progress %. Tapping a row focuses it, which opens the focus layer's **neighbours `<Sheet>`**. Its relations are navigable, and its Open clears the focus and opens the task panel. The column modes are desktop-only; *live/all* stays.
+
+**Departures from the mockup.**
+- A click focuses and opening is a double-click or the card, as the mockup implies; the standing "a click opens the panel" rule yields here to the brief's "focus is the main interaction".
+- The side card is the shared `BoardFocusCard`, at the lower right, rather than the mockup's top-right card. It also lists siblings in the group, which the shared helper reports and the mockup did not.
+- The node has no hover lift (no `transform`). It shows the repo chip only when the map spans more than one repo, not when the repo differs from a default.
+- The *live/all* filter is new. The mockup's 17-task sample had no need for it, but the real board's landed history (about 900 tasks) would bury the live work.

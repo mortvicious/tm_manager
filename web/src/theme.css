@@ -10845,3 +10845,328 @@ button.explain-tap:active {
   background: var(--tm-bg-raised);
   border-color: var(--tm-border);
 }
+
+/* ── Board version: Relation map (docs/board-versions.md § Relation map) ──
+   Geometry (node 230×52, columns 270, band padding 34) is the shared
+   `layoutRelationMap`'s; these rules only paint it. */
+.rm-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+  white-space: nowrap;
+}
+.rm-legend i {
+  display: inline-block;
+  width: 22px;
+  height: 0;
+  margin-right: var(--tm-space-1);
+  vertical-align: middle;
+}
+.rm-lg-subtask {
+  border-top: 2px solid var(--tm-group-1);
+}
+.rm-lg-filed {
+  border-top: 2px dashed var(--tm-text-muted);
+}
+.rm-lg-dispatch {
+  border-top: 2px dotted var(--tm-accent);
+}
+.rm-seg {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-inset);
+}
+.rm-seg-label {
+  padding: 0 var(--tm-space-2);
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-xs);
+}
+.rm-seg button {
+  padding: 2px var(--tm-space-2);
+  border: 0;
+  border-radius: var(--tm-radius-sm);
+  background: none;
+  color: var(--tm-text-muted);
+  font: inherit;
+  font-size: var(--tm-text-xs);
+  cursor: pointer;
+}
+.rm-seg button.on {
+  background: var(--tm-bg-raised);
+  color: var(--tm-text);
+  box-shadow: var(--tm-shadow-md);
+}
+.rm-seg button:focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: 1px;
+}
+.app.mobile .rm-seg button {
+  min-height: 32px;
+  padding: 0 var(--tm-space-3);
+}
+
+.rm-canvas {
+  position: relative;
+  height: max(360px, calc(100dvh - 150px));
+  overflow: auto;
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-lg);
+  background:
+    radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--tm-border) 70%, transparent) 1px, transparent 0) 0 0 / 18px 18px,
+    var(--tm-bg-inset);
+  cursor: grab;
+  overscroll-behavior: contain;
+}
+.rm-canvas:active {
+  cursor: grabbing;
+}
+.rm-empty {
+  position: absolute;
+  top: var(--tm-space-4);
+  left: var(--tm-space-5);
+}
+/* sticky column headers of the phase/status modes: a zero-height strip so
+   the stage keeps its own coordinates */
+.rm-cols {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 0;
+}
+.rm-col {
+  position: absolute;
+  top: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--tm-space-2);
+  border-bottom: 1px solid var(--tm-border);
+  background: var(--tm-bg-inset);
+  color: var(--tm-text-muted);
+  font: 600 var(--tm-text-xs) var(--tm-font-display);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.rm-stage {
+  position: relative;
+}
+.rm-band {
+  position: absolute;
+  left: var(--tm-space-2);
+  right: var(--tm-space-2);
+  border: 1px solid color-mix(in srgb, var(--rm-g) 22%, transparent);
+  border-radius: var(--tm-radius-lg);
+  background: color-mix(in srgb, var(--rm-g) 6%, transparent);
+}
+.rm-band b {
+  position: absolute;
+  top: var(--tm-space-2);
+  left: var(--tm-space-3);
+  max-width: 60%;
+  overflow: hidden;
+  color: var(--rm-g);
+  font: 600 var(--tm-text-xs) var(--tm-font-display);
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rm-band span {
+  position: absolute;
+  top: var(--tm-space-2);
+  right: var(--tm-space-3);
+  color: var(--tm-text-faint);
+  font: 500 var(--tm-text-xs) var(--tm-font-mono);
+}
+.rm-edges {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+.rm-edge {
+  fill: none;
+  transition: opacity var(--tm-dur-fast) var(--tm-ease-out);
+}
+.rm-edge-subtask {
+  stroke-width: 1.6;
+}
+.rm-edge-filed {
+  stroke: var(--tm-text-muted);
+  stroke-width: 1.3;
+  stroke-dasharray: 5 4;
+}
+.rm-edge-dispatch {
+  stroke: var(--tm-accent);
+  stroke-width: 1.6;
+  stroke-dasharray: 2 4;
+  opacity: 0.45;
+}
+.rm-edge-dispatch.pending {
+  opacity: 1;
+  animation: rm-flow 1.2s linear infinite;
+}
+.rm-arrow {
+  fill: var(--tm-accent);
+}
+@keyframes rm-flow {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rm-edge-dispatch.pending {
+    animation: none;
+  }
+}
+.bf-scope[data-focus-active] .rm-edge {
+  opacity: 0.12;
+}
+.bf-scope[data-focus-active] .rm-edge[data-hi] {
+  opacity: 1;
+}
+.rm-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--tm-space-1);
+  padding: var(--tm-space-1) var(--tm-space-2);
+  overflow: hidden;
+  border: 1px solid var(--tm-border);
+  border-left: 3px solid var(--rm-c);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-raised);
+  color: var(--tm-text);
+  font: inherit;
+  font-size: var(--tm-text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.rm-node:hover {
+  border-color: var(--tm-border-strong);
+  border-left-color: var(--rm-c);
+}
+.rm-node:focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: 1px;
+}
+.rm-node-title {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rm-node-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.rm-node-meta .chip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* phone: the list that opens the neighbours sheet */
+.rm-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-4);
+  padding-bottom: var(--tm-space-6);
+}
+.rm-list-band ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--rm-g) 22%, var(--tm-border));
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-bg-raised);
+  overflow: hidden;
+}
+.rm-list-band li + li {
+  border-top: 1px solid var(--tm-border);
+}
+.rm-list-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--tm-space-2);
+  margin: 0 0 var(--tm-space-2);
+  padding: 0 var(--tm-space-1);
+  color: var(--rm-g);
+  font: 600 var(--tm-text-xs) var(--tm-font-display);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.rm-list-head > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rm-list-count {
+  color: var(--tm-text-faint);
+  font: 500 var(--tm-text-xs) var(--tm-font-mono);
+}
+.rm-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--tm-space-1);
+  width: 100%;
+  min-height: 44px;
+  padding: var(--tm-space-2) var(--tm-space-3) var(--tm-space-2) calc(var(--tm-space-3) + var(--rm-depth, 0) * var(--tm-space-4));
+  border: 0;
+  border-left: 3px solid var(--rm-c);
+  background: none;
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rm-row:active {
+  background: var(--tm-fill-press);
+}
+.rm-row:focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: -2px;
+}
+.rm-row-title {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rm-row-elbow {
+  margin-right: var(--tm-space-1);
+  color: var(--rm-g);
+}
+.rm-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-1);
+}
+.rm-mark {
+  padding: 0 var(--tm-space-1);
+  border-radius: var(--tm-radius-sm);
+  color: var(--tm-text-muted);
+  font: 500 var(--tm-text-xs) var(--tm-font-mono);
+}
+.rm-mark-filed {
+  border: 1px dashed var(--tm-text-muted);
+}
+.rm-mark-dispatch {
+  border: 1px dotted var(--tm-accent);
+  color: var(--tm-accent);
+}
+.rm-mark-dispatch.pending {
+  background: var(--tm-accent-subtle);
+}
