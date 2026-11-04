@@ -293,6 +293,12 @@ a stale `origin/main`.
   we read) and `git push --dry-run --porcelain origin origin/<base>:refs/heads/tm-push-probe`
   (can we write — nothing is sent, but the remote checks the credentials for a
   push), then `localAhead` (§ Base branch).
+  A step that fails with a kind that would HOLD the repo (auth/protected) is
+  retried up to `PROBE_ATTEMPTS` (3) times, 3 s apart, before the probe fails:
+  during GitHub's 2026-11-04 Git Operations incident the remote refused a
+  valid key with `Permission denied (publickey)` on about half the
+  connections, and single unlucky probes held every `pr` repo behind the
+  banner. A real credential problem fails every attempt and still holds.
 - **Real pushes report too**: `syncPr`, the land (`publishWorktree`'s failed
   branch) and the fork's `git fetch` (`ensureTree`) classify their failure
   (`classifyGitFailure`: network → protected → auth → race → other; network is

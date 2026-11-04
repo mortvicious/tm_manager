@@ -652,15 +652,26 @@ export function resultInstruction(schema: object | string): string {
 /**
  * The JSON value at the end of a final message: the LAST ```json fence, else
  * the last bare fence, else the whole text. null when none of them parse.
+ *
+ * A fence's body may itself contain ``` inside a JSON string (a plan task about
+ * escaping fences did exactly that, and a lazy match cut the block there and
+ * threw a good plan away), so each opening is tried against every later
+ * closing fence, farthest first. Only a string can hold ```, so whichever
+ * closing yields valid JSON is the block's own.
  */
 export function extractJson(text: string): unknown {
-  const fences = [...text.matchAll(/```(json)?[ \t]*\r?\n([\s\S]*?)```/g)];
-  const tagged = fences.filter((m) => m[1]);
-  for (const m of [...tagged.reverse(), ...fences.filter((f) => !f[1]).reverse()]) {
-    try {
-      return JSON.parse(m[2]);
-    } catch {
-      // try the next candidate
+  const opens = [...text.matchAll(/```(json)?[ \t]*\r?\n/g)];
+  const closes = [...text.matchAll(/```/g)].map((m) => m.index ?? 0);
+  const order = [...opens.filter((m) => m[1]).reverse(), ...opens.filter((m) => !m[1]).reverse()];
+  let attempts = 0;
+  for (const open of order) {
+    const start = (open.index ?? 0) + open[0].length;
+    for (let i = closes.length - 1; i >= 0 && closes[i] >= start && attempts < 64; i--, attempts++) {
+      try {
+        return JSON.parse(text.slice(start, closes[i]));
+      } catch {
+        // try the next candidate
+      }
     }
   }
   try {

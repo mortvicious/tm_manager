@@ -173,6 +173,32 @@ describe('probePush (real git)', () => {
     assert.equal(r.step, 'ls-remote');
     assert.equal(r.kind, 'auth'); // "…correct access rights and the repository exists."
   });
+
+  test('an intermittent "Permission denied (publickey)" is retried, not held (GitHub incident 2026-11-04)', async () => {
+    const { bare, work } = makeRepo('probe-flaky');
+    // A fake ssh that refuses every ODD connection the way GitHub did, and
+    // otherwise runs the git service locally against the bare repo.
+    const counter = path.join(tmp, 'flaky-count');
+    const ssh = path.join(tmp, 'flaky-ssh');
+    fs.writeFileSync(
+      ssh,
+      [
+        '#!/bin/sh',
+        `n=$(( $(cat "${counter}" 2>/dev/null || echo 0) + 1 )); echo $n > "${counter}"`,
+        'if [ $((n % 2)) -eq 1 ]; then echo "git@github.com: Permission denied (publickey)." >&2; exit 255; fi',
+        'for a; do last=$a; done',
+        'exec sh -c "$last"',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    git(work, 'config', 'core.sshCommand', ssh);
+    git(work, 'remote', 'set-url', 'origin', `flaky:${bare}`);
+    const repo = { id: 'p3', name: 'p3', path: work, delivery: 'pr', baseBranch: null } as unknown as Repo;
+    const r = await probePush(repo, (x) => defaultBranch(x));
+    assert.equal(r.ok, true, JSON.stringify(r));
+    // ls-remote: refused, then ok; push --dry-run: refused, then ok
+    assert.equal(fs.readFileSync(counter, 'utf8').trim(), '4');
+  });
 });
 
 describe('integratedIn (real git)', () => {

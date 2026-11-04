@@ -168,6 +168,14 @@ describe('feature plan dependsOn', () => {
     assert.deepEqual(plan.phases[0].tasks[1].dependsOn, ['c00']);
     assert.deepEqual(plan.phases[0].tasks[2].dependsOn, ['c01']);
   });
+  test('refs resolve to the cards\' own ids with a non-deterministic idFor (production passes () => randomUUID())', () => {
+    let n = 0;
+    const rnd = toStoredPlan(raw, () => `id-${n++}`);
+    const [api, ui, docs] = rnd.phases[0].tasks;
+    assert.deepEqual(ui.dependsOn, [api.id]);
+    assert.deepEqual(docs.dependsOn, [ui.id]);
+    assert.deepEqual(planCards({ title: 'F', analysis: rnd } as Feature).map((c) => c.dependsOnCards), [[], [api.id], [ui.id]]);
+  });
   test('planCards drops an edge onto an excluded or later card', () => {
     const excl = structuredClone(plan);
     excl.phases[0].tasks[1].excluded = true;

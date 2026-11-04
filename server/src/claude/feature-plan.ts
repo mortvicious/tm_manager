@@ -157,6 +157,10 @@ export function buildFeatureTaskDescription(
 
 /** Normalizes a validated model plan into the stored shape (stable card ids). */
 export function toStoredPlan(raw: z.infer<typeof planSchema>, idFor: (phase: number, index: number) => string): FeaturePlan {
+  // Each card's id is minted ONCE: the caller's idFor may be `() => randomUUID()`,
+  // and calling it again for a "2.1" ref minted a fresh id that matched no card,
+  // so every dependsOn was dangling and approval dropped them all.
+  const ids = raw.phases.map((p, pi) => p.tasks.map((_, ti) => idFor(pi, ti)));
   /** "2.1" → the card id of phase 2 task 1 (1-based), only when it comes BEFORE (pi, ti) */
   const ref = (r: string, pi: number, ti: number): string | null => {
     const m = /^\s*(\d+)\s*\.\s*(\d+)\s*$/.exec(r);
@@ -164,7 +168,7 @@ export function toStoredPlan(raw: z.infer<typeof planSchema>, idFor: (phase: num
     const [p, t] = [Number(m[1]) - 1, Number(m[2]) - 1];
     if (!raw.phases[p]?.tasks[t]) return null;
     if (p > pi || (p === pi && t >= ti)) return null; // forward or self: could deadlock the phase gate
-    return idFor(p, t);
+    return ids[p][t];
   };
   return {
     summary: raw.summary,
@@ -173,7 +177,7 @@ export function toStoredPlan(raw: z.infer<typeof planSchema>, idFor: (phase: num
       title: p.title,
       goal: p.goal,
       tasks: p.tasks.map((t, ti) => ({
-        id: idFor(pi, ti),
+        id: ids[pi][ti],
         title: t.title,
         description: t.description,
         category: t.category ?? null,

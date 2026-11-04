@@ -75,6 +75,28 @@ export interface ProbeResult {
 /** `origin/<base>` of a repo, as the land resolves it (worktrees.ts `defaultBranch`). */
 export type BaseResolver = (repo: Repo) => Promise<{ remote: string; branch: string; ref: string } | null>;
 
+/** Attempts per probe step, and the pause between them. */
+export const PROBE_ATTEMPTS = 3;
+const PROBE_RETRY_MS = 3_000;
+
+/**
+ * One probe step, retried while it fails with a kind that would HOLD the repo.
+ * During a GitHub incident (2026-11-04: "intermittent failures" in Git
+ * Operations) the remote refuses a valid key with `Permission denied
+ * (publickey)` on about half the connections, and a single unlucky probe
+ * read as `auth` held every pr repo behind a banner. A real credential
+ * problem fails every attempt, so it still holds — one probe later at most.
+ * Network/other failures are not retried: they never hold a repo.
+ */
+async function retried(step: () => Promise<{ code: number | null; out: string }>, attempts = PROBE_ATTEMPTS) {
+  let res = await step();
+  for (let i = 1; i < attempts && res.code !== 0 && holdsRepo(classifyGitFailure(res.out)); i++) {
+    await new Promise((r) => setTimeout(r, PROBE_RETRY_MS));
+    res = await step();
+  }
+  return res;
+}
+
 /**
  * The preflight: can the server READ the base branch (`ls-remote`) and WRITE
  * to the remote (`push --dry-run` of the base to a probe ref — nothing is
@@ -87,14 +109,18 @@ export async function probePush(repo: Repo, resolveBase: BaseResolver, timeoutMs
     return { ok: false, kind: 'other', step: 'base', error: repo.baseBranch ? `origin/${repo.baseBranch} does not exist` : 'no origin default branch' };
   }
   const env = await gitNetEnv(repo.path);
-  const ls = await run(repo.path, 'git', ['ls-remote', '--heads', def.remote, `refs/heads/${def.branch}`], timeoutMs, env);
+  const ls = await retried(() =>
+    run(repo.path, 'git', ['ls-remote', '--heads', def.remote, `refs/heads/${def.branch}`], timeoutMs, env),
+  );
   if (ls.code !== 0) return { ok: false, kind: classifyGitFailure(ls.out), step: 'ls-remote', error: tail(ls.out), base: def.ref };
-  const push = await run(
-    repo.path,
-    'git',
-    ['push', '--dry-run', '--porcelain', def.remote, `${def.ref}:refs/heads/tm-push-probe`],
-    timeoutMs,
-    env,
+  const push = await retried(() =>
+    run(
+      repo.path,
+      'git',
+      ['push', '--dry-run', '--porcelain', def.remote, `${def.ref}:refs/heads/tm-push-probe`],
+      timeoutMs,
+      env,
+    ),
   );
   if (push.code !== 0) return { ok: false, kind: classifyGitFailure(push.out), step: 'push', error: tail(push.out), base: def.ref };
   const remoteSha = ls.out.trim().split(/\s+/)[0] ?? '';

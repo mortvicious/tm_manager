@@ -152,15 +152,31 @@ export async function startFeatureAnalysis(
 
       let plan: FeaturePlan | null = null;
       let rounds: PlanReviewRound[] = feature.review?.rounds ?? [];
+      // A Re-analyze over a plan whose LAST review blocked it is the next round
+      // of that loop, not a fresh start: the blocked plan and its findings go
+      // into the first prompt, exactly as an automatic re-analysis round would.
+      const lastRound = rounds.at(-1);
       let previous: {
         plan: FeaturePlan;
         findings: { severity: string; summary: string; detail: string | null }[];
-      } | null = null;
+      } | null =
+        feature.analysis && lastRound?.verdict === 'blocker'
+          ? { plan: feature.analysis, findings: lastRound.findings }
+          : null;
+      // Review rounds are numbered across Re-analyze runs (the list is appended to).
+      const roundBase = rounds.length;
+      // Set when a LATER round fails and the earlier plan is proposed instead:
+      // the page must say so rather than show a blocked plan as the outcome.
+      let laterRoundError: string | null = null;
       // round 0 is the first attempt; up to maxRounds RE-analyses follow it.
       for (let round = 0; round <= maxRounds; round++) {
         if (await aborted()) return;
         if (Date.now() - startedAt > PIPELINE_BUDGET_MS) {
-          if (plan) break; // keep the plan we have rather than throwing it away
+          if (plan) {
+            // keep the plan we have rather than throwing it away
+            laterRoundError = `re-analysis stopped: the pipeline exceeded its time budget`;
+            break;
+          }
           return void (await fail('analysis exceeded its time budget'));
         }
 
@@ -189,7 +205,11 @@ export async function startFeatureAnalysis(
         if (await stoppedByKill(planRes)) return;
         if (await aborted()) return;
         if (planRes.status !== 'ok' || !planRes.value) {
-          if (plan) break; // a later round failed; the earlier plan still stands
+          if (plan) {
+            // a later round failed; the earlier plan still stands — but say so
+            laterRoundError = `re-analysis round ${rounds.length + 1} failed: ${outcomeError(planRes, 'plan analysis failed')}`;
+            break;
+          }
           return void (await fail(outcomeError(planRes, 'plan analysis failed')));
         }
         plan = toStoredPlan(planRes.value, () => randomUUID());
@@ -229,7 +249,7 @@ export async function startFeatureAnalysis(
         const reviewParsed = reviewRes.status === 'ok' && reviewRes.value ? { data: reviewRes.value } : null;
         if (reviewParsed) {
           roundResult = {
-            round: round + 1,
+            round: roundBase + round + 1,
             verdict: reviewParsed.data.verdict,
             findings: reviewParsed.data.findings.map((f) => ({
               severity: f.severity,
@@ -242,7 +262,7 @@ export async function startFeatureAnalysis(
         } else {
           // A review that could not run must never look like a clean verdict.
           roundResult = {
-            round: round + 1,
+            round: roundBase + round + 1,
             verdict: 'minor',
             findings: [
               {
@@ -268,7 +288,7 @@ export async function startFeatureAnalysis(
           data: {
             featureId: feature.id,
             costUsd: stats.costUsd,
-            round: round + 1,
+            round: roundBase + round + 1,
             verdict: roundResult.verdict,
             findings: roundResult.findings.length,
             phases: plan.phases.length,
@@ -282,8 +302,11 @@ export async function startFeatureAnalysis(
       }
 
       if (!plan) return void (await fail('analysis produced no plan'));
+      const last = rounds.at(-1);
       const proposed = await storage.transitionFeature(feature.id, ['analyzing'], 'proposed', 'analyze', {
-        error: null,
+        error: laterRoundError
+          ? `${laterRoundError} — showing the previous plan${last?.verdict === 'blocker' ? ', which its review BLOCKED' : ''}. Re-analyze to continue from that review.`.slice(0, 1000)
+          : null,
       });
       if (proposed) broadcast({ type: 'feature.updated', feature: proposed });
     } catch (err) {
