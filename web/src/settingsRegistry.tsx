@@ -10,6 +10,8 @@ import { Link } from 'react-router-dom';
 import {
   CONCURRENCY_MAX,
   EFFORT_LEVELS,
+  JOB_CONCURRENCY_MAX,
+  JOB_MAX_ACTIVE_TASKS_MAX,
   MODEL_OPTIONS,
   taskPresets,
   type AppSettings,
@@ -32,6 +34,7 @@ export type SectionId =
   | 'review'
   | 'routing'
   | 'chat'
+  | 'jobs'
   | 'budget'
   | 'board'
   | 'presets'
@@ -175,7 +178,7 @@ const model =
   };
 
 const effort =
-  (k: 'agent.effort' | 'chat.effort', label: string) =>
+  (k: 'agent.effort' | 'chat.effort' | 'jobs.effort', label: string) =>
   ({ cfg, form }: SettingCtx) => (
     <select
       className="field mono"
@@ -274,6 +277,16 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     intent: 'agents',
     summary: ({ cfg }) =>
       `${shortModel(valueOf(cfg, 'chat.model'))} ${valueOf(cfg, 'chat.effort')} · ${valueOf(cfg, 'chat.concurrency')} at once`,
+  },
+  {
+    id: 'jobs',
+    title: 'Scheduled jobs',
+    intent: 'agents',
+    intro: 'deferred checks fired by the server in their own queue (docs/jobs.md)',
+    summary: ({ cfg }) =>
+      valueOf(cfg, 'jobs.enabled')
+        ? `on · below ${valueOf(cfg, 'jobs.maxActiveTasks')} active tasks · ${shortModel(valueOf(cfg, 'jobs.model'))}`
+        : 'off',
   },
   {
     id: 'budget',
@@ -639,6 +652,63 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     help: 'across all chats — a chat is serial on its own; this is the fence against opening several and sending to all of them. Separate from the worker concurrency: a chat turn owns no task and must not take a worker slot',
     advanced: true,
     render: num('chat.concurrency', { min: 1, max: 5, label: 'Concurrent chat turns' }),
+  },
+
+  // Scheduled jobs
+  {
+    key: 'jobs.enabled',
+    section: 'jobs',
+    label: 'Jobs queue',
+    help: 'fire due jobs on their own (docs/jobs.md); independent of the task queue switch — Pause all still stops them',
+    render: toggle('jobs.enabled', 'Jobs queue'),
+  },
+  {
+    key: 'jobs.maxActiveTasks',
+    section: 'jobs',
+    label: 'Fire while fewer than N tasks are active',
+    help: 'running + waiting tasks across all repos (default 3, 0 = no threshold)',
+    render: num('jobs.maxActiveTasks', { min: 0, max: JOB_MAX_ACTIVE_TASKS_MAX, width: 80, label: 'Fire while fewer than N tasks are active' }),
+  },
+  {
+    key: 'jobs.concurrency',
+    section: 'jobs',
+    label: 'Job runs at once',
+    help: `aux terminals, never a worker slot (default 1, up to ${JOB_CONCURRENCY_MAX})`,
+    advanced: true,
+    render: num('jobs.concurrency', { min: 1, max: JOB_CONCURRENCY_MAX, width: 80, label: 'Job runs at once' }),
+  },
+  {
+    key: 'jobs.timeoutMinutes',
+    section: 'jobs',
+    label: 'Job timeout (minutes)',
+    help: 'a run past this ends as an error verdict',
+    advanced: true,
+    render: num('jobs.timeoutMinutes', { min: 2, max: 120, width: 80, label: 'Job timeout' }),
+  },
+  {
+    key: 'jobs.model',
+    section: 'jobs',
+    label: 'Job model',
+    help: 'default for a job without its own pick',
+    advanced: true,
+    render: model('jobs.model', 'Job model'),
+  },
+  {
+    key: 'jobs.effort',
+    section: 'jobs',
+    label: 'Job effort',
+    help: 'reasoning effort for job runs',
+    advanced: true,
+    render: effort('jobs.effort', 'Job effort'),
+  },
+  {
+    key: 'jobs.notifyOk',
+    section: 'jobs',
+    label: 'Ping when a job run is clean',
+    help: 'Telegram/push for an ok verdict too (attention and errors always ping)',
+    intent: 'alerts',
+    advanced: true,
+    render: toggle('jobs.notifyOk', 'Ping when a job run is clean'),
   },
 
   // Budget & alerts

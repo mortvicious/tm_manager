@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { CONCURRENCY_MAX, DEFAULT_SETTINGS, EFFORT_LEVELS, MODEL_OPTIONS, taskPresets, type AppSettings } from '@tm/shared';
+import { CONCURRENCY_MAX, DEFAULT_SETTINGS, EFFORT_LEVELS, JOB_CONCURRENCY_MAX, JOB_MAX_ACTIVE_TASKS_MAX, MODEL_OPTIONS, taskPresets, type AppSettings } from '@tm/shared';
 import { AppearanceSettings } from '../components/AppearanceSettings.tsx';
 import { PresetEditor } from '../components/PresetEditor.tsx';
 import { TemplateEditor } from '../components/TemplateEditor.tsx';
@@ -89,6 +89,101 @@ export function ConfigPage({ headSlot, topSlot }: { headSlot?: ReactNode; topSlo
               on-green or auto-publish
             </div>
           </div>
+        </div>
+      </div>
+
+      <div className="panel cfg-group">
+        <h3>Scheduled jobs</h3>
+        <div className="cfg-row">
+          <div>
+            <div>Jobs queue</div>
+            <div className="hint">
+              fire due jobs on their own (docs/jobs.md); independent of the task queue switch — Pause all still stops them
+            </div>
+          </div>
+          <Toggle on={cfg['jobs.enabled']} onChange={(v) => set('jobs.enabled', v)} />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Fire while fewer than N tasks are active</div>
+            <div className="hint">running + waiting tasks across all repos (default 3, 0 = no threshold)</div>
+          </div>
+          <input
+            className="field"
+            style={{ width: 80 }}
+            type="number"
+            min={0}
+            max={JOB_MAX_ACTIVE_TASKS_MAX}
+            value={cfg['jobs.maxActiveTasks']}
+            onChange={(e) => set('jobs.maxActiveTasks', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Job runs at once</div>
+            <div className="hint">aux terminals, never a worker slot (default 1, up to {JOB_CONCURRENCY_MAX})</div>
+          </div>
+          <input
+            className="field"
+            style={{ width: 80 }}
+            type="number"
+            min={1}
+            max={JOB_CONCURRENCY_MAX}
+            value={cfg['jobs.concurrency']}
+            onChange={(e) => set('jobs.concurrency', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Timeout (minutes)</div>
+            <div className="hint">a run past this ends as an error verdict</div>
+          </div>
+          <input
+            className="field"
+            style={{ width: 80 }}
+            type="number"
+            min={2}
+            max={120}
+            value={cfg['jobs.timeoutMinutes']}
+            onChange={(e) => set('jobs.timeoutMinutes', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Model</div>
+            <div className="hint">default for a job without its own pick</div>
+          </div>
+          <select className="field mono" style={{ width: 220 }} value={cfg['jobs.model']} onChange={(e) => set('jobs.model', e.target.value)}>
+            {modelChoices.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Effort</div>
+          </div>
+          <select
+            className="field mono"
+            style={{ width: 220 }}
+            value={cfg['jobs.effort']}
+            onChange={(e) => set('jobs.effort', e.target.value as AppSettings['jobs.effort'])}
+          >
+            {EFFORT_LEVELS.map((l) => (
+              <option key={l} value={l}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Ping when a run is clean</div>
+            <div className="hint">Telegram/push for an ok verdict too (attention and errors always ping)</div>
+          </div>
+          <Toggle on={cfg['jobs.notifyOk']} onChange={(v) => set('jobs.notifyOk', v)} />
         </div>
       </div>
 

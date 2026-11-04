@@ -71,6 +71,8 @@ import { FlowStore, startEdit, startFeature, startNew, startProceed } from './fl
 import { resolveFeature, resolveLiveRun, resolveProposal, resolveRepo, resolveTask, short } from './ids.ts';
 import { collectStatus, formatClock, renderStatus, type GateCounters } from './status.ts';
 import type { BotCommandSpec, TelegramMessage } from './types.ts';
+import type { JobService } from '../jobs.ts';
+import { jobsListMessage } from './jobs.ts';
 
 // The router. One table, one lookup, no HTTP: a handler calls the same service
 // functions the REST routes call (docs/telegram.md § In-process, never HTTP).
@@ -98,6 +100,8 @@ export interface CommandContext {
   flows: FlowStore;
   /** the ONE open confirm window for a destructive command (§ Emergency) */
   confirms: ConfirmStore;
+  /** scheduled jobs (docs/jobs.md); null in a harness */
+  jobs?: JobService | null;
   /** the fence in front of /killall and /restart */
   limiter: RateLimiter;
   /** what index.ts wired in: the restart guard and the front door's port.
@@ -327,6 +331,23 @@ export const COMMANDS: BotCommand[] = [
         }
       }
       return renderBoard(board, state);
+    },
+  },
+  {
+    command: 'jobs',
+    description: 'Scheduled checks — /jobs, /jobs on|off',
+    async handler(ctx) {
+      if (!ctx.jobs) return 'Jobs are unavailable here.';
+      const arg = ctx.args.trim().toLowerCase();
+      if (arg === 'on' || arg === 'off') {
+        await ctx.jobs.setEnabled(arg === 'on', ctx.actor);
+        return arg === 'on' ? '🗓 Очередь проверок включена.' : '🗓 Очередь проверок выключена — due jobs wait until /jobs on.';
+      }
+      if (arg) return 'Usage: /jobs, /jobs on, /jobs off';
+      const [jobs, repos] = await Promise.all([ctx.storage.listJobs(), ctx.storage.listRepos()]);
+      const names = new Map(repos.map((r) => [r.id, r.name]));
+      const m = jobsListMessage(jobs, ctx.jobs.status(), (id) => names.get(id) ?? id.slice(0, 8));
+      return { html: m.html, keyboard: m.keyboard };
     },
   },
   {

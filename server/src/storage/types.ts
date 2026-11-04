@@ -1,8 +1,9 @@
 import type { WorktreePatch } from './worktree-sql.ts';
 import type { ApprovalFilter, NewApproval } from './approval-sql.ts';
+import type { JobFilter, JobPatch, JobRunFinish, NewJob } from './job-sql.ts';
 import type { MoveAnchor } from './group.ts';
 import type { QueueMoveAnchor } from './queue-sql.ts';
-import type { Approval, ApprovalStatus, PushDevice, PushKind } from '@tm/shared';
+import type { Approval, ApprovalStatus, Job, JobRun, JobStatus, JobVerdict, PushDevice, PushKind } from '@tm/shared';
 import type {
   LoopState,
   AppSettings,
@@ -624,6 +625,40 @@ export interface Storage {
    * expires ALL pending questions — the boot sweep.
    */
   expireQuestions(f: { runId?: string; taskId?: string }, note: string): Promise<Question[]>;
+
+  // ---- scheduled jobs (docs/jobs.md; SQL in job-sql.ts) ----
+
+  listJobs(f?: JobFilter): Promise<Job[]>;
+  getJob(id: string): Promise<Job | null>;
+  createJob(j: NewJob): Promise<Job>;
+  /** field edit, never status; null when the job is gone */
+  updateJob(id: string, p: JobPatch): Promise<Job | null>;
+  deleteJob(id: string): Promise<boolean>;
+  /** scheduled/paused/running jobs of a repo (the agent cap) */
+  countLiveJobs(repoId: string): Promise<number>;
+  /**
+   * `scheduled → running` only while still due at `now` (the sweep); `force`
+   * (a human's Run now) also takes paused/done. Single winner, null otherwise.
+   */
+  claimDueJob(id: string, now: string, force?: boolean): Promise<Job | null>;
+  /** conditional status step (see jobStepSql) */
+  stepJob(
+    id: string,
+    from: JobStatus[],
+    to: JobStatus,
+    opts?: { nextRunAt?: string | null; last?: { runId: string | null; verdict: JobVerdict; summary: string | null; at: string; counted: boolean } },
+  ): Promise<Job | null>;
+  createJobRun(r: { jobId: string; runNumber: number; firedBy: string }): Promise<JobRun>;
+  setJobRunRunId(id: string, runId: string): Promise<void>;
+  /** open → finished once; null when already finished */
+  finishJobRun(id: string, f: JobRunFinish): Promise<JobRun | null>;
+  getJobRun(id: string): Promise<JobRun | null>;
+  listJobRuns(jobId: string): Promise<JobRun[]>;
+  /** attention/error runs not yet acknowledged (Inbox) */
+  listOpenJobRuns(): Promise<JobRun[]>;
+  listUnfinishedJobRuns(): Promise<JobRun[]>;
+  acknowledgeJobRun(id: string): Promise<JobRun | null>;
+  acknowledgeJobRuns(jobId: string): Promise<JobRun[]>;
 
   // ---- approvals (docs/approvals.md; SQL in approval-sql.ts) ----
 

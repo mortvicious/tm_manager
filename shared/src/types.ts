@@ -139,7 +139,8 @@ export const REVIEW_BUSY_STATES: ReviewState[] = ['pending', 'reviewing', 'fixin
  */
 export const TERMINAL_TASK_STATUSES: TaskStatus[] = ['published', 'done', 'failed', 'cancelled'];
 
-export type TaskSource = 'manual' | 'sentry' | 'auto' | 'feature';
+/** `job`: a follow-up draft a scheduled job's run filed (docs/jobs.md) — external, like every source but manual/feature */
+export type TaskSource = 'manual' | 'sentry' | 'auto' | 'feature' | 'job';
 
 /**
  * How far a finished task may go without a human (docs/design.md § Landing
@@ -1405,7 +1406,9 @@ export type RunKind =
   | 'compact'
   | 'report'
   | 'chat'
-  | 'commit';
+  | 'commit'
+  /** a scheduled job's run (docs/jobs.md): subject = the job id */
+  | 'job';
 export const AUX_RUN_KINDS: readonly Exclude<RunKind, 'worker'>[] = [
   'review',
   'plan',
@@ -1415,6 +1418,7 @@ export const AUX_RUN_KINDS: readonly Exclude<RunKind, 'worker'>[] = [
   'report',
   'chat',
   'commit',
+  'job',
 ];
 export type RunStatus = 'running' | 'exited' | 'killed';
 
@@ -2034,6 +2038,19 @@ export interface AppSettings {
    *  sending to all of them. Separate from `orchestrator.concurrency` on
    *  purpose — a chat turn owns no task and must not eat a worker slot. */
   'chat.concurrency': number;
+  /** Scheduled jobs (docs/jobs.md): THE jobs queue switch — independent of
+   *  `orchestrator.enabled`, like the custom queue. Pause all stops jobs too. */
+  'jobs.enabled': boolean;
+  /** a due job fires only while running+waiting tasks (all repos) < this; 0 = no threshold */
+  'jobs.maxActiveTasks': number;
+  /** job aux runs at once (1..3) — never a worker slot */
+  'jobs.concurrency': number;
+  'jobs.timeoutMinutes': number;
+  /** default model of a job's run (a job may pick its own) */
+  'jobs.model': string;
+  'jobs.effort': EffortLevel;
+  /** ping (Telegram + Web Push) on an `ok` verdict too — attention/error always ping */
+  'jobs.notifyOk': boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -2120,6 +2137,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'chat.model': 'claude-opus-5-5',
   'chat.effort': 'high',
   'chat.concurrency': 2,
+  'jobs.enabled': true,
+  'jobs.maxActiveTasks': 3,
+  'jobs.concurrency': 1,
+  'jobs.timeoutMinutes': 20,
+  'jobs.model': 'claude-opus-5-5',
+  'jobs.effort': 'high',
+  'jobs.notifyOk': false,
 };
 
 // ---- Features (big request → analysis → reviewed plan → approved tasks) ----
@@ -2347,6 +2371,16 @@ export type AuditKind =
   | 'question.answered'
   | 'question.autopilot'
   | 'question.expired'
+  /** scheduled jobs (docs/jobs.md) */
+  | 'job.created'
+  | 'job.updated'
+  | 'job.fired'
+  | 'job.finished'
+  | 'job.paused'
+  | 'job.resumed'
+  | 'job.cancelled'
+  | 'job.deleted'
+  | 'jobs.toggle'
   | 'approval.requested'
   | 'approval.decided'
   | 'approval.finished'
@@ -2572,6 +2606,12 @@ export interface OrchestratorStatus {
    * (docs/mobile.md § Action feedback). A server predating it omits it.
    */
   landing?: string[];
+  /**
+   * The scheduled-jobs queue (docs/jobs.md): its switch, how many are due now,
+   * how many of those cannot fire and why (`hold`), and live job runs. A
+   * server predating it omits it.
+   */
+  jobs?: { enabled: boolean; due: number; overdue: number; running: number; hold: JobsHold | null; activeTasks: number; maxActiveTasks: number };
 }
 
 /** What a failed git network command says about its cause (`classifyGitFailure`). */
@@ -2978,6 +3018,10 @@ export type ServerEvent =
   | { type: 'shared-note.updated'; note: SharedNote }
   | { type: 'shared-note.deleted'; noteId: string }
   | { type: 'background-shells'; shells: BackgroundShell[] }
+  | { type: 'job.updated'; job: Job }
+  | { type: 'job.deleted'; jobId: string }
+  | { type: 'job-run.updated'; run: JobRun }
+  | { type: 'jobs.toggle'; enabled: boolean }
   | { type: 'orchestrator.status'; status: OrchestratorStatus };
 
 /**
@@ -3097,7 +3141,8 @@ export type PushKind =
   | 'chat'
   | 'report'
   | 'queue'
-  | 'anomaly';
+  | 'anomaly'
+  | 'job';
 
 /** The one list every surface renders (SPA toggles, server validation, defaults). */
 export const PUSH_KINDS: { kind: PushKind; label: string; hint: string; default: boolean }[] = [
@@ -3114,6 +3159,7 @@ export const PUSH_KINDS: { kind: PushKind; label: string; hint: string; default:
   { kind: 'feature', label: 'Features', hint: 'a feature plan is ready to approve, or a feature paused', default: true },
   { kind: 'chat', label: 'Chat replies', hint: 'claude answered in a chat', default: true },
   { kind: 'report', label: 'Reports', hint: 'a client report finished or failed', default: true },
+  { kind: 'job', label: 'Scheduled jobs', hint: 'a scheduled check found something or failed (all clear only if notify.jobOk)', default: true },
   { kind: 'queue', label: 'Queue drained', hint: 'nothing queued, nothing running', default: true },
   {
     kind: 'anomaly',
@@ -3160,7 +3206,7 @@ export interface PushMessage {
 
 // ---- Inbox (docs/inbox.md) --------------------------------------------------
 
-export type InboxKind = 'question' | 'approval' | 'attention' | 'review' | 'failed' | 'blocked' | 'proposal' | 'feature' | 'stale-draft';
+export type InboxKind = 'question' | 'approval' | 'attention' | 'review' | 'failed' | 'blocked' | 'job' | 'proposal' | 'feature' | 'stale-draft';
 
 /**
  * The order the kinds are listed in — by how much one decision unblocks: a
@@ -3170,7 +3216,7 @@ export type InboxKind = 'question' | 'approval' | 'attention' | 'review' | 'fail
  * features are new work nobody waits on yet; a stale agent draft is backlog
  * hygiene — last, because nothing at all waits on it.
  */
-export const INBOX_KINDS: InboxKind[] = ['question', 'approval', 'attention', 'review', 'failed', 'blocked', 'proposal', 'feature', 'stale-draft'];
+export const INBOX_KINDS: InboxKind[] = ['question', 'approval', 'attention', 'review', 'failed', 'blocked', 'job', 'proposal', 'feature', 'stale-draft'];
 
 /** A `failed` task older than this has been seen and left alone — it drops out of the inbox (the board still lists it). */
 export const INBOX_FAILED_DAYS = 7;
@@ -3214,6 +3260,8 @@ export type InboxItem =
     })
   | (InboxBase & { kind: 'failed'; task: Task })
   | (InboxBase & { kind: 'blocked'; task: Task; children: { total: number; open: number; failed: number } })
+  /** a scheduled job's run said `attention` or ended in `error`, not yet acknowledged (docs/jobs.md) */
+  | (InboxBase & { kind: 'job'; job: Job; run: JobRun })
   | (InboxBase & { kind: 'proposal'; proposal: Proposal; task: Task | null })
   | (InboxBase & { kind: 'feature'; feature: Feature })
   | (InboxBase & {
@@ -3237,6 +3285,9 @@ export interface InboxInput {
   proposals: Proposal[];
   /** `proposed` ones are used */
   features: Feature[];
+  /** job runs; unacknowledged attention/error ones are items when their job is in `jobs` (optional) */
+  jobRuns?: JobRun[];
+  jobs?: Job[];
   now?: number;
   /** `inbox.staleDraftDays`; the default when omitted */
   staleDraftDays?: number;
@@ -3253,6 +3304,7 @@ export function inboxItemRepoId(item: InboxItem): string | null {
   if (item.kind === 'proposal') return item.proposal.repoId ?? item.task?.repoId ?? null;
   if (item.kind === 'approval') return item.approval.repoId ?? item.task?.repoId ?? null;
   if (item.kind === 'feature') return item.feature.repoId ?? null;
+  if (item.kind === 'job') return item.job.repoId;
   return item.task.repoId ?? null;
 }
 
@@ -3371,6 +3423,15 @@ export function buildInbox(input: InboxInput): InboxItem[] {
     },
   );
 
+  // scheduled job runs that found something or failed — newest first, one per job
+  const jobsById = new Map((input.jobs ?? []).map((j) => [j.id, j]));
+  const jobSeen = new Set<string>();
+  for (const r of [...(input.jobRuns ?? [])].filter(jobRunNeedsHuman).sort((a, b) => (b.endedAt ?? b.startedAt).localeCompare(a.endedAt ?? a.startedAt))) {
+    const job = jobsById.get(r.jobId);
+    if (!job || jobSeen.has(job.id)) continue;
+    jobSeen.add(job.id);
+    out.push({ kind: 'job', key: `job:${job.id}`, job, run: r, unblocks: 0 });
+  }
   // proposals — oldest first
   for (const p of [...input.proposals].filter((p) => p.status === 'pending').sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
     out.push({ kind: 'proposal', key: `proposal:${p.id}`, proposal: p, task: p.taskId ? byId.get(p.taskId) ?? null : null, unblocks: 0 });
@@ -3525,3 +3586,6 @@ export * from './stacks.ts';
 export * from './metro.ts';
 // Agent-draft triage: drafts grouped by filer or repo (docs/inbox.md § Draft triage)
 export * from './triage.ts';
+// Scheduled jobs: schedule parsing + the firing rule (docs/jobs.md)
+export * from './jobs.ts';
+import { jobRunNeedsHuman, type Job, type JobRun, type JobsHold } from './jobs.ts';

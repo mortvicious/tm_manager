@@ -1,3 +1,4 @@
+import type { JobService } from './jobs.ts';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -399,6 +400,8 @@ export class Orchestrator implements OrchestratorApi {
   private checkLoops = new Map<string, { round: number; hash: string }>();
   /** The commands pool's runner — checks run there (docs/checks.md). Wired by index.ts. */
   private commandRunner: CommandRunner | null = null;
+  /** scheduled jobs (docs/jobs.md): swept at the top of every scheduling pass, suspended by Pause all */
+  private jobs: JobService | null = null;
   /**
    * Tasks whose adversarial review round is in flight RIGHT NOW — the
    * single-flight lock behind `reviewCompletedRun`. What other surfaces read
@@ -846,6 +849,11 @@ export class Orchestrator implements OrchestratorApi {
    * `budget.taskUsd`. Human clicks (Proceed, Run now, Retry, Follow-up,
    * Apply fixes, Publish) never call it.
    */
+  setJobs(jobs: JobService): void {
+    this.jobs = jobs;
+    jobs.onStatus(() => this.broadcastStatusSoon());
+  }
+
   setCommandRunner(runner: CommandRunner): void {
     this.commandRunner = runner;
   }
@@ -1941,6 +1949,7 @@ export class Orchestrator implements OrchestratorApi {
       shellWaits: this.shellWaitTasks(),
       pushHealth: pushHealth.list(),
       landing: [...this.landing],
+      ...(this.jobs ? { jobs: this.jobs.status() } : {}),
     };
   }
 
@@ -2007,6 +2016,8 @@ export class Orchestrator implements OrchestratorApi {
     }
     broadcast({ type: 'orchestrator.status', status: await this.status() });
     if (!suspend) return { suspended: [], already };
+    // a live job run is suspended too: its job is due again after Continue (docs/jobs.md)
+    this.jobs?.suspendAll();
     const suspended = new Set<string>();
     await this.suspendSweep(actor, suspended);
     const deadline = Date.now() + 15_000;
@@ -2216,6 +2227,9 @@ export class Orchestrator implements OrchestratorApi {
       try {
         do {
           this.rescheduleRequested = false;
+          // scheduled jobs fill idle capacity on their own switch (docs/jobs.md);
+          // the sweep reads Pause all itself and never awaits a run
+          void this.jobs?.sweep();
           const settings = await this.storage.getSettings();
           // Pause all (docs/pause.md): no claim, no pump, no dispatch
           // delivery — every source of a new turn on this pass is held.

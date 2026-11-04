@@ -1,4 +1,5 @@
 import { encodeApprovalButton } from './approvals.ts';
+import { encodeJobButton } from './jobs.ts';
 import {
   REVIEW_BUSY_STATES,
   publishGateReason,
@@ -21,6 +22,8 @@ import {
   type RunActivity,
   type Task,
   type TaskStatus,
+  type Job,
+  type JobRun,
 } from '@tm/shared';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { Storage } from '../storage/types.ts';
@@ -378,6 +381,9 @@ interface Snapshot {
   approvals: Approval[];
   proposals: Proposal[];
   features: Feature[];
+  /** scheduled jobs + their open (attention/error, unacknowledged) runs — the Inbox `job` kind */
+  jobs: Job[];
+  jobRuns: JobRun[];
   /** task ids with a pending question */
   asking: Set<string>;
   /** task ids whose live run is flagged needs-attention (Board.tsx's rule) */
@@ -399,6 +405,7 @@ async function load(deps: BoardDeps): Promise<Snapshot> {
     deps.storage.listFeatures({ status: 'proposed' }),
     deps.storage.getSettings(),
   ]);
+  const [jobs, jobRuns] = await Promise.all([deps.storage.listJobs(), deps.storage.listOpenJobRuns()]);
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const liveByTask = new Map<string, Run>();
   for (const r of live) {
@@ -432,6 +439,8 @@ async function load(deps: BoardDeps): Promise<Snapshot> {
     approvals,
     proposals,
     features,
+    jobs,
+    jobRuns,
     asking: new Set(questions.map((q) => q.taskId)),
     attention,
     liveByTask,
@@ -543,6 +552,8 @@ function inboxItems(snap: Snapshot, state: BoardState, inRepo: (id: string | nul
     runs: snap.live,
     proposals: snap.proposals.filter((p) => inRepo(p.repoId)),
     features: snap.features.filter((f) => inRepo(f.repoId)),
+    jobs: snap.jobs.filter((j) => inRepo(j.repoId)),
+    jobRuns: snap.jobRuns,
     staleDraftDays: snap.staleDraftDays,
   });
   const errorLine = (t: Task) => (max: number) => (t.error ? [`⚠ ${escapeHtml(clip(t.error, max + 40))}`] : []);
@@ -598,6 +609,21 @@ function inboxItems(snap: Snapshot, state: BoardState, inRepo: (id: string | nul
         ]);
         it.actions.push(act('⛔ Unblock', { kind: 'task.unblock', id: x.task.id }));
         return it;
+      }
+      case 'job': {
+        const j = x.job;
+        const r = x.run;
+        return {
+          open: null,
+          lines: (max) => [
+            `🗓 <b>${escapeHtml(clip(j.title, max))}</b> <code>${short(j.id)}</code> · ${r.verdict === 'attention' ? 'needs attention' : 'run failed'}`,
+            ...(r.summary || r.error ? [escapeHtml(clip(r.summary ?? r.error ?? '', max + 40))] : []),
+          ],
+          actions: [
+            { text: '👌 Ack', callback_data: encodeJobButton(j.id, 'ack') },
+            { text: '🔁 Run again', callback_data: encodeJobButton(j.id, 'run') },
+          ],
+        };
       }
       case 'proposal': {
         const p = x.proposal;

@@ -7,6 +7,7 @@ import {
   LOOP_DEFAULT_MAX_ITERATIONS,
   landingReason,
   type Approval,
+  type JobRun,
   type Question,
   type CheckState,
   type ReviewState,
@@ -23,6 +24,7 @@ import { encodeAction } from './actions.ts';
 import { escapeHtml, type Reply } from './api.ts';
 import { buildReport, type ReportDocument } from './report.ts';
 import type { InlineKeyboardMarkup } from './types.ts';
+import { jobRunMessage } from './jobs.ts';
 import { questionMessages, settledNotice } from './questions.ts';
 
 // The push half of the bot (docs/telegram.md § Notifications): subscribes to
@@ -357,7 +359,31 @@ export class TelegramNotifier {
         // coalescing and no notify flag (docs/approvals.md § Telegram).
         await this.onApproval(e.approval);
         break;
+      case 'job-run.updated':
+        await this.onJobRun(e.run);
+        break;
     }
+  }
+
+  /** job runs already pinged — a run is broadcast again on acknowledge */
+  private jobRunsPinged = new Set<string>();
+
+  /**
+   * A finished job run (docs/jobs.md § Notifications): attention/error always,
+   * ok only with `jobs.notifyOk`. Once per run; an acknowledged or old run
+   * (a broadcast after a restart) is never news.
+   */
+  private async onJobRun(r: JobRun): Promise<void> {
+    if (!r.endedAt || !r.verdict || r.acknowledgedAt || this.jobRunsPinged.has(r.id)) return;
+    if (Date.now() - Date.parse(r.endedAt) > 10 * 60_000) return;
+    if (r.verdict === 'failed') return;
+    if (r.verdict === 'ok' && !(await this.deps.storage.getSettings())['jobs.notifyOk']) return;
+    this.jobRunsPinged.add(r.id);
+    const job = await this.deps.storage.getJob(r.jobId);
+    if (!job) return;
+    const repo = await this.deps.storage.getRepo(job.repoId);
+    const m = jobRunMessage(job, r, repo?.name ?? job.repoId.slice(0, 8));
+    await this.deps.send(m.html, m.keyboard);
   }
 
   /** ids whose card was sent (a pending row is broadcast once, but a reconnect must not resend) */

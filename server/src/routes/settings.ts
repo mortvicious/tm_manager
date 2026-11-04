@@ -3,12 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import {
+  JOB_CONCURRENCY_MAX,
+  JOB_MAX_ACTIVE_TASKS_MAX,
   CONCURRENCY_MAX,
   CUSTOM_PRESET_ID_RE,
   CUSTOM_PRESET_LABEL_MAX,
   CUSTOM_PRESET_MAX,
   CUSTOM_PRESET_MODEL_RE,
   GROUP_COLOR_COUNT,
+  MODEL_OPTIONS,
   TASK_TEMPLATE_ID_RE,
   TASK_TEMPLATE_MAX,
   TASK_TEMPLATE_NAME_MAX,
@@ -104,6 +107,14 @@ const settingsSchema = z
     'chat.model': z.string().min(1),
     'chat.effort': z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
     'chat.concurrency': z.number().int().min(1).max(5),
+    // scheduled jobs (docs/jobs.md)
+    'jobs.enabled': z.boolean(),
+    'jobs.maxActiveTasks': z.number().int().min(0).max(JOB_MAX_ACTIVE_TASKS_MAX),
+    'jobs.concurrency': z.number().int().min(1).max(JOB_CONCURRENCY_MAX),
+    'jobs.timeoutMinutes': z.number().int().min(2).max(120),
+    'jobs.model': z.string().refine((m) => MODEL_OPTIONS.includes(m), 'not one of MODEL_OPTIONS'),
+    'jobs.effort': z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
+    'jobs.notifyOk': z.boolean(),
     'agent.permissionMode': z.enum(['acceptEdits', 'auto', 'bypassPermissions']),
     'agent.allowedTools': z.array(z.string()),
     'agent.resumeSessions': z.boolean(),

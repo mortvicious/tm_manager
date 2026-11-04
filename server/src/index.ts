@@ -34,6 +34,9 @@ import { registerSpaceRoutes } from './routes/spaces.ts';
 import { registerWorkspaceRoutes } from './routes/workspaces.ts';
 import { registerReportRoutes } from './routes/reports.ts';
 import { recoverReportsOnBoot } from './reports/service.ts';
+import { JobService } from './jobs.ts';
+import { registerJobRoutes } from './routes/jobs.ts';
+import { registerAgentJobRoutes } from './routes/agent-jobs.ts';
 import { registerCommandRoutes } from './routes/commands.ts';
 import { registerShellRoutes } from './routes/shells.ts';
 import { registerBackgroundShellRoutes } from './routes/background-shells.ts';
@@ -126,6 +129,14 @@ const shellRunner = new ShellRunner(storage, shellSessions);
 // by the SPA and the phone. Every turn is an aux terminal (kind `chat`,
 // `claude --resume`), so the restart guard and /killall already cover it.
 const chats = new ChatService({ storage });
+// Scheduled jobs (docs/jobs.md): deferred checks fired as aux terminals (kind
+// `job`) on their own switch when fewer than N tasks are active.
+const jobs = new JobService({
+  storage,
+  isPaused: (settings) => orchestrator.isPaused(settings),
+  budget: (settings) => orchestrator.budgetAllows(null, 'job', settings),
+});
+orchestrator.setJobs(jobs);
 await orchestrator.recoverOnBoot({ lastStop });
 await storage.appendEvent({
   kind: 'server.started',
@@ -155,6 +166,9 @@ new AgentCommandCleanup(storage, commandRunner).start();
 // `running` with nothing in existence to settle it (docs/reports.md).
 const strandedReports = await recoverReportsOnBoot(storage);
 if (strandedReports) console.log(`reports: failed ${strandedReports} report(s) stranded by the last restart`);
+const strandedJobs = await jobs.recoverOnBoot();
+if (strandedJobs) console.log(`jobs: re-armed ${strandedJobs} job(s) interrupted by the last restart`);
+jobs.start();
 
 // Live "what is it doing right now" line per running agent, tailed off the
 // session transcripts. Started after boot recovery so orphaned runs from the
@@ -294,7 +308,8 @@ const restartGuard = async () => {
     landing,
   };
 };
-const PAUSE_HELD_AUX_KINDS = new Set<string>(['review', 'compact']);
+// a job run finishes under the pause and nothing fires behind it (docs/jobs.md)
+const PAUSE_HELD_AUX_KINDS = new Set<string>(['review', 'compact', 'job']);
 app.get('/api/server/restart-check', async () => restartGuard());
 
 // The front door's remote gate (server/src/remote.ts, docs/remote-access.md)
@@ -348,6 +363,8 @@ app.post('/api/server/restart', async (req, reply) => {
   // Aux sessions only ever exist here on the force path — same reasoning.
   commandRunner.stopAll();
   shellRunner.stopAll();
+  // before the aux stop: a job run ended by the restart is boot recovery's to re-arm, not a human's kill
+  jobs.stop();
   aux().stopAll();
   // Abort the in-flight long poll NOW so the socket is not still open when the
   // teardown below runs; that teardown awaits the same (idempotent) stop, so
@@ -422,6 +439,8 @@ registerChatRoutes(app, chats);
 registerQuestionRoutes(app, orchestrator.questions);
 registerApprovalRoutes(app, storage, approvals);
 registerReportRoutes(app, storage);
+registerJobRoutes(app, storage, jobs, orchestrator);
+registerAgentJobRoutes(app, storage, jobs);
 registerSpaceRoutes(app, storage, orchestrator);
 registerWorkspaceRoutes(app, storage);
 // Web Push to the Home Screen PWA (docs/push.md). Like the bot it reaches OUT
@@ -461,6 +480,7 @@ const telegram = new TelegramBot(
   orchestrator.questions,
   activity,
   approvals,
+  jobs,
 );
 
 // Serve the built SPA when present (production mode). When it is absent this
@@ -520,6 +540,8 @@ const stop = async (cause: Omit<StopCause, 'at' | 'pid'> | null) => {
   // are ended explicitly — they would keep spending tokens for nobody.
   commandRunner.stopAll();
   shellRunner.stopAll();
+  // before the aux stop: a job run ended by the restart is boot recovery's to re-arm, not a human's kill
+  jobs.stop();
   aux().stopAll();
   // A resume gate (docs/token-budget.md § The fourth) sits between "task marked
   // running" and "run row created", so a task inside one has nothing in

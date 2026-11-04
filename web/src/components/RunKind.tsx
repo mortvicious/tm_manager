@@ -15,6 +15,7 @@ const KIND_TITLE: Record<RunKind, string> = {
   report: 'writing a client report (no tools)',
   chat: 'one chat turn',
   commit: 'writing a commit message (no tools)',
+  job: 'a scheduled check (observes only; Bash, no edits)',
 };
 
 export function KindBadge({ kind }: { kind: RunKind }) {
@@ -36,6 +37,7 @@ export function runLink(r: Run): { taskId: string } | { path: string } | null {
   if (r.kind === 'plan' || r.kind === 'plan-review') return { path: `/features/${r.subjectId}` };
   if (r.kind === 'chat') return { path: `/chat/${r.subjectId}` };
   if (r.kind === 'report') return { path: '/reports' };
+  if (r.kind === 'job') return { path: `/jobs?job=${r.subjectId}` };
   return null;
 }
 

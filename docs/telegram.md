@@ -440,6 +440,10 @@ The coalescing memory is the audit log: every alert is an `anomaly.notified` row
 
 An agent's approval request (`docs/approvals.md`) arrives as a 🔐 card: the action, the requesting task, the exact `summary` (refs, commit range, task list) and the agent's reason, with **✅ Approve / ✖ Reject** (`ap:<uuid>:y|n`, parsed before the action codec like `q:`). Like a question, it is not coalesced and not gated by notify flags. A pre-approved request (the repo's auto-approve) sends no card, only its outcome. The outcome (done / failed / rejected / expired, with the server's `result`) follows as its own line. A press on a request already decided elsewhere answers "Already decided" with the reason. Presses are audited as `telegram.command` `button:approval.approve|reject`, and the decision itself as `approval.decided` with actor `telegram`.
 
+### Scheduled jobs
+
+A job run that ends `attention` or `error` (or `ok` with `jobs.notifyOk`) pings once per run (`jobRunMessage`): verdict, summary, the top findings and the number of follow-up drafts, with **🔁 Ещё раз · ⏸ Пауза / ⏯ Продолжить · 👌 Принято** (`j:<uuid>:r|p|s|a`, parsed before the action codec like `ap:`). Acknowledged runs and runs settled more than 10 minutes ago (a reconnect replaying events) are skipped; a `failed` run is one a human stopped and never pings. Presses are audited as `telegram.command` `button:job.<op>` and go through `JobService` in-process with `actor: 'telegram'`. See `docs/jobs.md` § Notifications.
+
 ### Buttons
 
 Inline keyboards ride the **last** chunk of a message. `callback_data` is a `<ns>:<verb>:<id>` string — `p:acc:<n>:<id>` for the option-choosing accept, the one action that carries a parameter (Telegram caps the whole thing at 64 bytes); codec and dispatch table live together in `actions.ts` so a button cannot be added to one without the other, and an option segment on any other verb parses as null rather than being guessed about.
@@ -554,6 +558,7 @@ Registered with `setMyCommands`, so they autocomplete in the client. The tables 
 | `/kill <run id>` | kill a live run |
 | `/killall` | the red button — see § Emergency controls |
 | `/restart` | restart the server through the front door — see § Emergency controls |
+| `/jobs` | scheduled jobs (`docs/jobs.md`): the jobs switch, the busy threshold, what holds a due job, and the live jobs with ▶ run / ⏸ pause buttons; `/jobs on\|off` flips the jobs queue's own switch (`jobs.enabled`) |
 
 ### Bot
 

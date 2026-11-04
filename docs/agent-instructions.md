@@ -447,6 +447,38 @@ in which case the row comes back already `approved`. Pushes and restarts
 always wait for a tap. At most {{approvalPendingCap}} pending per task; the same
 request twice returns the same row.
 
+## Scheduled jobs (a check that must happen later)
+
+Shipped something whose real test is time — "look at the logs / alarms /
+error rates for the new endpoint in 7 days"? **Never file a task with a date
+in its title** — nothing fires it. Schedule a **job**: the server runs a fresh
+claude session in the repo at the due time (once fewer than the configured
+number of tasks are active), with your instructions plus a snapshot of your
+task (id, title, brief, summary, its `Task:` trailer commits). That session
+may run Bash (`aws`, `gh`, `curl`, the repo's scripts) under the same permission mode as you, but never edits; it
+returns a verdict (`ok` / `attention`), findings, and up to 3 follow-ups the
+server files as drafts. The human sees it on `/jobs`, the Inbox and their phone.
+
+```bash
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
+  "$TM_CALLBACK_URL/api/agent/jobs" \
+  -d '{"title": "Check /v2/orders error rate after the rewrite", "delay": "7d",
+       "instructions": "Compare the 5xx rate and p95 latency of POST /v2/orders over the last 7 days against the week before (CloudWatch alarm orders-5xx, `aws logs ...`). attention if 5xx > 0.5% or p95 > 800 ms.",
+       "context": "deployed in release 6.22.0; feature flag orders_v2"}'
+#   or "runAt": "2026-11-10T09:00:00Z" instead of "delay"
+#   repeat: "repeat": {"every": "1d", "maxRuns": 7}   (or "until": "<ISO date>")
+#   always your own repo — a check in another repo is a shared-space request or a question
+curl -s -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/jobs"          # your repo's jobs
+curl -s -X DELETE -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/jobs/<id>"   # only one your task created
+```
+
+Write `instructions` as a contract — the job's session sees ONLY them and the
+snapshot: what to look at, where (log group, alarm, dashboard, query), and what
+counts as `attention`. Durations: `90m`, `36h`, `7d`, `2w`. Limits (4xx with
+the reason): the first run at least 10 min and at most 180 days away, a repeat
+every ≥ 1h and at most 100 runs, 5 jobs per session, 50 live jobs per repo.
+Mention each job you scheduled (title + id + when) in your final summary.
+
 ## Rules (server-enforced — do not work around refusals)
 
 1. **Max {{taskCreationCap}} tasks per session** (the `agent.taskCreationCap` setting; `GET /api/agent/context` reports `taskCreationCap`/`tasksRemaining`). A 403 means stop creating and finish your turn.

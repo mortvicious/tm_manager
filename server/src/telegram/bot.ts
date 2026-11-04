@@ -66,6 +66,8 @@ import {
   type QuestionDeps,
 } from './questions.ts';
 import type { QuestionService } from '../questions.ts';
+import type { JobService } from '../jobs.ts';
+import { parseJobData, runJobButton, type JobButton } from './jobs.ts';
 import { buildReport, type ReportDocument } from './report.ts';
 import { formatClock, type GateCounters } from './status.ts';
 import type { InlineKeyboardMarkup, ReplyKeyboardMarkup, TelegramCallbackQuery, TelegramUpdate } from './types.ts';
@@ -204,6 +206,8 @@ export class TelegramBot {
     private readonly activity: ActivitySource | null = null,
     /** the approval service (docs/approvals.md). Null in a harness — the buttons then say so. */
     private readonly approvals: ApprovalService | null = null,
+    /** the scheduled-jobs service (docs/jobs.md). Null in a harness — /jobs and its buttons then say so. */
+    private readonly jobs: JobService | null = null,
   ) {
     // `loadBootConfig()` always merges this block in, but a config built by
     // hand — a harness, an older caller — can be missing it entirely. The
@@ -603,6 +607,7 @@ export class TelegramBot {
           flows: this.flows,
           chatDeps: this.chatDeps(),
           questions: this.questionDeps(),
+          jobs: this.jobs,
           confirms: this.confirms,
           limiter: this.limiter,
           hooks: this.hooks,
@@ -824,6 +829,13 @@ export class TelegramBot {
     const approvalButton = cb.data ? parseApprovalData(cb.data) : null;
     if (approvalButton) {
       await this.handleApprovalPress(cb, approvalButton);
+      return;
+    }
+    // Then the job buttons (docs/jobs.md § Telegram) — a job can be deleted
+    // from either surface, so a stale one is refused with the reason.
+    const jobButton = cb.data ? parseJobData(cb.data) : null;
+    if (jobButton) {
+      await this.handleJobPress(cb, jobButton);
       return;
     }
     // The board (docs/telegram.md § The board). Navigation only — a tab, a
@@ -1145,6 +1157,22 @@ export class TelegramBot {
     await this.audit('telegram.command', { command: `button:approval.${button.approve ? 'approve' : 'reject'}`, target: button.id, ok });
     await this.answerCallback(cb.id, toast);
     await this.send(this.cfg.allowedUserId, html);
+  }
+
+  private async handleJobPress(cb: TelegramCallbackQuery, button: JobButton): Promise<void> {
+    if (!this.jobs) {
+      await this.answerCallback(cb.id, 'Jobs are unavailable');
+      return;
+    }
+    let r: { ok: boolean; toast: string; html: string };
+    try {
+      r = await runJobButton(this.jobs, button, ACTOR);
+    } catch (e) {
+      r = { ok: false, toast: 'Failed', html: `⚠ ${escapeHtml(errText(e))}` };
+    }
+    await this.audit('telegram.command', { command: `button:job.${button.op}`, target: button.id, ok: r.ok });
+    await this.answerCallback(cb.id, r.toast);
+    await this.send(this.cfg.allowedUserId, r.html);
   }
 
   private questionDeps(): QuestionDeps | null {

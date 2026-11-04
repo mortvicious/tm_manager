@@ -127,6 +127,16 @@ export const IconReport = () => (
   </svg>
 );
 
+export const IconJobs = () => (
+  <svg {...p}>
+    <rect x="3" y="4" width="18" height="17" rx="2" />
+    <path d="M3 9h18" />
+    <path d="M8 2v4" />
+    <path d="M16 2v4" />
+    <path d="M12 13v3l2 1.5" />
+  </svg>
+);
+
 export const IconShared = () => (
   <svg {...p}>
     <circle cx="6" cy="12" r="2.5" />

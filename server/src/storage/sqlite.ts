@@ -74,6 +74,33 @@ import {
   type ApprovalFilter,
   type NewApproval,
 } from './approval-sql.ts';
+import {
+  JOB_DELETE_SQL,
+  JOB_INSERT_SQL,
+  JOB_RUN_ACK_SQL,
+  JOB_RUN_FINISH_SQL,
+  JOB_RUN_INSERT_SQL,
+  JOB_RUN_SET_RUN_ID_SQL,
+  JOB_RUNS_ACK_ALL_SQL,
+  JOB_RUNS_DELETE_SQL,
+  JOB_RUNS_FOR_JOB_SQL,
+  JOB_RUNS_OPEN_SQL,
+  JOB_RUNS_UNFINISHED_SQL,
+  JOB_SCHEDULED_COUNT_SQL,
+  jobClaimSql,
+  jobInsertParams,
+  jobListSql,
+  jobPatchSql,
+  jobRunFinishParams,
+  jobStepSql,
+  rowToJob,
+  rowToJobRun,
+  type JobFilter,
+  type JobPatch,
+  type JobRunFinish,
+  type NewJob,
+} from './job-sql.ts';
+import type { Job, JobRun, JobStatus, JobVerdict } from '@tm/shared';
 import type { Approval, ApprovalStatus } from '@tm/shared';
 import { PUSH_RESULT_FAIL_SQL, PUSH_RESULT_OK_SQL, PUSH_UPSERT_SQL, rowToPushDevice } from './push-sql.ts';
 import type { LoopStep, NewPushDevice, PushDeviceRecord } from './types.ts';
@@ -1239,6 +1266,98 @@ export class SqliteStorage implements Storage {
     }
     const sql = `SELECT * FROM tm_questions ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC, id DESC`;
     return (this.db.prepare(sql).all(...params) as any[]).map(rowToQuestion);
+  }
+
+  // ---- scheduled jobs (docs/jobs.md; SQL shared in job-sql.ts) ----
+
+  async listJobs(f?: JobFilter): Promise<Job[]> {
+    const { sql, params } = jobListSql(f);
+    return (this.db.prepare(sql).all(...params) as any[]).map(rowToJob);
+  }
+
+  async getJob(id: string): Promise<Job | null> {
+    const r = this.db.prepare(`SELECT * FROM tm_jobs WHERE id = ?`).get(id);
+    return r ? rowToJob(r) : null;
+  }
+
+  async createJob(j: NewJob): Promise<Job> {
+    const id = randomUUID();
+    this.db.prepare(JOB_INSERT_SQL).run(...jobInsertParams(id, j, now()));
+    return (await this.getJob(id))!;
+  }
+
+  async updateJob(id: string, p: JobPatch): Promise<Job | null> {
+    const q = jobPatchSql(id, p, now());
+    if (!q) return this.getJob(id);
+    const r = this.db.prepare(q.sql).get(...q.params);
+    return r ? rowToJob(r) : null;
+  }
+
+  async deleteJob(id: string): Promise<boolean> {
+    this.db.prepare(JOB_RUNS_DELETE_SQL).run(id);
+    return this.db.prepare(JOB_DELETE_SQL).run(id).changes > 0;
+  }
+
+  async countLiveJobs(repoId: string): Promise<number> {
+    return Number((this.db.prepare(JOB_SCHEDULED_COUNT_SQL).get(repoId) as any)?.n ?? 0);
+  }
+
+  async claimDueJob(id: string, at: string, force = false): Promise<Job | null> {
+    const { sql, params } = jobClaimSql(id, at, force);
+    const r = this.db.prepare(sql).get(...params);
+    return r ? rowToJob(r) : null;
+  }
+
+  async stepJob(
+    id: string,
+    from: JobStatus[],
+    to: JobStatus,
+    opts: { nextRunAt?: string | null; last?: { runId: string | null; verdict: JobVerdict; summary: string | null; at: string; counted: boolean } } = {},
+  ): Promise<Job | null> {
+    const { sql, params } = jobStepSql(id, from, to, now(), opts);
+    const r = this.db.prepare(sql).get(...params);
+    return r ? rowToJob(r) : null;
+  }
+
+  async createJobRun(r: { jobId: string; runNumber: number; firedBy: string }): Promise<JobRun> {
+    const id = randomUUID();
+    this.db.prepare(JOB_RUN_INSERT_SQL).run(id, r.jobId, null, r.runNumber, r.firedBy, now());
+    return (await this.getJobRun(id))!;
+  }
+
+  async setJobRunRunId(id: string, runId: string): Promise<void> {
+    this.db.prepare(JOB_RUN_SET_RUN_ID_SQL).run(runId, id);
+  }
+
+  async finishJobRun(id: string, f: JobRunFinish): Promise<JobRun | null> {
+    const r = this.db.prepare(JOB_RUN_FINISH_SQL).get(...jobRunFinishParams(id, f, now()));
+    return r ? rowToJobRun(r) : null;
+  }
+
+  async getJobRun(id: string): Promise<JobRun | null> {
+    const r = this.db.prepare(`SELECT * FROM tm_job_runs WHERE id = ?`).get(id);
+    return r ? rowToJobRun(r) : null;
+  }
+
+  async listJobRuns(jobId: string): Promise<JobRun[]> {
+    return (this.db.prepare(JOB_RUNS_FOR_JOB_SQL).all(jobId) as any[]).map(rowToJobRun);
+  }
+
+  async listOpenJobRuns(): Promise<JobRun[]> {
+    return (this.db.prepare(JOB_RUNS_OPEN_SQL).all() as any[]).map(rowToJobRun);
+  }
+
+  async listUnfinishedJobRuns(): Promise<JobRun[]> {
+    return (this.db.prepare(JOB_RUNS_UNFINISHED_SQL).all() as any[]).map(rowToJobRun);
+  }
+
+  async acknowledgeJobRun(id: string): Promise<JobRun | null> {
+    const r = this.db.prepare(JOB_RUN_ACK_SQL).get(now(), id);
+    return r ? rowToJobRun(r) : null;
+  }
+
+  async acknowledgeJobRuns(jobId: string): Promise<JobRun[]> {
+    return (this.db.prepare(JOB_RUNS_ACK_ALL_SQL).all(now(), jobId) as any[]).map(rowToJobRun);
   }
 
   // ---- approvals (docs/approvals.md; SQL shared in approval-sql.ts) ----

@@ -32,8 +32,10 @@ import type {
   Space,
   Workspace,
   Task,
+  Job,
+  JobRun,
 } from '@tm/shared';
-import { APPROVAL_LABELS, AUTOPILOT_ACTOR, questionWaitedMinutes } from '@tm/shared';
+import { APPROVAL_LABELS, AUTOPILOT_ACTOR, jobRunNeedsHuman, questionWaitedMinutes } from '@tm/shared';
 import { api, normalizeTask } from './api.ts';
 import { openTaskFromAnywhere } from './nav.ts';
 import { toastError, toastSticky } from './toast.ts';
@@ -69,6 +71,10 @@ interface AppState {
   loadChat: (id: string) => Promise<void>;
   /** generated work-summary documents, newest first (docs/reports.md) */
   reports: Report[];
+  /** scheduled jobs, newest first (docs/jobs.md) */
+  jobs: Job[];
+  /** attention/error job runs not yet acknowledged — the Inbox `job` kind */
+  jobRuns: JobRun[];
   /** shared spaces and their request/note ledger (docs/shared-spaces.md) */
   spaces: Space[];
   /** scoped views over repo sets, in switcher order (docs/workspaces.md) */
@@ -173,6 +179,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [chatMessages, setChatMessages] = useState<Record<string, ChatMessage[]>>({});
   const [reports, setReports] = useState<Report[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [jobRuns, setJobRuns] = useState<JobRun[]>([]);
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
@@ -211,6 +219,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api.listFeatures().then(setFeatures).catch(() => {});
     api.listChats().then(setChats).catch(() => {});
     api.listReports().then(setReports).catch(() => {});
+    api.listJobs().then(setJobs).catch(() => {});
+    api.openJobRuns().then(setJobRuns).catch(() => {});
     api.listSpaces().then(setSpaces).catch(() => {});
     api
       .listWorkspaces()
@@ -461,6 +471,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
           case 'report.deleted':
             setReports((cur) => cur.filter((r) => r.id !== e.reportId));
             break;
+          case 'job.updated':
+            setJobs((cur) => {
+              const i = cur.findIndex((j) => j.id === e.job.id);
+              if (i === -1) return [e.job, ...cur];
+              const next = [...cur];
+              next[i] = e.job;
+              return next;
+            });
+            break;
+          case 'job.deleted':
+            setJobs((cur) => cur.filter((j) => j.id !== e.jobId));
+            setJobRuns((cur) => cur.filter((r) => r.jobId !== e.jobId));
+            break;
+          case 'job-run.updated': {
+            // only the open (attention/error, unacknowledged) ones are held
+            const r = e.run;
+            setJobRuns((cur) => {
+              const rest = cur.filter((x) => x.id !== r.id);
+              return jobRunNeedsHuman(r) ? [r, ...rest] : rest;
+            });
+            break;
+          }
           case 'space.updated':
             setSpaces((cur) => {
               const i = cur.findIndex((x) => x.id === e.space.id);
@@ -616,6 +648,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         chatMessages,
         loadChat,
         reports,
+        jobs,
+        jobRuns,
         spaces,
         workspaces,
         workspacesLoaded,

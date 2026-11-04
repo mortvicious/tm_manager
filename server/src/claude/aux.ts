@@ -86,9 +86,10 @@ export interface AuxSpec<T> {
   disallowedTools: string[];
   /**
    * `dontAsk` = deny anything that would prompt (every read-only role);
-   * `bypass` = `--dangerously-skip-permissions` (chat write mode only).
+   * `bypass` = `--dangerously-skip-permissions` (chat write mode, human jobs);
+   * `auto` = the CLI's classifier-gated mode (an agent-filed job while workers run `auto`).
    */
-  permission: 'dontAsk' | 'bypass';
+  permission: 'dontAsk' | 'bypass' | 'auto';
   /**
    * Trim the fixed preamble: `--no-chrome` + `disableBundledSkills`. Every role
    * except chat — a chat is the terminal the human would have opened.
@@ -605,7 +606,7 @@ export function buildAuxArgs(spec: AuxSpec<unknown>): string[] {
   if (spec.effort) args.push('--effort', String(spec.effort));
   args.push('--settings', JSON.stringify(settings));
   if (spec.permission === 'bypass') args.push('--dangerously-skip-permissions');
-  else args.push('--permission-mode', 'dontAsk');
+  else args.push('--permission-mode', spec.permission);
   // Variadic flags take the `--flag=value` form (docs/token-budget.md): as
   // two argv elements the parser would keep consuming.
   if (spec.tools) args.push(`--tools=${spec.tools.join(',')}`);

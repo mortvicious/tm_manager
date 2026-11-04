@@ -26,7 +26,9 @@ export type BudgetTurn =
   | 'auto-publish'
   | 'loop-iteration'
   | 'conflict-round'
-  | 'wait-resume';
+  | 'wait-resume'
+  /** a scheduled job's automatic fire (docs/jobs.md): the day fuse only — a job owns no task */
+  | 'job';
 
 /**
  * `loop.budgetUsd` is a loop task's OWN ceiling (`Task.loopBudgetUsd`,
@@ -83,7 +85,7 @@ export async function budgetAllows(
   settings?: AppSettings,
 ): Promise<BudgetVerdict> {
   const s = settings ?? (await storage.getSettings());
-  if (kind === 'claim') {
+  if (kind === 'claim' || kind === 'job') {
     const cap = fuse(s, 'budget.dayUsd');
     if (!cap) return { ok: true };
     const spent = await spentToday(storage);
@@ -93,7 +95,7 @@ export async function budgetAllows(
       fuse: 'budget.dayUsd',
       spentUsd: spent,
       capUsd: cap,
-      reason: `today's spend ${usd(spent)} reached the ${usd(cap)} day budget — claiming stopped until midnight`,
+      reason: `today's spend ${usd(spent)} reached the ${usd(cap)} day budget — ${kind === 'job' ? 'scheduled jobs' : 'claiming'} stopped until midnight`,
     };
   }
   const taskCap = fuse(s, 'budget.taskUsd');
@@ -132,6 +134,7 @@ const KIND_LABEL: Record<BudgetTurn, string> = {
   'loop-iteration': 'next loop iteration',
   'conflict-round': 'rebase-conflict turn (worktree land)',
   'wait-resume': 'resume after a task wait',
+  job: 'scheduled job run',
 };
 
 /**

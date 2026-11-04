@@ -46,6 +46,7 @@ state a review verdict the same way.
 | `feature` | a plan is ready to approve (`proposed`), or the feature `paused` | `/features/<id>` |
 | `chat` | claude replied in a chat whose last message was typed in the **browser**. A phone-typed turn is already answered in Telegram | `/chat/<id>` |
 | `report` | a client report became `ready` or `failed` | `/reports` |
+| `job` | a scheduled job's run settled `attention` or `error` (or `ok` with `jobs.notifyOk`), once per run, tag `job-<runId>` (`docs/jobs.md`) | `/jobs?job=<id>` |
 | `queue` | queue drained: nothing queued, running or waiting (TTL 1h) | `/` |
 | `anomaly` | an anomaly or budget alert (`anomaly.raised`): a long run, an expensive task, a stale review, a task's or the day's budget reached — one per task per type per episode, decided and remembered by `AnomalyAlerts` (`docs/telegram.md` § Anomalies). Sent as it arrives, tag `anomaly-<key>` | `/?task=<id>`, or `/` for the day budget |
 

@@ -823,6 +823,65 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `ALTER TABLE tm_tasks ADD COLUMN depends_on TEXT`,
     ],
   },
+  {
+    id: 52,
+    // Scheduled jobs (docs/jobs.md): deferred checks fired by the server as
+    // aux terminals (kind 'job'). Jobs are NOT tasks. FK-less like tm_events:
+    // `context` is a JSON snapshot of the filer taken at create time, so a
+    // deleted task loses nothing. `repeat_every_ms` is DOUBLE PRECISION
+    // because 180 days in ms overflows a pg INTEGER and float8 reads back as a
+    // number (BIGINT would read as a string). One `tm_job_runs` row per
+    // firing: the verdict, findings and the human's acknowledgement.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_jobs (
+        id TEXT PRIMARY KEY,
+        repo_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        instructions TEXT NOT NULL,
+        context TEXT,
+        source TEXT NOT NULL,
+        created_by_run TEXT,
+        created_by_task TEXT,
+        status TEXT NOT NULL,
+        next_run_at TEXT,
+        repeat_every_ms DOUBLE PRECISION,
+        repeat_until TEXT,
+        max_runs INTEGER,
+        runs_count INTEGER NOT NULL DEFAULT 0,
+        model TEXT,
+        effort TEXT,
+        last_run_id TEXT,
+        last_verdict TEXT,
+        last_summary TEXT,
+        last_run_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_jobs_due_idx ON tm_jobs(status, next_run_at)`,
+      `CREATE INDEX IF NOT EXISTS tm_jobs_repo_idx ON tm_jobs(repo_id, status)`,
+      `CREATE INDEX IF NOT EXISTS tm_jobs_task_idx ON tm_jobs(created_by_task)`,
+      `CREATE TABLE IF NOT EXISTS tm_job_runs (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        run_id TEXT,
+        run_number INTEGER NOT NULL,
+        fired_by TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        verdict TEXT,
+        summary TEXT,
+        findings TEXT,
+        follow_ups TEXT,
+        report_path TEXT,
+        error TEXT,
+        acknowledged_at TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_job_runs_job_idx ON tm_job_runs(job_id, started_at)`,
+      `CREATE INDEX IF NOT EXISTS tm_job_runs_open_idx ON tm_job_runs(verdict, acknowledged_at)`,
+      // a device pinged about failures is pinged about jobs that found something too
+      `UPDATE tm_push_devices SET kinds = REPLACE(kinds, '"failed"', '"failed","job"') WHERE kinds LIKE '%"failed"%' AND kinds NOT LIKE '%"job"%'`,
+    ],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */

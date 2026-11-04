@@ -17,7 +17,9 @@ import {
 import { api } from '../api.ts';
 import { topmostDialog, useDialogFocus } from '../dialogFocus.ts';
 import { publishIsPrimary } from '../publish.ts';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../state.tsx';
+import { useWorkspace } from '../workspace.ts';
 import { DispatchStrip } from './DispatchStrip.tsx';
 import { TaskDiff } from './TaskDiff.tsx';
 import { TaskHistory } from './TaskHistory.tsx';
@@ -280,7 +282,11 @@ export function TaskSlideOver({
   /** replace `?tab=` (null drops it); never a new history entry */
   onUrlTab: (tab: PanelTab | null) => void;
 }) {
-  const { tasks, repos, runs, proposals, dispatches, refresh, questions, settings, orch } = useApp();
+  const { tasks, repos, runs, proposals, dispatches, refresh, questions, settings, orch, jobs } = useApp();
+  const navigate = useNavigate();
+  const { wsHref } = useWorkspace();
+  // scheduled jobs this task filed (docs/jobs.md § In the task panel)
+  const myJobs = useMemo(() => jobs.filter((j) => j.createdByTask === taskId), [jobs, taskId]);
   const task = tasks.find((t) => t.id === taskId);
   // an action pressed on ANY surface is in flight (src/pending.ts)
   const pend = usePendingAction(taskId);
@@ -959,6 +965,22 @@ export function TaskSlideOver({
               </Fragment>
             );
           })}
+        </div>
+      )}
+      {myJobs.length > 0 && (
+        <div className="hint so-alert">
+          scheduled {myJobs.length === 1 ? 'a later check' : `${myJobs.length} later checks`}:{' '}
+          {myJobs.map((j, i) => (
+            <Fragment key={j.id}>
+              {i > 0 && ', '}
+              <a href="#" onClick={(e) => (e.preventDefault(), navigate(wsHref(`/jobs?job=${j.id}`)))}>
+                {j.title}
+              </a>{' '}
+              <span className="muted">
+                ({j.status === 'scheduled' && j.nextRunAt ? new Date(j.nextRunAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : (j.lastVerdict ?? j.status)})
+              </span>
+            </Fragment>
+          ))}
         </div>
       )}
       {task.status === 'queued' && task.queueHeldAt && (

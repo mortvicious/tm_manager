@@ -45,13 +45,13 @@ import { Sheet, SheetAction } from './Sheet.tsx';
  * ignores it (the Inbox page's "n more in other workspaces").
  */
 export function useInbox(all = false): InboxItem[] {
-  const { tasks, questions, approvals, runs, proposals, features, settings } = useApp();
+  const { tasks, questions, approvals, runs, proposals, features, jobs, jobRuns, settings } = useApp();
   const { repoIds: scope } = useWorkspace();
   const repoIds = all ? null : scope;
   const staleDraftDays = staleDays(settings);
   return useMemo(
-    () => buildInbox({ tasks, questions, approvals, runs, proposals, features, staleDraftDays, repoIds }),
-    [tasks, questions, approvals, runs, proposals, features, staleDraftDays, repoIds],
+    () => buildInbox({ tasks, questions, approvals, runs, proposals, features, jobs, jobRuns, staleDraftDays, repoIds }),
+    [tasks, questions, approvals, runs, proposals, features, jobs, jobRuns, staleDraftDays, repoIds],
   );
 }
 
@@ -93,6 +93,7 @@ export const KIND_LABEL: Record<InboxKind, string> = {
   review: 'review',
   failed: 'failed',
   blocked: 'blocked',
+  job: 'scheduled check',
   proposal: 'proposal',
   feature: 'feature plan',
   'stale-draft': 'stale draft',
@@ -101,7 +102,7 @@ export const KIND_LABEL: Record<InboxKind, string> = {
 /** The task an item is about, when it is about one. */
 export function itemTask(item: InboxItem): Task | null {
   if (item.kind === 'proposal' || item.kind === 'approval') return item.task;
-  if (item.kind === 'feature') return null;
+  if (item.kind === 'feature' || item.kind === 'job') return null;
   return item.task;
 }
 
@@ -109,6 +110,7 @@ export function itemTitle(item: InboxItem): string {
   if (item.kind === 'proposal')
     return item.proposal.payload.title ?? item.task?.title ?? item.proposal.payload.rationale;
   if (item.kind === 'feature') return item.feature.title;
+  if (item.kind === 'job') return item.job.title;
   if (item.kind === 'approval') return `${APPROVAL_LABELS[item.approval.action]}${item.task ? ` · ${item.task.title}` : ''}`;
   return item.task.title;
 }
@@ -154,6 +156,8 @@ export function itemSummary(item: InboxItem): string {
       const c = item.children;
       return `${c.total - c.open} of ${c.total} subtasks settled${c.failed ? `, ${c.failed} failed` : ''}`;
     }
+    case 'job':
+      return `${item.run.verdict === 'attention' ? 'needs attention' : 'run failed'} — ${item.run.summary ?? item.run.error ?? ''}`;
     case 'proposal':
       return `${item.proposal.kind.replace('_', ' ')} — ${item.proposal.payload.rationale}`;
     case 'feature': {
@@ -342,6 +346,19 @@ export function useInboxActs(nav: InboxNav) {
             ...open(item.task),
           ];
         }
+        case 'job':
+          return [
+            {
+              key: 'a',
+              label: 'Acknowledge',
+              hint: 'seen — leaves the inbox',
+              tone: 'primary',
+              icon: <IconCheck />,
+              run: () => api.ackJob(item.job.id, item.run.id),
+            },
+            { key: 'r', label: 'Run again', hint: 'a fresh check now', run: () => api.runJob(item.job.id) },
+            { key: 'o', label: 'Open', hint: 'the job', run: () => navigate(`/jobs?job=${item.job.id}`) },
+          ];
         case 'feature':
           return [
             {
@@ -433,7 +450,9 @@ export function InboxRowHead({ item, bare = false }: { item: InboxItem; bare?: b
         ? item.feature.repoId
         : item.kind === 'approval'
           ? item.approval.repoId
-          : item.task.repoId;
+          : item.kind === 'job'
+            ? item.job.repoId
+            : item.task.repoId;
   const repo = repos.find((r) => r.id === repoId);
   return (
     <>
@@ -495,6 +514,21 @@ export function InboxDetail({ item }: { item: InboxItem }) {
       );
     case 'proposal':
       return <ProposalDetail item={item} />;
+    case 'job':
+      return (
+        <div className="inbox-detail">
+          {item.run.summary && <Block label="Summary">{item.run.summary}</Block>}
+          {item.run.error && <Block label="Error">{item.run.error}</Block>}
+          {item.run.findings
+            .filter((f) => f.severity !== 'info')
+            .slice(0, 6)
+            .map((f, i) => (
+              <Block key={i} label={f.severity}>
+                {f.text}
+              </Block>
+            ))}
+        </div>
+      );
     case 'stale-draft':
       return (
         <div className="inbox-detail">

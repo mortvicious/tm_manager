@@ -45,6 +45,9 @@ import type {
   TaskMovePlace,
   TaskDiffResponse,
   TaskHistoryResponse,
+  Job,
+  JobRun,
+  JobScheduleInput,
 } from '@tm/shared';
 
 // Only user-editable fields — status/error/resultSummary are machine-owned and
@@ -232,6 +235,28 @@ export const api = {
   }) => req<Report>('POST', '/api/reports', b),
   regenerateReport: (id: string) => req<Report>('POST', `/api/reports/${id}/regenerate`),
   deleteReport: (id: string) => req<{ ok: boolean }>('DELETE', `/api/reports/${id}`),
+  // Scheduled jobs (docs/jobs.md)
+  listJobs: () => req<Job[]>('GET', '/api/jobs'),
+  openJobRuns: () => req<JobRun[]>('GET', '/api/job-runs/open'),
+  getJob: (id: string) => req<{ job: Job; runs: JobRun[] }>('GET', `/api/jobs/${id}`),
+  createJob: (b: JobScheduleInput & { title: string; instructions: string; repoId: string; notes?: string | null; model?: string | null; effort?: string | null }) =>
+    req<Job>('POST', '/api/jobs', b),
+  updateJob: (
+    id: string,
+    b: { title?: string; instructions?: string; repoId?: string; model?: string | null; effort?: string | null; schedule?: JobScheduleInput | null },
+  ) => req<Job>('PATCH', `/api/jobs/${id}`, b),
+  deleteJob: (id: string) => req<{ id: string }>('DELETE', `/api/jobs/${id}`),
+  runJob: (id: string) => req<Job>('POST', `/api/jobs/${id}/run`, {}),
+  pauseJob: (id: string) => req<Job>('POST', `/api/jobs/${id}/pause`, {}),
+  resumeJob: (id: string) => req<Job>('POST', `/api/jobs/${id}/resume`, {}),
+  cancelJob: (id: string) => req<Job>('POST', `/api/jobs/${id}/cancel`, {}),
+  ackJob: (id: string, runId?: string | null) => req<JobRun[]>('POST', `/api/jobs/${id}/ack`, { runId: runId ?? null }),
+  toggleJobs: (enabled: boolean) => req<{ enabled: boolean }>('POST', '/api/jobs/toggle', { enabled }),
+  jobReport: async (jobId: string, runId: string): Promise<string> => {
+    const res = await fetch(`/api/jobs/${jobId}/runs/${runId}/report`);
+    if (!res.ok) throw new Error(res.status === 404 ? 'no report for this run' : `report failed (${res.status})`);
+    return res.text();
+  },
   // Workspaces (docs/workspaces.md)
   listWorkspaces: () => req<Workspace[]>('GET', '/api/workspaces'),
   createWorkspace: (b: { name: string; slug?: string; repoIds: string[]; color?: number | null }) =>

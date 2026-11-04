@@ -11,6 +11,7 @@ import {
   type Approval,
   APPROVAL_LABELS,
   type Question,
+  type JobRun,
   type Report,
   type CheckState,
   type ReviewState,
@@ -165,6 +166,9 @@ export class PushNotifier {
         break;
       case 'chat.message':
         await this.onChatMessage(e.message);
+        break;
+      case 'job-run.updated':
+        await this.onJobRun(e.run);
         break;
       case 'chat.deleted':
         this.chatAsker.delete(e.chatId);
@@ -499,6 +503,26 @@ export class PushNotifier {
       body: clip(m.error ?? (m.text || '(empty reply)'), SUMMARY_CLIP),
       tag: `chat-${m.chatId}`,
       url: `/chat/${encodeURIComponent(m.chatId)}`,
+    });
+  }
+
+  /** job runs already pushed — a run is broadcast again on acknowledge */
+  private jobRunsPushed = new Set<string>();
+
+  /** a finished job run (docs/jobs.md § Notifications): attention/error always, ok only with `jobs.notifyOk` */
+  private async onJobRun(r: JobRun): Promise<void> {
+    if (!r.endedAt || !r.verdict || r.verdict === 'failed' || r.acknowledgedAt || this.jobRunsPushed.has(r.id)) return;
+    if (Date.now() - Date.parse(r.endedAt) > 10 * 60_000) return;
+    if (r.verdict === 'ok' && !(await this.deps.storage.getSettings())['jobs.notifyOk']) return;
+    this.jobRunsPushed.add(r.id);
+    const job = await this.deps.storage.getJob(r.jobId);
+    if (!job) return;
+    const head = r.verdict === 'ok' ? '✅ Check all clear' : r.verdict === 'attention' ? '⚠️ Check needs attention' : '❌ Check failed to run';
+    void this.deps.push.deliver('job', {
+      title: `${head} · ${clip(job.title, 80)}`,
+      body: clip(r.summary ?? r.error ?? '', SUMMARY_CLIP),
+      tag: `job-${r.id}`,
+      url: `/jobs?job=${encodeURIComponent(job.id)}`,
     });
   }
 

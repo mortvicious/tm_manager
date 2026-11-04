@@ -9566,6 +9566,240 @@ button.explain-tap:active {
   border-color: color-mix(in srgb, var(--tm-live) 40%, transparent);
 }
 
+/* ---------- scheduled jobs (docs/jobs.md) ---------- */
+.job-switch {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-3);
+  padding: var(--tm-space-3) var(--tm-space-4);
+}
+
+.job-switch-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.job-switch-text,
+.job-sub,
+.job-run-meta,
+.job-evidence,
+.job-notes {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+}
+
+.job-panel {
+  margin-top: var(--tm-space-3);
+  padding: var(--tm-space-4);
+}
+
+.job-close {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.job-section {
+  margin-top: var(--tm-space-4);
+}
+
+.job-section-title {
+  padding: var(--tm-space-2) var(--tm-space-4);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--tm-text-muted);
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.job-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  padding: 10px var(--tm-space-4);
+  border-bottom: 1px solid var(--tm-border);
+  cursor: pointer;
+  transition: background var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.job-row:last-child {
+  border-bottom: none;
+}
+
+.job-row:hover {
+  background: var(--tm-bg-overlay);
+}
+
+.job-row .job-title,
+.job-detail-title {
+  font-weight: 600;
+}
+
+.job-row .job-sub {
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-hold {
+  margin-top: 2px;
+  font-size: var(--tm-text-xs);
+  color: var(--tm-status-attention);
+}
+
+.chip.job-verdict.ok,
+.chip.job-status.done {
+  color: var(--tm-status-done);
+  border-color: color-mix(in srgb, var(--tm-status-done) 40%, transparent);
+}
+
+.chip.job-verdict.attention {
+  color: var(--tm-status-attention);
+  border-color: color-mix(in srgb, var(--tm-status-attention) 40%, transparent);
+}
+
+.chip.job-verdict.error {
+  color: var(--tm-status-failed);
+  border-color: color-mix(in srgb, var(--tm-status-failed) 40%, transparent);
+}
+
+.chip.job-verdict.running,
+.chip.job-status.running {
+  color: var(--tm-status-running);
+  border-color: color-mix(in srgb, var(--tm-status-running) 40%, transparent);
+}
+
+.job-detail-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+}
+
+.job-detail .job-sub {
+  margin-top: var(--tm-space-1);
+}
+
+.job-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-3);
+}
+
+.job-form,
+.job-instructions {
+  margin-top: var(--tm-space-3);
+}
+
+.job-runs-title {
+  margin-top: var(--tm-space-4);
+  margin-bottom: var(--tm-space-2);
+  font-weight: 600;
+}
+
+.job-run {
+  border-top: 1px solid var(--tm-border);
+}
+
+.job-run-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2) 0;
+  cursor: pointer;
+}
+
+.job-run-n {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+.job-run-sum {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-run-body {
+  padding: 0 0 var(--tm-space-3) var(--tm-space-5);
+}
+
+.job-findings {
+  margin: 0 0 var(--tm-space-2);
+  padding-left: var(--tm-space-4);
+}
+
+.job-finding + .job-finding {
+  margin-top: var(--tm-space-1);
+}
+
+.job-followups {
+  margin-bottom: var(--tm-space-2);
+  font-size: var(--tm-text-sm);
+}
+
+/* the board's tiny job rows (BoardRoute, above any board version) */
+.board-jobs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  margin-bottom: var(--tm-space-3);
+}
+
+.board-job {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  max-width: 100%;
+  padding: 3px var(--tm-space-2);
+  border: 1px dashed var(--tm-border-strong);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-raised);
+  color: var(--tm-text);
+  font-size: var(--tm-text-xs);
+  cursor: pointer;
+  transition: background var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+.board-job:hover {
+  background: var(--tm-bg-overlay);
+}
+
+.board-job .board-job-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
+.board-job .board-job-when {
+  color: var(--tm-text-muted);
+  font-family: var(--tm-font-mono);
+}
+
+.board-job.due {
+  border-color: var(--tm-status-attention);
+}
+
+.board-job.running {
+  border-style: solid;
+  border-color: var(--tm-status-running);
+}
+
+.board-job.attention .board-job-when {
+  color: var(--tm-status-attention);
+}
+
 /* a phone row wraps, and a thumb needs more than a 14px sliver to grab */
 .app.mobile .task-row .drag-grip {
   align-self: stretch;
