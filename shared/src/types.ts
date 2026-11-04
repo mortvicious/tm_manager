@@ -3610,3 +3610,5 @@ export * from './triage.ts';
 // Scheduled jobs: schedule parsing + the firing rule (docs/jobs.md)
 export * from './jobs.ts';
 import { jobRunNeedsHuman, type Job, type JobRun, type JobsHold } from './jobs.ts';
+// Virtual Office: types, cron, catch-up, guards, the hard gate, autonomy and taint (docs/office.md)
+export * from './office.ts';
