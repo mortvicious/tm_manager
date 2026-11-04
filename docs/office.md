@@ -14,9 +14,11 @@ foundations: the pure model in `shared/src/office.ts`. Each later phase fills in
 its own section below.
 
 Code so far: `shared/src/office.ts` (types and pure logic, no I/O, exported from
-`@tm/shared`) and `server/src/office/office-pure.test.ts`, plus the data layer
-(§ Data model): migrations 53–54, `server/src/storage/office-sql.ts`, the
-Storage methods in both drivers, and `server/src/storage/office.test.ts`.
+`@tm/shared`), `server/src/office/presets.ts`, `names.ts` and `folder.ts`, the
+shared folder rule in `server/src/folder-guard.ts`, and the tests
+`server/src/office/office-pure.test.ts` and `office-scaffold.test.ts`, plus the
+data layer (§ Data model): migrations 53–54, `server/src/storage/office-sql.ts`,
+the Storage methods in both drivers, and `server/src/storage/office.test.ts`.
 
 ## Concepts
 
@@ -26,7 +28,7 @@ Storage methods in both drivers, and `server/src/storage/office.test.ts`.
 | `OfficeRole` | A standing role. Has a kebab `key` (`OFFICE_ROLE_KEY_RE`), a name, avatar and title, its human-written `prompt`, model and effort, and `tools` (always a subset of `SHIFT_TOOL_ALLOWLIST`). It can override autonomy (`autonomy`) and set a per-day cap (`capUsd`). It wakes on `schedules` (5-field cron) and `triggers`, and pre-run `guards` can skip a wake. `notesPath` is its notes file and `notesTaintedAt` marks notes written by a tainted shift. `sessionId` is the session it resumes, and `sessionTainted` marks that session as tainted. |
 | `OfficeShift` | One wake: its `trigger` (`cron`/`event`/`signal`/`request`, a `ref`, and `at` = the slot or event time), a `verdict` of `ran` or `skipped` with a readable `skipReason`, the aux run, cost, the taint and its sources (`kind:ref` strings), the brief, the tasks filed, and the times and error. |
 | Trigger | `{kind:'event', event}` is something this server did (`OFFICE_EVENT_NAMES`: task-landed, task-failed, review-flagged, checks-red, job-attention), so it is trusted. `{kind:'signal', source}` comes from outside (a webhook, an alert), so it is untrusted. |
-| Presets | `OFFICE_ROLE_PRESETS` are the ids of the built-in role templates. Their content belongs to the presets phase. |
+| Presets | `OFFICE_ROLE_PRESETS` are the ids of the built-in role templates (director, developer, devops, qa, seo). Their content is in `server/src/office/presets.ts` (§ Presets). |
 
 ### Tools
 
@@ -223,11 +225,101 @@ Times are formatted in the office zone (`formatOfficeTime`).
 
 ## Presets
 
-_To be filled by the presets phase._
+`server/src/office/presets.ts` holds one template per `OFFICE_ROLE_PRESETS` id
+(`OFFICE_PRESETS`). A preset is a **starting point**: `roleFromPreset(id)`
+returns a deep copy of it as a role body, which the human then edits freely.
+Nothing reads a preset at run time, so editing a role never changes the preset
+and changing a preset never changes an existing role.
+
+| Preset | Model, effort | Schedule | Triggers | Guards |
+|---|---|---|---|---|
+| Director | `claude-opus-5-5`, high | `0 9,17 * * 1-5` (stand-up) | none | office-not-paused, budget-left |
+| Developer | `claude-opus-5-5`, high | `0 10 * * 1-5` | task-failed | no-open-task-of-this-role, cooldown 120 |
+| DevOps | `claude-opus-5-5`, medium | `0 8 * * 1-5` | checks-red, job-attention | cooldown 60, quiet-hours 22:00–07:00 |
+| QA / Tester | `claude-opus-5-5`, medium | `0 11,16 * * 1-5` | task-landed | **new-commits-since** (runs only after code lands), cooldown 60, open-bugs-below 10 |
+| SEO | `claude-opus-5-5`, low | `0 10 * * 1` (weekly) | none | budget-left, no-open-task-of-this-role |
+
+Every preset uses `claude-opus-5-5` (`OFFICE_DEFAULT_MODEL`); presets differ by effort only, never by model (no fable). Every preset's tools are `SHIFT_READ_TOOLS` (Read, Glob, Grep, Agent,
+TodoWrite). No preset grants WebFetch or WebSearch, including SEO, because web
+tools taint a shift. A human may add them (`OFFICE_OPTIONAL_WEB_TOOLS`) and the
+UI will flag them as tainting. No preset lists Bash, Edit or Write, and a test
+checks every preset against `shiftToolsRefusal`, `cronError` and `guardError`.
+
+Each prompt has the role's duties, what it delivers, and how **execution work
+leaves the shift**, followed by the common `SHIFT_RULES` block:
+
+- **QA**: the exploratory pass (running the suite, clicking through, edge
+  cases) and any test writing are filed as worker tasks tagged with the role
+  key. A shift cannot run code.
+- **DevOps and SEO**: audits (dependency audit, crawl, Lighthouse) run as
+  **saved commands a human allowlisted** for the office (the shift command-runs
+  phase). The shift requests a run and reads its result. It never runs the
+  audit itself or invents a command line. Fixes are worker tasks.
+- **Director and Developer**: implementation is a worker task tagged with the
+  role that owns it.
+
+### Names
+
+`server/src/office/names.ts` generates each role's name and avatar.
+`generateRoleIdentity(officeId, roleKey, theme)` hashes (office id, role key)
+with sha256, so the same inputs always give the same identity. The theme
+(`OFFICE_THEMES`) picks the pool:
+
+| Theme | Example |
+|---|---|
+| `pixel-office` (default; `officeTheme` maps an unknown `Office.theme` to it) | `Boss Dana`, `Kit` |
+| `starship-bridge` | `Captain Vega`, `Science Officer Lyra` |
+| `fantasy-guild` | `Guildmaster Brynn`, `Wren the Seeker` |
+| `space-colony` | `Administrator Okafor`, `Dr. Tanaka` |
+
+The given-name pools are disjoint, so the same seed gives different names in
+different themes. Each preset key has its own title format and avatar set, and
+any other key gets the theme's generic ones. `generateOfficeIdentities(officeId,
+keys, theme)` names a whole office: when two roles would share a given name,
+the later key steps to the next free one. The result is still deterministic.
+A name is generated once, when the role is created, and the human can rename
+it later. Nothing re-derives a stored name.
 
 ## Office folder
 
-_To be filled by the folder phase._
+`server/src/office/folder.ts`.
+
+**Validation.** `validateOfficeFolder(path, repos)` follows the shared-space
+rule. Both call `validateDedicatedFolder` in `server/src/folder-guard.ts`, and
+`validateSpacePath` is now a thin wrapper over it. The rule: the path is
+absolute (or `~/…`), it is not `/` or the home directory, and it is neither
+inside nor containing any registered repo. Lexical and real paths are both
+compared, and a path that does not exist yet resolves through its deepest
+existing ancestor, so a symlink cannot smuggle the folder into a repo.
+
+**Default.** `defaultOfficeFolder(workspace, spaces, repos)` checks whether
+**every** existing repo of the workspace is a member of one shared space
+(`docs/shared-spaces.md`). If so, the office uses `<space folder>/office`
+(`OFFICE_SPACE_SUBDIR`), validated like any other path. Otherwise it returns
+null and the human picks a folder.
+
+**Scaffold.** `scaffoldOfficeFolder(office, roles, {repos?})` creates:
+
+```
+README.md            generated, marker line first
+vision.md            human-written
+priorities.md        human-decided
+roadmap.md
+roles/<key>.md       one per role: standing instructions + notes
+briefings/
+deliverables/
+untrusted/README.md  "agents never read this folder unreviewed"
+```
+
+It is idempotent. Files are created with `wx`, so an existing file (or even a
+dangling symlink) is never overwritten, and an edited `vision.md` or role file
+survives every re-run. A directory slot taken by a non-directory or a symlink
+throws. `README.md` is regenerated only while its first line is
+`OFFICE_README_MARKER` (`<!-- tm:office-folder …`), the same convention as the
+shared-memory `CLAUDE.md`. Delete that line to take the file over. Role keys
+must match `OFFICE_ROLE_KEY_RE`, so `roles/<key>.md` cannot escape the folder.
+With `repos` given, the folder is validated first and nothing is written on a
+refusal. The result lists `created`, `kept` and `readmeUpdated`.
 
 ## Data model
 

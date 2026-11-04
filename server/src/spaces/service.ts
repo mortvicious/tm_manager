@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type {
   Repo,
@@ -13,6 +12,7 @@ import type {
 import { oneLineTitle } from '@tm/shared';
 import type { ActionResult, OrchestratorApi } from '../app-types.ts';
 import { broadcast } from '../events.ts';
+import { expandHome, isInside, validateDedicatedFolder } from '../folder-guard.ts';
 import type { SharedNotePatch, Storage } from '../storage/types.ts';
 import { queueAddTask } from '../task-actions.ts';
 
@@ -48,60 +48,16 @@ const err = (code: number, error: string) => ({ code, error });
 // ---------------------------------------------------------------------------
 // Paths
 
-export function expandHome(p: string): string {
-  if (p === '~') return os.homedir();
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
-  return p;
-}
+export { expandHome };
 
-const inside = (child: string, parent: string) => {
-  const rel = path.relative(parent, child);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-};
+const inside = isInside;
 
 /**
  * The folder must be a real, dedicated directory OUTSIDE every registered
- * repo — inside one it would be committed into that repo's history (and be
- * invisible to the others' git), and a folder that CONTAINS a repo would hand
- * agents a write-scope over whole working trees via `--add-dir`.
+ * repo — the shared rule in `folder-guard.ts` (offices use it too).
  */
 export function validateSpacePath(raw: string, repos: Repo[]): { path: string } | { error: string } {
-  const t = raw.trim();
-  // `~user/…` is not expanded — only the caller's own home.
-  if (!path.isAbsolute(t) && t !== '~' && !t.startsWith('~/')) {
-    return { error: 'path must be absolute (or start with ~/)' };
-  }
-  const p = path.resolve(expandHome(t));
-  // Compare real paths, so a symlink cannot smuggle the folder into (or
-  // around) a repo. A folder that does not exist yet resolves through its
-  // deepest existing ancestor — `link-to-repo/new/dir` is still inside.
-  const real = (x: string): string => {
-    let head = x;
-    const tail: string[] = [];
-    for (;;) {
-      try {
-        return path.join(fs.realpathSync(head), ...tail);
-      } catch {
-        const up = path.dirname(head);
-        if (up === head) return x;
-        tail.unshift(path.basename(head));
-        head = up;
-      }
-    }
-  };
-  const rp0 = real(p);
-  if (p === path.parse(p).root || rp0 === path.parse(rp0).root || p === os.homedir() || rp0 === real(os.homedir())) {
-    return { error: 'pick a dedicated folder, not / or your home' };
-  }
-  for (const r of repos) {
-    for (const rp of new Set([path.resolve(r.path), real(r.path)])) {
-      for (const sp of new Set([p, rp0])) {
-        if (inside(sp, rp)) return { error: `the folder is inside repo "${r.name}" — pick one outside every repo` };
-        if (inside(rp, sp)) return { error: `the folder contains repo "${r.name}" — pick a dedicated folder` };
-      }
-    }
-  }
-  return { path: p };
+  return validateDedicatedFolder(raw, repos);
 }
 
 /**

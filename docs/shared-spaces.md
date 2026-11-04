@@ -72,7 +72,7 @@ The seed format is `{ "version": 1, "items": [{ "kind", "from", "to", "title", "
 that does not resolve is skipped and counted, never guessed. A self-addressed
 request is also skipped.
 
-**Path rules** (`validateSpacePath`). The path must be absolute or start with
+**Path rules** (`validateSpacePath` → `validateDedicatedFolder` in `server/src/folder-guard.ts`, which office folders share — docs/office.md § Office folder). The path must be absolute or start with
 `~/`. It must not be `/` or `$HOME`. It must be **neither inside nor
 containing** any registered repo:
 

@@ -21,16 +21,9 @@ import type { EffortLevel, Task } from './types.ts';
 export type OfficeAutonomy = 'proposals' | 'auto-run' | 'autonomous';
 export const OFFICE_AUTONOMY_LEVELS: readonly OfficeAutonomy[] = ['proposals', 'auto-run', 'autonomous'];
 
-/** Built-in role templates; the preset content (prompt, tools, schedule) is a later phase's (docs/office.md § Presets). */
-export type OfficeRolePreset = 'product-manager' | 'qa' | 'researcher' | 'tech-writer' | 'release-manager' | 'support';
-export const OFFICE_ROLE_PRESETS: readonly OfficeRolePreset[] = [
-  'product-manager',
-  'qa',
-  'researcher',
-  'tech-writer',
-  'release-manager',
-  'support',
-];
+/** Built-in role templates; their content (prompt, tools, schedule, guards) is `server/src/office/presets.ts` (docs/office.md § Presets). */
+export type OfficeRolePreset = 'director' | 'developer' | 'devops' | 'qa' | 'seo';
+export const OFFICE_ROLE_PRESETS: readonly OfficeRolePreset[] = ['director', 'developer', 'devops', 'qa', 'seo'];
 
 /** A role key: a kebab slug, unique per office, used in folder names (`roles/<key>.md`). */
 export const OFFICE_ROLE_KEY_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
