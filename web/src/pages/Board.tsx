@@ -155,7 +155,7 @@ const loadLastRepo = (workspaceId: string | null): string => {
  * N opens New task on a desktop board — never while typing, in a terminal, or
  * under another dialog (the task panel, a question, the search).
  */
-function useNewTaskHotkey(onOpen: () => void, enabled: boolean) {
+export function useNewTaskHotkey(onOpen: () => void, enabled: boolean) {
   const ref = useRef(onOpen);
   ref.current = onOpen;
   useEffect(() => {
@@ -174,7 +174,7 @@ function useNewTaskHotkey(onOpen: () => void, enabled: boolean) {
   }, [enabled]);
 }
 
-function NewTaskForm({
+export function NewTaskForm({
   open,
   onOpenChange,
   onCreated,

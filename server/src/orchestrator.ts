@@ -82,6 +82,7 @@ import {
   hasUnpushedTaskCommit,
   publishRepo,
   pushUpTo,
+  remoteStateKey,
   run as execIn,
   taskShipped,
   unpushedCommits,
@@ -197,6 +198,10 @@ const PUBLISH_RUN_LABEL = 'publish';
  * apart from 'system' so the audit log tells a landing from a sweep.
  */
 const LANDING_ACTOR = 'orchestrator';
+/** shipped-done sweep (docs/publish.md § Done work that shipped): newest `done` tasks read per repo per pass */
+const SHIPPED_DONE_MAX_PER_REPO = 50;
+/** …and an unshipped one is re-read at least this often even when the remote refs did not move */
+const SHIPPED_DONE_RECHECK_MS = 60 * 60_000;
 
 /** Conflict turns a worktree land may send before it hands the conflict to the human (docs/parallel.md § Conflicts). */
 const CONFLICT_MAX_ROUNDS = 2;
@@ -697,6 +702,11 @@ export class Orchestrator implements OrchestratorApi {
     // worktrees removed, idle ones evicted. Disk, not latency — 5 min.
     setInterval(() => {
       void this.worktreeSweep();
+    }, 5 * 60_000).unref();
+    // Done work that shipped (docs/publish.md § Done work that shipped): the
+    // backstop for a push nobody here made — a human's `git push` by hand.
+    setInterval(() => {
+      void this.promoteShippedDone();
     }, 5 * 60_000).unref();
     // Push health of `pr` repos (docs/parallel.md § Push health): a failing
     // repo is re-probed every minute, a healthy one every 5.
@@ -1940,6 +1950,7 @@ export class Orchestrator implements OrchestratorApi {
     }
     // worktree hygiene, orphans included — after the sweeps above settled who is live
     void this.worktreeSweep(true);
+    void this.promoteShippedDone();
     // every `pr` repo's push preflight, before the first claim can fork from a stale base
     void this.pushHealthSweep(true);
   }
@@ -2475,7 +2486,12 @@ export class Orchestrator implements OrchestratorApi {
    * supervised landing) or `done` (marked done before anyone noticed); never
    * while the verify round is open.
    */
-  async markPublished(taskId: string, actor = 'human'): Promise<ActionResult> {
+  async markPublished(
+    taskId: string,
+    actor = 'human',
+    /** the shipped-done sweep's own call: its audit note, and no re-trigger of itself */
+    auto?: { reason: string },
+  ): Promise<ActionResult> {
     const task = await this.storage.getTask(taskId);
     if (!task) return { error: 'task not found', code: 404 };
     if (task.status !== 'review' && task.status !== 'done') {
@@ -2493,7 +2509,7 @@ export class Orchestrator implements OrchestratorApi {
       'published',
       actor,
       { error: null, shippedSha: shipped.sha, shippedAt: task.shippedSha === shipped.sha ? task.shippedAt : null },
-      { observed: true, sha: shipped.sha },
+      { observed: true, sha: shipped.sha, ...(auto ? { reason: auto.reason } : {}) },
     );
     if (!updated) return { error: 'task changed status — check it and try again', code: 409 };
     broadcast({ type: 'task.updated', task: updated });
@@ -2502,14 +2518,94 @@ export class Orchestrator implements OrchestratorApi {
       actor,
       taskId,
       repoId: repo.id,
-      data: { phase: 'published', delivery: 'observed', reason: null, branch: shipped.ref, head: shipped.sha.slice(0, 8) },
+      data: { phase: 'published', delivery: 'observed', reason: auto?.reason ?? null, branch: shipped.ref, head: shipped.sha.slice(0, 8) },
     });
     if (task.status === 'review') {
       await this.closeTaskSessions(taskId, actor);
       // like Mark done: the cascade is the orchestrator's, not the human's
       await this.resolveCompletion(updated);
     }
+    if (!auto) this.requestShippedDoneSweep();
     return { task: updated };
+  }
+
+  // ---- shipped done work (docs/publish.md § Done work that shipped) --------
+
+  /**
+   * A `done` task whose own commits are now on a remote was published by
+   * somebody else's push — a later task's publish carried its stacked
+   * commits along, or a human pushed by hand. `promoteShippedDone` moves it
+   * `done → published` through Mark published's own git re-read
+   * (`shippedState`), as the orchestrator. Trailer attribution only: the
+   * base-range fallback is good enough for a human's click, not for an
+   * automatic move. A task already found unshipped against the same remote
+   * refs, HEAD and tree is not re-read (`shippedDoneSeen`) until an hour passes, so a
+   * quiet install costs three `git` reads per repo per pass.
+   */
+  private shippedDoneSweeping = false;
+  private shippedDoneAgain = false;
+  private readonly shippedDoneSeen = new Map<string, { key: string; at: number }>();
+
+  /** Fire-and-forget trigger, after anything that may have pushed. */
+  requestShippedDoneSweep(): void {
+    void this.promoteShippedDone();
+  }
+
+  /** Single-flight; a request during a pass runs one more pass. Never throws. Returns the promoted count. */
+  async promoteShippedDone(): Promise<number> {
+    if (this.shippedDoneSweeping) {
+      this.shippedDoneAgain = true;
+      return 0;
+    }
+    this.shippedDoneSweeping = true;
+    let promoted = 0;
+    try {
+      do {
+        this.shippedDoneAgain = false;
+        promoted += await this.promoteShippedDonePass();
+      } while (this.shippedDoneAgain);
+    } catch (e) {
+      console.error('shipped-done sweep failed:', e);
+    } finally {
+      this.shippedDoneSweeping = false;
+    }
+    return promoted;
+  }
+
+  private async promoteShippedDonePass(): Promise<number> {
+    const done = (await this.storage.listTasks({ status: 'done' })).filter((t) => !!t.repoId);
+    const live = new Set(done.map((t) => t.id));
+    for (const id of this.shippedDoneSeen.keys()) if (!live.has(id)) this.shippedDoneSeen.delete(id);
+    const byRepo = new Map<string, Task[]>();
+    for (const t of done) byRepo.set(t.repoId!, [...(byRepo.get(t.repoId!) ?? []), t]);
+    let promoted = 0;
+    for (const [repoId, tasks] of byRepo) {
+      const repo = await this.storage.getRepo(repoId);
+      if (!repo) continue;
+      const key = await remoteStateKey(repo.path);
+      if (key === null) continue; // not a git checkout (or gone): nothing to read
+      const now = Date.now();
+      // newest first, bounded: an old install's history is not re-walked every pass
+      tasks.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      for (const task of tasks.slice(0, SHIPPED_DONE_MAX_PER_REPO)) {
+        if (verifyOpen(task)) continue; // Mark published refuses it too
+        const seen = this.shippedDoneSeen.get(task.id);
+        if (seen && seen.key === key && now - seen.at < SHIPPED_DONE_RECHECK_MS) continue;
+        const shipped = await this.shippedState(task, repo).catch(() => null);
+        if (!shipped?.ok || !shipped.sha || shipped.attribution !== 'trailer') {
+          this.shippedDoneSeen.set(task.id, { key, at: now });
+          continue;
+        }
+        const res = await this.markPublished(task.id, LANDING_ACTOR, { reason: 'commits shipped by a later push' });
+        if ('task' in res) {
+          this.shippedDoneSeen.delete(task.id);
+          promoted++;
+        } else {
+          this.shippedDoneSeen.set(task.id, { key, at: now });
+        }
+      }
+    }
+    return promoted;
   }
 
   /**
@@ -4504,7 +4600,11 @@ export class Orchestrator implements OrchestratorApi {
         head: check.head,
       },
     });
-    if (check.ok) await this.resolveCompletion(updated, actor);
+    if (check.ok) {
+      await this.resolveCompletion(updated, actor);
+      // a push may have carried earlier `done` tasks' commits along
+      this.requestShippedDoneSweep();
+    }
     return updated;
   }
 
@@ -5372,6 +5472,7 @@ export class Orchestrator implements OrchestratorApi {
           repoId: repo.id,
           data: { phase: 'published', delivery: 'observed', reason: null, branch: shipped?.ref ?? null, head: sha.slice(0, 8) },
         });
+        this.requestShippedDoneSweep();
       }
       await this.closeTaskSessions(taskId, LANDING_ACTOR);
       await this.resolveCompletion(done, LANDING_ACTOR);

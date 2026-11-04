@@ -144,6 +144,17 @@ This test is task-scoped, where `verifyPublished` is whole-repo.
 
 `shipped_sha` describes the CURRENT landing. `transitionTask` clears it on any move to a status other than review/done/published (a follow-up, a retry, a cancel), and `observeShipped` clears a stale one the next time it looks.
 
+### Done work that shipped (2026-11-05)
+
+A `done` task's commits often reach the remote without its own publish: a later task's publish pushes the whole stacked pile (§ Stacked tasks lets done work ride along), or a human runs `git push` by hand. Such a task used to sit in `done` forever. Now **`Orchestrator.promoteShippedDone`** moves it `done → published` on its own (task c5bb1a10).
+
+- **The test is Mark published's**: the sweep calls `markPublished(id, 'orchestrator', { reason: 'commits shipped by a later push' })`, so git is re-read through `shippedState` (`taskShipped` for a checkout task, `landedCheck` for a worktree task), the transition is conditional on `done`, and the rows are the same: `task.transition { observed: true, sha, reason }` + `task.publish { delivery: 'observed', reason }`.
+- **Trailer attribution only**: the sweep promotes only when `shippedState` found the task's commits by its `Task:` trailer. The sole-worker base-range fallback is good enough behind a human's click, not for an automatic move. A task with no commits of its own never moves. A tree owner with uncommitted leftovers does not move until they are gone.
+- **When it runs**: after every successful `settlePublish` (publish turn, observed, direct, worktree squash), after a human's Mark published, after the on-green landing that lands `published`, at boot, and every 5 minutes (the backstop for a push made outside the app). Single-flight; a request during a pass runs one more pass. Pause all does not stop it: it records what git shows and starts nothing.
+- **Cost**: the newest 50 `done` tasks per repo are considered. A task found unshipped is not re-read while the repo's `remoteStateKey` (`git.ts`: every remote-tracking ref, HEAD and the tree's porcelain status, read with `GIT_OPTIONAL_LOCKS=0`) is unchanged, and at most hourly otherwise — so a quiet install costs three git reads per repo per pass. No fetch, like `taskShipped`: a push from another clone is seen after the next fetch.
+- **Quiet**: a `done → published` move sends no Web Push and no Telegram "published" ping (`prevStatus === 'done'` is skipped in both notifiers): the human already heard "done", and the first boot may promote dozens of old tasks at once. A human's Mark published from `done` is quiet for the same reason.
+- **Test**: `server/src/shipped-done.test.ts` (real git, temp SQLite, a real `Orchestrator`): pushed trailer commits → `published`, local-only and trailer-less stay `done`, the next push promotes the local one, a dirty tree owner waits until its tree is clean.
+
 ## The `published` status
 
 `published` is **terminal**, alongside `done`:
@@ -151,8 +162,8 @@ This test is task-scoped, where `verifyPublished` is whole-repo.
 - it resolves a split parent (`resolveChildCompletion`) and settles a feature phase (`FEATURE_CLAIM_GATE` and its JS twin `isFeatureTaskBlocking` — edited together, as always);
 - `TERMINAL_TASK_STATUSES` in `shared/src/types.ts` is the single list both drivers read;
 - the agent-API task poll counts it as terminal;
-- the dashboard counts it as a completion (`done` plus a push);
-- the board gives it its own section, folded away with the other history and hidden in essentials mode; its badge uses `--tm-status-published` (blue — distinct from `done`'s green, because "shipped" and "accepted" are different claims).
+- the dashboard counts it as a completion (`done` plus a push) — except a move FROM `done` (Mark published, `promoteShippedDone`), which was counted on its `done` day (`isCompletionTransition` in `routes/stats.ts`);
+- the board gives it its own section, folded away with the other history and hidden in essentials mode; its badge uses `--tm-status-published`: since 2026-11-05 the SAME green family as `done`, a shade deeper (`--tm-green-6` dark / `--tm-green-8` light; Glass `#28b14c` / `#1c7031`), because both mean "finished, nothing left to do" and the board should read them as one success colour. The badge label still tells them apart (it was blue before — user request, task c5bb1a10).
 
 It is not re-enqueueable and not re-completable (`complete` stays `review → done`) — but a **follow-up** may still be sent to a published task: shipping the work does not end the conversation with its agent.
 

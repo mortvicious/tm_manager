@@ -8,6 +8,7 @@ import {
   type AuxOutcome,
 } from '../claude/aux.ts';
 import { broadcast } from '../events.ts';
+import { EVENT_LIST_MAX } from '../storage/event-sql.ts';
 import type { Storage } from '../storage/types.ts';
 import { reportStrings } from './language.ts';
 import { dayKeyOf, endOfDay, formatDay, startOfDay } from './range.ts';
@@ -41,6 +42,8 @@ const SUMMARY_CHARS = 1200;
  * a wide report is precisely the part the document is about.
  */
 const TRANSITION_LIMIT = 20_000;
+/** tasks per by-id lookup of a landing older than the window (gatherTasks) */
+const PRIOR_LANDING_CHUNK = 500;
 
 /** `done` and `published` only. `failed`/`cancelled` are in
  *  TERMINAL_TASK_STATUSES but did not deliver anything, and a report of
@@ -126,6 +129,27 @@ export async function gatherTasks(
     if (!e.taskId) continue;
     const prev = landedAt.get(e.taskId);
     if (!prev || e.at < prev) landedAt.set(e.taskId, e.at);
+  }
+  // ...and "earliest" means EVER, not earliest inside the window: a task that
+  // went `done` before it and moved `done → published` inside it (a later push
+  // carried its commits — docs/publish.md § Done work that shipped — or a Mark
+  // published) was delivered back then, not on the promotion day. So the tasks
+  // the window would date are re-read by id for a delivered transition before
+  // `since`; one found keeps the old date, which falls outside the window.
+  const inWindow = scoped.map((t) => t.id).filter((id) => landedAt.has(id));
+  for (let i = 0; i < inWindow.length; i += PRIOR_LANDING_CHUNK) {
+    const prior = await storage.listEvents({
+      kind: 'task.transition',
+      taskIds: inWindow.slice(i, i + PRIOR_LANDING_CHUNK),
+      until: since,
+      limit: EVENT_LIST_MAX,
+    });
+    for (const e of prior) {
+      const to = (e.data as { to?: string } | null)?.to;
+      if (!to || !DELIVERED.has(to) || !e.taskId) continue;
+      const prev = landedAt.get(e.taskId);
+      if (!prev || e.at < prev) landedAt.set(e.taskId, e.at);
+    }
   }
 
   const items: GatheredTask[] = [];

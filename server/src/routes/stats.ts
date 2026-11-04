@@ -6,6 +6,19 @@ import type { SessionManager } from '../pty/session-manager.ts';
 import type { Storage } from '../storage/types.ts';
 import { maxSpawnDepth } from './agent-caps.ts';
 
+/**
+ * Does this `task.transition` row count as a completion on the Dashboard?
+ * `published` is a completion too — it is `done` plus a push — but NOT from
+ * `done`: that move is the record catching up with a push (Mark published, or
+ * `promoteShippedDone` — docs/publish.md § Done work that shipped), and the
+ * task was already counted on the day it went `done`.
+ */
+export function isCompletionTransition(data: unknown): boolean {
+  const d = data as { from?: string | null; to?: string } | null;
+  if (d?.to === 'done') return true;
+  return d?.to === 'published' && d.from !== 'done';
+}
+
 // Aggregates come from the base tables wherever they can (permanent truth);
 // the event log answers only what they cannot: per-day done/failed, byActor,
 // attention counts, overflow claims (dashboard review Q4/A1).
@@ -157,8 +170,7 @@ export function registerStatsRoutes(
       const claim = (e.data as any)?.claim;
       if (claim === 'overflow') totals.overflowClaims++;
       const day = perDayMap.get(dayKey(e.at));
-      // `published` is a completion too — it is `done` plus a push.
-      const completed = to === 'done' || to === 'published';
+      const completed = isCompletionTransition(e.data);
       if (day && completed) {
         day.done++;
         totals.tasksDone++;

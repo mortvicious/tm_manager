@@ -58,7 +58,13 @@ late dispatch note months later would silently re-date delivered work into the
 wrong section, and into the wrong report entirely. `updated_at` is the fallback
 only for rows old enough to predate their own transition event. A task that
 landed twice is dated by the **first** time, so a re-publish does not appear on
-two days.
+two days. First means EVER, not first inside the window: the tasks the window
+would date are re-read by id (`listEvents({ taskIds, until: since })`, chunks of
+500) for a delivered transition before it, so a task that went `done` last week
+and was promoted `done → published` today (a later push carried its commits —
+`docs/publish.md` § Done work that shipped — or a Mark published) keeps last
+week's date and is not reported again as today's delivery
+(`server/src/shipped-done.test.ts`).
 
 Days are bucketed on **server-local** time (`reports/range.ts`), the same reason
 `routes/stats.ts` does its bars in JS: SQL `date()` on UTC splits a Baku evening

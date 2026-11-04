@@ -24,6 +24,7 @@ import {
 import type { BoardVersionProps } from '../../boardVersions.ts';
 import { BoardFocusCard, BoardFocusProvider, BoardFocusScope, useBoardFocus, useBoardTasks } from '../../boardFocus.tsx';
 import { BoardVersionsControl } from '../../components/BoardVersions.tsx';
+import { BoardNewTask } from '../../components/BoardNewTask.tsx';
 import { IconChevron, IconRelations } from '../../components/Icons.tsx';
 import { useIsMobile } from '../../components/Layout.tsx';
 import { liveReviewRun } from '../../components/RunKind.tsx';
@@ -452,6 +453,7 @@ export default function Stacks({ onOpenTask, onOpenTerminal }: BoardVersionProps
             ))}
           </div>
           <BoardVersionsControl />
+          <BoardNewTask />
         </div>
       </div>
       <BoardFocusProvider tasks={tasks}>

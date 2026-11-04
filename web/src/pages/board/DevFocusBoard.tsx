@@ -7,6 +7,7 @@ import { TERMINAL_TASK_STATUSES, groupDepth } from '@tm/shared';
 import type { BoardVersionProps } from '../../boardVersions.ts';
 import { BoardFocusCard, BoardFocusProvider, BoardFocusScope, useBoardFocus, useBoardTasks } from '../../boardFocus.tsx';
 import { BoardVersionsControl } from '../../components/BoardVersions.tsx';
+import { BoardNewTask } from '../../components/BoardNewTask.tsx';
 import { StatusBadge } from '../../components/StatusBadge.tsx';
 
 function Nodes() {
@@ -42,6 +43,7 @@ export default function DevFocusBoard({ onOpenTask }: BoardVersionProps) {
         <h1 className="page-title">Board</h1>
         <div className="board-tools">
           <BoardVersionsControl />
+          <BoardNewTask />
         </div>
       </div>
       <BoardFocusProvider tasks={tasks}>

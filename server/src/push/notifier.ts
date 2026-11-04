@@ -237,7 +237,9 @@ export class PushNotifier {
         if (moved && !t.waitFor) this.mark(t.id, (p) => (p.blocked = true));
         break;
       case 'published':
-        if (moved) this.mark(t.id, (p) => (p.published = true));
+        // done → published is a record catching up with a push (docs/publish.md
+        // § Done work that shipped) — the human already heard "done"
+        if (moved && prevStatus !== 'done') this.mark(t.id, (p) => (p.published = true));
         break;
     }
   }

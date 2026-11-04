@@ -28,7 +28,9 @@
   --tm-amber-5: #f5b83d;
   --tm-amber-7: #b7791f;
   --tm-green-5: #4ade80;
+  --tm-green-6: #22c55e;
   --tm-green-7: #15803d;
+  --tm-green-8: #166534;
   --tm-red-5: #f4645f;
   --tm-red-7: #b91c1c;
   --tm-violet-5: #a78bfa;
@@ -138,7 +140,7 @@
   --tm-status-running: var(--tm-teal-5);
   --tm-status-review: var(--tm-amber-5);
   --tm-status-done: var(--tm-green-5);
-  --tm-status-published: var(--tm-blue-5);
+  --tm-status-published: var(--tm-green-6); /* done's hue, a shade deeper */
   --tm-status-failed: var(--tm-red-5);
   --tm-status-attention: var(--tm-violet-5);
   /* one hue per task group; `groupColorSlot` picks the slot (1..7) */
@@ -197,7 +199,7 @@
   --tm-status-running: var(--tm-teal-7);
   --tm-status-review: var(--tm-amber-7);
   --tm-status-done: var(--tm-green-7);
-  --tm-status-published: var(--tm-blue-7);
+  --tm-status-published: var(--tm-green-8); /* done's hue, a shade deeper */
   --tm-status-failed: var(--tm-red-7);
   --tm-status-attention: var(--tm-violet-7);
   --tm-group-1: var(--tm-violet-7);
@@ -299,7 +301,7 @@
   --tm-status-running: var(--tm-teal-5);
   --tm-status-review: #ff9f0a;
   --tm-status-done: #30d158;
-  --tm-status-published: #7d7aff;
+  --tm-status-published: #28b14c; /* done's hue, a shade deeper */
   --tm-status-failed: #ff453a;
   --tm-status-attention: #bf5af2;
   --tm-group-1: #bf5af2;
@@ -372,7 +374,7 @@
   --tm-status-running: #0c817b;
   --tm-status-review: #c93400;
   --tm-status-done: #248a3d;
-  --tm-status-published: #3634a3;
+  --tm-status-published: #1c7031; /* done's hue, a shade deeper */
   --tm-status-failed: #d70015;
   --tm-status-attention: #8944ab;
   --tm-group-1: #8944ab;

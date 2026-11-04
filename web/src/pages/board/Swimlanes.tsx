@@ -24,6 +24,7 @@ import {
 import type { BoardVersionProps } from '../../boardVersions.ts';
 import { BoardFocusCard, BoardFocusProvider, BoardFocusScope, useBoardFocus, useBoardTasks } from '../../boardFocus.tsx';
 import { BoardVersionsControl } from '../../components/BoardVersions.tsx';
+import { BoardNewTask } from '../../components/BoardNewTask.tsx';
 import { useIsMobile } from '../../components/Layout.tsx';
 import { liveReviewRun } from '../../components/RunKind.tsx';
 import { StatusBadge } from '../../components/StatusBadge.tsx';
@@ -357,6 +358,7 @@ export default function Swimlanes({ onOpenTask, onOpenTerminal }: BoardVersionPr
             ))}
           </div>
           <BoardVersionsControl />
+          <BoardNewTask />
         </div>
       </div>
       <BoardFocusProvider tasks={tasks}>

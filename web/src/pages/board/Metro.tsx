@@ -21,6 +21,7 @@ import {
 import type { BoardVersionProps } from '../../boardVersions.ts';
 import { BoardFocusCard, BoardFocusProvider, BoardFocusScope, useBoardFocus, useBoardTasks } from '../../boardFocus.tsx';
 import { BoardVersionsControl } from '../../components/BoardVersions.tsx';
+import { BoardNewTask } from '../../components/BoardNewTask.tsx';
 import { useIsMobile } from '../../components/Layout.tsx';
 import { StatusBadge } from '../../components/StatusBadge.tsx';
 import { ProgressPct } from '../../components/TaskProgress.tsx';
@@ -575,6 +576,7 @@ export default function Metro({ onOpenTask }: BoardVersionProps) {
             ))}
           </div>
           <BoardVersionsControl />
+          <BoardNewTask />
         </div>
       </div>
       <BoardFocusProvider tasks={tasks}>

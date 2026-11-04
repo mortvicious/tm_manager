@@ -38,7 +38,9 @@
   --tm-amber-5:  #f5b83d;
   --tm-amber-7:  #b7791f;
   --tm-green-5:  #4ade80;
+  --tm-green-6:  #22c55e;
   --tm-green-7:  #15803d;
+  --tm-green-8:  #166534;
   --tm-red-5:    #f4645f;
   --tm-red-7:    #b91c1c;
   --tm-violet-5: #a78bfa;
@@ -123,7 +125,7 @@
   --tm-status-running: var(--tm-teal-5);
   --tm-status-review: var(--tm-amber-5);
   --tm-status-done: var(--tm-green-5);
-  --tm-status-published: var(--tm-blue-5);
+  --tm-status-published: var(--tm-green-6); /* done's hue, a shade deeper */
   --tm-status-failed: var(--tm-red-5);
   --tm-status-attention: var(--tm-violet-5);
   /* timeline sub-segments with no status of their own (docs/timeline.md § Tracks) */
@@ -177,7 +179,7 @@
   --tm-status-running: var(--tm-teal-7);
   --tm-status-review: var(--tm-amber-7);
   --tm-status-done: var(--tm-green-7);
-  --tm-status-published: var(--tm-blue-7);
+  --tm-status-published: var(--tm-green-8); /* done's hue, a shade deeper */
   --tm-status-failed: var(--tm-red-7);
   --tm-status-attention: var(--tm-violet-7);
   --tm-tl-checks: var(--tm-orange-7);
@@ -273,7 +275,7 @@
   --tm-status-running: var(--tm-teal-5);
   --tm-status-review: #ff9f0a;
   --tm-status-done: #30d158;
-  --tm-status-published: #7d7aff;
+  --tm-status-published: #28b14c; /* done's hue, a shade deeper */
   --tm-status-failed: #ff453a;
   --tm-status-attention: #bf5af2;
   --tm-group-1: #bf5af2;
@@ -344,7 +346,7 @@
   --tm-status-running: #0c817b;
   --tm-status-review: #c93400;
   --tm-status-done: #248a3d;
-  --tm-status-published: #3634a3;
+  --tm-status-published: #1c7031; /* done's hue, a shade deeper */
   --tm-status-failed: #d70015;
   --tm-status-attention: #8944ab;
   --tm-group-1: #8944ab;
@@ -1117,7 +1119,7 @@ footer .mono { font-family: var(--tm-font-mono); }
   <span class="k">--tm-bg</span><span class="v">:            #0c0e10;</span>   <span class="c">/* graphite 10 */</span>
   <span class="k">--tm-status-running</span><span class="v">: #2dd4bf;</span>   <span class="c">/* worker attached, streaming */</span>
   <span class="k">--tm-status-review</span><span class="v">:  #f5b83d;</span>   <span class="c">/* first Stop hook fired */</span>
-  <span class="k">--tm-status-published</span><span class="v">: #60a5fa;</span> <span class="c">/* committed + pushed by the agent */</span>
+  <span class="k">--tm-status-published</span><span class="v">: #22c55e;</span> <span class="c">/* committed + pushed by the agent */</span>
   <span class="k">--tm-font-mono</span><span class="v">:      "JetBrains Mono";</span>
 <span class="v">}</span><span class="cursor" aria-hidden="true"></span></pre>
       </div>

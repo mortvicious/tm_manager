@@ -382,6 +382,21 @@ export async function pushUpTo(
 
 // ---- observed publish (docs/publish.md § Observed publish) ----
 
+/**
+ * A fingerprint of what `taskShipped` reads that moves when something ships:
+ * every remote-tracking ref, HEAD and the tree's status. Equal keys → a task found unshipped is
+ * still unshipped (docs/publish.md § Done work that shipped). null when `cwd`
+ * is not a readable git checkout. No fetch, like `taskShipped`.
+ */
+export async function remoteStateKey(cwd: string): Promise<string | null> {
+  const refs = await run(cwd, 'git', ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/remotes']);
+  if (refs.code !== 0) return null;
+  const head = await run(cwd, 'git', ['rev-parse', '--verify', '-q', 'HEAD']);
+  // the tree too: a tree owner's leftovers block it, and cleaning them moves no ref
+  const tree = await run(cwd, 'git', ['status', '--porcelain', '--ignore-submodules=dirty'], 60_000, { GIT_OPTIONAL_LOCKS: '0' });
+  return `${head.code === 0 ? head.out : '-'}\n${refs.out}\n${tree.out}`;
+}
+
 export interface ShippedCheck {
   /** every commit of this task is on a remote, and (as tree owner) nothing is left uncommitted */
   ok: boolean;

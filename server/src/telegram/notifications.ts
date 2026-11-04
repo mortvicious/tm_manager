@@ -483,7 +483,9 @@ export class TelegramNotifier {
         if (moved && t.autoLandedAt) this.mark(t.id, (p) => (p.autoLanded = true));
         break;
       case 'published':
-        if (moved) this.mark(t.id, (p) => (p.published = true));
+        // done → published is a record catching up with a push (docs/publish.md
+        // § Done work that shipped) — the human already heard "done"
+        if (moved && prevStatus !== 'done') this.mark(t.id, (p) => (p.published = true));
         break;
     }
   }
