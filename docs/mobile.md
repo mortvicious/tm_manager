@@ -571,13 +571,10 @@ differ, not only their layout). A 3×3 grid:
 [grip] [row error, when there is one               ]
 ```
 
-- **One primary action, chosen by status.** Review → Publish, but only over a
-  clean verdict (`publishIsPrimary`; `docs/publish.md` § The verify gate). While
-  the review or checks are open, flagged or red, the row shows its terminal
-  instead. A startable task
-  (draft/queued/failed/cancelled, no live session) → Run now; otherwise the
-  terminal, if there is a session. When nothing applies there is no button. A
-  disabled primary is never shown: its reason would sit in a tooltip.
+- **One primary action: the next step, in words** (§ Next step below). When
+  nothing waits on the human, the row falls back to the old glyphs: the
+  terminal if there is a session (a working task), else nothing. A disabled
+  primary is never shown: its reason would sit in a tooltip.
 - **`⋯` opens the row's sheet** with every row action: terminal, Publish (review),
   Run now, Mark done / Mark as ready, Add to / Remove from queue, and Open
   details. They use the same guards and the same wording as the desktop icons.
@@ -594,6 +591,76 @@ differ, not only their layout). A 3×3 grid:
   is what the eye looks for there.
 - **Nesting** moves `--tm-depth` onto the row, so the meta line indents with its
   title.
+
+**Next step** (`web/src/nextStep.ts`, task e3c3b503). The phone row's one
+primary button names what the human should do: **Answer** (a pending
+question → opens the task, where the question waits), **Respond** (needs
+attention → opens the terminal at its prompt), **Publish** / **Mark
+published** (`publishIsPrimary`: a clean verdict; Mark published when the
+agent already pushed), **Findings** (review flagged or checks red → opens the
+task, whose review bucket opens on Review & checks), **Details** (the review
+or a check could not run), **Retry** (failed/cancelled → `retry`, a fresh
+agent through the queue, the panel's word) and **Run now** (a draft, outlined —
+an offer, not a call; a QUEUED task waits on the queue, not on the human, so it
+keeps the play glyph).
+`nextStep()` reads the signals `badgeReading` reads, in its order — question,
+attention, a publish under way, then the review/check state — so the pill and
+the button never disagree: an open review round or checks run (`auto-review`,
+`checking`) has no step, and a row reading `publishing` offers nothing. The
+per-task `buildInbox` kinds (question, attention, settled review, failed) are
+exactly the non-`run` steps. A press in flight keeps its own step on the
+button with the in-flight verb (`runTaskAction`, § Action feedback); opening a
+task or a terminal is never held by one. Colours: the accent for go-ahead
+steps, attention violet for Answer/Respond, outlined review amber for
+Findings, outlined failed red for Retry, outlined accent for Run now. 44px tall.
+
+**Now strip** (`components/NowStrip.tsx`, phone only, under the toolbar, gone
+while selecting). Four counts: **working** (`status running|waiting`), **needs
+you** (`state asking|attention`), **to publish** (`state ready` — the new
+search state, `readyToShip` = `publishIsPrimary`, docs/search.md) and
+**failed** (`status failed`). Each cell IS a set of board search chips: a tap
+replaces the status/state chips with its own and keeps every other chip (a
+repo, a group) and the typed text; tapping the lit cell clears them. The count
+is that same query (`compileQuery`) over the same workspace-scoped tasks, so it
+always equals the rows the tap leaves (Hidden included, as the search shows
+them). A zero cell is disabled — an empty board is a dead end — unless it is
+the lit one.
+
+**Live timers** (`components/Elapsed.tsx`). Next to the status pill, how long
+the thing under way has been under way, from a time the client was told —
+never a guess at progress (that is the progress %). An action in flight
+(`PendingAction.since`) and the agent's publish turn (its run's `startedAt`)
+tick per second, `0:42`; a working turn (`running`/`waiting`, the newest live
+worker run's `startedAt`) reads in minutes off the shared 30 s clock, `12m`.
+On a phone the timer takes the age's place; a desktop row shows both. The
+per-second clock is one interval shared by every fine timer on screen and
+stops when none is.
+
+**Row swipe** (`components/RowSwipe.tsx`, every phone `TaskRow`). Swipe the row
+LEFT to reveal its trailing buttons — the next step, plus **Cancel** for a
+queued task (two-press, `src/arm.ts`: "Cancel? tap again"; a custom-queue
+member's `unqueue`, which cancels) — and RIGHT for **Hide** / **Unhide**
+(never on a working task). The row stays open; nothing fires on release,
+because the trailing side may hold Publish, which pushes. A tap on a revealed
+button acts through `runTaskAction`, so it gets the same in-flight state and
+toast as every other surface. Gesture rules:
+- pointer events on the row, never the HTML5 drag API; the row is
+  `touch-action: pan-y pinch-zoom`, so the browser keeps vertical scrolling
+  and cancels the pointer when it takes it;
+- a move is a swipe only past 10 px AND 1.5× more horizontal than vertical; a
+  vertical move first is a scroll and is left alone;
+- a press on the drag grip is never a swipe (the grip's hold-to-drag is
+  untouched);
+- the swipe that just ended and the tap that closes an open row swallow their
+  click, so neither opens the task; the mark expires after 400 ms because iOS
+  may send no click at all after a swipe;
+- one row open at a time; a press anywhere else closes it and only closes it (its click is eaten, as on iOS); select mode and the
+  row's ⋯ sheet turn it off;
+- only the row's CHILDREN slide (`--swipe-x`), the row itself never takes a
+  transform, and `overflow: hidden` applies only while open, so drop
+  indicators and the selectors that read the row (`:last-child`, `.st-row >
+  .task-row`) are untouched. Reduce Motion: the row still follows the finger
+  (direct manipulation), but the snap open/closed is instant.
 
 **Section heads stick** to the top of `.main` while their list scrolls. Each
 head is sticky inside its own Section wrapper, so the next section's head pushes
@@ -614,6 +681,26 @@ phone the panel is a full-height sheet (§ Sheets): the same `head`, action bar
 and body JSX as the desktop panel, rearranged — head + bar are the sheet's drag
 handle, the body is its content. Drag it down (from anywhere while at the top)
 to close; × animates out the same way.
+
+- **Panel prev/next** (`components/PanelNav.tsx` + `web/src/boardOrder.ts`,
+  task e3c3b503). Over the legacy Board, a strip above the head names the
+  neighbours in the board section the task was opened from — `‹ previous ·
+  Review · 2/4 · next ›`. Swipe it left for the next task, right for the
+  previous one (a release past 56 px), or tap either side (44 px targets).
+  The Board publishes its sections in drawing order (Active, Drafts, the
+  groupBy sections with the same skips as the JSX, Hidden, Recent; rows as
+  `renderRows` lays them out, folded ones included) and clears them when it
+  unmounts, so a panel opened over another page has no strip. A task can be
+  in two lists (pinned Active and Recent), so a row notes the KIND of list it
+  was opened from and every step stays in that kind. A step is a task swap
+  (`onOpenTask`), which REPLACES the URL entry: Back still closes the panel.
+  The strip is the panel's ONE swipe zone: react-modal-sheet follows a finger
+  from anywhere on the sheet with a native listener on its container, so the
+  strip stops `pointerdown`/`touchstart` natively (React's own listener sits at
+  the root, after the container) and runs its gesture on native listeners; the
+  body keeps its scroll, its sideways tab strip and its terminal, and the grip
+  and head still drag the sheet down. Reduce Motion: no rubber-band, the step
+  just happens.
 
 - **A pinned header**: grip, then status · title · close, with the meta line
   under it (2026-11-02, `docs/design.md` § Desktop chrome): repo · category ·
@@ -927,6 +1014,33 @@ compact/breakpoint/run change. The reasoning is in `docs/decisions.md`,
   longer to ingest could still see the Enter arrive early.
 
 ## Verification
+
+**Next step, Now strip, live timers, row swipe, panel prev/next (2026-11-03,
+task e3c3b503)**: Playwright (Chromium 1243) at 393×852 (touch, iPhone UA +
+`platform`, `.app.mobile`) in Classic and Glass, and 1440×900. The scratch build
+was served over the front door's origin from recorded API fixtures, with four
+drafts patched to failed / review flagged / checks red / auto-review. Every
+non-GET was aborted or faked (`hide`, `publish` answered with the task's own
+GET), and every WebSocket was swallowed. No `pageerror` in any run.
+
+- Steps matched the pills: Publish on a passed review, Findings on flagged and
+  on checks red, Retry on failed, nothing on auto-review or running (terminal
+  glyph), Run now on drafts. Every step button and Now cell was ≥ 44px.
+- Now strip: each enabled cell's count equalled the distinct rows after its
+  tap (working 2 = 2 with `status running|waiting` chips, to publish 2 = 2,
+  failed 1 = 1), and a second tap cleared the chips. Zero cells were disabled.
+- Row swipe: a vertical drag over a row scrolled `.main` (285–413 px) and
+  opened nothing. Left on a review row revealed Publish (84×96) with no sheet
+  opened. A tap on the row closed it without opening the panel. Right revealed
+  Hide; its tap POSTed `/hide` and toasted "Hid …". Publish POSTed `/publish`.
+  A queued row revealed Cancel, whose first tap only armed it ("Cancel? tap
+  again", no POST). A tap elsewhere closed the row and did not open what was
+  under it.
+- Panel prev/next: opening the first Active row showed `‹ · Active · 1/8 ·
+  next ›`. A left swipe on the strip moved `?task=` to the next row (2/8) with
+  the sheet still open, and a right swipe came back.
+- Desktop: no strip, no step buttons, no swipe; the running rows showed
+  `1h 17m` timers.
 
 **Task panel tabs, push `?tab=` (2026-11-02, phase 3 of *Task panel tabs +
 per-task history*)**: Playwright (Chromium 1243) at 1440×900 and 393×852

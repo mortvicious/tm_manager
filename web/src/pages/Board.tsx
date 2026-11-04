@@ -75,6 +75,9 @@ import { DragGhost, undoMove, useTaskDrag, type DropZone } from '../components/T
 import { TaskRow } from '../components/TaskRow.tsx';
 import { ProgressPct } from '../components/TaskProgress.tsx';
 import { TimeAgo, isNew, useNow } from '../components/TimeAgo.tsx';
+import { Elapsed, elapsedSource } from '../components/Elapsed.tsx';
+import { NowStrip } from '../components/NowStrip.tsx';
+import { noteOpenedFrom, publishBoardSections, type BoardListKind, type BoardSection } from '../boardOrder.ts';
 
 const ORDER: TaskStatus[] = [
   'running',
@@ -1095,6 +1098,8 @@ export function BoardPage({
     // never from prefs.tokens, so it is not persisted in tm.board
     return tasks.filter((t) => inScope(t) && match(t));
   }, [tasks, tokens, searchText, searchCtx, haystacks, inScope]);
+  // the workspace's tasks before the search: what the phone Now strip counts
+  const scopedTasks = useMemo(() => (mobile ? tasks.filter(inScope) : []), [mobile, tasks, inScope]);
   const setSearch = (next: { tokens: SearchToken[]; text: string }) => setPrefs((p) => ({ ...p, ...next }));
   const openSearch = useCallback(() => setSearchOpen(true), []);
   // closing folds typed `key:value` words into chips — the committed form
@@ -1530,11 +1535,16 @@ export function BoardPage({
     const g = groupIndex.get(t.groupId);
     const pendingOut = dispatches.filter((d) => d.fromTaskId === t.id && d.status === 'pending').length;
     const hasIncoming = dispatches.some((d) => d.toTaskId === t.id);
+    // live timer (docs/mobile.md § Live timers): on a phone it takes the age's place
+    const timed = elapsedSource(t, runs, pendingActs.get(t.id));
     return (
       <Fragment key={t.id}>
       <TaskRow
         task={t}
-        onOpenTask={onOpenTask}
+        onOpenTask={(id) => {
+          noteOpenedFrom(listKind(ctx));
+          onOpenTask(id);
+        }}
         onOpenTerminal={onOpenTerminal}
         fresh={fresh}
         depth={depth}
@@ -1561,8 +1571,9 @@ export function BoardPage({
             return rv ? () => onOpenTerminal(rv.id) : undefined;
           })()}
         />
+        {timed && <Elapsed source={timed} />}
         <ProgressPct task={t} />
-        {!focus && (
+        {!focus && !(mobile && timed) && (
           <TimeAgo
             iso={t[field]}
             field={field === 'createdAt' ? 'created' : 'updated'}
@@ -1617,6 +1628,30 @@ export function BoardPage({
 
   // a search shows every match: a capped strip would hide some of them
   const draftsShown = showAllDrafts || searching ? drafts : drafts.slice(0, DRAFT_LIMIT);
+
+  // The phone panel's previous/next (docs/mobile.md § Panel prev/next): every
+  // section the board draws below, in drawing order, rows as renderRows lays
+  // them out. The same skips as the JSX, so a step never lands on a hidden list.
+  const boardSections = useMemo<BoardSection[]>(() => {
+    if (!mobile) return [];
+    const ids = (rows: Row[]) => blocksOf(rows).flatMap((b) => b.rows.map((r) => r.task.id));
+    const out: BoardSection[] = [];
+    if (active.length) out.push({ key: 'active', label: 'Active', kind: 'active', ids: ids(active) });
+    if (drafts.length) out.push({ key: 'drafts', label: 'Drafts', kind: 'drafts', ids: ids(draftsShown) });
+    for (const [label, list] of groups) {
+      if (groupBy === 'status' && ((ACTIVE as string[]).includes(label) || label === 'draft')) continue;
+      if (focus && !searching && groupBy === 'status' && (HISTORY as string[]).includes(label)) continue;
+      const heading = groupBy === 'group' ? (groupIndex.get(label)?.label ?? label) : label;
+      out.push({ key: `${groupBy}:${label}`, label: heading, kind: 'grouped', ids: ids(list) });
+    }
+    if ((!focus || searching) && hiddenRows.length) out.push({ key: 'hidden', label: 'Hidden', kind: 'hidden', ids: ids(hiddenRows) });
+    if (!focus && !searching && recent.length) out.push({ key: 'recent', label: 'Recent', kind: 'recent', ids: recent.map((r) => r.task.id) });
+    return out;
+  }, [mobile, active, drafts, draftsShown, groups, groupBy, focus, searching, groupIndex, hiddenRows, recent]);
+  useEffect(() => publishBoardSections(boardSections), [boardSections]);
+  useEffect(() => () => publishBoardSections([]), []);
+  const listKind = (ctx: GroupBy | 'recent' | 'active' | 'drafts' | 'hidden'): BoardListKind =>
+    ctx === 'recent' || ctx === 'active' || ctx === 'drafts' || ctx === 'hidden' ? ctx : 'grouped';
 
   // The view controls, written once: the search panel's foot on a desktop,
   // its View section on a phone (docs/search.md).
@@ -1743,6 +1778,9 @@ export function BoardPage({
               <IconPlus /> New
             </button>
           </div>
+          {!selecting && (
+            <NowStrip tasks={scopedTasks} tokens={tokens} text={searchText} ctx={searchCtx} haystacks={haystacks} onChange={setSearch} />
+          )}
           {chips}
         </>
       ) : (

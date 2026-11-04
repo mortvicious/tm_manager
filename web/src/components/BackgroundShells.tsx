@@ -7,6 +7,7 @@ import { toastError } from '../toast.ts';
 import { IconEye, IconStop, IconX } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
 import { Sheet } from './Sheet.tsx';
+import { fmtElapsed } from './Elapsed.tsx';
 import { useNow } from './TimeAgo.tsx';
 
 /**
@@ -205,16 +206,6 @@ export function BackgroundShellList({
       )}
     </div>
   );
-}
-
-/** "<1m" / "12m" / "1h 05m" / "2d 3h" */
-function fmtElapsed(ms: number): string {
-  const m = Math.floor(Math.max(0, ms) / 60_000);
-  if (m < 1) return '<1m';
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ${String(m % 60).padStart(2, '0')}m`;
-  return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
 /** what the viewer keeps — the end of a long output is the part that matters */

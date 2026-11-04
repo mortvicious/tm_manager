@@ -44,6 +44,7 @@ import { buildTaskActions, type TaskAction } from '../taskActions.ts';
 import { useArm } from '../arm.ts';
 import { exitGhost } from '../motion.ts';
 import { BackgroundShellList } from './BackgroundShells.tsx';
+import { PanelNav } from './PanelNav.tsx';
 import {
   PANEL_TAB_LABEL,
   offeredTabs,
@@ -1450,6 +1451,7 @@ export function TaskSlideOver({
           onClose={onClose}
           head={(close) => (
             <>
+              <PanelNav taskId={task.id} onOpenTask={onOpenTask} />
               {head(close)}
               {actionBar}
             </>

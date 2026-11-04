@@ -12756,3 +12756,273 @@ button.explain-tap:active {
 .mt-row-rel[aria-pressed='true'] {
   color: var(--tm-accent);
 }
+
+/* ---- phone board: Now strip, next step, live timers, row swipe (docs/mobile.md) ---- */
+
+/* Now strip: four counts above the board, each a set of search chips */
+.now-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--tm-space-2);
+  padding: 0 var(--tm-space-3) var(--tm-space-2);
+}
+
+.now-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 52px;
+  min-width: 0;
+  padding: var(--tm-space-1) var(--tm-space-2);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-bg-raised);
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.now-cell .now-n {
+  font-size: var(--tm-text-lg);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.now-cell .now-label {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.now-cell.t-run .now-n {
+  color: var(--tm-status-running);
+}
+.now-cell.t-att .now-n {
+  color: var(--tm-status-attention);
+}
+.now-cell.t-rev .now-n {
+  color: var(--tm-status-review);
+}
+.now-cell.t-fail .now-n {
+  color: var(--tm-status-failed);
+}
+
+.now-cell.zero .now-n {
+  color: var(--tm-text-faint);
+}
+
+.now-cell:disabled {
+  cursor: default;
+}
+
+.now-cell.on {
+  border-color: var(--tm-accent);
+  background: var(--tm-accent-subtle);
+}
+
+/* next step: the phone row's one primary button, in words */
+.app.mobile .task-row.m .btn.next-step {
+  min-height: 44px;
+  padding: 0 var(--tm-space-3);
+  border-radius: var(--tm-radius-pill);
+  font-size: var(--tm-text-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--tm-accent);
+  border-color: transparent;
+  color: var(--tm-accent-contrast);
+}
+
+.app.mobile .task-row.m .btn.next-step.k-answer,
+.app.mobile .task-row.m .btn.next-step.k-prompt {
+  background: var(--tm-status-attention);
+  color: var(--tm-bg);
+}
+
+.app.mobile .task-row.m .btn.next-step.k-findings {
+  background: transparent;
+  border-color: var(--tm-status-review);
+  color: var(--tm-status-review);
+}
+
+.app.mobile .task-row.m .btn.next-step.k-retry {
+  background: transparent;
+  border-color: var(--tm-status-failed);
+  color: var(--tm-status-failed);
+}
+
+/* a draft's Run now: an offer, not a call to act — outlined, so a long Drafts list stays quiet */
+.app.mobile .task-row.m .btn.next-step.k-run {
+  background: transparent;
+  border-color: var(--tm-accent);
+  color: var(--tm-accent);
+}
+
+/* in flight: its label says so (docs/mobile.md § Action feedback); the words breathe */
+.app.mobile .task-row.m .btn.next-step.in-flight {
+  animation: pulse 1.2s var(--tm-ease-in-out) infinite;
+}
+
+/* live timer beside the status pill */
+.elapsed {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Row swipe: the row's children slide, the revealed buttons sit under them */
+.app.mobile .task-row.m.swipeable {
+  touch-action: pan-y pinch-zoom;
+}
+
+.app.mobile .task-row.m.swipe-open {
+  position: relative;
+  overflow: hidden;
+}
+
+.app.mobile .task-row.m.swipe-open > :not(.swipe-act) {
+  transform: translateX(var(--swipe-x, 0px));
+  transition: transform var(--tm-dur-base) var(--tm-ease-out);
+}
+
+.app.mobile .task-row.m.swiping > :not(.swipe-act) {
+  transition: none;
+}
+
+.swipe-act {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  z-index: 0;
+}
+
+.swipe-act.lead {
+  left: 0;
+}
+
+.swipe-act.trail {
+  right: 0;
+  justify-content: flex-end;
+}
+
+.swipe-btn {
+  flex: 1 0 84px;
+  min-height: 44px;
+  border: 0;
+  padding: 0 var(--tm-space-2);
+  font: inherit;
+  font-size: var(--tm-text-sm);
+  font-weight: 600;
+  color: var(--tm-accent-contrast);
+  background: var(--tm-accent);
+  cursor: pointer;
+}
+
+.swipe-btn:disabled {
+  opacity: 0.6;
+}
+
+.swipe-btn.in-flight:disabled {
+  opacity: 1;
+}
+
+.swipe-btn.k-answer,
+.swipe-btn.k-prompt {
+  background: var(--tm-status-attention);
+  color: var(--tm-bg);
+}
+
+.swipe-btn.k-findings {
+  background: var(--tm-status-review);
+  color: var(--tm-bg);
+}
+
+.swipe-btn.k-retry,
+.swipe-btn.k-cancel {
+  background: var(--tm-status-failed);
+  color: var(--tm-bg);
+}
+
+.swipe-btn.k-hide {
+  background: var(--tm-bg-overlay);
+  color: var(--tm-text);
+}
+
+/* the slid row keeps an opaque face over the buttons */
+.app.mobile .task-row.m.swipe-open > :not(.swipe-act):not(.row-progress):not(.row-select) {
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app.mobile .task-row.m.swipe-open > :not(.swipe-act) {
+    transition: none;
+  }
+  .app.mobile .task-row.m .btn.next-step.in-flight {
+    animation: none;
+  }
+}
+
+/* Panel prev/next (docs/mobile.md § Panel prev/next): the panel sheet's one swipe zone */
+.panel-nav {
+  touch-action: none;
+  overflow: hidden;
+  border-bottom: 1px solid var(--tm-border);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.panel-nav .pn-track {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--tm-space-1);
+  padding: 0 var(--tm-space-1);
+}
+
+.panel-nav .pn-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 var(--tm-space-2);
+  border: 0;
+  background: none;
+  color: var(--tm-text-muted);
+  font: inherit;
+  font-size: var(--tm-text-xs);
+  cursor: pointer;
+}
+
+.panel-nav .pn-btn.next {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.panel-nav .pn-btn[aria-disabled='true'] {
+  color: var(--tm-text-faint);
+  cursor: default;
+}
+
+.panel-nav .pn-title {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-nav .pn-pos {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

@@ -1,5 +1,6 @@
 import { effectiveLanding, groupAncestors, type Feature, type Repo, type Task, type TaskStatus } from '@tm/shared';
 import { MAX_TASK_ID_CANDIDATES, MIN_TASK_ID_PREFIX, findTaskById, normalizeTaskId } from './taskId.ts';
+import { readyToShip } from './nextStep.ts';
 
 /**
  * Board search (docs/search.md): ONE query that narrows the board by anything a
@@ -94,7 +95,8 @@ export type TaskState =
   | 'waking'
   | 'auto-publish'
   | 'on-green'
-  | 'auto-landed';
+  | 'auto-landed'
+  | 'ready';
 
 const STATE_WORDS: Record<TaskState, { label: string; words: string[] }> = {
   attention: { label: 'needs attention', words: ['attention', 'needs attention', 'permission'] },
@@ -109,6 +111,7 @@ const STATE_WORDS: Record<TaskState, { label: string; words: string[] }> = {
   'auto-publish': { label: 'auto-publish', words: ['auto-publish', 'auto publish', 'autopublish'] },
   'on-green': { label: 'lands on green', words: ['on-green', 'on green', 'lands on green'] },
   'auto-landed': { label: 'auto-landed', words: ['auto-landed', 'autolanded', 'landed'] },
+  ready: { label: 'ready to publish', words: ['ready', 'ready to publish', 'to publish', 'shippable'] },
 };
 
 const SOURCE_WORDS: Record<Provenance, { label: string; words: string[] }> = {
@@ -446,6 +449,9 @@ function stateMatches(state: string, t: Task, ctx: SearchContext): boolean {
       return effectiveLanding(t, ctx.repos.find((r) => r.id === t.repoId)) === state;
     case 'auto-landed':
       return !!t.autoLandedAt;
+    // Publish may take the primary slot (nextStep.ts) — the Now strip's "to publish"
+    case 'ready':
+      return readyToShip(t);
     default:
       return false;
   }

@@ -92,7 +92,7 @@ nothing.
 | `repo` (`r`)                          | a repo name, prefix or inner word; `none`                                                         |
 | `status` (`s`)                        | a status or a word for one (`todo`, `shipped`, `in progress`…)                                    |
 | `is`                                  | a status, else a state                                                                            |
-| `state`                               | `attention`, `asking`, `auto-review`, `fixing`, `flagged`, `in-queue`, `held`, `hidden`, `waking`, `auto-publish`, `on-green`, `auto-landed` |
+| `state`                               | `attention`, `asking`, `auto-review`, `fixing`, `flagged`, `in-queue`, `held`, `hidden`, `waking`, `auto-publish`, `on-green`, `auto-landed`, `ready` |
 | `source` (`src`, `from`, `by`)        | `human`, `agent`, `sentry`, `analyze`, `feature`                                                  |
 | `cat` (`category`)                    | a category; `uncategorized`                                                                       |
 | `group` (`g`)                         | a group's name, or its root id (4+ characters)                                                    |
@@ -123,7 +123,9 @@ year's.
   *auto-publish* and *lands on green* (the task's EFFECTIVE landing tier,
   `effectiveLanding` — repo default or override, external tasks clamped; was the
   per-task `autoPublish` flag), and *auto-landed* (`autoLandedAt`, the
-  orchestrator landed it — `docs/design.md` § Landing tiers).
+  orchestrator landed it — `docs/design.md` § Landing tiers), and *ready to
+  publish* (`ready`: Publish may take the primary slot — `readyToShip` in
+  `web/src/nextStep.ts`, the phone Now strip's "to publish", docs/mobile.md § Now strip).
 - **Persisted** in `localStorage['tm.board']` as `tokens` + `text`, beside sort,
   focus, folds and groupBy. The single-valued filters stored before
   (`repo/prov/cat/group/dispatch`, `'all'` when off) migrate into tokens on

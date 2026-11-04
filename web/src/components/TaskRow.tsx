@@ -4,13 +4,15 @@ import { api } from '../api.ts';
 import { confirmMarkPublished, confirmPublish, markPublishedLabel, markPublishedOffered, publishIsPrimary } from '../publish.ts';
 import { useApp } from '../state.tsx';
 import { toastError } from '../toast.ts';
-import { ACTION_TITLE, runTaskAction, usePendingAction, type TaskActionId } from '../pending.ts';
+import { ACTION_TITLE, publishBusy, runTaskAction, usePendingAction, type TaskActionId } from '../pending.ts';
+import { nextStep, type NextStep } from '../nextStep.ts';
 import { useArm } from '../arm.ts';
 import { IconCheck, IconEye, IconGrip, IconMore, IconPlay, IconPublish, IconQueue, IconStop, IconTerminal, IconX } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
 import { QueueMark } from './QueueMark.tsx';
 import { Sheet, SheetAction } from './Sheet.tsx';
 import { ProgressBar } from './TaskProgress.tsx';
+import { useRowSwipe, type SwipeSide } from './RowSwipe.tsx';
 
 // Mirrors the server guards (server/src/routes/tasks.ts + orchestrator.runNow)
 // so a disabled quick action gives the same answer a 409 would have.
@@ -95,7 +97,7 @@ export function TaskRow({
   progress?: boolean;
   children?: ReactNode;
 }) {
-  const { runs, tasks, activity, refresh, orch } = useApp();
+  const { runs, tasks, activity, refresh, orch, questions } = useApp();
   const mobile = useIsMobile();
   // one action at a time per TASK, whichever surface pressed it (src/pending.ts)
   const pend = usePendingAction(task.id);
@@ -232,6 +234,118 @@ export function TaskRow({
           ? 'terminal'
           : null;
 
+  // The next step (docs/mobile.md § Next step): the phone row names what the
+  // human should do, read like the status pill (nextStep.ts). A press in
+  // flight keeps its own step on the button, saying so.
+  const pubBusy = publishBusy(task, runs, orch, pend);
+  const step = nextStep(task, {
+    question: questions.some((q) => q.taskId === task.id),
+    attention: task.status === 'running' && taskRuns.some((r) => r.status === 'running' && r.needsAttention),
+    live,
+    busy: !!pubBusy && pend?.action !== 'publish' && pend?.action !== 'mark-published',
+  });
+  const attnRun = taskRuns.find((r) => r.status === 'running' && r.needsAttention) ?? run;
+  const doStep = (st: NextStep, e: MouseEvent | null) => {
+    e?.stopPropagation();
+    switch (st.kind) {
+      case 'answer':
+      case 'findings':
+        onOpenTask(task.id);
+        return;
+      case 'prompt':
+        if (attnRun) onOpenTerminal(attnRun.id);
+        return;
+      case 'publish':
+        doPublish(e);
+        return;
+      case 'retry':
+        void act(e, 'retry', () => api.taskAction(task.id, 'retry'));
+        return;
+      case 'run':
+        void doRun(e);
+        return;
+    }
+  };
+  const stepFlying = step
+    ? step.kind === 'publish'
+      ? flying('publish', 'mark-published')
+      : step.kind === 'retry'
+        ? flying('retry')
+        : step.kind === 'run'
+          ? flying('run-now')
+          : null
+    : null;
+  // opening a task or a terminal is never blocked by a press in flight
+  const stepAct = step && step.kind !== 'answer' && step.kind !== 'findings' && step.kind !== 'prompt';
+
+  // Row swipe (docs/mobile.md § Row swipe): trailing = the next step (+ Cancel
+  // for a queued task, two-press), leading = Hide/Unhide. Off while selecting.
+  const cancelKind: 'cancel' | 'unqueue' | null = task.status === 'queued' ? (task.customQueueAt ? 'unqueue' : 'cancel') : null;
+  const swipeCancelArmed = arm.armed === 'swipe-cancel';
+  const trailCount = (step ? 1 : 0) + (cancelKind ? 1 : 0);
+  const canHide = !!task.hiddenAt || !working;
+  const trail: SwipeSide | null = trailCount
+    ? {
+        count: trailCount,
+        render: (closeSwipe) => (
+          <>
+            {step && (
+              <button
+                type="button"
+                className={`swipe-btn k-${step.kind}${stepFlying ? ' in-flight' : ''}`}
+                title={step.title}
+                aria-busy={stepFlying ? true : undefined}
+                disabled={!!stepAct && busy}
+                onClick={(e) => {
+                  closeSwipe();
+                  doStep(step, e);
+                }}
+              >
+                {stepFlying ?? step.label}
+              </button>
+            )}
+            {cancelKind && (
+              <button
+                type="button"
+                className={`swipe-btn k-cancel${swipeCancelArmed ? ' armed' : ''}`}
+                title="Cancel the task — it leaves the queue (asks for a second press)"
+                disabled={busy}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // the arming tap keeps the row open for the second one (src/arm.ts)
+                  if (!arm.press('swipe-cancel')) return;
+                  closeSwipe();
+                  void act(null, cancelKind, () => api.taskAction(task.id, cancelKind));
+                }}
+              >
+                {swipeCancelArmed ? 'Cancel? tap again' : 'Cancel'}
+              </button>
+            )}
+          </>
+        ),
+      }
+    : null;
+  const lead: SwipeSide | null = canHide
+    ? {
+        count: 1,
+        render: (closeSwipe) => (
+          <button
+            type="button"
+            className="swipe-btn k-hide"
+            title={task.hiddenAt ? 'Back to its usual section' : 'Into the dimmed Hidden section'}
+            disabled={busy}
+            onClick={(e) => {
+              closeSwipe();
+              void act(e, task.hiddenAt ? 'unhide' : 'hide', () => api.taskAction(task.id, task.hiddenAt ? 'unhide' : 'hide'));
+            }}
+          >
+            {flying('hide', 'unhide') ?? (task.hiddenAt ? 'Unhide' : 'Hide')}
+          </button>
+        ),
+      }
+    : null;
+  const swipe = useRowSwipe(`row:${task.id}`, lead, trail, mobile && !select && !sheet);
+
   if (mobile) {
     const close = () => setSheet(false);
     // close first, then act: the sheet must not sit over the row's error line
@@ -241,13 +355,15 @@ export function TaskRow({
     };
     return (
       <div
-        className={`task-row m ${progress ? 'has-progress' : ''} ${grip ? '' : 'no-grip'} ${depth > 0 ? 'nested' : ''} ${fresh ? 'fresh' : ''} ${dropClass ?? ''}`}
+        {...swipe.rowProps}
+        className={`task-row m ${progress ? 'has-progress' : ''} ${grip ? '' : 'no-grip'} ${depth > 0 ? 'nested' : ''} ${fresh ? 'fresh' : ''} ${dropClass ?? ''} ${swipe.cls}`}
         // on the row, not the title: the meta line below indents by it too
-        style={depth > 1 ? ({ '--tm-depth': depth } as CSSProperties) : undefined}
+        style={depth > 1 || swipe.rowProps.style ? ({ ...(depth > 1 ? { '--tm-depth': depth } : {}), ...swipe.rowProps.style } as CSSProperties) : undefined}
         data-drop-task={grip ? task.id : undefined}
         onClick={() => (select ? select.toggle() : onOpenTask(task.id))}
         data-selected={select?.on || undefined}
       >
+        {swipe.layer}
         {select && <SelectBox on={select.on} />}
         {grip && (
           <span className="drag-grip" title="Press and hold, then drag: onto a task to group with it, above or below it to reorder" {...grip}>
@@ -265,7 +381,21 @@ export function TaskRow({
           )}
         </span>
         <span className="row-actions">
-          {primary === 'terminal' && (
+          {step && (
+            <span className="quick-wrap" title={stepFlying ?? step.title}>
+              <button
+                type="button"
+                className={`btn next-step k-${step.kind}${stepFlying ? ' in-flight' : ''}`}
+                aria-label={stepFlying ?? step.title}
+                aria-busy={stepFlying ? true : undefined}
+                disabled={!!stepAct && busy}
+                onClick={(e) => doStep(step, e)}
+              >
+                {stepFlying ?? step.label}
+              </button>
+            </span>
+          )}
+          {!step && primary === 'terminal' && (
             <QuickBtn
               label={termLabel}
               className="primary-act"
@@ -278,12 +408,12 @@ export function TaskRow({
               <IconTerminal />
             </QuickBtn>
           )}
-          {primary === 'run' && (
+          {!step && primary === 'run' && (
             <QuickBtn label="Run now" className="primary-act" disabled={busy} inFlight={flying('run-now')} onClick={(e) => doRun(e)}>
               <IconPlay />
             </QuickBtn>
           )}
-          {primary === 'publish' && (
+          {!step && primary === 'publish' && (
             <QuickBtn
               label={publishLabel}
               className="primary-act"
