@@ -32,6 +32,7 @@ import {
   REVIEW_BUSY_STATES,
 } from './types.ts';
 import type { AppSettings, AuditEvent, Feature, Repo, Run, Task } from './types.ts';
+import { officeClaimRefusal, type OfficeClaimFacts } from './office.ts';
 
 export interface DurationLine {
   /** per-task worked time of landed tasks */
@@ -178,6 +179,8 @@ function medianOrNull(xs: number[]): number | null {
 //      `REPO_EXCLUSIVE_GATE` (`holdsRepoForClaim` + `repoHasRoom`) and
 //      `FEATURE_CLAIM_GATE` (`isFeatureTaskBlocking`), push-failing repos out
 //   6. queue on only: the overflow claim for children of live worker runs
+//   3, 5 and 6 also carry `OFFICE_CLAIM_GATE` (`officeClaimRefusal`, the
+//   office slot share — only when the caller passes `offices`)
 //   then the 30 s wake sweep (`wakeDue`, only with `agent.autoWake`): due
 //   wake-ups within the cap, the queue switch holding non-members.
 // Steps 3–6 also stop at the day budget fuse. A twin edit on the server side
@@ -199,6 +202,7 @@ export type ScheduleWaitCode =
   | 'phase'
   | 'repo'
   | 'filer'
+  | 'office'
   | 'cap'
   | 'wake';
 
@@ -273,6 +277,12 @@ export interface ScheduleInput {
   dayBudgetReached?: boolean;
   /** repoId → the names of its check commands (`isCheck`); absent = no checks */
   repoChecks?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * The offices (`OFFICE_CLAIM_GATE`'s facts). Absent = the caller has no
+   * office rows, and the office claim share is not modelled; present = a task
+   * whose office is not listed waits, as the SQL fails closed.
+   */
+  offices?: readonly OfficeClaimFacts[];
   /** runId → taskId for the `createdByRun` ids the tasks name (live worker runs are known already) */
   runTaskIds?: Readonly<Record<string, string>>;
   now: string | number | Date;
@@ -337,6 +347,7 @@ export function predictSchedule(input: ScheduleInput): PredictedSlot[] {
   const repos = new Map(input.repos.map((r) => [r.id, r]));
   const features = new Map(input.features.map((f) => [f.id, f]));
   const pushFailing = new Set(input.pushFailing ?? []);
+  const offices = input.offices ? new Map(input.offices.map((o) => [o.id, o])) : null;
   const iso = (ms: number) => new Date(ms).toISOString();
 
   const rows: Task[] = input.tasks.map((t) => ({ ...t }));
@@ -450,6 +461,12 @@ export function predictSchedule(input: ScheduleInput): PredictedSlot[] {
       : lo.status === 'draft' ? ` — ${short(lo.title)} is a draft`
       : '';
     return { code: 'phase', text: `phase ${c.featurePhase} after phase ${lo.featurePhase}${why}` };
+  };
+  /** OFFICE_CLAIM_GATE (`officeClaimRefusal`) over the simulated rows, at virtual time `t` */
+  const officeGate = (c: Task): ScheduleWait | null => {
+    if (!offices || c.officeId == null) return null;
+    const why = officeClaimRefusal(c, rows, offices.get(c.officeId), t);
+    return why ? { code: 'office', text: why } : null;
   };
   const pushGate = (c: Task): ScheduleWait | null =>
     c.repoId && pushFailing.has(c.repoId) ? { code: 'push-failing', text: `push failing (${repoName(c.repoId)})` } : null;
@@ -710,7 +727,7 @@ export function predictSchedule(input: ScheduleInput): PredictedSlot[] {
       for (const c of customQueueWaiting(rows)) {
         if (c.queueHeldAt) why(c, W.held);
         if (!c.repoId) why(c, W.noRepo);
-        const gate = reasons.has(c.id) ? null : (pushGate(c) ?? featureGate(c, false) ?? customQueueGate(c));
+        const gate = reasons.has(c.id) ? null : (pushGate(c) ?? featureGate(c, false) ?? officeGate(c) ?? customQueueGate(c));
         if (gate) why(c, gate);
         if (reasons.has(c.id)) continue;
         if (active() >= cap) {
@@ -745,7 +762,7 @@ export function predictSchedule(input: ScheduleInput): PredictedSlot[] {
       for (const c of [...global].sort(compareClaimOrder(byId))) {
         if (c.queueHeldAt) why(c, W.held);
         if (!c.repoId) why(c, W.noRepo);
-        const gate = reasons.has(c.id) ? null : (featureGate(c, false) ?? pushGate(c) ?? exclusiveGate(c));
+        const gate = reasons.has(c.id) ? null : (featureGate(c, false) ?? officeGate(c) ?? pushGate(c) ?? exclusiveGate(c));
         if (gate) why(c, gate);
         if (reasons.has(c.id)) continue;
         if (active() >= cap) {
@@ -762,7 +779,7 @@ export function predictSchedule(input: ScheduleInput): PredictedSlot[] {
         const next = rows
           .filter((c) => isCandidate(c) && !c.customQueueAt && !c.queueHeldAt && c.repoId && c.createdByRun && credits.has(c.createdByRun))
           .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-          .find((c) => !featureGate(c, true) && !pushGate(c) && !exclusiveGate(c));
+          .find((c) => !featureGate(c, true) && !officeGate(c) && !pushGate(c) && !exclusiveGate(c));
         if (!next) break;
         reasons.delete(next.id);
         startWork(sim(next), 'overflow', workMs(next));

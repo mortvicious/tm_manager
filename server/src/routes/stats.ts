@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { contextPctOf, holdsRepoForClaim, repoHasRoom, runWorkedMs, type Anomaly, type AuditEvent, type StatsOverview, type Task } from '@tm/shared';
+import { contextPctOf, holdsRepoForClaim, officeHasSlot, repoHasRoom, runWorkedMs, type Anomaly, type AuditEvent, type StatsOverview, type Task } from '@tm/shared';
 import { budgetAllows } from '../budget.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
@@ -283,6 +283,9 @@ export function registerStatsRoutes(
     for (const x of tasks) if (x.repoId && holdsRepoForClaim(x)) holders.set(x.repoId, [...(holders.get(x.repoId) ?? []), x]);
     const repoById = new Map((await storage.listRepos()).map((r) => [r.id, r] as const));
     const heldRepos = new Set([...holders].filter(([id, hs]) => !repoHasRoom(hs, repoById.get(id))).map(([id]) => id));
+    // an office task past its office's slot share (OFFICE_CLAIM_GATE, docs/office.md § Claim share) waits on purpose too
+    const offices = new Map((await storage.listOffices()).map((o) => [o.id, o] as const));
+    const officeHeld = (t: Task) => t.officeId != null && !officeHasSlot(t, tasks, offices.get(t.officeId), nowMs);
     const day = await budgetAllows(storage, null, 'claim', settings);
     if (!day.ok) {
       anomalies.push({ severity: 'critical', kind: 'day-budget', message: day.reason });
@@ -309,6 +312,7 @@ export function registerStatsRoutes(
         settingsEnabled &&
         day.ok &&
         !(t.repoId && heldRepos.has(t.repoId)) &&
+        !officeHeld(t) &&
         nowMs - Date.parse(t.updatedAt) > queuedSinceMs
       ) {
         anomalies.push({

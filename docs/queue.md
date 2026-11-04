@@ -273,6 +273,16 @@ child a human enqueued waits for its filer's turn to end, like any other
 same-repo task. The Dashboard's `starved-queue` anomaly skips a task whose repo
 is held this way (or the day budget), since that wait is by design.
 
+**The office claim share (2026-11-04, `docs/office.md` § Claim share).**
+Every claim path (global, overflow, the custom queue's peek and by-id claim,
+both drivers) also carries `OFFICE_CLAIM_GATE` (`storage/queue-sql.ts`, JS
+twin `officeHasSlot`/`officeClaimRefusal` in `shared/src/office.ts` and
+`predictSchedule` — edit together). A task an office filed is claimed only
+while its office is enabled, not paused, not over budget today, and has
+fewer `running`/`waiting` tasks than `max_slots`. A held office task is
+skipped like a held repo. Tasks with no `office_id` are untouched. The gate
+binds one `?` (the offices tripped today, `officeTrippedParam`).
+
 What the gate does NOT cover: turns that are not claims — a human Run now, a
 dispatch delivery (which checks `repoBusy` itself), a review fix round or a
 wake-up continue an existing task and are not refused by it.

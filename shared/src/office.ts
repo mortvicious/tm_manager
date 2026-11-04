@@ -6,7 +6,7 @@
 // server's sweep, the SPA's role cards and the tests read ONE rule. No I/O:
 // facts come in precomputed, time comes in as epoch ms, zones go through Intl.
 
-import type { EffortLevel } from './types.ts';
+import type { EffortLevel, Task } from './types.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -767,6 +767,72 @@ export function officeHardGate(f: OfficeGateFacts): OfficeGateRefusal | null {
     return { code: 'slots', reason: `all ${plural(f.maxSlots, 'shift slot')} busy` };
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// The claim share (docs/office.md § Claim share, decisions.md 2026-11-04)
+// ---------------------------------------------------------------------------
+
+/** What the claim share reads of an office row. */
+export type OfficeClaimFacts = Pick<Office, 'id' | 'enabled' | 'pausedAt' | 'budgetTrippedOn' | 'timezone' | 'maxSlots'>;
+
+/**
+ * Whether the office's day budget tripped on its CURRENT office-local day.
+ * An unreadable zone fails closed (a trip with no readable "today" counts).
+ */
+export function officeBudgetTrippedToday(o: Pick<Office, 'budgetTrippedOn' | 'timezone'>, now: number): boolean {
+  if (!o.budgetTrippedOn) return false;
+  try {
+    return o.budgetTrippedOn === officeDay(now, o.timezone);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * The ids of the offices whose budget tripped today, comma-joined: the ONE
+ * value `OFFICE_CLAIM_GATE` binds (server/src/storage/queue-sql.ts). The SQL
+ * cannot read an office-local day (SQLite has no zones), so the driver reads
+ * the tripped rows, asks this, and binds the answer.
+ */
+export function officeTrippedParam(offices: readonly Pick<Office, 'id' | 'budgetTrippedOn' | 'timezone'>[], now: number): string {
+  return offices.filter((o) => officeBudgetTrippedToday(o, now)).map((o) => o.id).join(',');
+}
+
+/**
+ * Why the queued office task `task` may not be CLAIMED now, or null when it
+ * may — a task with no `officeId` always may. An office task is claimable
+ * only while its office exists, is enabled, is not paused, has not tripped
+ * its day budget today, and has fewer `running`/`waiting` tasks than
+ * `maxSlots` (the office's slot share, not first come first served —
+ * decisions.md 2026-11-04). A missing office fails closed.
+ * JS twin of `OFFICE_CLAIM_GATE` in server/src/storage/queue-sql.ts — edit together.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
+ */
+export function officeClaimRefusal(
+  task: Pick<Task, 'id' | 'officeId'>,
+  tasks: readonly Pick<Task, 'id' | 'officeId' | 'status'>[],
+  office: OfficeClaimFacts | null | undefined,
+  now: number,
+): string | null {
+  if (task.officeId == null) return null;
+  if (!office || office.id !== task.officeId) return 'office not found';
+  if (!office.enabled) return 'office is off';
+  if (office.pausedAt) return 'office paused';
+  if (officeBudgetTrippedToday(office, now)) return 'office day budget spent';
+  const live = tasks.filter((o) => o.officeId === task.officeId && o.id !== task.id && (o.status === 'running' || o.status === 'waiting'));
+  if (live.length >= office.maxSlots) return `office slot share ${live.length}/${office.maxSlots}`;
+  return null;
+}
+
+/** `officeClaimRefusal(...) === null`. JS twin of `OFFICE_CLAIM_GATE` — edit together. */
+export function officeHasSlot(
+  task: Pick<Task, 'id' | 'officeId'>,
+  tasks: readonly Pick<Task, 'id' | 'officeId' | 'status'>[],
+  office: OfficeClaimFacts | null | undefined,
+  now: number,
+): boolean {
+  return officeClaimRefusal(task, tasks, office, now) === null;
 }
 
 // ---------------------------------------------------------------------------

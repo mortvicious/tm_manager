@@ -154,6 +154,37 @@ export const REPO_EXCLUSIVE_GATE = repoHasRoom(
 );
 
 /**
+ * The office claim share (docs/office.md § Claim share, decisions.md
+ * 2026-11-04 — open decision 4): a queued task an office filed (`office_id`
+ * set) is claimed only while its office exists, is `enabled`, is not paused,
+ * has not tripped its day budget TODAY, and has fewer `running`/`waiting`
+ * tasks than its `max_slots`. A share per office, not first come first
+ * served: an office can never take more worker slots than it was given, and
+ * the queue behind it moves on. `t.office_id IS NULL` short-circuits, so a
+ * task no office filed is claimed exactly as before.
+ *
+ * Binds exactly ONE `?`: the comma-joined ids of the offices whose budget
+ * tripped on their own office-local day (`officeTrippedParam` in shared —
+ * SQLite cannot read a zone, so "today" is computed in JS; use
+ * `OFFICE_TRIPPED_SQL` to read the rows it needs). Ids are UUIDs: no `,`, `%`
+ * or `_` to confuse the LIKE. Over the candidate aliased `t`; AND-ed into the
+ * global, overflow, custom-queue peek and custom-queue claim statements of
+ * BOTH drivers.
+ * JS twin: `officeHasSlot` / `officeClaimRefusal` in shared/src/office.ts — edit together.
+ * JS twin: predictSchedule (shared/src/schedule.ts) — the schedule simulator; edit together.
+ */
+export const OFFICE_CLAIM_GATE = `(t.office_id IS NULL OR EXISTS (
+    SELECT 1 FROM tm_offices oc WHERE oc.id = t.office_id
+      AND oc.enabled = 1
+      AND oc.paused_at IS NULL
+      AND (oc.budget_tripped_on IS NULL OR (',' || CAST(? AS TEXT) || ',') NOT LIKE ('%,' || oc.id || ',%'))
+      AND (SELECT COUNT(*) FROM tm_tasks ot
+            WHERE ot.office_id = t.office_id AND ot.id <> t.id AND ot.status IN ('running', 'waiting')) < oc.max_slots))`;
+
+/** The office rows `officeTrippedParam` needs to bind OFFICE_CLAIM_GATE. */
+export const OFFICE_TRIPPED_SQL = `SELECT id, timezone, budget_tripped_on FROM tm_offices WHERE budget_tripped_on IS NOT NULL`;
+
+/**
  * Custom-queue reorder (docs/queue.md § Reordering). The order IS
  * `custom_queue_at` (then `created_at`) — CUSTOM_QUEUE_HEAD_ORDER above and
  * `customQueueWaiting` in shared both sort on it — so a reorder only rewrites

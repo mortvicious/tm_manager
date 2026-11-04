@@ -114,6 +114,47 @@ order. It returns the first refusal (`{code, reason}`), or null:
 5. `role-cap`: the role's spend today ≥ `capUsd`
 6. `slots`: live shifts ≥ `maxSlots`
 
+## Claim share
+
+The tasks an office files (`office_id` set) run on the ordinary worker queue,
+but never past their office's share of it (decisions.md 2026-11-04, open
+decision 4: a slot share, not first come first served).
+`OFFICE_CLAIM_GATE` (`server/src/storage/queue-sql.ts`) is AND-ed into every
+claim path of both drivers: the global claim, the overflow (agent-child)
+claim, and the custom queue's peek and by-id claim. A queued office task is
+claimed only while its office:
+
+1. exists (the table is FK-less; a deleted office fails closed),
+2. is `enabled`,
+3. is not paused (`paused_at IS NULL`),
+4. has not tripped its day budget **today** — `budget_tripped_on` equal to
+   the office-local day (`officeDay(now, timezone)`),
+5. has fewer `running`/`waiting` tasks than `max_slots`.
+
+A held office task is skipped, not waited on: the next eligible task, office
+or not, is claimed in its place, like the repo gate. `t.office_id IS NULL`
+short-circuits the gate, so a task no office filed is claimed exactly as
+before. The share counts the office's TASKS; its live shifts are aux
+terminals counted by the hard gate's `slots` rule above, never here.
+
+**Today in SQL.** SQLite cannot read an IANA zone, so the gate binds ONE
+value: the comma-joined ids of the offices whose budget tripped on their own
+local day. Each driver reads `OFFICE_TRIPPED_SQL` in the claim's own
+transaction and asks the shared `officeTrippedParam` (an unreadable zone
+fails closed). The postgres global and overflow claims therefore moved to
+`?` placeholders through `toPg`, like every other statement.
+
+**Twins (edit together).** `officeClaimRefusal` / `officeHasSlot` in
+`shared/src/office.ts` are the JS twin. `predictSchedule`
+(`shared/src/schedule.ts`) applies it at the custom-queue, global and
+overflow steps when the caller passes `offices`. A held task gets the wait
+`{code: 'office', text: 'office slot share 1/1'}` (or `office paused`,
+`office is off`, `office day budget spent`, `office not found`). Without
+`offices` the share is not modelled: the SPA timeline and the accuracy
+replay do not load office rows yet. The Dashboard's `starved-queue` anomaly
+(`routes/stats.ts`) skips an office-held task, since that wait is by design.
+Tests: `server/src/storage/queue-order.test.ts` § office claim share.
+
 ## Autonomy and filing
 
 `effectiveAutonomy(office, role)`: the role's override wins over the office's level.

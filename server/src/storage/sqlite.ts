@@ -29,7 +29,7 @@ import {
 import { planCards } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
-import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, CUSTOM_QUEUE_WAITING_SQL, REPO_EXCLUSIVE_GATE, planQueueReorder, reorderAudit, skipRepos, type QueueMoveAnchor } from './queue-sql.ts';
+import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, CUSTOM_QUEUE_WAITING_SQL, OFFICE_CLAIM_GATE, OFFICE_TRIPPED_SQL, REPO_EXCLUSIVE_GATE, planQueueReorder, reorderAudit, skipRepos, type QueueMoveAnchor } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
 import { REPO_PARALLEL_SQL, repoParallelParams, worktreePatchSql } from './worktree-sql.ts';
 import { LOOP_LEAVES_RUNNING_SQL, loopStepSets, stepLoopSql } from './loop-sql.ts';
@@ -97,6 +97,7 @@ import {
   type OfficeShiftPatch,
 } from './office-sql.ts';
 import type { Office, OfficeRole, OfficeShift } from '@tm/shared';
+import { officeTrippedParam } from '@tm/shared';
 import {
   APPROVAL_DECIDE_SQL,
   APPROVAL_INSERT_SQL,
@@ -841,6 +842,18 @@ export class SqliteStorage implements Storage {
     del(id);
   }
 
+  /**
+   * The ONE value OFFICE_CLAIM_GATE binds: the offices whose day budget
+   * tripped on their own office-local day (queue-sql.ts — SQLite has no zones).
+   */
+  private officeTripped(): string {
+    const rows = this.db.prepare(OFFICE_TRIPPED_SQL).all() as { id: string; timezone: string; budget_tripped_on: string | null }[];
+    return officeTrippedParam(
+      rows.map((r) => ({ id: r.id, timezone: r.timezone, budgetTrippedOn: r.budget_tripped_on })),
+      Date.now(),
+    );
+  }
+
   async claimNextQueuedTask(actor: string, skipRepoIds: string[] = []): Promise<Task | null> {
     // .get() (not .run()) — RETURNING rows are discarded by .run().
     // Atomic only because the orchestrator is single-process; a Postgres
@@ -853,11 +866,12 @@ export class SqliteStorage implements Storage {
                          AND t.custom_queue_at IS NULL
                          AND t.queue_held_at IS NULL
                          AND ${FEATURE_CLAIM_GATE}
+                         AND ${OFFICE_CLAIM_GATE}
                          AND ${REPO_EXCLUSIVE_GATE}${skipRepos(skipRepoIds.length)}
                        ORDER BY ${MANUAL_CLAIM_ORDER} LIMIT 1)
            RETURNING *`,
         )
-        .get(now(), ...skipRepoIds);
+        .get(now(), this.officeTripped(), ...skipRepoIds);
       if (!r) return null;
       const task = rowToTask(r);
       this.appendEventSync({
@@ -874,10 +888,11 @@ export class SqliteStorage implements Storage {
   async peekCustomQueue(skipRepoIds: string[] = []): Promise<Task | null> {
     const r = this.db
       .prepare(
-        `SELECT t.* FROM tm_tasks t WHERE ${CUSTOM_QUEUE_HEAD_WHERE} AND ${FEATURE_CLAIM_GATE}${skipRepos(skipRepoIds.length)}
+        `SELECT t.* FROM tm_tasks t WHERE ${CUSTOM_QUEUE_HEAD_WHERE} AND ${FEATURE_CLAIM_GATE}
+           AND ${OFFICE_CLAIM_GATE}${skipRepos(skipRepoIds.length)}
          ${CUSTOM_QUEUE_HEAD_ORDER}`,
       )
-      .get(...skipRepoIds);
+      .get(this.officeTripped(), ...skipRepoIds);
     return r ? rowToTask(r) : null;
   }
 
@@ -891,11 +906,11 @@ export class SqliteStorage implements Storage {
         .prepare(
           `UPDATE tm_tasks SET status = 'running', updated_at = ?
            WHERE id = ? AND id = (SELECT t.id FROM tm_tasks t WHERE ${CUSTOM_QUEUE_HEAD_WHERE}
-                                    AND ${FEATURE_CLAIM_GATE} AND ${CUSTOM_QUEUE_SAME_REPO}
+                                    AND ${FEATURE_CLAIM_GATE} AND ${OFFICE_CLAIM_GATE} AND ${CUSTOM_QUEUE_SAME_REPO}
                                   ${CUSTOM_QUEUE_HEAD_ORDER})
            RETURNING *`,
         )
-        .get(now(), id, id);
+        .get(now(), id, this.officeTripped(), id);
       if (!r) return null;
       const task = rowToTask(r);
       this.appendEventSync({
@@ -1137,11 +1152,12 @@ export class SqliteStorage implements Storage {
                          AND t.custom_queue_at IS NULL
                          AND t.queue_held_at IS NULL
                          AND ${FEATURE_OVERFLOW_GATE}
+                         AND ${OFFICE_CLAIM_GATE}
                          AND ${REPO_EXCLUSIVE_GATE}${skipRepos(skipRepoIds.length)}
                        ORDER BY t.created_at LIMIT 1)
            RETURNING *`,
         )
-        .get(now(), ...eligibleRunIds, ...skipRepoIds);
+        .get(now(), ...eligibleRunIds, this.officeTripped(), ...skipRepoIds);
       if (!r) return null;
       const task = rowToTask(r);
       this.appendEventSync({

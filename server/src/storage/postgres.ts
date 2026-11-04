@@ -27,7 +27,7 @@ import {
 import { planCards } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
-import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, CUSTOM_QUEUE_WAITING_SQL, REPO_EXCLUSIVE_GATE, planQueueReorder, reorderAudit, skipRepos, type QueueMoveAnchor } from './queue-sql.ts';
+import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, CUSTOM_QUEUE_WAITING_SQL, OFFICE_CLAIM_GATE, OFFICE_TRIPPED_SQL, REPO_EXCLUSIVE_GATE, planQueueReorder, reorderAudit, skipRepos, type QueueMoveAnchor } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
 import { REPO_PARALLEL_SQL, repoParallelParams, worktreePatchSql } from './worktree-sql.ts';
 import { LOOP_LEAVES_RUNNING_SQL, loopStepSets, stepLoopSql } from './loop-sql.ts';
@@ -95,6 +95,7 @@ import {
   type OfficeShiftPatch,
 } from './office-sql.ts';
 import type { Office, OfficeRole, OfficeShift } from '@tm/shared';
+import { officeTrippedParam } from '@tm/shared';
 import {
   APPROVAL_DECIDE_SQL,
   APPROVAL_INSERT_SQL,
@@ -208,11 +209,6 @@ import { eventListSql, runListSql, taskAnchorsSql, taskSeedEventsSql } from './e
 
 /** Rewrites `?` placeholders to `$1..$n`. Constraint: no `?` inside SQL string
  *  literals — all SQL here is in-house and follows that rule. */
-/** `skipRepos` (queue-sql.ts) for the claims that number their own `$n`: `n` ids from `$first` on. */
-function pgSkipRepos(n: number, first: number): string {
-  return n > 0 ? ` AND t.repo_id NOT IN (${Array.from({ length: n }, (_, i) => `$${first + i}`).join(', ')})` : '';
-}
-
 function toPg(sql: string): string {
   let i = 0;
   return sql.replace(/\?/g, () => `$${++i}`);
@@ -861,19 +857,33 @@ export class PostgresStorage implements Storage {
     });
   }
 
+  /**
+   * The ONE value OFFICE_CLAIM_GATE binds: the offices whose day budget
+   * tripped on their own office-local day (queue-sql.ts — twin of the sqlite
+   * driver; "today" is computed in JS so both dialects agree).
+   */
+  private async officeTripped(c?: pg.PoolClient): Promise<string> {
+    const rows = c ? (await c.query(OFFICE_TRIPPED_SQL)).rows : await this.q(OFFICE_TRIPPED_SQL);
+    return officeTrippedParam(
+      rows.map((r: any) => ({ id: r.id, timezone: r.timezone, budgetTrippedOn: r.budget_tripped_on ?? null })),
+      Date.now(),
+    );
+  }
+
   async claimNextQueuedTask(actor: string, skipRepoIds: string[] = []): Promise<Task | null> {
     // Single-process orchestrator; multi-writer would need FOR UPDATE SKIP LOCKED.
     return this.tx(async (c, sink) => {
       const r = await c.query(
-        `UPDATE tm_tasks SET status = 'running', updated_at = $1
+        toPg(`UPDATE tm_tasks SET status = 'running', updated_at = ?
          WHERE id = (SELECT t.id FROM tm_tasks t WHERE t.status = 'queued' AND t.repo_id IS NOT NULL
                        AND t.custom_queue_at IS NULL
                        AND t.queue_held_at IS NULL
                        AND ${FEATURE_CLAIM_GATE}
-                       AND ${REPO_EXCLUSIVE_GATE}${pgSkipRepos(skipRepoIds.length, 2)}
+                       AND ${OFFICE_CLAIM_GATE}
+                       AND ${REPO_EXCLUSIVE_GATE}${skipRepos(skipRepoIds.length)}
                      ORDER BY ${MANUAL_CLAIM_ORDER} LIMIT 1)
-         RETURNING *`,
-        [now(), ...skipRepoIds],
+         RETURNING *`),
+        [now(), await this.officeTripped(c), ...skipRepoIds],
       );
       if (!r.rows[0]) return null;
       const task = rowToTask(r.rows[0]);
@@ -890,9 +900,10 @@ export class PostgresStorage implements Storage {
 
   async peekCustomQueue(skipRepoIds: string[] = []): Promise<Task | null> {
     const rows = await this.q(
-      `SELECT t.* FROM tm_tasks t WHERE ${CUSTOM_QUEUE_HEAD_WHERE} AND ${FEATURE_CLAIM_GATE}${skipRepos(skipRepoIds.length)}
+      `SELECT t.* FROM tm_tasks t WHERE ${CUSTOM_QUEUE_HEAD_WHERE} AND ${FEATURE_CLAIM_GATE}
+         AND ${OFFICE_CLAIM_GATE}${skipRepos(skipRepoIds.length)}
        ${CUSTOM_QUEUE_HEAD_ORDER}`,
-      skipRepoIds,
+      [await this.officeTripped(), ...skipRepoIds],
     );
     return rows[0] ? rowToTask(rows[0]) : null;
   }
@@ -903,10 +914,10 @@ export class PostgresStorage implements Storage {
       const r = await c.query(
         toPg(`UPDATE tm_tasks SET status = 'running', updated_at = ?
          WHERE id = ? AND id = (SELECT t.id FROM tm_tasks t WHERE ${CUSTOM_QUEUE_HEAD_WHERE}
-                                  AND ${FEATURE_CLAIM_GATE} AND ${CUSTOM_QUEUE_SAME_REPO}
+                                  AND ${FEATURE_CLAIM_GATE} AND ${OFFICE_CLAIM_GATE} AND ${CUSTOM_QUEUE_SAME_REPO}
                                 ${CUSTOM_QUEUE_HEAD_ORDER})
          RETURNING *`),
-        [now(), id, id],
+        [now(), id, await this.officeTripped(c), id],
       );
       if (!r.rows[0]) return null;
       const task = rowToTask(r.rows[0]);
@@ -1127,19 +1138,20 @@ export class PostgresStorage implements Storage {
 
   async claimNextAgentChildTask(eligibleRunIds: string[], actor: string, skipRepoIds: string[] = []): Promise<Task | null> {
     if (eligibleRunIds.length === 0) return null;
-    const placeholders = eligibleRunIds.map((_, i) => `$${i + 2}`).join(', ');
+    const placeholders = eligibleRunIds.map(() => '?').join(', ');
     return this.tx(async (c, sink) => {
       const r = await c.query(
-        `UPDATE tm_tasks SET status = 'running', updated_at = $1
+        toPg(`UPDATE tm_tasks SET status = 'running', updated_at = ?
          WHERE id = (SELECT t.id FROM tm_tasks t
                      WHERE t.status = 'queued' AND t.repo_id IS NOT NULL AND t.created_by_run IN (${placeholders})
                        AND t.custom_queue_at IS NULL
                        AND t.queue_held_at IS NULL
                        AND ${FEATURE_OVERFLOW_GATE}
-                       AND ${REPO_EXCLUSIVE_GATE}${pgSkipRepos(skipRepoIds.length, eligibleRunIds.length + 2)}
+                       AND ${OFFICE_CLAIM_GATE}
+                       AND ${REPO_EXCLUSIVE_GATE}${skipRepos(skipRepoIds.length)}
                      ORDER BY t.created_at LIMIT 1)
-         RETURNING *`,
-        [now(), ...eligibleRunIds, ...skipRepoIds],
+         RETURNING *`),
+        [now(), ...eligibleRunIds, await this.officeTripped(c), ...skipRepoIds],
       );
       if (!r.rows[0]) return null;
       const task = rowToTask(r.rows[0]);
