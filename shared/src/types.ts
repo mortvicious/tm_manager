@@ -2221,9 +2221,30 @@ export interface PlanFinding {
 export interface PlanReviewRound {
   round: number;
   verdict: PlanVerdict;
+  /** open findings after this round — in a fix round, the unresolved previous ones plus the new ones */
   findings: PlanFinding[];
   model: string;
   at: string;
+  /**
+   * `full`: a whole plan written and reviewed from scratch. `fix`: the planner
+   * EDITED the previous plan for the numbered findings only, and the reviewer
+   * judged those findings plus what the edits changed (docs/features.md §
+   * Fix rounds). Absent on rounds before 2026-11-04 (= full).
+   */
+  mode?: 'full' | 'fix';
+  /** fix round: the verdict on each previous finding, in the order they were handed over */
+  resolutions?: PlanResolution[];
+  /** fix round: what the planner changed, one line per edit */
+  edits?: string[];
+  /** sha256 prefix of the request this round planned for: a changed request makes the next Re-analyze a full round */
+  requestHash?: string;
+}
+
+export interface PlanResolution {
+  summary: string;
+  severity: PlanFinding['severity'];
+  status: 'resolved' | 'unresolved';
+  note: string | null;
 }
 
 export interface FeatureReview {

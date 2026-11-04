@@ -458,8 +458,9 @@ export const api = {
   updateFeaturePlan: (id: string, analysis: FeaturePlan) =>
     req<Feature>('PATCH', `/api/features/${id}/plan`, { analysis }),
   deleteFeature: (id: string) => req<{ ok: true }>('DELETE', `/api/features/${id}`),
-  analyzeFeature: (id: string, note?: string) =>
-    req<{ runId: string; feature: Feature }>('POST', `/api/features/${id}/analyze`, { note: note || null }),
+  /** fresh: a whole new plan even when the last review left blocker/major findings (else the next fix round) */
+  analyzeFeature: (id: string, note?: string, fresh = false) =>
+    req<{ runId: string; feature: Feature }>('POST', `/api/features/${id}/analyze`, { note: note || null, ...(fresh ? { fresh: true } : {}) }),
   approveFeature: (id: string) =>
     req<{ feature: Feature; tasks: Task[] }>('POST', `/api/features/${id}/approve`),
   featureAction: (id: string, action: 'start' | 'pause' | 'resume' | 'cancel' | 'complete') =>

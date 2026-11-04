@@ -67,7 +67,9 @@ const planBody = z
   })
   .strict();
 
-const analyzeBody = z.object({ note: z.string().max(8000).nullish() }).strict();
+// fresh: write a whole new plan even when the last review left blocker/major
+// findings (default: the next FIX round over the stored plan — docs/features.md § Fix rounds)
+const analyzeBody = z.object({ note: z.string().max(8000).nullish(), fresh: z.boolean().optional() }).strict();
 
 /** Statuses a plain content edit / (re-)analysis may start from. */
 const EDITABLE: FeatureStatus[] = ['draft', 'proposed', 'failed'];
@@ -181,7 +183,7 @@ export function registerFeatureRoutes(app: FastifyInstance, storage: Storage) {
     if (!feature) return reply.code(409).send({ error: `cannot analyze from status '${cur.status}'` });
     push(feature);
     try {
-      await startFeatureAnalysis({ storage }, feature, repo, { note: body.note ?? null });
+      await startFeatureAnalysis({ storage }, feature, repo, { note: body.note ?? null, fresh: body.fresh ?? false });
       return { feature };
     } catch (e) {
       const reverted = await storage.transitionFeature(id, ['analyzing'], 'failed', 'system', {

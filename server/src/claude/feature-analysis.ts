@@ -1,8 +1,17 @@
-import { randomUUID } from 'node:crypto';
-import type { Feature, FeaturePlan, FeatureReview, PlanReviewRound, Repo, RunStats } from '@tm/shared';
+import { createHash, randomUUID } from 'node:crypto';
+import type { Feature, FeaturePlan, FeatureReview, PlanFinding, PlanReviewRound, Repo, RunStats } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 import { READ_ONLY_TOOLS, acceptJson, aux, resultInstruction, withModelFallback, type AuxOutcome } from './aux.ts';
+import {
+  PLAN_FIX_JSON_SCHEMA,
+  PLAN_FIX_REVIEW_JSON_SCHEMA,
+  buildPlanFixPrompt,
+  buildPlanFixReviewPrompt,
+  mergePlanFixRound,
+  planFixAcceptor,
+  planFixReviewSchema,
+} from './plan-fix.ts';
 import {
   PLAN_JSON_SCHEMA,
   PLAN_REVIEW_JSON_SCHEMA,
@@ -115,7 +124,7 @@ export async function startFeatureAnalysis(
   deps: FeatureAnalyzeDeps,
   feature: Feature,
   repo: Repo,
-  opts?: { note?: string | null },
+  opts?: { note?: string | null; fresh?: boolean },
 ): Promise<void> {
   const { storage } = deps;
   const settings = await storage.getSettings();
@@ -173,11 +182,15 @@ export async function startFeatureAnalysis(
       // of that loop, not a fresh start: the blocked plan and its findings go
       // into the first prompt, exactly as an automatic re-analysis round would.
       const lastRound = rounds.at(-1);
-      let previous: {
-        plan: FeaturePlan;
-        findings: { severity: string; summary: string; detail: string | null }[];
-      } | null =
-        feature.analysis && lastRound && needsReplan(lastRound)
+      const requestHash = createHash('sha256').update(feature.request).digest('hex').slice(0, 16);
+      // Set = the next round is a FIX round over this plan for these findings.
+      let previous: { plan: FeaturePlan; findings: PlanFinding[] } | null =
+        !opts?.fresh &&
+        feature.analysis &&
+        lastRound &&
+        needsReplan(lastRound) &&
+        // the request was rewritten since that round: its findings are about another request — plan anew
+        (lastRound.requestHash === undefined || lastRound.requestHash === requestHash)
           ? { plan: feature.analysis, findings: mustFix(lastRound) }
           : null;
       // Review rounds are numbered across Re-analyze runs (the list is appended to).
@@ -197,101 +210,196 @@ export async function startFeatureAnalysis(
           return void (await fail('analysis exceeded its time budget'));
         }
 
-        const planRes = await runWithFallback({
-          kind: 'plan',
-          feature,
-          repo,
-          model,
-          prompt: buildPlanPrompt({
-            repoName: repo.name,
-            repoPath: repo.path,
-            repoRole: repo.role,
-            title: feature.title,
-            request: feature.request,
-            openTasks,
-            note: opts?.note ?? null,
-            previous,
-          }),
-          jsonSchema: PLAN_JSON_SCHEMA,
-          schema: planSchema,
-          timeoutMs: CALL_TIMEOUT_MS,
-          label: `plan: ${feature.title}`,
-          signal: ctl.signal,
-        });
-        stats = addStats(stats, planRes.stats);
-        if (await stoppedByKill(planRes)) return;
-        if (await aborted()) return;
-        if (planRes.status !== 'ok' || !planRes.value) {
-          if (plan) {
-            // a later round failed; the earlier plan still stands — but say so
-            laterRoundError = `re-analysis round ${rounds.length + 1} failed: ${outcomeError(planRes, 'plan analysis failed')}`;
+        let roundResult: PlanReviewRound;
+        let reviewRunId: string | null = null;
+        let planRunId: string | null = null;
+        if (previous) {
+          // ---- FIX round: edit the plan for the numbered findings, review those + the edits ----
+          const base = previous.plan;
+          const handedOver = previous.findings;
+          const fixRes = await runWithFallback({
+            kind: 'plan',
+            feature,
+            repo,
+            model,
+            prompt: buildPlanFixPrompt({
+              repoName: repo.name,
+              repoPath: repo.path,
+              title: feature.title,
+              request: feature.request,
+              plan: base,
+              findings: handedOver,
+              note: round === 0 ? (opts?.note ?? null) : null,
+            }),
+            jsonSchema: PLAN_FIX_JSON_SCHEMA,
+            schema: planFixAcceptor(base, () => randomUUID()),
+            timeoutMs: CALL_TIMEOUT_MS,
+            label: `plan fix: ${feature.title}`,
+            signal: ctl.signal,
+          });
+          stats = addStats(stats, fixRes.stats);
+          planRunId = fixRes.runId || null;
+          if (await stoppedByKill(fixRes)) return;
+          if (await aborted()) return;
+          if (fixRes.status !== 'ok' || !fixRes.value) {
+            plan = plan ?? base;
+            laterRoundError = `plan fix round ${rounds.length + 1} failed: ${outcomeError(fixRes, 'plan fix failed')}`;
             break;
           }
-          return void (await fail(outcomeError(planRes, 'plan analysis failed')));
-        }
-        plan = toStoredPlan(planRes.value, () => randomUUID());
+          const { fix, applied } = fixRes.value;
+          plan = applied.plan;
+          const withPlan = await storage.updateFeature(
+            feature.id,
+            { analysis: plan, analysisRounds: round + 1, error: null },
+            'analyze',
+          );
+          if (withPlan) broadcast({ type: 'feature.updated', feature: withPlan });
 
-        // Persist the fresh plan immediately: a crash mid-review must not lose
-        // a good plan, and the page shows progress round by round.
-        const withPlan = await storage.updateFeature(
-          feature.id,
-          { analysis: plan, analysisRounds: round + 1, error: null },
-          'analyze',
-        );
-        if (withPlan) broadcast({ type: 'feature.updated', feature: withPlan });
-
-        // ---- adversarial pass over THIS plan ----
-        const reviewRes = await runWithFallback({
-          kind: 'plan-review',
-          feature,
-          repo,
-          model: settings['review.model'],
-          prompt: buildPlanReviewPrompt({
-            repoName: repo.name,
-            title: feature.title,
-            request: feature.request,
-            plan,
-          }),
-          jsonSchema: PLAN_REVIEW_JSON_SCHEMA,
-          schema: planReviewSchema,
-          label: `plan review: ${feature.title}`,
-          timeoutMs: CALL_TIMEOUT_MS,
-          signal: ctl.signal,
-        });
-        stats = addStats(stats, reviewRes.stats);
-        if (await stoppedByKill(reviewRes)) return;
-        if (await aborted()) return;
-
-        let roundResult: PlanReviewRound;
-        const reviewParsed = reviewRes.status === 'ok' && reviewRes.value ? { data: reviewRes.value } : null;
-        if (reviewParsed) {
-          roundResult = {
-            round: roundBase + round + 1,
-            verdict: reviewParsed.data.verdict,
-            findings: reviewParsed.data.findings.map((f) => ({
-              severity: f.severity,
-              summary: f.summary,
-              detail: f.detail ?? null,
-            })),
-            model: reviewRes.model,
-            at: new Date().toISOString(),
-          };
+          const reviewRes = await runWithFallback({
+            kind: 'plan-review',
+            feature,
+            repo,
+            model: settings['review.model'],
+            prompt: buildPlanFixReviewPrompt({
+              repoName: repo.name,
+              title: feature.title,
+              request: feature.request,
+              plan,
+              findings: handedOver,
+              notes: fix.notes,
+              log: applied.log,
+              changed: applied.changed,
+              labels: applied.labels,
+            }),
+            jsonSchema: PLAN_FIX_REVIEW_JSON_SCHEMA,
+            schema: planFixReviewSchema,
+            label: `plan fix review: ${feature.title}`,
+            timeoutMs: CALL_TIMEOUT_MS,
+            signal: ctl.signal,
+          });
+          stats = addStats(stats, reviewRes.stats);
+          reviewRunId = reviewRes.runId || null;
+          if (await stoppedByKill(reviewRes)) return;
+          if (await aborted()) return;
+          const meta = { round: roundBase + round + 1, model: reviewRes.model, at: new Date().toISOString(), edits: applied.log };
+          roundResult =
+            reviewRes.status === 'ok' && reviewRes.value
+              ? mergePlanFixRound(handedOver, reviewRes.value, meta)
+              : {
+                  // An unreviewed fix resolves nothing: the handed-over findings stay open.
+                  ...meta,
+                  mode: 'fix',
+                  verdict: handedOver.some((f) => f.severity === 'blocker') ? 'blocker' : 'minor',
+                  findings: [
+                    ...handedOver,
+                    {
+                      severity: 'minor',
+                      summary: 'The fix-round review could not run — these edits are UNREVIEWED.',
+                      detail: outcomeError(reviewRes, 'plan review'),
+                    },
+                  ],
+                };
         } else {
-          // A review that could not run must never look like a clean verdict.
-          roundResult = {
-            round: roundBase + round + 1,
-            verdict: 'minor',
-            findings: [
-              {
-                severity: 'minor',
-                summary: 'The adversarial plan review could not run — this plan is UNREVIEWED.',
-                detail: outcomeError(reviewRes, 'plan review'),
-              },
-            ],
-            model: reviewRes.model,
-            at: new Date().toISOString(),
-          };
+          // ---- FULL round: write the whole plan, review the whole plan ----
+          const planRes = await runWithFallback({
+            kind: 'plan',
+            feature,
+            repo,
+            model,
+            prompt: buildPlanPrompt({
+              repoName: repo.name,
+              repoPath: repo.path,
+              repoRole: repo.role,
+              title: feature.title,
+              request: feature.request,
+              openTasks,
+              note: opts?.note ?? null,
+            }),
+            jsonSchema: PLAN_JSON_SCHEMA,
+            schema: planSchema,
+            timeoutMs: CALL_TIMEOUT_MS,
+            label: `plan: ${feature.title}`,
+            signal: ctl.signal,
+          });
+          stats = addStats(stats, planRes.stats);
+          planRunId = planRes.runId || null;
+          if (await stoppedByKill(planRes)) return;
+          if (await aborted()) return;
+          if (planRes.status !== 'ok' || !planRes.value) {
+            if (plan) {
+              // a later round failed; the earlier plan still stands — but say so
+              laterRoundError = `re-analysis round ${rounds.length + 1} failed: ${outcomeError(planRes, 'plan analysis failed')}`;
+              break;
+            }
+            return void (await fail(outcomeError(planRes, 'plan analysis failed')));
+          }
+          plan = toStoredPlan(planRes.value, () => randomUUID());
+
+          // Persist the fresh plan immediately: a crash mid-review must not lose
+          // a good plan, and the page shows progress round by round.
+          const withPlan = await storage.updateFeature(
+            feature.id,
+            { analysis: plan, analysisRounds: round + 1, error: null },
+            'analyze',
+          );
+          if (withPlan) broadcast({ type: 'feature.updated', feature: withPlan });
+
+          // ---- adversarial pass over THIS plan ----
+          const reviewRes = await runWithFallback({
+            kind: 'plan-review',
+            feature,
+            repo,
+            model: settings['review.model'],
+            prompt: buildPlanReviewPrompt({
+              repoName: repo.name,
+              title: feature.title,
+              request: feature.request,
+              plan,
+            }),
+            jsonSchema: PLAN_REVIEW_JSON_SCHEMA,
+            schema: planReviewSchema,
+            label: `plan review: ${feature.title}`,
+            timeoutMs: CALL_TIMEOUT_MS,
+            signal: ctl.signal,
+          });
+          stats = addStats(stats, reviewRes.stats);
+          reviewRunId = reviewRes.runId || null;
+          if (await stoppedByKill(reviewRes)) return;
+          if (await aborted()) return;
+
+          const reviewParsed = reviewRes.status === 'ok' && reviewRes.value ? { data: reviewRes.value } : null;
+          if (reviewParsed) {
+            roundResult = {
+              round: roundBase + round + 1,
+              verdict: reviewParsed.data.verdict,
+              findings: reviewParsed.data.findings.map((f) => ({
+                severity: f.severity,
+                summary: f.summary,
+                detail: f.detail ?? null,
+              })),
+              model: reviewRes.model,
+              at: new Date().toISOString(),
+              mode: 'full',
+            };
+          } else {
+            // A review that could not run must never look like a clean verdict.
+            roundResult = {
+              round: roundBase + round + 1,
+              verdict: 'minor',
+              findings: [
+                {
+                  severity: 'minor',
+                  summary: 'The adversarial plan review could not run — this plan is UNREVIEWED.',
+                  detail: outcomeError(reviewRes, 'plan review'),
+                },
+              ],
+              model: reviewRes.model,
+              at: new Date().toISOString(),
+              mode: 'full',
+            };
+          }
         }
+        roundResult = { ...roundResult, requestHash };
         rounds = [...rounds, roundResult];
         const review: FeatureReview = { rounds };
         const withReview = await storage.updateFeature(feature.id, { review }, 'analyze');
@@ -300,7 +408,7 @@ export async function startFeatureAnalysis(
         await storage.appendEvent({
           kind: 'feature.analyzed',
           actor: 'analyze',
-          runId: reviewRes.runId || planRes.runId || null,
+          runId: reviewRunId || planRunId,
           repoId: repo.id,
           data: {
             featureId: feature.id,
@@ -308,6 +416,10 @@ export async function startFeatureAnalysis(
             round: roundBase + round + 1,
             verdict: roundResult.verdict,
             findings: roundResult.findings.length,
+            mode: roundResult.mode,
+            ...(roundResult.resolutions
+              ? { resolved: roundResult.resolutions.filter((r) => r.status === 'resolved').length, handedOver: roundResult.resolutions.length }
+              : {}),
             phases: plan.phases.length,
             tasks: plan.phases.reduce((n, p) => n + p.tasks.length, 0),
           },

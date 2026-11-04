@@ -378,6 +378,12 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
 
   const repo = repos.find((r) => r.id === feature.repoId);
   const latestRound = feature.review?.rounds[feature.review.rounds.length - 1] ?? null;
+  // The server's own test (feature-analysis.ts `needsReplan`): Re-analyze continues with a FIX round
+  // (docs/features.md § Fix rounds) — unless the request was rewritten since, which the server checks.
+  const continuesFix =
+    !!feature.analysis &&
+    !!latestRound &&
+    (latestRound.verdict === 'blocker' || latestRound.findings.some((f) => f.severity !== 'minor'));
   const preApproval = feature.status === 'proposed';
   const plan = preApproval ? draftPlan : feature.analysis;
 
@@ -433,9 +439,23 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
               className="btn"
               disabled={busy !== null}
               onClick={() => act('analyze', () => api.analyzeFeature(feature.id, note))}
-              title="Run the planning session + adversarial plan review (each is a terminal in Queue → Active sessions)"
+              title={
+                continuesFix
+                  ? 'Next fix round: the planner edits this plan for the open blocker/major findings, and the reviewer checks those findings plus the edits'
+                  : 'Run the planning session + adversarial plan review (each is a terminal in Queue → Active sessions)'
+              }
             >
-              {feature.analysis ? 'Re-analyze' : 'Analyze'}
+              {continuesFix ? 'Fix findings' : feature.analysis ? 'Re-analyze' : 'Analyze'}
+            </button>
+          )}
+          {continuesFix && (feature.status === 'proposed' || feature.status === 'failed') && (
+            <button
+              className="btn"
+              disabled={busy !== null}
+              onClick={() => act('analyze', () => api.analyzeFeature(feature.id, note, true))}
+              title="Write a whole new plan from scratch and review it whole (the findings so far are not handed over)"
+            >
+              Re-plan from scratch
             </button>
           )}
           {preApproval && (
@@ -612,8 +632,16 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
           </div>
           <div className="panel" style={{ padding: 14, marginBottom: 18 }}>
             <div className="muted" style={{ fontSize: 'var(--tm-text-xs)', marginBottom: 8 }}>
-              round {latestRound.round} of {feature.review?.rounds.length} · {latestRound.model} ·{' '}
+              round {latestRound.round} of {feature.review?.rounds.length}
+              {latestRound.mode === 'fix' ? ' (fix round)' : ''} · {latestRound.model} ·{' '}
               {new Date(latestRound.at).toLocaleString()}
+              {latestRound.resolutions && (
+                <>
+                  {' '}
+                  · resolved {latestRound.resolutions.filter((r) => r.status === 'resolved').length} of{' '}
+                  {latestRound.resolutions.length} handed-over findings
+                </>
+              )}
             </div>
             {latestRound.findings.length === 0 ? (
               <span className="muted">No issues found.</span>
@@ -630,6 +658,29 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
                 </div>
               ))
             )}
+            {latestRound.mode === 'fix' && (latestRound.resolutions?.length || latestRound.edits?.length) ? (
+              <details style={{ marginTop: 'var(--tm-space-3)' }}>
+                <summary className="muted" style={{ fontSize: 'var(--tm-text-xs)', cursor: 'pointer' }}>
+                  What this fix round did
+                </summary>
+                {latestRound.resolutions?.map((r, i) => (
+                  <div className="finding-row" key={`r${i}`}>
+                    <span className={`sev-tag sev-${r.status === 'resolved' ? 'info' : 'warn'}`}>{r.status}</span>
+                    <span>
+                      {r.summary}
+                      {r.note ? <span className="muted"> — {r.note}</span> : null}
+                    </span>
+                  </div>
+                ))}
+                {latestRound.edits?.length ? (
+                  <ul className="muted" style={{ fontSize: 'var(--tm-text-xs)', margin: 'var(--tm-space-2) 0 0', paddingLeft: 'var(--tm-space-4)' }}>
+                    {latestRound.edits.map((e, i) => (
+                      <li key={i}>{e}</li>
+                    ))}
+                  </ul>
+                ) : null}
+              </details>
+            ) : null}
           </div>
         </>
       )}
