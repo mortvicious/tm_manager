@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { motion, setDragLock, useDragControls, useReducedMotion, type PanInfo } from 'motion/react';
+import { motion, useDragControls, useReducedMotion, type PanInfo } from 'motion/react';
 import { CHECK_BUSY_STATES, REVIEW_BUSY_STATES, publishGateReason, type InboxItem, type Task } from '@tm/shared';
 import { api } from '../api.ts';
 import { useArm } from '../arm.ts';
@@ -14,6 +14,7 @@ import { markPublishedOffered } from '../publish.ts';
 import { useApp } from '../state.tsx';
 import { toastInfo } from '../toast.ts';
 import { useWorkspace } from '../workspace.ts';
+import { SWIPE_PX, SWIPE_VELOCITY, inSideScroller, startSideSwipe } from '../sheetSwipe.ts';
 import { ACT_COOLDOWN_MS, keyIsOurs } from './Inbox.tsx';
 
 /**
@@ -377,22 +378,6 @@ function FollowUp({ task, run, onClose }: { task: Task; run: Runner['run']; onCl
   );
 }
 
-/** A press inside a box that scrolls sideways (a diff's long lines) scrolls it, never swipes the card. */
-function inSideScroller(target: EventTarget | null, stop: Element | null): boolean {
-  for (let el = target instanceof Element ? target : null; el && el !== stop; el = el.parentElement) {
-    if (el.closest('input, textarea, select')) return true;
-    if (el.scrollWidth > el.clientWidth + 1) {
-      const ox = getComputedStyle(el).overflowX;
-      if (ox === 'auto' || ox === 'scroll') return true;
-    }
-  }
-  return false;
-}
-
-/** How far (px) or how fast (px/s) a release must go to move to the next card. */
-const SWIPE_PX = 72;
-const SWIPE_VELOCITY = 400;
-
 /**
  * Phone (docs/inbox.md § Review deck › Phone): the deck is a card stack in a
  * tall `<Sheet>`. A horizontal swipe on the card moves next/prev and never
@@ -443,36 +428,10 @@ function PhoneDeck({ items, nav, covered }: { items: ReviewItem[]; nav: InboxNav
     setSelId(items[next].task.id);
   };
 
-  // The sheet drags on 'y' and the card on 'x', and motion keeps one lock per
-  // axis, so both would follow one finger: a sideways swipe would also tug the
-  // sheet down. The first move past motion's 3 px start threshold decides —
-  // sideways takes the 'y' lock before the sheet's drag can start (a capture
-  // listener runs ahead of motion's own), so only the card moves; downwards
-  // leaves it to the sheet, and the card's direction lock keeps it still.
+  // the gesture start is shared with the draft triage stack (src/sheetSwipe.ts)
   const onPointerDown = (e: ReactPointerEvent) => {
     if (e.button !== 0 || items.length < 2 || inSideScroller(e.target, cardRef.current)) return;
-    const x0 = e.clientX;
-    const y0 = e.clientY;
-    let decided = false;
-    let release: (() => void) | null = null;
-    const move = (ev: PointerEvent) => {
-      if (decided) return;
-      const dx = ev.clientX - x0;
-      const dy = ev.clientY - y0;
-      if (Math.hypot(dx, dy) < 3) return;
-      decided = true;
-      if (Math.abs(dx) > Math.abs(dy)) release = setDragLock('y');
-    };
-    const end = () => {
-      release?.();
-      window.removeEventListener('pointermove', move, true);
-      window.removeEventListener('pointerup', end, true);
-      window.removeEventListener('pointercancel', end, true);
-    };
-    window.addEventListener('pointermove', move, true);
-    window.addEventListener('pointerup', end, true);
-    window.addEventListener('pointercancel', end, true);
-    drag.start(e);
+    startSideSwipe(e, drag);
   };
   const onDragEnd = (_: unknown, info: PanInfo) => {
     const { x } = info.offset;

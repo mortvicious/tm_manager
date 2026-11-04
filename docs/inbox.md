@@ -385,6 +385,53 @@ the stale-drafts footer. N counts every agent-filed draft in scope, stale or not
 - **Never automatic.** The page decides nothing on its own: no sweep, no timer.
   Only the workspace scopes it; the orchestrator never reads it.
 
+#### Phone: a swipe card stack
+
+On a phone (`useIsMobile`) the page is a list of GROUP cards, not rows:
+**Triage all · N** on top, then per group its header (filer title + badge +
+repo, or the repo / fallback label), a **Triage n drafts** button with the
+oldest age, and the group-wide acts — the desktop's own buttons, so a group's
+Cancel / Enqueue / Add to queue still need the second press (`useArm`). A
+group-wide refusal is listed on its card as "title — reason".
+
+**Triage n drafts** (or **Triage all**, every member oldest filed first)
+opens `DraftTriageStack` (`pages/DraftTriageStack.tsx`): a tall `<Sheet>` with
+one card at a time, oldest first. The card shows the title (opens the task
+panel; the sheet steps aside while it is open and comes back on the same card,
+like the Review deck's `covered`), repo, age, the stale / kept / hidden chips,
+**filed by** (the filer's title + `StatusBadge`, through `createdByRun` →
+`Run.taskId`) and the description cut at the server-injected `<!-- tm:` caps
+block, ≈360 characters.
+
+- **Swipe right** (motion `drag="x"`, the axis lock shared with the Review deck
+  in `src/sheetSwipe.ts`) is **Keep** by default. A segmented toggle at the top
+  of the sheet (**Keep · Add to queue · Enqueue**, per page visit, Keep on
+  load) switches what the right swipe does. **Swipe left** is **Cancel** with
+  `reason: 'stale draft triage'`. A release decides only on the side the card
+  is on: past 72 px, or a flick over 400 px/s in the SAME direction as the
+  offset once it is past 24 px (`swipeSide` in `src/sheetSwipe.ts`; unlike the Review deck's navigation swipe —
+  here the left action cannot be undone). Pulling a half-swipe back fast to
+  abort it, or a twitch, springs back. A label fading in on the card says what
+  letting go will do.
+- **Big buttons** under the card (the deck's pinned bar) mirror the swipes —
+  `← Cancel` (two taps: a swipe is one deliberate gesture, a button tap is not)
+  and `<right action> →` — plus **Hide** (off for an already hidden card) and
+  **Skip**, which moves the card behind the rest without deciding it. When only
+  skipped cards are left, **Go through the skipped again** brings them back.
+- **One call per decision**: `POST /api/tasks/bulk` with that one id. The card
+  flies out while it runs; a refusal (or a failed request) flies it back to the
+  centre with the server's reason on the card, and nothing else moves.
+- **The next card comes up only because this one was decided or skipped** —
+  there is no timer and no auto-advance. A Kept draft is still a member (still a
+  draft), so the stack drops decided ids itself for as long as it is open.
+- **The result** is a line inside the sheet ("Kept “…”"), not a toast: a toast
+  would sit over the pinned bar and eat the next tap. **Undo** is offered only
+  where a server inverse exists: Hide → `unhide`. Keep has none, and Add to
+  queue / Enqueue / Cancel have no inverse back to `draft` (queue-remove
+  cancels, retry enqueues), so they just show the result.
+- The sheet still closes by a downward drag (header always, content at the
+  top) — the card only takes sideways gestures.
+
 ### Workspace scope
 
 In the SPA the Inbox follows the current workspace (docs/workspaces.md § Inbox

@@ -434,7 +434,11 @@ component.
   `.slideover-body` turns `overflow: visible` inside the panel sheet and the
   body box is `.sheet-body`, not a scroller).
 - **A sideways gesture inside a sheet** (the Review deck's card swipe,
-  docs/inbox.md § Review deck › Phone) is a motion `drag="x"` child. Motion
+  docs/inbox.md § Review deck › Phone, and the draft triage stack's
+  keep/cancel swipe, docs/inbox.md § Draft triage › Phone) is a motion
+  `drag="x"` child; the gesture start is ONE helper, `startSideSwipe` in
+  `src/sheetSwipe.ts`, with `inSideScroller` (a field or a sideways scroller
+  never swipes). Motion
   holds one drag lock per axis, so the sheet's `drag="y"` would follow the same
   finger; the child takes the `y` lock (`setDragLock`) the moment a gesture
   reads sideways, before the sheet's drag starts, and leaves a downward one to
@@ -891,6 +895,9 @@ The phone's Review deck (docs/inbox.md § Review deck › Phone) needs no
 `ReturnTo`: its sheet only steps aside while a task panel or terminal is open
 (`covered`), the page and its cursor stay mounted, and the sheet comes back on
 the same card when the panel or terminal closes.
+The draft triage stack (docs/inbox.md § Draft triage › Phone) works the same
+way: opening a card's task or its filer steps the sheet aside, and closing the
+panel brings it back on the same card with the stack's decided/skipped state.
 
 Not restored: a desktop click-outside close (`onClose('outside')`, the
 `terminal.clickOutside: close` setting) — that click was aimed at something

@@ -4,10 +4,12 @@ import { BULK_MAX, type BulkAction, type Task, type TriageDraft, type TriageGrou
 import { api } from '../api.ts';
 import { useArm } from '../arm.ts';
 import { CANCEL_STALE_REASON, staleDays, useDraftTriage } from '../components/Inbox.tsx';
+import { useIsMobile } from '../components/Layout.tsx';
 import { StatusBadge } from '../components/StatusBadge.tsx';
 import { useApp } from '../state.tsx';
 import { toastError } from '../toast.ts';
 import { useWorkspace } from '../workspace.ts';
+import { DraftTriageStack, type RightAction } from './DraftTriageStack.tsx';
 
 /**
  * Agent-draft triage (docs/inbox.md § Draft triage): every idle agent-filed
@@ -17,6 +19,8 @@ import { useWorkspace } from '../workspace.ts';
  * per BULK_MAX ids, so refusals come back per id and are shown on the row.
  * Never automatic: nothing here runs without a press, and the group-wide
  * Cancel / Enqueue / Add to queue need a second one (src/arm.ts).
+ * Phone: a list of groups, each (or "Triage all") opening a swipe card stack
+ * in a Sheet (`DraftTriageStack`, docs/inbox.md § Draft triage › Phone).
  */
 
 type TriageAction = Extract<BulkAction, 'keep' | 'enqueue' | 'queue' | 'hide' | 'unhide' | 'cancel'>;
@@ -47,8 +51,22 @@ function storedGrouping(): Grouping {
   }
 }
 
-export function DraftTriagePage({ onOpenTask }: { onOpenTask: (id: string) => void }) {
-  const { repos, runs, questions, refresh, settings, loaded } = useApp();
+/** which drafts the phone's card stack is going through */
+type StackScope = { kind: 'all' } | { kind: 'group'; key: string; label: string };
+
+export function DraftTriagePage({
+  onOpenTask,
+  covered = false,
+}: {
+  onOpenTask: (id: string) => void;
+  /** a task panel is over the page: the phone's stack sheet steps aside and comes back on the same card */
+  covered?: boolean;
+}) {
+  const { repos, tasks, runs, questions, refresh, settings, loaded } = useApp();
+  const mobile = useIsMobile();
+  const [stack, setStack] = useState<StackScope | null>(null);
+  /** what a swipe right does in the stack: Keep unless the toggle says otherwise (per page visit) */
+  const [right, setRight] = useState<RightAction>('keep');
   const { workspace, wsHref } = useWorkspace();
   const [grouping, setGroupingState] = useState<Grouping>(storedGrouping);
   const [showHidden, setShowHidden] = useState(false);
@@ -68,6 +86,25 @@ export function DraftTriagePage({ onOpenTask }: { onOpenTask: (id: string) => vo
     () => new Set(runs.filter((r) => r.needsAttention && r.status === 'running' && r.taskId).map((r) => r.taskId!)),
     [runs],
   );
+
+  const filerOf = useMemo(() => {
+    const runTask = new Map(runs.map((r) => [r.id, r.taskId]));
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    return (t: Task): Task | null => {
+      const tid = t.createdByRun ? runTask.get(t.createdByRun) : null;
+      return (tid && byId.get(tid)) || null;
+    };
+  }, [runs, tasks]);
+  /** "Triage all" goes oldest first across every group; a group is already oldest first */
+  const allOldestFirst = useMemo(
+    () => [...triage.drafts].sort((a, b) => a.task.createdAt.localeCompare(b.task.createdAt)),
+    [triage.drafts],
+  );
+  const stackDrafts: TriageDraft[] = !stack
+    ? []
+    : stack.kind === 'all'
+      ? allOldestFirst
+      : (groups.find((g) => g.key === stack.key)?.drafts ?? []);
 
   const setGrouping = (g: Grouping) => {
     setGroupingState(g);
@@ -227,7 +264,56 @@ export function DraftTriagePage({ onOpenTask }: { onOpenTask: (id: string) => vo
           {showHidden ? '' : ' (hidden ones are behind “show hidden”)'}.
         </div>
       )}
+      {!settling && mobile && groups.length > 0 && (
+        <button type="button" className="btn primary deck-bar-btn triage-all" onClick={() => setStack({ kind: 'all' })}>
+          Triage all · {triage.drafts.length}
+        </button>
+      )}
       {!settling &&
+        mobile &&
+        groups.map((g) => {
+          const ids = g.drafts.map((d) => d.task.id);
+          const hiddenOnly = g.drafts.every((d) => !!d.task.hiddenAt);
+          const oldest = Math.max(...g.drafts.map((d) => d.ageDays));
+          return (
+            <section key={g.key} className="panel triage-group triage-group-phone">
+              <div className="triage-group-head">
+                <span className="triage-main">{groupHead(g)}</span>
+              </div>
+              <button
+                type="button"
+                className="btn deck-bar-btn triage-open"
+                onClick={() => setStack({ kind: 'group', key: g.key, label: g.filer?.title ?? (g.kind === 'repo' ? repoName(g.repoId) : g.label) })}
+              >
+                Triage {ids.length === 1 ? '1 draft' : `${ids.length} drafts`}
+                <span className="triage-age">oldest {oldest}d</span>
+              </button>
+              <div className="triage-acts">{actionButtons(`g:${g.key}`, ids, hiddenOnly, true)}</div>
+              {g.drafts
+                .filter((d) => refused[d.task.id])
+                .map((d) => (
+                  <div key={d.task.id} className="triage-refused">
+                    {d.task.title} — {refused[d.task.id]}
+                  </div>
+                ))}
+            </section>
+          );
+        })}
+      {stack && (
+        <DraftTriageStack
+          title={stack.kind === 'all' ? 'All drafts' : stack.label}
+          drafts={stackDrafts}
+          right={right}
+          onRight={setRight}
+          repoName={repoName}
+          filerOf={filerOf}
+          onOpenTask={onOpenTask}
+          covered={covered}
+          onClose={() => setStack(null)}
+        />
+      )}
+      {!settling &&
+        !mobile &&
         groups.map((g) => {
         const ids = g.drafts.map((d) => d.task.id);
         const hiddenOnly = g.drafts.every((d) => !!d.task.hiddenAt);

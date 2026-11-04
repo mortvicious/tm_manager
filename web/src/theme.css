@@ -9565,6 +9565,131 @@ button.explain-tap:active {
   color: var(--tm-status-failed);
 }
 
+/* phone draft triage (docs/inbox.md § Draft triage › Phone): a list of group
+   cards, each opening a swipe card stack in a tall sheet that reuses the deck's
+   head, swipe card and pinned bar */
+.triage-all {
+  width: 100%;
+  margin-bottom: var(--tm-space-3);
+}
+
+.triage-group-phone {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+}
+
+.triage-group-phone .triage-acts {
+  margin-left: 0;
+}
+
+.triage-open {
+  gap: var(--tm-space-2);
+}
+
+.triage-right-seg {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: var(--tm-space-3);
+}
+
+.triage-right-seg .btn {
+  flex: 1 1 0;
+  min-height: var(--tm-tap);
+  justify-content: center;
+}
+
+.triage-right-label {
+  flex-basis: 100%;
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+.triage-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-4);
+  margin-bottom: var(--tm-space-3);
+}
+
+.triage-card-title {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--tm-text);
+  font-family: var(--tm-font-display);
+  font-size: var(--tm-text-lg);
+  font-weight: 600;
+  text-align: left;
+}
+
+.triage-card-meta,
+.triage-card-filer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-1) var(--tm-space-2);
+  font-size: var(--tm-text-sm);
+}
+
+.triage-card-desc {
+  margin: 0;
+  font-size: var(--tm-text-sm);
+  color: var(--tm-text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* what letting go would do, fading in with the drag */
+.triage-swipe-hint {
+  position: absolute;
+  top: var(--tm-space-3);
+  padding: var(--tm-space-1) var(--tm-space-2);
+  border: 2px solid currentColor;
+  border-radius: var(--tm-radius-sm);
+  font-size: var(--tm-text-sm);
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.triage-swipe-right {
+  left: var(--tm-space-3);
+  color: var(--tm-status-done);
+}
+
+.triage-swipe-left {
+  right: var(--tm-space-3);
+  color: var(--tm-status-failed);
+}
+
+.triage-last {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  min-height: var(--tm-tap);
+  margin-bottom: var(--tm-space-2);
+  font-size: var(--tm-text-sm);
+  color: var(--tm-text-muted);
+}
+
+.triage-last-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.triage-stack-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-3);
+  align-items: stretch;
+}
+
 /* phone: the rows of the Inbox page and of the header chip's sheet */
 .inbox-rows {
   display: flex;
