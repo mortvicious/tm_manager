@@ -131,6 +131,7 @@ import {
   type BudgetTurn,
   type BudgetVerdict,
 } from './budget.ts';
+import { settleAllOfficeBudgets } from './office/budget.ts';
 import { MAX_LIVE_SESSIONS, pidLooksLikeOurs, type SessionManager } from './pty/session-manager.ts';
 import { artifactsRoot } from './config.ts';
 import { attachedFilesNote, readAttachedFiles } from './attachments.ts';
@@ -681,6 +682,12 @@ export class Orchestrator implements OrchestratorApi {
     setInterval(() => {
       void this.anomalySweep();
     }, 60_000).unref();
+    // Office day budgets (docs/office.md § Gate and budget): trip an office
+    // whose spend crossed its day budget, clear it at its local midnight.
+    // The gate and `budgetAllows` settle lazily too; this is the clock.
+    setInterval(() => {
+      void settleAllOfficeBudgets(storage);
+    }, 60_000).unref();
     // Question autopilot (docs/questions.md § Autopilot): off unless a repo
     // opted in; minutes are its unit, so a 30s pass is late by at most that.
     setInterval(() => {
@@ -912,7 +919,12 @@ export class Orchestrator implements OrchestratorApi {
     await this.alerts.emit({
       type: 'task-budget',
       severity: 'warn',
-      message: `over its $${v.capUsd.toFixed(2)} budget ($${v.spentUsd.toFixed(2)} spent) — automatic turns stopped`,
+      message:
+        v.fuse === 'office.paused'
+          ? 'its office is paused — automatic turns stopped'
+          : v.fuse === 'office.dayBudgetUsd'
+            ? `its office spent $${v.spentUsd.toFixed(2)} of its $${v.capUsd.toFixed(2)} day budget — automatic turns stopped`
+            : `over its $${v.capUsd.toFixed(2)} budget ($${v.spentUsd.toFixed(2)} spent) — automatic turns stopped`,
       key: `task-budget:${taskId}:${v.capUsd}`,
       taskId,
     });

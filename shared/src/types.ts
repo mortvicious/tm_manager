@@ -2420,6 +2420,9 @@ export type AuditKind =
   | 'job.cancelled'
   | 'job.deleted'
   | 'jobs.toggle'
+  /** a Virtual Office paused / resumed — the day-budget trip and its midnight clear (docs/office.md § Gate and budget) */
+  | 'office.paused'
+  | 'office.resumed'
   | 'approval.requested'
   | 'approval.decided'
   | 'approval.finished'
@@ -3059,6 +3062,8 @@ export type ServerEvent =
   | { type: 'background-shells'; shells: BackgroundShell[] }
   | { type: 'job.updated'; job: Job }
   | { type: 'job.deleted'; jobId: string }
+  /** an office row changed (docs/office.md § Gate and budget: the budget trip / midnight clear) */
+  | { type: 'office.updated'; office: Office }
   | { type: 'job-run.updated'; run: JobRun }
   | { type: 'jobs.toggle'; enabled: boolean }
   | { type: 'orchestrator.status'; status: OrchestratorStatus };
@@ -3628,5 +3633,6 @@ export * from './triage.ts';
 // Scheduled jobs: schedule parsing + the firing rule (docs/jobs.md)
 export * from './jobs.ts';
 import { jobRunNeedsHuman, type Job, type JobRun, type JobsHold } from './jobs.ts';
+import type { Office } from './office.ts';
 // Virtual Office: types, cron, catch-up, guards, the hard gate, autonomy and taint (docs/office.md)
 export * from './office.ts';

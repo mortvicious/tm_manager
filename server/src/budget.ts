@@ -2,12 +2,15 @@
 // server runs — the review fix round, dispatch wakes, auto wake-up, and the
 // later check-fix / transient-resume rounds — asks `budgetAllows` before it
 // starts a turn, and the claim loop asks it before it claims. All three fuses
-// are OFF by default (0); a human click never goes through here.
+// are OFF by default (0); a human click never goes through here. A task a
+// Virtual Office filed is also refused while its office is paused or over the
+// office's day budget (docs/office.md § Gate and budget).
 
 import type { AppSettings, Run, Task } from '@tm/shared';
 import { runTaskId } from '@tm/shared';
 import { broadcast } from './events.ts';
 import type { Storage } from './storage/types.ts';
+import { officeBudgetVerdict } from './office/budget.ts';
 
 /**
  * What is asking. `claim` is the day fuse (a new task starting); every other
@@ -36,7 +39,13 @@ export type BudgetTurn =
  * and applied to every automatic turn on that task, the next iteration
  * included; the lower of the two caps wins.
  */
-export type BudgetFuse = 'budget.taskUsd' | 'budget.dayUsd' | 'loop.budgetUsd';
+export type BudgetFuse =
+  | 'budget.taskUsd'
+  | 'budget.dayUsd'
+  | 'loop.budgetUsd'
+  /** an office task's office is paused / its day budget is spent (docs/office.md § Gate and budget) */
+  | 'office.paused'
+  | 'office.dayBudgetUsd';
 
 export type BudgetVerdict =
   | { ok: true }
@@ -83,12 +92,24 @@ export async function budgetAllows(
   task: Pick<Task, 'id'> | null,
   kind: BudgetTurn,
   settings?: AppSettings,
+  opts: { now?: number } = {},
 ): Promise<BudgetVerdict> {
   const s = settings ?? (await storage.getSettings());
+  // A task a Virtual Office filed also answers to ITS office: paused (any
+  // reason) or over the office's day budget refuses the automatic turn. Only
+  // office tasks — every other task is untouched by any office switch
+  // (decisions.md 2026-11-04, amending 2026-10-28). Checked first so the
+  // turn that would cross the office's line is the one that trips it.
+  const fresh = task ? await storage.getTask(task.id) : null;
+  if (fresh?.officeId) {
+    const office = await storage.getOffice(fresh.officeId);
+    const refused = office ? await officeBudgetVerdict(storage, office, opts.now, KIND_LABEL[kind]) : null;
+    if (refused) return { ok: false, ...refused };
+  }
   if (kind === 'claim' || kind === 'job') {
     const cap = fuse(s, 'budget.dayUsd');
     if (!cap) return { ok: true };
-    const spent = await spentToday(storage);
+    const spent = await spentToday(storage, opts.now === undefined ? undefined : new Date(opts.now));
     if (spent < cap) return { ok: true };
     return {
       ok: false,
@@ -99,8 +120,6 @@ export async function budgetAllows(
     };
   }
   const taskCap = fuse(s, 'budget.taskUsd');
-  if (!task) return { ok: true };
-  const fresh = await storage.getTask(task.id);
   if (!fresh) return { ok: true };
   const loopCap = fresh.kind === 'loop' ? loopBudget(fresh) : 0;
   // the lower positive cap wins; a loop's own budget names itself

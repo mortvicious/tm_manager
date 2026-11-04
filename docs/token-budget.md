@@ -576,6 +576,19 @@ At or OVER the cap refuses. It returns `{ ok: true }` or
   same-repo gate, its repo — and now lands it and clears the fuse's flag; and
   the usage-limit parker, which skipped any flagged run and so never parked an
   over-time turn the 5h window then cut short.
+- **The office fuse (2026-11-05, `docs/office.md` § Gate and budget)** — a
+  task a Virtual Office filed (`Task.officeId` set) also answers to ITS
+  office. `budgetAllows` refuses every per-task automatic kind on it while the
+  office is paused (any reason; fuse `office.paused`) or has spent its
+  `dayBudgetUsd` for the office-local day (fuse `office.dayBudgetUsd`;
+  measure `officeSpendSince` from the office zone's midnight: its shift runs
+  plus its tasks' worker/review/compact runs). Checked before the per-task
+  caps, so the turn that would cross the line is the one that trips it: the
+  OFFICE is paused (`budget_tripped_on`, reason `over budget until midnight`,
+  one `office.paused` row) and clears itself at the office's next local
+  midnight. Refusals go through `refuseOverBudget` like the task fuse. It
+  never touches `budget.dayUsd`, `orchestrator.paused` or any non-office task,
+  and a human click is never gated.
 
 ### The expensive-task alert: each repo's own history (2026-10-26)
 

@@ -293,6 +293,36 @@ export function officeDay(ms: number, tz: string): string {
   return `${w.year}-${String(w.month).padStart(2, '0')}-${String(w.day).padStart(2, '0')}`;
 }
 
+/**
+ * The first instant of the office-local calendar day y-mo-d (normalised, so
+ * day 32 is the 1st of the next month). Midnight itself can fall in a DST gap
+ * in a few zones; the day then starts at its first wall minute that exists.
+ */
+function dayStartInstant(y: number, mo: number, d: number, tz: string): number {
+  const n = new Date(Date.UTC(y, mo - 1, d));
+  const [yy, mm, dd] = [n.getUTCFullYear(), n.getUTCMonth() + 1, n.getUTCDate()];
+  for (let m = 0; m < 24 * 60; m += 1) {
+    const t = wallToInstant(yy, mm, dd, Math.floor(m / 60), m % 60, tz);
+    if (t !== null) return t;
+  }
+  return n.getTime(); // unreachable: no zone skips a whole day's minutes
+}
+
+/** Local midnight of the office day `ms` falls in (`officeDay`), as epoch ms — the budget day's start. */
+export function officeDayStart(ms: number, tz: string): number {
+  const w = wallAt(ms, tz);
+  return dayStartInstant(w.year, w.month, w.day, tz);
+}
+
+/** The NEXT office-local midnight after `ms` — when a day-budget trip clears. */
+export function nextOfficeDayStart(ms: number, tz: string): number {
+  const w = wallAt(ms, tz);
+  return dayStartInstant(w.year, w.month, w.day + 1, tz);
+}
+
+/** The pause reason the day-budget trip writes; only a pause with this reason is lifted at midnight. */
+export const OFFICE_OVER_BUDGET_REASON = 'over budget until midnight';
+
 const DOW_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const pad2 = (n: number) => String(n).padStart(2, '0');
 

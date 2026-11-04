@@ -18,7 +18,10 @@ Code so far: `shared/src/office.ts` (types and pure logic, no I/O, exported from
 shared folder rule in `server/src/folder-guard.ts`, and the tests
 `server/src/office/office-pure.test.ts` and `office-scaffold.test.ts`, plus the
 data layer (§ Data model): migrations 53–54, `server/src/storage/office-sql.ts`,
-the Storage methods in both drivers, and `server/src/storage/office.test.ts`.
+the Storage methods in both drivers, and `server/src/storage/office.test.ts`;
+and the gate and day budget (§ Gate and budget): `server/src/office/gate.ts`,
+`server/src/office/budget.ts`, the office branch of `budgetAllows`, and
+`server/src/office/gate.test.ts`.
 
 ## Concepts
 
@@ -156,6 +159,100 @@ overflow steps when the caller passes `offices`. A held task gets the wait
 replay do not load office rows yet. The Dashboard's `starved-queue` anomaly
 (`routes/stats.ts`) skips an office-held task, since that wait is by design.
 Tests: `server/src/storage/queue-order.test.ts` § office claim share.
+## Gate and budget
+
+Code: `server/src/office/gate.ts` (the gate), `server/src/office/budget.ts`
+(the office day budget), the office branch of `budgetAllows` in
+`server/src/budget.ts`, and `server/src/office/gate.test.ts`. decisions.md
+2026-11-05 records why the office switches gate office work only.
+
+### The gate: zero-token checks before a shift spawns
+
+`officeGate(storage, office, role, trigger, {now?, settings?, countCommits?})`
+is what a later phase calls before it spawns a shift. It never starts a
+session or calls a model. It returns `{ok: true, hard, facts}` or
+`{ok: false, skip: true, reason, code, guard?, hard, facts}`. The caller
+records a refusal as a `skipped` shift with `reason` as its `skipReason`.
+
+1. **Settle the budget** (below), so a crossing pauses the office before
+   anything is judged.
+2. **Hard gate.** It gathers `OfficeGateFacts` and calls `officeHardGate`.
+   - Day spend: `officeSpendSince(office, <office-local midnight>)`.
+   - Role spend: the same narrowed to the role, read only when the role has
+     a `capUsd`.
+   - Live shifts: `ran` shifts with no `ended_at`.
+   - Server pause: the `orchestrator.paused` setting.
+   - The office's own pause and `budgetTrippedOn`.
+
+   A refusal returns at once with `code` set to the hard-gate code. **Guards
+   are not evaluated, and their facts are not gathered**, so the hard reason
+   always wins. A role whose `officeId` is another office's is refused with
+   `role-mismatch`.
+3. **A human `request` skips the guards.** Guards save money on automatic
+   wakes, and a human who asks for a shift has already decided. The hard gate
+   still applies to a request.
+4. **Guards.** `officeGuardFacts` reads only the facts the role's guards
+   need, then calls `evalGuards`. A failure returns `code: 'guard'` and the
+   guard's kind.
+
+| Fact | Source |
+|---|---|
+| `lastRanShiftAt` / `lastShiftEndedAt` | the role's newest `ran` shift |
+| `newCommitsSinceLastShift` | `git rev-list --count --branches --remotes --since=<last ran shift>` per workspace repo, summed (`gitCommitsSince`, through `git.ts` `run`). `--branches` includes the `tm/*` worktree branches; stashes and notes are excluded. A repo git cannot read is left out; if none can be read the fact is undefined. |
+| `tasksLandedSinceLastShift` | distinct tasks with a `task.transition` to `done`/`published` in the workspace repos since then |
+| `openBugs` (+ `openBugsByCategory`) | non-terminal tasks in the workspace repos that read as bugs (`isBugTask`: source `sentry`, or a category containing the word "bug"/"bugs"), counted per category (`uncategorized` for none) |
+| `openTasksOfRole` | `countOpenOfficeTasks(office, role)` |
+| `budgetLeftUsd` | the lower of office budget − day spend and role cap − role spend, floored at 0 |
+| `officePaused` / reason | the row after the budget settle |
+
+A missing workspace, or a repo set no git command could read, leaves the
+fact undefined. The guard then fails closed ("cannot tell …").
+
+### The office day budget
+
+`settleOfficeBudget(storage, office, now)` is idempotent and safe to race. It
+is called by the gate, by the office branch of `budgetAllows`, and once a
+minute for every office (`settleAllOfficeBudgets`, an orchestrator interval;
+this is the clock that clears a trip at midnight). The day is the office's
+local calendar day: `officeDay`, with `officeDayStart`/`nextOfficeDayStart`
+in `shared/src/office.ts`. When midnight falls in a DST gap, the day starts at
+its first wall minute that exists.
+
+- **Trip.** When `dayBudgetUsd > 0`, today's spend ≥ it, and the office has
+  not tripped today: `budget_tripped_on` is set to today, then the office is
+  paused with reason `OFFICE_OVER_BUDGET_REASON` (`over budget until
+  midnight`). The pause goes through the conditional `pauseOffice(…, false)`,
+  so callers that cross together write **one** `office.paused` audit row
+  (`actor: system`, data `{officeId, workspaceId, reason, trigger:
+  'day-budget', day, spentUsd, budgetUsd}`), plus an `office.updated`
+  broadcast. If the office is already paused by a human, only the trip mark
+  is written. Their pause and its reason stay, and no row is written.
+- **Clear.** When today's spend is under the budget, `budget_tripped_on` is
+  cleared and a pause carrying exactly `OFFICE_OVER_BUDGET_REASON` is lifted
+  (one `office.resumed` row with `reason: 'midnight' | 'under budget'`). This
+  happens after the office's next local midnight, or the same day if the
+  human raised the budget. A human's pause is never lifted. If the office is
+  already over budget again on the new day, the trip moves to today and the
+  pause stays, with no extra rows.
+- **A $0 budget never trips.** It means "nothing runs", which the hard gate
+  and the fuse refuse without calling it an overrun.
+
+**The office fuse in `budgetAllows`.** For a task with `officeId`, every
+per-task automatic kind first settles the office, then refuses while the
+office is paused (any reason; fuse `office.paused`) or its day is spent or
+tripped (fuse `office.dayBudgetUsd`). The reason starts with `budget:`, so
+`refuseOverBudget` treats it like the task fuse: the reason goes on the row,
+a `task.budget` row is written, and one ping goes out. Tasks without an
+office are unchanged, and a human click never goes through `budgetAllows`.
+`docs/token-budget.md` § Fuses lists the office fuse beside the others.
+
+**What it never touches.** `orchestrator.paused`, `orchestrator.enabled`,
+`budget.dayUsd` and the global or custom queue are never written by this
+code. Office spend still counts toward the global day fuse, since that
+measures every run. `budgetAllows(null, 'claim')` has no task, so claims
+are not gated here. § Claim share's `OFFICE_CLAIM_GATE` holds them instead.
+It reads the pause and the `budget_tripped_on` that the trip writes, so the
+minute sweep is also what holds an over-budget office's queued tasks.
 
 ## Autonomy and filing
 
