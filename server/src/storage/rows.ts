@@ -172,6 +172,9 @@ export function rowToTask(r: any): Task {
       const v = safeParse<unknown>(r.depends_on, []);
       return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
     })(),
+    officeId: r.office_id ?? null,
+    roleId: r.role_id ?? null,
+    taintedAt: r.tainted_at ?? null,
     hiddenAt: r.hidden_at ?? null,
     inboxKeptUntil: r.inbox_kept_until ?? null,
     costUsd: Number(r.cost_usd ?? 0) || 0,

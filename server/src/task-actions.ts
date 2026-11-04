@@ -84,7 +84,7 @@ function normalizeDone<T extends { acceptance?: string | null; checks?: string[]
  * task will never get.
  */
 export function landingRefusal(
-  t: Pick<Task, 'source' | 'createdByRun'>,
+  t: Pick<Task, 'source' | 'createdByRun' | 'officeId'>,
   landing: LandingTier | null | undefined,
 ): string | null {
   if (!landing || landing === 'supervised' || !isExternalTask(t)) return null;

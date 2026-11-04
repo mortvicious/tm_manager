@@ -156,7 +156,7 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
   app.post('/api/tasks', async (req, reply) => {
     const body = legacyLanding(taskBody.parse(req.body));
     if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
-    const refused = landingRefusal({ source: body.source ?? 'manual', createdByRun: null }, body.landing);
+    const refused = landingRefusal({ source: body.source ?? 'manual', createdByRun: null, officeId: null }, body.landing);
     if (refused) return reply.code(409).send({ error: refused });
     if (loopNeedsBrowser(body, req.headers.origin)) return reply.code(403).send({ error: LOOP_FROM_BROWSER });
     const loopRefused = loopProblem(body);

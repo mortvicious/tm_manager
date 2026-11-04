@@ -14,7 +14,9 @@ foundations: the pure model in `shared/src/office.ts`. Each later phase fills in
 its own section below.
 
 Code so far: `shared/src/office.ts` (types and pure logic, no I/O, exported from
-`@tm/shared`) and `server/src/office/office-pure.test.ts`.
+`@tm/shared`) and `server/src/office/office-pure.test.ts`, plus the data layer
+(§ Data model): migrations 53–54, `server/src/storage/office-sql.ts`, the
+Storage methods in both drivers, and `server/src/storage/office.test.ts`.
 
 ## Concepts
 
@@ -186,9 +188,87 @@ _To be filled by the presets phase._
 
 _To be filled by the folder phase._
 
-## Data layer
+## Data model
 
-_To be filled by the data-layer phase (tables, migrations, storage composites)._
+Migrations 53 and 54. The SQL is shared by both drivers in
+`server/src/storage/office-sql.ts` (dialect-neutral, `?` placeholders, like
+`workspace-sql.ts`). Storage test: `server/src/storage/office.test.ts`.
+
+**Tables (migration 53)**. All three are FK-less, like `tm_events` and
+`tm_workspaces`. Rows refer to each other by id only, so deleting a workspace
+never touches an office, and a shift row outlives the role it ran for, because
+it is history. Money is `DOUBLE PRECISION` (pg `REAL` is float4). Flags are
+`INTEGER` 0/1, like `tm_runs.needs_attention`. Lists and objects are JSON
+`TEXT`.
+
+| Table | Columns (beyond the `Office` / `OfficeRole` / `OfficeShift` fields) | Indexes |
+|---|---|---|
+| `tm_offices` | `workspace_id`, `folder_path`, `autonomy` (default `proposals`), `day_budget_usd` (0), `max_slots` (1), `max_tasks_per_shift` (3), `max_open_tasks` (10), `paused_at`, `paused_reason`, `budget_tripped_on`, `theme`, `timezone`, `enabled` (0), `created_at`, `updated_at` | **unique** `(workspace_id)`: one office per workspace |
+| `tm_office_roles` | `office_id`, `preset`, `role_key` (the role's `key`), name/avatar/title/prompt/model/effort, `tools`/`schedules`/`triggers`/`guards` (JSON), `autonomy`, `cap_usd`, `notes_path`, `notes_tainted_at`, `session_id`, `session_tainted` (0), `enabled` (1), `created_at`, `updated_at` | **unique** `(office_id, role_key)` |
+| `tm_office_shifts` | `office_id`, `role_id`, `trigger_kind`/`trigger_ref`/`trigger_at` (the `trigger` object), `verdict`, `skip_reason`, `run_id`, `cost_usd`, `tainted`, `taint_sources` (JSON), `brief_id`, `filed_task_ids` (JSON), `started_at`, `ended_at`, `error` | `(office_id, started_at)`, `(role_id, started_at)`, `(run_id)` |
+
+**Task columns (migration 54)**. `tm_tasks.office_id`, `role_id` and
+`tainted_at` are all nullable, with an index on `office_id`. On the `Task`
+type they are `officeId`, `roleId` and `taintedAt`. They are **create-only**:
+`NewTask` carries them, but `updateTask` never writes them, because its column
+list is explicit and the storage test checks this. Office-filed tasks use the
+new `TaskSource` `'office'`. An office *feature's* cards keep source
+`'feature'` and still carry `officeId`.
+
+**Every office task is external.** `isExternalTask` is true when
+`officeId != null`, whatever the source. So `effectiveLanding` clamps an
+office task to `supervised`, `landingRefusal` refuses raising it, and
+`effectivePushPolicy` clamps `agent-pushes`. This holds even for a
+source-`'feature'` card. The board search reads such a task as provenance
+`office` (`web/src/boardSearch.ts`). decisions.md 2026-11-04 records the
+choice; the only exception is the phase-6 opt-in.
+
+**Storage methods** (`Storage` in `server/src/storage/types.ts`, the same in
+both drivers):
+
+- Offices: `listOffices`, `getOffice`, `getOfficeByWorkspace`,
+  `createOffice` (defaults as above; a second office for the same workspace
+  throws the driver's unique violation, `isUniqueViolation`), `updateOffice`
+  (`OfficePatch`; `workspaceId` and the pause are not in it), and
+  `deleteOffice` (one transaction that also deletes the office's roles and
+  shifts).
+- **`pauseOffice(id, reason, expectedPaused)`** is the conditional composite
+  that owns `paused_at`/`paused_reason`. A string `reason` pauses the office
+  and null resumes it. The write lands only while the row's pause state is
+  the one the caller saw. Otherwise it returns null and the caller re-reads,
+  so a budget trip racing a human's Resume cannot undo either one. Re-pausing
+  an office that is already paused (`expectedPaused: true`) replaces the
+  reason and keeps the first `paused_at`.
+- Roles: `listOfficeRoles(officeId?)`, `getOfficeRole`, `createOfficeRole`
+  (a duplicate key in one office throws the unique violation),
+  `updateOfficeRole` (every field but `id`/`officeId`, including
+  `notesTaintedAt`, `sessionId` and `sessionTainted`), and
+  `deleteOfficeRole` (the role's shifts stay).
+- Shifts: `appendShift` (`NewOfficeShift`; `startedAt` defaults to now, cost
+  starts at 0, and nothing is filed yet), `updateShift` (`OfficeShiftPatch`:
+  verdict, skip reason, run id, cost, taint, brief, filed task ids, end time,
+  error), `getShift`, and `listShifts(filter)`. The filter takes `officeId`,
+  `roleId`, `verdict`, `since` (≥), `until` (<), `open` (no `ended_at`) and
+  `limit` (default 500, at most 5000). Results are newest first.
+- **`officeSpendSince(officeId, sinceIso, roleId?)`** returns the
+  `tm_runs.cost_usd` of every run **started** at or after `sinceIso`. This is
+  the same measure as `spendSince`, which backs the `budget.dayUsd` fuse. It
+  counts two kinds of run:
+  - the office's shift runs: a run linked by `tm_office_shifts.run_id`, or an
+    aux run of kind `shift` whose `subject_id` is a shift of the office;
+  - the runs of the tasks the office filed, attributed like `taskCostSql`:
+    each task's own worker runs, plus the `review`/`compact` aux runs about
+    it.
+
+  A run that matches more than one branch is one row, so it is counted once.
+  Other tasks, other offices' tasks, and other aux kinds about an office task
+  (a chat, for example) are not counted. `roleId` narrows both kinds to one
+  role. For the gate's day spend, the caller passes the start of the
+  office-local day.
+- **`countOpenOfficeTasks(officeId, roleId?)`** counts tasks with that
+  `office_id` (and `role_id`) whose status is not in
+  `TERMINAL_TASK_STATUSES`. This is the measure for `Office.maxOpenTasks` and
+  for the `no-open-task-of-this-role` guard.
 
 ## API
 

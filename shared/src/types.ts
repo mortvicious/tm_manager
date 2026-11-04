@@ -139,8 +139,12 @@ export const REVIEW_BUSY_STATES: ReviewState[] = ['pending', 'reviewing', 'fixin
  */
 export const TERMINAL_TASK_STATUSES: TaskStatus[] = ['published', 'done', 'failed', 'cancelled'];
 
-/** `job`: a follow-up draft a scheduled job's run filed (docs/jobs.md) — external, like every source but manual/feature */
-export type TaskSource = 'manual' | 'sentry' | 'auto' | 'feature' | 'job';
+/**
+ * `job`: a follow-up draft a scheduled job's run filed (docs/jobs.md);
+ * `office`: a task an office shift filed (docs/office.md) — both external,
+ * like every source but manual/feature.
+ */
+export type TaskSource = 'manual' | 'sentry' | 'auto' | 'feature' | 'job' | 'office';
 
 /**
  * How far a finished task may go without a human (docs/design.md § Landing
@@ -165,10 +169,13 @@ export const LANDING_TIERS: LandingTier[] = ['supervised', 'on-green', 'auto-pub
  * `feature` (a plan the human approved) are the human's. Such a task can never
  * land above `supervised` — the prompt-injection line. `createdByRun` is the
  * belt to the source's braces: a row an agent run created is external whatever
- * its source says. `source` is immutable after create (routes/tasks.ts).
+ * its source says. `officeId` is the second belt: every task a Virtual Office
+ * filed is external, INCLUDING an office feature's cards, which keep source
+ * `feature` (docs/office.md § Data model, decisions.md 2026-11-04). `source`,
+ * `createdByRun` and `officeId` are all immutable after create.
  */
-export function isExternalTask(t: Pick<Task, 'source' | 'createdByRun'>): boolean {
-  return (t.source !== 'manual' && t.source !== 'feature') || t.createdByRun !== null;
+export function isExternalTask(t: Pick<Task, 'source' | 'createdByRun' | 'officeId'>): boolean {
+  return (t.source !== 'manual' && t.source !== 'feature') || t.createdByRun !== null || t.officeId != null;
 }
 
 /**
@@ -208,7 +215,7 @@ export function landingReason(
 
 /** The tier a task actually lands with: its override, else its repo's, clamped to `supervised` for an external task. */
 export function effectiveLanding(
-  t: Pick<Task, 'source' | 'createdByRun' | 'landing'>,
+  t: Pick<Task, 'source' | 'createdByRun' | 'officeId' | 'landing'>,
   repo: Pick<Repo, 'landing'> | null | undefined,
 ): LandingTier {
   if (isExternalTask(t)) return 'supervised';
@@ -237,7 +244,7 @@ export const PUSH_POLICIES: PushPolicy[] = ['repo-rules', 'agent-pushes', 'publi
 
 /** The push policy a task's worker turns get: its repo's, with `agent-pushes` clamped to `repo-rules` for an external task. */
 export function effectivePushPolicy(
-  t: Pick<Task, 'source' | 'createdByRun'>,
+  t: Pick<Task, 'source' | 'createdByRun' | 'officeId'>,
   repo: Pick<Repo, 'pushPolicy'> | null | undefined,
 ): PushPolicy {
   const policy = repo?.pushPolicy ?? 'repo-rules';
@@ -1078,6 +1085,17 @@ export interface Task {
    * none.
    */
   dependsOn: string[];
+  /**
+   * The Virtual Office that filed this task (docs/office.md § Data model,
+   * migration 54) and the role whose shift did; null = not an office task.
+   * Any `officeId` makes the task external (`isExternalTask`). `taintedAt` is
+   * set when the filing shift read outside text (`shiftTaint`) — the reason
+   * such a task never goes straight to `queued`. All three are CREATE-ONLY
+   * (`NewTask`), never written through `updateTask`.
+   */
+  officeId: string | null;
+  roleId: string | null;
+  taintedAt: string | null;
   /**
    * ISO time the human hid this task (docs/design.md § Hidden tasks): the
    * board leaves it out of every section but its own dimmed "Hidden" one, and

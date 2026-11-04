@@ -62,6 +62,42 @@ import {
   workspacePatchColumns,
 } from './workspace-sql.ts';
 import {
+  OFFICE_BY_WORKSPACE_SQL,
+  OFFICE_DELETE_SQL,
+  OFFICE_GET_SQL,
+  OFFICE_INSERT_SQL,
+  OFFICE_LIST_SQL,
+  OFFICE_ROLE_DELETE_SQL,
+  OFFICE_ROLE_GET_SQL,
+  OFFICE_ROLE_INSERT_SQL,
+  OFFICE_ROLES_DELETE_SQL,
+  OFFICE_SHIFT_GET_SQL,
+  OFFICE_SHIFT_INSERT_SQL,
+  OFFICE_SHIFTS_DELETE_SQL,
+  officeInsertParams,
+  officeOpenTasksSql,
+  officePatchSql,
+  officePauseSql,
+  officeRoleInsertParams,
+  officeRoleListSql,
+  officeRolePatchSql,
+  officeShiftInsertParams,
+  officeShiftListSql,
+  officeShiftPatchSql,
+  officeSpendSql,
+  rowToOffice,
+  rowToOfficeRole,
+  rowToOfficeShift,
+  type NewOffice,
+  type NewOfficeRole,
+  type NewOfficeShift,
+  type OfficePatch,
+  type OfficeRolePatch,
+  type OfficeShiftFilter,
+  type OfficeShiftPatch,
+} from './office-sql.ts';
+import type { Office, OfficeRole, OfficeShift } from '@tm/shared';
+import {
   APPROVAL_DECIDE_SQL,
   APPROVAL_INSERT_SQL,
   REPO_AUTO_APPROVE_SQL,
@@ -512,8 +548,8 @@ export class SqliteStorage implements Storage {
     const place = this.placeSync(id, t.parentId);
     this.db
       .prepare(
-        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, kind, loop_goal, loop_max_iterations, loop_budget_usd, brief, depends_on, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (${NEXT_SORT_ORDER_SQL}))`,
+        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, kind, loop_goal, loop_max_iterations, loop_budget_usd, brief, depends_on, office_id, role_id, tainted_at, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (${NEXT_SORT_ORDER_SQL}))`,
       )
       .run(
         id,
@@ -548,6 +584,9 @@ export class SqliteStorage implements Storage {
         t.loopBudgetUsd ?? null,
         t.brief ?? null,
         t.dependsOn?.length ? JSON.stringify([...new Set(t.dependsOn)]) : null,
+        t.officeId ?? null,
+        t.roleId ?? null,
+        t.taintedAt ?? null,
       );
     const task = rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
     this.appendEventSync({
@@ -2111,6 +2150,111 @@ export class SqliteStorage implements Storage {
       this.db.prepare(`DELETE FROM tm_shared_notes WHERE space_id = ?`).run(id);
       return this.db.prepare(`DELETE FROM tm_spaces WHERE id = ?`).run(id).changes > 0;
     });
+  }
+
+  // ---- Virtual Office (docs/office.md § Data model; SQL in office-sql.ts) ----
+
+  async listOffices(): Promise<Office[]> {
+    return (this.db.prepare(OFFICE_LIST_SQL).all() as any[]).map(rowToOffice);
+  }
+
+  async getOffice(id: string): Promise<Office | null> {
+    const r = this.db.prepare(OFFICE_GET_SQL).get(id);
+    return r ? rowToOffice(r) : null;
+  }
+
+  async getOfficeByWorkspace(workspaceId: string): Promise<Office | null> {
+    const r = this.db.prepare(OFFICE_BY_WORKSPACE_SQL).get(workspaceId);
+    return r ? rowToOffice(r) : null;
+  }
+
+  async createOffice(o: NewOffice): Promise<Office> {
+    const id = randomUUID();
+    this.db.prepare(OFFICE_INSERT_SQL).run(...(officeInsertParams(id, o, now()) as any[]));
+    return (await this.getOffice(id))!;
+  }
+
+  async updateOffice(id: string, patch: OfficePatch): Promise<Office | null> {
+    const q = officePatchSql(id, patch, now());
+    if (!q) return this.getOffice(id);
+    const r = this.db.prepare(q.sql).get(...(q.params as any[]));
+    return r ? rowToOffice(r) : null;
+  }
+
+  async deleteOffice(id: string): Promise<boolean> {
+    return this.inTxn(() => {
+      this.db.prepare(OFFICE_SHIFTS_DELETE_SQL).run(id);
+      this.db.prepare(OFFICE_ROLES_DELETE_SQL).run(id);
+      return this.db.prepare(OFFICE_DELETE_SQL).run(id).changes > 0;
+    });
+  }
+
+  async pauseOffice(id: string, reason: string | null, expectedPaused: boolean): Promise<Office | null> {
+    const q = officePauseSql(id, reason, expectedPaused, now());
+    const r = this.db.prepare(q.sql).get(...(q.params as any[]));
+    return r ? rowToOffice(r) : null;
+  }
+
+  async listOfficeRoles(officeId?: string): Promise<OfficeRole[]> {
+    const q = officeRoleListSql(officeId);
+    return (this.db.prepare(q.sql).all(...(q.params as any[])) as any[]).map(rowToOfficeRole);
+  }
+
+  async getOfficeRole(id: string): Promise<OfficeRole | null> {
+    const r = this.db.prepare(OFFICE_ROLE_GET_SQL).get(id);
+    return r ? rowToOfficeRole(r) : null;
+  }
+
+  async createOfficeRole(role: NewOfficeRole): Promise<OfficeRole> {
+    const id = randomUUID();
+    this.db.prepare(OFFICE_ROLE_INSERT_SQL).run(...(officeRoleInsertParams(id, role, now()) as any[]));
+    return (await this.getOfficeRole(id))!;
+  }
+
+  async updateOfficeRole(id: string, patch: OfficeRolePatch): Promise<OfficeRole | null> {
+    const q = officeRolePatchSql(id, patch, now());
+    if (!q) return this.getOfficeRole(id);
+    const r = this.db.prepare(q.sql).get(...(q.params as any[]));
+    return r ? rowToOfficeRole(r) : null;
+  }
+
+  async deleteOfficeRole(id: string): Promise<boolean> {
+    return this.db.prepare(OFFICE_ROLE_DELETE_SQL).run(id).changes > 0;
+  }
+
+  async appendShift(s: NewOfficeShift): Promise<OfficeShift> {
+    const id = randomUUID();
+    this.db.prepare(OFFICE_SHIFT_INSERT_SQL).run(...(officeShiftInsertParams(id, s, now()) as any[]));
+    return (await this.getShift(id))!;
+  }
+
+  async updateShift(id: string, patch: OfficeShiftPatch): Promise<OfficeShift | null> {
+    const q = officeShiftPatchSql(id, patch);
+    if (!q) return this.getShift(id);
+    const r = this.db.prepare(q.sql).get(...(q.params as any[]));
+    return r ? rowToOfficeShift(r) : null;
+  }
+
+  async getShift(id: string): Promise<OfficeShift | null> {
+    const r = this.db.prepare(OFFICE_SHIFT_GET_SQL).get(id);
+    return r ? rowToOfficeShift(r) : null;
+  }
+
+  async listShifts(f?: OfficeShiftFilter): Promise<OfficeShift[]> {
+    const q = officeShiftListSql(f);
+    return (this.db.prepare(q.sql).all(...(q.params as any[])) as any[]).map(rowToOfficeShift);
+  }
+
+  async officeSpendSince(officeId: string, sinceIso: string, roleId?: string): Promise<number> {
+    const q = officeSpendSql(officeId, sinceIso, roleId);
+    const r = this.db.prepare(q.sql).get(...(q.params as any[])) as { s: number | null };
+    return Number(r.s ?? 0) || 0;
+  }
+
+  async countOpenOfficeTasks(officeId: string, roleId?: string): Promise<number> {
+    const q = officeOpenTasksSql(officeId, roleId);
+    const r = this.db.prepare(q.sql).get(...(q.params as any[])) as { n: number };
+    return Number(r.n ?? 0);
   }
 
   // ---- Workspaces (docs/workspaces.md) ----

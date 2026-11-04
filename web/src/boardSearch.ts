@@ -52,9 +52,12 @@ export interface SearchToken {
 }
 
 /** Who filed a task, as the board names it. */
-export type Provenance = 'human' | 'agent' | 'sentry' | 'analyze' | 'feature';
+export type Provenance = 'human' | 'agent' | 'sentry' | 'analyze' | 'feature' | 'office';
 
 export const provenanceOf = (t: Task): Provenance => {
+  // office wins over everything: an office's feature cards keep source
+  // 'feature' but are the office's filing (docs/office.md § Data model).
+  if (t.officeId || t.source === 'office') return 'office';
   // feature wins over agent: a feature-generated task is the plan's, not a
   // worker's follow-up (its children keep featureId but are still 'agent').
   if (t.source === 'feature') return 'feature';
@@ -120,6 +123,7 @@ const SOURCE_WORDS: Record<Provenance, { label: string; words: string[] }> = {
   sentry: { label: 'sentry', words: ['sentry'] },
   analyze: { label: 'analyze', words: ['analyze', 'analysis', 'auto'] },
   feature: { label: 'feature', words: ['feature', 'features', 'plan'] },
+  office: { label: 'office', words: ['office', 'shift', 'role'] },
 };
 
 const DISPATCH_WORDS: Record<'with' | 'pending', { label: string; words: string[] }> = {

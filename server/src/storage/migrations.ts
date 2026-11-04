@@ -882,6 +882,101 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `UPDATE tm_push_devices SET kinds = REPLACE(kinds, '"failed"', '"failed","job"') WHERE kinds LIKE '%"failed"%' AND kinds NOT LIKE '%"job"%'`,
     ],
   },
+  {
+    id: 53,
+    // Virtual Office (docs/office.md § Data model). FK-less like tm_events and
+    // tm_workspaces: an office names its workspace, a role its office, a shift
+    // both, by id only — deleting a workspace never has to touch an office and
+    // a shift row outlives the role it ran for (it is history). ONE office per
+    // workspace (unique index). Money is DOUBLE PRECISION (pg REAL is float4),
+    // flags are INTEGER 0/1 like tm_runs.needs_attention, lists are JSON TEXT.
+    // `paused_at`/`paused_reason` are written only by the conditional
+    // `pauseOffice`; `budget_tripped_on` is the office-local day the day budget
+    // tripped. A role's `notes_tainted_at`, `session_id`, `session_tainted`
+    // carry the taint model (`mayResume`).
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_offices (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        folder_path TEXT NOT NULL,
+        autonomy TEXT NOT NULL DEFAULT 'proposals',
+        day_budget_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+        max_slots INTEGER NOT NULL DEFAULT 1,
+        max_tasks_per_shift INTEGER NOT NULL DEFAULT 3,
+        max_open_tasks INTEGER NOT NULL DEFAULT 10,
+        paused_at TEXT,
+        paused_reason TEXT,
+        budget_tripped_on TEXT,
+        theme TEXT,
+        timezone TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS tm_offices_workspace_idx ON tm_offices (workspace_id)`,
+      `CREATE TABLE IF NOT EXISTS tm_office_roles (
+        id TEXT PRIMARY KEY,
+        office_id TEXT NOT NULL,
+        preset TEXT,
+        role_key TEXT NOT NULL,
+        name TEXT NOT NULL,
+        avatar TEXT NOT NULL,
+        title TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        model TEXT NOT NULL,
+        effort TEXT,
+        tools TEXT NOT NULL,
+        autonomy TEXT,
+        cap_usd DOUBLE PRECISION,
+        schedules TEXT NOT NULL,
+        triggers TEXT NOT NULL,
+        guards TEXT NOT NULL,
+        notes_path TEXT NOT NULL,
+        notes_tainted_at TEXT,
+        session_id TEXT,
+        session_tainted INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS tm_office_roles_key_idx ON tm_office_roles (office_id, role_key)`,
+      `CREATE TABLE IF NOT EXISTS tm_office_shifts (
+        id TEXT PRIMARY KEY,
+        office_id TEXT NOT NULL,
+        role_id TEXT NOT NULL,
+        trigger_kind TEXT NOT NULL,
+        trigger_ref TEXT,
+        trigger_at TEXT NOT NULL,
+        verdict TEXT NOT NULL,
+        skip_reason TEXT,
+        run_id TEXT,
+        cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+        tainted INTEGER NOT NULL DEFAULT 0,
+        taint_sources TEXT NOT NULL,
+        brief_id TEXT,
+        filed_task_ids TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        error TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_office_shifts_office_idx ON tm_office_shifts (office_id, started_at)`,
+      `CREATE INDEX IF NOT EXISTS tm_office_shifts_role_idx ON tm_office_shifts (role_id, started_at)`,
+      `CREATE INDEX IF NOT EXISTS tm_office_shifts_run_idx ON tm_office_shifts (run_id)`,
+    ],
+  },
+  {
+    id: 54,
+    // Office tasks (docs/office.md § Data model): which office and role filed
+    // a task, and when its shift was tainted. Create-only — `updateTask`
+    // writes neither (its column list is explicit). Any `office_id` makes the
+    // task external (`isExternalTask`), so it never lands above supervised.
+    statements: [
+      `ALTER TABLE tm_tasks ADD COLUMN office_id TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN role_id TEXT`,
+      `ALTER TABLE tm_tasks ADD COLUMN tainted_at TEXT`,
+      `CREATE INDEX IF NOT EXISTS tm_tasks_office_idx ON tm_tasks (office_id)`,
+    ],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */

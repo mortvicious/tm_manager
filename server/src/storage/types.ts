@@ -1,9 +1,30 @@
 import type { WorktreePatch } from './worktree-sql.ts';
 import type { ApprovalFilter, NewApproval } from './approval-sql.ts';
 import type { JobFilter, JobPatch, JobRunFinish, NewJob } from './job-sql.ts';
+import type {
+  NewOffice,
+  NewOfficeRole,
+  NewOfficeShift,
+  OfficePatch,
+  OfficeRolePatch,
+  OfficeShiftFilter,
+  OfficeShiftPatch,
+} from './office-sql.ts';
 import type { MoveAnchor } from './group.ts';
 import type { QueueMoveAnchor } from './queue-sql.ts';
-import type { Approval, ApprovalStatus, Job, JobRun, JobStatus, JobVerdict, PushDevice, PushKind } from '@tm/shared';
+import type {
+  Approval,
+  ApprovalStatus,
+  Job,
+  JobRun,
+  JobStatus,
+  JobVerdict,
+  Office,
+  OfficeRole,
+  OfficeShift,
+  PushDevice,
+  PushKind,
+} from '@tm/shared';
 import type {
   LoopState,
   AppSettings,
@@ -178,6 +199,10 @@ export interface NewTask {
   featurePhase?: number | null;
   /** declared dependencies (docs/task-waits.md § Declared dependencies) */
   dependsOn?: string[] | null;
+  /** the office / role whose shift filed this, and when that shift was tainted (docs/office.md § Data model) — create-only */
+  officeId?: string | null;
+  roleId?: string | null;
+  taintedAt?: string | null;
 }
 
 export interface NewFeature {
@@ -841,6 +866,44 @@ export interface Storage {
   updateWorkspace(id: string, patch: WorkspacePatch): Promise<Workspace | null>;
   deleteWorkspace(id: string): Promise<boolean>;
   reorderWorkspaces(ids: string[]): Promise<Workspace[]>;
+
+  /**
+   * Virtual Office (docs/office.md § Data model), SQL shared in
+   * `office-sql.ts`. Plain CRUD over FK-less tables: one office per workspace
+   * (a second `createOffice` for the same workspace throws the driver's
+   * unique-violation, `isUniqueViolation`; so does a duplicate role key in one
+   * office). Deleting an office deletes its roles and shifts; deleting a role
+   * keeps its shifts (history). `updateOffice` never touches the pause —
+   * `pauseOffice` is the conditional composite for that: `reason` pauses,
+   * null resumes, and it writes ONLY while the row's pause state equals
+   * `expectedPaused` (null back = no such office or the state moved; re-read).
+   */
+  listOffices(): Promise<Office[]>;
+  getOffice(id: string): Promise<Office | null>;
+  getOfficeByWorkspace(workspaceId: string): Promise<Office | null>;
+  createOffice(o: NewOffice): Promise<Office>;
+  updateOffice(id: string, patch: OfficePatch): Promise<Office | null>;
+  deleteOffice(id: string): Promise<boolean>;
+  pauseOffice(id: string, reason: string | null, expectedPaused: boolean): Promise<Office | null>;
+  /** `officeId` omitted = every office's roles, oldest first. */
+  listOfficeRoles(officeId?: string): Promise<OfficeRole[]>;
+  getOfficeRole(id: string): Promise<OfficeRole | null>;
+  createOfficeRole(r: NewOfficeRole): Promise<OfficeRole>;
+  updateOfficeRole(id: string, patch: OfficeRolePatch): Promise<OfficeRole | null>;
+  deleteOfficeRole(id: string): Promise<boolean>;
+  appendShift(s: NewOfficeShift): Promise<OfficeShift>;
+  updateShift(id: string, patch: OfficeShiftPatch): Promise<OfficeShift | null>;
+  getShift(id: string): Promise<OfficeShift | null>;
+  /** newest first (`officeShiftListSql`) */
+  listShifts(f?: OfficeShiftFilter): Promise<OfficeShift[]>;
+  /**
+   * `cost_usd` of the office's runs STARTED at or after `sinceIso`: its
+   * shifts' aux runs plus the worker/review/compact runs of the tasks it filed
+   * (`officeSpendSql`); `roleId` narrows both to one role.
+   */
+  officeSpendSince(officeId: string, sinceIso: string, roleId?: string): Promise<number>;
+  /** tasks with this `office_id` (and `role_id`) not in `TERMINAL_TASK_STATUSES` */
+  countOpenOfficeTasks(officeId: string, roleId?: string): Promise<number>;
 
   getSettings(): Promise<AppSettings>;
   /** Total `cost_usd` of every run (any mode) STARTED at or after this ISO time — the `budget.dayUsd` measure. */
