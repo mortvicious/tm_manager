@@ -1042,6 +1042,14 @@
   backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
 }
 
+/* the Review deck's pinned bar is the same material as New task's foot */
+[data-design='glass'] .deck-bar {
+  border-top: 0.5px solid var(--tm-border);
+  background: var(--tm-glass-bar);
+  -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+}
+
 [data-design='glass'] .full-sheet-title {
   font-family: var(--tm-font-display);
   font-weight: 700;

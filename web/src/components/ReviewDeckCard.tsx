@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { effectiveLanding, publishCaution, publishGateReason, type InboxItem } from '@tm/shared';
 import { useApp } from '../state.tsx';
 import { ChecksPanel } from './ChecksPanel.tsx';
@@ -21,9 +22,11 @@ export function ReviewDeckCard({
 }: {
   item: ReviewItem;
   onOpenTerminal: (runId: string) => void;
-  /** mount the diff (one fetch per card — only the card under the cursor) */
-  diff: boolean;
+  /** mount the diff (one fetch per card — only the card under the cursor);
+   *  `folded` (the phone) mounts it only once the human taps to expand */
+  diff: boolean | 'folded';
 }) {
+  const [unfolded, setUnfolded] = useState(false);
   const { repos } = useApp();
   const t = item.task;
   const repo = repos.find((r) => r.id === t.repoId);
@@ -71,7 +74,18 @@ export function ReviewDeckCard({
       <ReviewPanel task={t} />
       {!last?.summary && t.resultSummary && <Block label="Agent">{t.resultSummary}</Block>}
       <ChecksPanel task={t} onOpenTerminal={onOpenTerminal} />
-      {diff && <TaskDiff task={t} repo={repo} />}
+      {diff === 'folded' && (
+        <button
+          type="button"
+          className="btn deck-diff-toggle"
+          aria-expanded={unfolded}
+          onClick={() => setUnfolded((v) => !v)}
+        >
+          {unfolded ? 'Hide the diff' : 'Show the diff'}
+          {stat && <span className="mono"> · {statText(stat)}</span>}
+        </button>
+      )}
+      {(diff === true || (diff === 'folded' && unfolded)) && <TaskDiff task={t} repo={repo} />}
     </>
   );
 }

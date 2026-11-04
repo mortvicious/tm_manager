@@ -13,6 +13,7 @@ import {
   useDraftTriage,
   useInboxActs,
   type InboxNav,
+  ReviewDeckEntry,
 } from '../components/Inbox.tsx';
 import { useIsMobile } from '../components/Layout.tsx';
 import type { InboxReturn } from '../returnTo.ts';
@@ -64,7 +65,7 @@ export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav 
             </>
           )}
         </span>
-        {(reviews > 0 || triaged > 0) && <span style={{ flex: 1 }} />}
+        {((reviews > 0 && !mobile) || triaged > 0) && <span style={{ flex: 1 }} />}
         {triaged > 0 && (
           <Link
             className="btn ghost deck-entry"
@@ -74,7 +75,7 @@ export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav 
             Triage drafts · {triaged}
           </Link>
         )}
-        {reviews > 0 && (
+        {reviews > 0 && !mobile && (
           <>
             <Link className="btn deck-entry" to={wsHref('/inbox/deck')} title="walk the settled reviews one card at a time (docs/inbox.md § Review deck)">
               Review deck · {reviews}
@@ -91,6 +92,7 @@ export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav 
       )}
       {mobile ? (
         <>
+          <ReviewDeckEntry />
           <InboxRows items={items} onPick={(i) => setOpenKey(i.key)} />
           {open && <InboxItemSheet item={open} nav={nav} onClose={() => setOpenKey(null)} />}
         </>

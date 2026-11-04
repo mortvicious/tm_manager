@@ -173,7 +173,14 @@ ships a pile of finished work from the keyboard.
   Nothing left → *Nothing to review* with a link back to the Inbox.
 - **Entry points**: the Inbox header's **Review deck · N** button (shown when
   the scoped list has at least one review, its link carries `?ws=` through
-  `wsHref`), and the URL itself. The deck's own header links back.
+  `wsHref`), the desktop header's **`N to review`** chip (`ReviewDeckChip` in
+  `components/Inbox.tsx`, mounted in `Layout.tsx` beside the Inbox chip:
+  `useReviewCount()` = the settled review items of `useInbox()`, so it is the
+  deck's length in the current workspace, hidden at 0, linking to
+  `wsHref('/inbox/deck')`), on a phone a **Review N** button at the top of the
+  Inbox sheet and of the `/inbox` page (`ReviewDeckEntry` — the phone header
+  has no room for the chip, and the page title's button gives way to it), the
+  ⌘K palette, and the URL itself. The deck's own header links back.
 - **The card** shows the title, id8 and repo; the ready reason
   (`landingReason`) or else `publishCaution`; the verify gate
   (`publishGateReason`) when it holds; the landing tier (`effectiveLanding`);
@@ -206,8 +213,44 @@ press of `x` excepted) or until the cursor moves; a disabled act toasts its
 reason instead of doing nothing. Acts run through `useActRunner`, so a refusal
 goes to the shared toast and the card stays.
 
-On a phone the deck is the plain card list, every card with its buttons and
-no diff (Open has it); the swipe stack is a later task.
+#### Phone: a swipe card stack
+
+On a phone (`useIsMobile`) `/inbox/deck` opens a tall `<Sheet>` (`PhoneDeck`
+in `pages/ReviewDeck.tsx`) holding ONE card at a time; closing it (×, Escape,
+a drag down) navigates back to `/inbox` (with `?ws=`).
+
+- **Swipe** left/right on the card moves next/prev — it never decides. The
+  card is a motion `drag="x"` with `dragDirectionLock`, snapping back to the
+  origin; a release past 72 px or 400 px/s moves the cursor. The sheet's own
+  drag is `drag="y"` and motion keeps one lock per axis, so both would follow
+  one finger: a capture-phase `pointermove` listener decides at motion's 3 px
+  start threshold, and a sideways gesture takes motion's `y` lock
+  (`setDragLock('y')`) before the sheet's drag can start. A downward gesture
+  leaves it to the sheet, so **drag-to-dismiss still works from the card**
+  (while the scroller is at its top, the library's rule). A press inside a box
+  that scrolls sideways (a diff's long lines) or a field never swipes. The
+  header's ‹ › buttons do the same, and say `Review n of N`.
+- **The big buttons** ride the bottom of the library's own scroller (a sticky
+  `.deck-bar`, no nested scroller, carrying the home-indicator inset): the
+  primary is the `useInboxActs` rule — Send findings back (flagged), Publish
+  or Mark published (ready), else Open, whichever it toned primary (falling
+  back to Publish/Mark published, then Open); under it **Mark done**, **Follow
+  up** (the same inline field, Enter sends) and **⋯**, a sheet on top with
+  everything else: Review now, Cancel (two-press: *Cancel? tap again*, the
+  sheet stays open for the second tap), Open, and over a flagged review
+  Publish anyway. The disabled *Publish — already pushed* pointer of the
+  desktop is dropped; Mark published stands alone. A decided card leaves and
+  the next one is under the cursor, as on the desktop.
+- **The diff is folded**: *Show the diff · n files +a −b* mounts `TaskDiff`
+  only when tapped, per card.
+- **Coming back to the card**: Open (task panel) and a checks terminal take the
+  screen, so the deck sheet steps aside while either is open (`covered`, from
+  `App.tsx`: a task panel or terminal is open) — without closing — and comes
+  back on the SAME card when it closes, because the cursor lives in the page,
+  not in the sheet. This is the `returnTo.ts` pattern's equivalent; the page
+  never unmounted, so no `ReturnTo` is needed.
+- **Glass**: the sheet is Liquid Glass like every sheet; the pinned bar gets
+  New task's foot material (`glass.css`).
 
 ### Header chip
 

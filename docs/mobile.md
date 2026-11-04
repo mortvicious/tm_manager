@@ -433,6 +433,12 @@ component.
   its own (the library cannot see a nested `scrollTop`; that is why
   `.slideover-body` turns `overflow: visible` inside the panel sheet and the
   body box is `.sheet-body`, not a scroller).
+- **A sideways gesture inside a sheet** (the Review deck's card swipe,
+  docs/inbox.md § Review deck › Phone) is a motion `drag="x"` child. Motion
+  holds one drag lock per axis, so the sheet's `drag="y"` would follow the same
+  finger; the child takes the `y` lock (`setDragLock`) the moment a gesture
+  reads sideways, before the sheet's drag starts, and leaves a downward one to
+  the sheet.
   - On iOS the library's touch lock (`preventScrollMobileSafari`, picked by
     `navigator.platform`) cancels the native pan at the top, which is what lets
     a drag start on any child, a textarea included. Chromium with a non-iOS
@@ -880,6 +886,11 @@ panel with its drafts, or the Inbox item's sheet (on the header-chip
 `InboxSheet` when `sheet`, on the `/inbox` page's own stack otherwise). An item
 that resolved meanwhile is simply not reopened; the chip's sheet still comes
 back on its list.
+
+The phone's Review deck (docs/inbox.md § Review deck › Phone) needs no
+`ReturnTo`: its sheet only steps aside while a task panel or terminal is open
+(`covered`), the page and its cursor stay mounted, and the sheet comes back on
+the same card when the panel or terminal closes.
 
 Not restored: a desktop click-outside close (`onClose('outside')`, the
 `terminal.clickOutside: close` setting) — that click was aimed at something

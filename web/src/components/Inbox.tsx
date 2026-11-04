@@ -686,6 +686,46 @@ export function InboxChip({
   );
 }
 
+/** How many settled reviews the Review deck holds — the Inbox's own items, so workspace-scoped. */
+export function useReviewCount(): number {
+  const items = useInbox();
+  return items.filter((i) => i.kind === 'review').length;
+}
+
+/**
+ * Desktop header chip (docs/inbox.md § Review deck › Entry points): `N to
+ * review`, the deck's length in the current workspace; hidden at zero.
+ */
+export function ReviewDeckChip() {
+  const n = useReviewCount();
+  const { wsHref } = useWorkspace();
+  if (n === 0) return null;
+  return (
+    <Link
+      className="btn ghost ichip rchip"
+      to={wsHref('/inbox/deck')}
+      title={`${n} settled review${n === 1 ? '' : 's'} — walk them one card at a time in the Review deck`}
+      aria-label={`Review deck, ${n} to review`}
+    >
+      <IconPublish /> {n}
+      <span className="ichip-word"> to review</span>
+    </Link>
+  );
+}
+
+/** The phone's way into the deck (its header has no room for the chip): `Review N`, hidden at zero. */
+export function ReviewDeckEntry() {
+  const n = useReviewCount();
+  const { wsHref } = useWorkspace();
+  if (n === 0) return null;
+  return (
+    <Link className="btn deck-review-entry" to={wsHref('/inbox/deck')}>
+      <IconPublish /> Review {n}
+      <span className="deck-review-entry-hint">one card at a time</span>
+    </Link>
+  );
+}
+
 /**
  * The phone's Inbox (docs/mobile.md § Sheets): a sheet of rows; a row opens
  * its own sheet ON TOP with the detail and the actions, so the list is where
@@ -722,6 +762,7 @@ export function InboxSheet({
   return (
     <>
       <Sheet label="Inbox" title={`Inbox · ${decisions(items).length}`} onClose={onClose} tall>
+        <ReviewDeckEntry />
         <InboxRows items={items} onPick={(i) => setOpenKey(i.key)} />
       </Sheet>
       {open && <InboxItemSheet item={open} nav={leave} onClose={() => setOpenKey(null)} />}

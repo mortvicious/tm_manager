@@ -14,7 +14,7 @@ import { Sheet } from './Sheet.tsx';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher.tsx';
 import { useWorkspace, WorkspaceGuard } from '../workspace.ts';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { InboxChip, InboxSheet, decisions, useInbox } from './Inbox.tsx';
+import { InboxChip, InboxSheet, ReviewDeckChip, decisions, useInbox } from './Inbox.tsx';
 import { Explainable } from './Explain.tsx';
 import { openPalette } from '../palette.ts';
 import {
@@ -1194,6 +1194,7 @@ export function Layout({
           urgentOnly={mobile}
           onClick={() => (!mobile ? navigate(wsHref('/inbox')) : onlyQuestions ? nudgeQuestions() : setInboxOpen(true))}
         />
+        {!mobile && <ReviewDeckChip />}
         {!mobile && <UsagePill />}
         <span className="spacer" />
         {/* the ⋯ menu is the tab bar's More alone; its old slot reads the connection */}

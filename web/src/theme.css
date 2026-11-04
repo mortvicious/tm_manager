@@ -9337,6 +9337,106 @@ button.explain-tap:active {
   font-size: var(--tm-text-xs);
 }
 
+/* Review deck on a phone (docs/inbox.md § Review deck › Phone): a card stack in
+   a tall sheet. The bar rides the bottom edge of the library's own scroller (no
+   nested scroller) and carries the home-indicator inset, so the body drops its
+   own bottom padding, as .new-task-foot does. */
+.deck-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+  padding-bottom: var(--tm-space-1);
+}
+
+.deck-sheet-head .btn {
+  min-width: var(--tm-tap);
+  min-height: var(--tm-tap);
+  justify-content: center;
+}
+
+.deck-sheet-title {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-family: var(--tm-font-display);
+  font-size: var(--tm-text-md);
+  font-weight: 600;
+}
+
+.deck-sheet-title .deck-pos {
+  color: var(--tm-text-muted);
+  font-weight: 400;
+}
+
+.deck-sheet-body {
+  min-height: 100%;
+  padding-bottom: 0;
+}
+
+/* the card follows a sideways finger; vertical stays the scroller's and the sheet's */
+.deck-swipe {
+  touch-action: pan-y;
+}
+
+.deck-diff-toggle {
+  align-self: flex-start;
+  min-height: var(--tm-tap);
+}
+
+.deck-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  margin: auto calc(-1 * (var(--tm-space-4) + env(safe-area-inset-right, 0px))) 0
+    calc(-1 * (var(--tm-space-4) + env(safe-area-inset-left, 0px)));
+  padding: var(--tm-space-2) calc(var(--tm-space-4) + env(safe-area-inset-right, 0px))
+    calc(var(--tm-space-2) + env(safe-area-inset-bottom, 0px)) calc(var(--tm-space-4) + env(safe-area-inset-left, 0px));
+  border-top: 1px solid var(--tm-border);
+  background: var(--tm-bg-raised);
+}
+
+.deck-bar-row {
+  display: flex;
+  gap: var(--tm-space-2);
+}
+
+.deck-bar-btn {
+  flex: 1 1 0;
+  min-height: var(--tm-tap);
+  justify-content: center;
+  font-size: var(--tm-text-md);
+}
+
+.deck-bar-row .deck-bar-more {
+  flex: 0 0 var(--tm-tap);
+}
+
+/* the phone's way into the deck, at the top of the Inbox sheet and page */
+.deck-review-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  min-height: var(--tm-tap);
+  margin-bottom: var(--tm-space-3);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.deck-review-entry-hint {
+  margin-left: auto;
+  color: var(--tm-text-faint);
+  font-size: var(--tm-text-sm);
+  font-weight: 400;
+}
+
+/* the desktop header's "N to review" chip (a link styled as the Inbox chip) */
+.ichip.rchip {
+  text-decoration: none;
+}
+
 /* under the stale drafts (docs/inbox.md § Stale drafts): "N of M" + Keep all / Hide all */
 .inbox-stale-foot {
   display: flex;

@@ -60,7 +60,7 @@ export function App() {
       <Route path="/dashboard" element={<DashboardPage onOpenTask={setOpenTask} />} />
       <Route path="/board" element={<BoardRoute onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
       <Route path="/inbox" element={<InboxPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} inboxReturn={inboxReturn} />} />
-      <Route path="/inbox/deck" element={<ReviewDeckPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
+      <Route path="/inbox/deck" element={<ReviewDeckPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} covered={!!openTask || !!openTerminal} />} />
       <Route path="/inbox/drafts" element={<DraftTriagePage onOpenTask={setOpenTask} />} />
       <Route path="/queue" element={<QueuePage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
       <Route path="/timeline" element={<TimelinePage onOpenTask={setOpenTask} />} />

@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { motion, setDragLock, useDragControls, useReducedMotion, type PanInfo } from 'motion/react';
 import { CHECK_BUSY_STATES, REVIEW_BUSY_STATES, publishGateReason, type InboxItem, type Task } from '@tm/shared';
 import { api } from '../api.ts';
 import { useArm } from '../arm.ts';
 import { useActRunner, useInbox, useInboxActs, type InboxAct, type InboxNav } from '../components/Inbox.tsx';
 import { useIsMobile } from '../components/Layout.tsx';
+import { IconMore, IconX } from '../components/Icons.tsx';
 import { ReviewDeckCard, type ReviewItem } from '../components/ReviewDeckCard.tsx';
+import { Sheet, SheetAction } from '../components/Sheet.tsx';
 import { runTaskAction } from '../pending.ts';
 import { markPublishedOffered } from '../publish.ts';
 import { useApp } from '../state.tsx';
@@ -20,7 +23,7 @@ import { ACT_COOLDOWN_MS, keyIsOurs } from './Inbox.tsx';
  * second ordering — and every act that the Inbox also offers is the Inbox's
  * own (`useInboxActs`), so its confirms and primary rules are the same.
  * A decided card leaves the list and the cursor stays on the same POSITION.
- * Phone: the plain card list (no diff — Open has it).
+ * Phone: a swipe card stack in a Sheet (`PhoneDeck`).
  */
 
 type DeckKey = 'p' | 'm' | 'd' | 's' | 'f' | 'r' | 'x' | 'o';
@@ -109,7 +112,14 @@ function useDeckActs(nav: InboxNav) {
   );
 }
 
-export function ReviewDeckPage({ onOpenTask, onOpenTerminal }: InboxNav) {
+export function ReviewDeckPage({
+  onOpenTask,
+  onOpenTerminal,
+  covered = false,
+}: InboxNav & {
+  /** a task panel or terminal is over the page: the phone's sheet steps aside and comes back on the same card */
+  covered?: boolean;
+}) {
   const mobile = useIsMobile();
   const items = useReviewItems();
   const everywhere = useReviewItems(true);
@@ -139,15 +149,11 @@ export function ReviewDeckPage({ onOpenTask, onOpenTerminal }: InboxNav) {
           Inbox
         </Link>
       </h1>
-      {!items.length ? (
+      {mobile ? (
+        <PhoneDeck items={items} nav={nav} covered={covered} />
+      ) : !items.length ? (
         <div className="inbox-empty">
           Nothing to review. <Link to={wsHref('/inbox')}>Back to the Inbox</Link>
-        </div>
-      ) : mobile ? (
-        <div className="deck-list">
-          {items.map((i) => (
-            <PhoneCard key={i.task.id} item={i} nav={nav} />
-          ))}
         </div>
       ) : (
         <DeskDeck items={items} nav={nav} onIndex={setIndex} />
@@ -371,20 +377,249 @@ function FollowUp({ task, run, onClose }: { task: Task; run: Runner['run']; onCl
   );
 }
 
-/** Phone: a plain card per item, no diff and no keys (the swipe stack is later). */
-function PhoneCard({ item, nav }: { item: ReviewItem; nav: InboxNav }) {
+/** A press inside a box that scrolls sideways (a diff's long lines) scrolls it, never swipes the card. */
+function inSideScroller(target: EventTarget | null, stop: Element | null): boolean {
+  for (let el = target instanceof Element ? target : null; el && el !== stop; el = el.parentElement) {
+    if (el.closest('input, textarea, select')) return true;
+    if (el.scrollWidth > el.clientWidth + 1) {
+      const ox = getComputedStyle(el).overflowX;
+      if (ox === 'auto' || ox === 'scroll') return true;
+    }
+  }
+  return false;
+}
+
+/** How far (px) or how fast (px/s) a release must go to move to the next card. */
+const SWIPE_PX = 72;
+const SWIPE_VELOCITY = 400;
+
+/**
+ * Phone (docs/inbox.md § Review deck › Phone): the deck is a card stack in a
+ * tall `<Sheet>`. A horizontal swipe on the card moves next/prev and never
+ * decides anything; the decisions are the big buttons pinned to the bottom of
+ * the sheet's own scroller (no nested scroller, so the sheet's drag-from-the-top
+ * still works). Closing the sheet goes back to the Inbox.
+ *
+ * `covered` (a task panel or terminal is open over the page) takes the sheet
+ * off the screen without closing it: the cursor lives here, in the page, so
+ * closing the panel or terminal brings the sheet back on the same card
+ * (docs/mobile.md § Returning from a terminal).
+ */
+function PhoneDeck({ items, nav, covered }: { items: ReviewItem[]; nav: InboxNav; covered: boolean }) {
+  const navigate = useNavigate();
+  const { wsHref } = useWorkspace();
   const deckActs = useDeckActs(nav);
   const { busy, run, labelOf } = useActRunner();
-  const { armed, press } = useArm();
+  const { armed, press, disarm } = useArm();
+  const [selId, setSelId] = useState<string | null>(null);
   const [follow, setFollow] = useState(false);
-  const acts = deckActs(item, { armed, press, openFollowUp: () => setFollow(true), again: 'tap again' }).filter(
-    (a) => !(a.key === 'p' && a.disabled && markPublishedOffered(item.task)),
-  );
+  const [more, setMore] = useState(false);
+  // +1 = the card came in from the right (moved next), -1 from the left
+  const [dir, setDir] = useState(0);
+  const lastIndex = useRef(0);
+  let index = items.findIndex((i) => i.task.id === selId);
+  if (index < 0) index = Math.min(lastIndex.current, items.length - 1);
+  const sel = index >= 0 ? items[index] : null;
+  lastIndex.current = Math.max(0, index);
+  const reduced = useReducedMotion();
+  const drag = useDragControls();
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (sel && sel.task.id !== selId) setSelId(sel.task.id);
+  }, [sel, selId]);
+  // a new card starts at the top, with nothing armed and no follow-up or ⋯ open
+  useEffect(() => {
+    disarm();
+    setFollow(false);
+    setMore(false);
+    cardRef.current?.closest('.react-modal-sheet-content-scroller')?.scrollTo({ top: 0 });
+  }, [sel?.task.id]);
+
+  const go = (d: number) => {
+    const next = Math.max(0, Math.min(items.length - 1, index + d));
+    if (next === index) return;
+    setDir(d);
+    setSelId(items[next].task.id);
+  };
+
+  // The sheet drags on 'y' and the card on 'x', and motion keeps one lock per
+  // axis, so both would follow one finger: a sideways swipe would also tug the
+  // sheet down. The first move past motion's 3 px start threshold decides —
+  // sideways takes the 'y' lock before the sheet's drag can start (a capture
+  // listener runs ahead of motion's own), so only the card moves; downwards
+  // leaves it to the sheet, and the card's direction lock keeps it still.
+  const onPointerDown = (e: ReactPointerEvent) => {
+    if (e.button !== 0 || items.length < 2 || inSideScroller(e.target, cardRef.current)) return;
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    let decided = false;
+    let release: (() => void) | null = null;
+    const move = (ev: PointerEvent) => {
+      if (decided) return;
+      const dx = ev.clientX - x0;
+      const dy = ev.clientY - y0;
+      if (Math.hypot(dx, dy) < 3) return;
+      decided = true;
+      if (Math.abs(dx) > Math.abs(dy)) release = setDragLock('y');
+    };
+    const end = () => {
+      release?.();
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', end, true);
+      window.removeEventListener('pointercancel', end, true);
+    };
+    window.addEventListener('pointermove', move, true);
+    window.addEventListener('pointerup', end, true);
+    window.addEventListener('pointercancel', end, true);
+    drag.start(e);
+  };
+  const onDragEnd = (_: unknown, info: PanInfo) => {
+    const { x } = info.offset;
+    const v = info.velocity.x;
+    if (x < -SWIPE_PX || v < -SWIPE_VELOCITY) go(1);
+    else if (x > SWIPE_PX || v > SWIPE_VELOCITY) go(-1);
+  };
+
+  const close = () => navigate(wsHref('/inbox'));
+  if (covered) return null;
+
+  const ui: DeckUi = { armed, press, openFollowUp: () => setFollow(true), again: 'tap again' };
+  // the disabled "Publish — already pushed" is the desktop's pointer to `m`; here Mark published stands alone
+  const acts = sel
+    ? deckActs(sel, ui).filter((a) => !(a.key === 'p' && a.disabled && markPublishedOffered(sel.task)))
+    : [];
+  // the useInboxActs primary rule: Send findings back (flagged), Publish /
+  // Mark published (ready), else Open — whichever it toned primary
+  const primary =
+    acts.find((a) => a.tone === 'primary' && (a.key === 's' || a.key === 'p' || a.key === 'm' || a.key === 'o')) ??
+    acts.find((a) => a.key === 'p' || a.key === 'm') ??
+    acts.find((a) => a.key === 'o');
+  const doneAct = acts.find((a) => a.key === 'd');
+  const followAct = acts.find((a) => a.key === 'f');
+  const rest = acts.filter((a) => a !== primary && a !== doneAct && a !== followAct);
+  const big = (a: DeckAct | undefined, cls: string) =>
+    a && (
+      <button
+        type="button"
+        className={`btn deck-bar-btn ${cls}${a.tone === 'primary' ? ' primary' : ''}`}
+        disabled={a.disabled || busy !== null}
+        onClick={() => sel && void run(sel.task.id, a)}
+      >
+        {labelOf(sel?.task.id ?? '', a)}
+      </button>
+    );
+
   return (
-    <div className="panel deck-card">
-      <ReviewDeckCard item={item} onOpenTerminal={nav.onOpenTerminal} diff={false} />
-      <DeckActs acts={acts} itemId={item.task.id} busy={busy} run={run} labelOf={labelOf} keys={false} />
-      {follow && <FollowUp task={item.task} run={run} onClose={() => setFollow(false)} />}
-    </div>
+    <>
+      <Sheet
+        label="Review deck"
+        tall
+        className="deck-sheet"
+        bodyClassName="sheet-body deck-sheet-body"
+        onClose={close}
+        head={(closeSheet) => (
+          <div className="deck-sheet-head">
+            <button type="button" className="btn ghost" aria-label="Previous card" disabled={index <= 0} onClick={() => go(-1)}>
+              ‹
+            </button>
+            <span className="deck-sheet-title">
+              {sel ? (
+                <>
+                  Review <span className="deck-pos">{index + 1} of {items.length}</span>
+                </>
+              ) : (
+                'Review deck'
+              )}
+            </span>
+            <button
+              type="button"
+              className="btn ghost"
+              aria-label="Next card"
+              disabled={index >= items.length - 1}
+              onClick={() => go(1)}
+            >
+              ›
+            </button>
+            <button type="button" className="btn ghost" aria-label="Close" onClick={closeSheet}>
+              <IconX />
+            </button>
+          </div>
+        )}
+      >
+        {!sel ? (
+          <div className="inbox-empty">
+            Nothing to review. <Link to={wsHref('/inbox')}>Back to the Inbox</Link>
+          </div>
+        ) : (
+          <>
+            <motion.div
+              key={sel.task.id}
+              ref={cardRef}
+              className="panel deck-card deck-swipe"
+              aria-label={`Review ${index + 1} of ${items.length}`}
+              drag="x"
+              dragListener={false}
+              dragControls={drag}
+              dragDirectionLock
+              dragSnapToOrigin
+              dragConstraints={{ left: 0, right: 0 }}
+              dragElastic={0.6}
+              onPointerDown={onPointerDown}
+              onDragEnd={onDragEnd}
+              initial={reduced || !dir ? false : { x: dir * 48, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+            >
+              <ReviewDeckCard item={sel} onOpenTerminal={nav.onOpenTerminal} diff="folded" />
+            </motion.div>
+            <div className="deck-bar">
+              {follow && <FollowUp task={sel.task} run={run} onClose={() => setFollow(false)} />}
+              {big(primary, 'deck-bar-primary')}
+              <div className="deck-bar-row">
+                {big(doneAct, '')}
+                {followAct && (
+                  <button
+                    type="button"
+                    className="btn deck-bar-btn"
+                    aria-expanded={follow}
+                    disabled={busy !== null}
+                    onClick={() => setFollow((v) => !v)}
+                  >
+                    Follow up
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn deck-bar-btn deck-bar-more"
+                  aria-label="More actions"
+                  disabled={!rest.length}
+                  onClick={() => setMore(true)}
+                >
+                  <IconMore />
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </Sheet>
+      {more && sel && (
+        <Sheet label={`More — ${sel.task.title}`} title={sel.task.title} onClose={() => setMore(false)} zIndex={36}>
+          <div className="inbox-sheet-acts">
+            {rest.map((a) => (
+              <SheetAction
+                key={a.key}
+                label={labelOf(sel.task.id, a)}
+                hint={a.hint}
+                tone={a.tone}
+                disabled={a.disabled || busy !== null}
+                // the arming press of Cancel keeps the sheet open for the second tap
+                onClick={() => void run(sel.task.id, a, () => setMore(false))}
+              />
+            ))}
+          </div>
+        </Sheet>
+      )}
+    </>
   );
 }
