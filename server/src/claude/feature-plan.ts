@@ -248,7 +248,7 @@ export function buildPlanPrompt(opts: {
   if (opts.previous) {
     lines.push(
       ``,
-      `This is a RE-ANALYSIS. Your previous plan was reviewed adversarially and BLOCKED. Previous plan:`,
+      `This is a RE-ANALYSIS. Your previous plan was reviewed adversarially and has blocker/major findings. Previous plan:`,
       JSON.stringify(
         {
           summary: opts.previous.plan.summary,

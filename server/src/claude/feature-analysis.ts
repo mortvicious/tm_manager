@@ -85,6 +85,23 @@ export interface FeatureAnalyzeDeps {
   storage: Storage;
 }
 
+/**
+ * A plan review round calls for a re-plan when its verdict is `blocker` OR any
+ * finding is blocker/major — the verdict scale (clean|minor|blocker) does not
+ * line up with the severities, and a reviewer returned `minor` over four majors
+ * (feature 0e323bef round 2), which ended the loop with them unfixed. Same rule
+ * as the diff review: blocker/major go back to the planner, minors do not.
+ */
+export function needsReplan(round: PlanReviewRound): boolean {
+  return round.verdict === 'blocker' || round.findings.some((f) => f.severity === 'blocker' || f.severity === 'major');
+}
+
+/** The findings a re-plan must resolve: blocker/major only (all of them when the verdict alone blocked). */
+export function mustFix(round: PlanReviewRound): PlanReviewRound['findings'] {
+  const serious = round.findings.filter((f) => f.severity === 'blocker' || f.severity === 'major');
+  return serious.length ? serious : round.findings;
+}
+
 /** Total wall clock for the whole (possibly multi-round) pipeline. */
 const PIPELINE_BUDGET_MS = 40 * 60_000;
 const CALL_TIMEOUT_MS = 12 * 60_000;
@@ -160,8 +177,8 @@ export async function startFeatureAnalysis(
         plan: FeaturePlan;
         findings: { severity: string; summary: string; detail: string | null }[];
       } | null =
-        feature.analysis && lastRound?.verdict === 'blocker'
-          ? { plan: feature.analysis, findings: lastRound.findings }
+        feature.analysis && lastRound && needsReplan(lastRound)
+          ? { plan: feature.analysis, findings: mustFix(lastRound) }
           : null;
       // Review rounds are numbered across Re-analyze runs (the list is appended to).
       const roundBase = rounds.length;
@@ -296,16 +313,16 @@ export async function startFeatureAnalysis(
           },
         });
 
-        if (roundResult.verdict !== 'blocker') break;
+        if (!needsReplan(roundResult)) break;
         if (round >= maxRounds) break; // bounded, mirroring review.maxRounds
-        previous = { plan, findings: roundResult.findings };
+        previous = { plan, findings: mustFix(roundResult) };
       }
 
       if (!plan) return void (await fail('analysis produced no plan'));
       const last = rounds.at(-1);
       const proposed = await storage.transitionFeature(feature.id, ['analyzing'], 'proposed', 'analyze', {
         error: laterRoundError
-          ? `${laterRoundError} — showing the previous plan${last?.verdict === 'blocker' ? ', which its review BLOCKED' : ''}. Re-analyze to continue from that review.`.slice(0, 1000)
+          ? `${laterRoundError} — showing the previous plan${last && needsReplan(last) ? ', which its review left with blocker/major findings' : ''}. Re-analyze to continue from that review.`.slice(0, 1000)
           : null,
       });
       if (proposed) broadcast({ type: 'feature.updated', feature: proposed });
