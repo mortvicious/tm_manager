@@ -39,7 +39,8 @@ export function runLink(r: Run): { taskId: string } | { path: string } | null {
   if (r.kind === 'chat') return { path: `/chat/${r.subjectId}` };
   if (r.kind === 'report') return { path: '/reports' };
   if (r.kind === 'job') return { path: `/jobs?job=${r.subjectId}` };
-  // a shift's office page is the UI phase's (docs/office.md § UI); no link yet
+  // a shift is in its office's log (docs/office.md § The /office page)
+  if (r.kind === 'shift') return { path: '/office' };
   return null;
 }
 

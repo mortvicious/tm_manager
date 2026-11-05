@@ -1258,6 +1258,8 @@ export interface OfficeRoleStateEntry extends OfficeRoleStatus {
   roleId: string;
   /** the role's next cron slot (ISO), or null when it has none */
   nextSlotAt: string | null;
+  /** what the role spent on its office-local today (`officeSpendSince` with the role), the /office page's "today" column */
+  spentTodayUsd: number;
 }
 
 /** `GET /api/offices/:id/states`, and `states` on `office.updated` */
@@ -1265,6 +1267,8 @@ export interface OfficeStates {
   officeId: string;
   /** when they were computed (ISO) */
   at: string;
+  /** what the whole office spent on its office-local today, against `dayBudgetUsd` */
+  spentTodayUsd: number;
   states: OfficeRoleStateEntry[];
 }
 
@@ -1375,4 +1379,28 @@ export interface OfficeRoleWriteResult {
   taintingTools: string[];
   /** set when `taintingTools` is not empty */
   warning?: string;
+}
+
+/**
+ * `GET /api/offices/:id/roles/:roleId/notes-review` — the notes Mark notes
+ * reviewed would vouch for: the file the role's next shift reads while
+ * `notesTaintedAt` is set (the untrusted twin when it exists, `promotes`;
+ * else `roles/<key>.md`), and the sha256 of exactly this `text`.
+ */
+export interface OfficeNotesReview {
+  /** folder-relative */
+  path: string;
+  /** true = the twin `untrusted/roles/<key>.md`, copied over `roles/<key>.md` on review */
+  promotes: boolean;
+  /** null = no notes file */
+  text: string | null;
+  sha256: string | null;
+  modifiedAt: string | null;
+  notesTaintedAt: string | null;
+}
+
+/** `POST …/notes-reviewed` — the version reviewed, as GET …/notes-review returned it; any mismatch is a 409. */
+export interface OfficeNotesReviewedBody {
+  notesTaintedAt: string;
+  sha256: string | null;
 }

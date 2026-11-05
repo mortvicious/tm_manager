@@ -2442,6 +2442,8 @@ export type AuditKind =
   | 'office.shift-deferred'
   /** a human pressed Wake now on a role */
   | 'office.wake'
+  /** a human marked a role's tainted notes reviewed (clears `notesTaintedAt`; docs/office.md § The /office page) */
+  | 'office.taint-cleared'
   | 'approval.requested'
   | 'approval.decided'
   | 'approval.finished'

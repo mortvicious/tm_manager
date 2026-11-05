@@ -103,7 +103,7 @@ export async function officeStates(storage: Storage, officeId: string, now = Dat
   const live = await storage.listShifts({ officeId: office.id, verdict: 'ran', open: true });
   const states: OfficeRoleStateEntry[] = [];
   for (const role of roles) {
-    const roleSpent = role.capUsd !== null ? await storage.officeSpendSince(office.id, sinceIso, role.id) : 0;
+    const roleSpent = await storage.officeSpendSince(office.id, sinceIso, role.id);
     const onShift = live.find((s) => s.roleId === role.id) ?? null;
     const [latest] = await storage.listShifts({ roleId: role.id, limit: 1 });
     const lastGuardSkip = latest && latest.verdict === 'skipped' && latest.skipCode === 'guard' ? latest.skipReason : null;
@@ -121,9 +121,9 @@ export async function officeStates(storage: Storage, officeId: string, now = Dat
       lastGuardSkip,
     });
     const next = nextRoleSlot(role, now, tz);
-    states.push({ roleId: role.id, ...status, nextSlotAt: next === null ? null : iso(next) });
+    states.push({ roleId: role.id, ...status, nextSlotAt: next === null ? null : iso(next), spentTodayUsd: roleSpent });
   }
-  return { officeId: office.id, at: iso(now), states };
+  return { officeId: office.id, at: iso(now), spentTodayUsd: officeSpent, states };
 }
 
 export class OfficeScheduler {
@@ -355,7 +355,7 @@ export class OfficeScheduler {
       this.lastStates.delete(officeId);
       return null;
     }
-    const key = JSON.stringify(states.states);
+    const key = JSON.stringify([states.spentTodayUsd, states.states]);
     if (force || this.lastStates.get(officeId) !== key) {
       const office = await this.deps.storage.getOffice(officeId);
       if (office) {

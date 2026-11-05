@@ -13505,3 +13505,574 @@ button.explain-tap:active {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ---------------------------------------------------------------------------
+   Virtual Office page (docs/office.md § The /office page)
+   --------------------------------------------------------------------------- */
+
+.office-page > .panel,
+.office-page > .office-banner,
+.office-page > .office-phone-bar {
+  margin-bottom: var(--tm-space-4);
+}
+
+.office-section-title {
+  padding: var(--tm-space-2) var(--tm-space-4);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--tm-text-muted);
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.office-pad {
+  padding: var(--tm-space-3) var(--tm-space-4);
+}
+
+.office-help,
+.office-hint {
+  font-size: var(--tm-text-xs);
+  line-height: 1.5;
+}
+
+.office-hint {
+  margin-top: var(--tm-space-1);
+}
+
+.office-gap {
+  margin-top: var(--tm-space-3);
+}
+
+.office-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-3);
+}
+
+.office-create,
+.office-settings,
+.office-editor-panel {
+  padding-bottom: var(--tm-space-4);
+}
+
+.office-create > :not(.office-section-title),
+.office-settings > :not(.office-section-title) {
+  margin-left: var(--tm-space-4);
+  margin-right: var(--tm-space-4);
+}
+
+.office-create .form-grid,
+.office-settings .form-grid {
+  margin-top: var(--tm-space-3);
+}
+
+.office-readonly {
+  display: flex;
+  align-items: center;
+  color: var(--tm-text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* All: the workspace picker */
+.office-list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  width: 100%;
+  min-height: var(--tm-tap);
+  padding: var(--tm-space-2) var(--tm-space-4);
+  border: none;
+  border-bottom: 1px solid var(--tm-border);
+  background: none;
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.office-list-row:last-child {
+  border-bottom: none;
+}
+
+.office-list-row:hover {
+  background: var(--tm-bg-overlay);
+}
+
+.office-list-name {
+  font-weight: 600;
+}
+
+.office-list-sub {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--tm-text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip.office-onoff.on {
+  color: var(--tm-status-done);
+}
+
+/* banners */
+.office-banner {
+  padding: var(--tm-space-3) var(--tm-space-4);
+  border: 1px solid currentColor;
+  border-radius: var(--tm-radius-md);
+  font-size: var(--tm-text-sm);
+  line-height: 1.5;
+  color: var(--tm-status-attention);
+  background: color-mix(in srgb, currentColor 10%, var(--tm-bg-raised));
+}
+
+.office-banner strong {
+  font-weight: 600;
+}
+
+.office-banner.paused {
+  color: var(--tm-status-review);
+}
+
+/* status bar: on/off, spend, pause */
+.office-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-3);
+  padding: var(--tm-space-3) var(--tm-space-4);
+}
+
+.office-switch {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+}
+
+.office-status-text {
+  font-size: var(--tm-text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.office-status-err {
+  flex-basis: 100%;
+}
+
+.office-phone-bar {
+  display: flex;
+  gap: var(--tm-space-2);
+}
+
+.office-phone-bar .btn {
+  flex: 1;
+  min-height: var(--tm-tap);
+}
+
+/* role rows (desktop) and cards (phone) */
+.office-role {
+  padding: var(--tm-space-3) var(--tm-space-4);
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.office-role.editing {
+  background: var(--tm-accent-subtle);
+}
+
+.office-role.off .office-role-main {
+  opacity: 0.6;
+}
+
+.office-role-main {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+}
+
+.office-avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tm-tap);
+  height: var(--tm-tap);
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-bg-inset);
+  border: 1px solid var(--tm-border);
+  font-size: var(--tm-text-xl);
+  line-height: 1;
+}
+
+.office-role-who {
+  flex: 1;
+  min-width: 0;
+}
+
+.office-role-name {
+  font-weight: 600;
+}
+
+.office-role-title {
+  font-weight: 400;
+  font-size: var(--tm-text-sm);
+}
+
+.office-role-state {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  margin-top: 2px;
+}
+
+.office-role-detail {
+  font-size: var(--tm-text-sm);
+}
+
+.office-role-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(64px, auto));
+  gap: var(--tm-space-3);
+  margin: 0;
+}
+
+.office-role-facts dt {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.office-role-facts dd {
+  margin: 0;
+  font-size: var(--tm-text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.office-role-flags,
+.office-role-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-2);
+  padding-left: calc(var(--tm-tap) + var(--tm-space-3));
+}
+
+.office-wake {
+  margin-top: var(--tm-space-2);
+  padding-left: calc(var(--tm-tap) + var(--tm-space-3));
+}
+
+.office-notes-text {
+  max-height: 40vh;
+  overflow: auto;
+  margin: var(--tm-space-2) 0;
+  padding: var(--tm-space-3);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-bg-inset);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chip.office-state {
+  border-color: currentColor;
+  color: var(--tm-text-muted);
+}
+
+.chip.office-state.s-scheduled {
+  color: var(--tm-status-queued);
+}
+
+.chip.office-state.s-on-shift,
+.chip.office-state.s-in-huddle {
+  color: var(--tm-status-running);
+}
+
+.chip.office-state.s-guarded,
+.chip.office-state.s-paused {
+  color: var(--tm-status-review);
+}
+
+.chip.office-state.s-waiting-for-you {
+  color: var(--tm-status-attention);
+}
+
+.chip.office-state.s-over-budget {
+  color: var(--tm-status-failed);
+}
+
+.chip.office-taint {
+  color: var(--tm-status-attention);
+  border-color: currentColor;
+}
+
+.office-add-role {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-3) var(--tm-space-4);
+}
+
+.office-add-role .field {
+  width: auto;
+}
+
+/* the role editor */
+.office-editor-panel .office-editor {
+  padding: var(--tm-space-4);
+}
+
+.office-editor-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-3);
+  margin-bottom: var(--tm-space-3);
+}
+
+.office-editor-title {
+  font-weight: 600;
+  font-size: var(--tm-text-lg);
+}
+
+.office-prompt {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-sm);
+}
+
+.office-editor-section {
+  margin-top: var(--tm-space-4);
+  padding-top: var(--tm-space-3);
+  border-top: 1px solid var(--tm-border);
+}
+
+.office-editor-section-title {
+  font-weight: 600;
+  font-size: var(--tm-text-sm);
+}
+
+.office-editor-section-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-2);
+}
+
+.office-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  min-height: var(--tm-tap-dense);
+  font-size: var(--tm-text-sm);
+  cursor: pointer;
+}
+
+.office-check.disabled {
+  color: var(--tm-text-faint);
+  cursor: default;
+}
+
+.office-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2) var(--tm-space-4);
+}
+
+.office-list-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+  width: 100%;
+  font-size: var(--tm-text-sm);
+}
+
+.office-list-edit .field {
+  width: auto;
+  min-width: 0;
+}
+
+.office-list-edit .field.mono {
+  width: 14em;
+}
+
+.office-num {
+  width: 7em;
+}
+
+.office-cmd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-1) var(--tm-space-3);
+  width: 100%;
+}
+
+.office-cmd-name {
+  font-weight: 600;
+}
+
+.office-cmd-line {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--tm-text-xs);
+  overflow-wrap: anywhere;
+}
+
+/* the shift log */
+.office-shift {
+  padding: var(--tm-space-2) var(--tm-space-4);
+  border-bottom: 1px solid var(--tm-border);
+  font-size: var(--tm-text-sm);
+}
+
+.office-shift:last-child {
+  border-bottom: none;
+}
+
+.office-shift-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+}
+
+.office-shift-when {
+  font-variant-numeric: tabular-nums;
+  color: var(--tm-text-muted);
+  min-width: 7em;
+}
+
+.office-shift-role {
+  font-weight: 600;
+}
+
+.office-shift-trigger {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
+.office-shift-line {
+  margin-top: 2px;
+  padding-left: calc(7em + var(--tm-space-2));
+  overflow-wrap: anywhere;
+}
+
+.office-shift-cmds {
+  margin-top: var(--tm-space-1);
+  padding-left: calc(7em + var(--tm-space-2));
+}
+
+.chip.office-verdict {
+  border-color: currentColor;
+}
+
+.chip.office-verdict.v-ran {
+  color: var(--tm-status-done);
+}
+
+.chip.office-verdict.v-on-shift {
+  color: var(--tm-status-running);
+  animation: pulse 1.6s var(--tm-ease-in-out) infinite;
+}
+
+.chip.office-verdict.v-skipped {
+  color: var(--tm-text-muted);
+}
+
+.chip.office-verdict.v-error {
+  color: var(--tm-status-failed);
+}
+
+.chip.office-cmd-status.st-done {
+  color: var(--tm-status-done);
+}
+
+.chip.office-cmd-status.st-done.red,
+.chip.office-cmd-status.st-error {
+  color: var(--tm-status-failed);
+}
+
+.office-shift-cmd summary {
+  cursor: pointer;
+  min-height: var(--tm-tap-dense);
+}
+
+/* wrapped, never a scroller: on a phone this sits inside a Sheet's own scroller */
+.office-cmd-tail {
+  margin: var(--tm-space-1) 0;
+  padding: var(--tm-space-2);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-terminal-bg);
+  color: var(--tm-terminal-text);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.office-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--tm-accent);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.office-link:hover {
+  text-decoration: underline;
+}
+
+.btn.office-term {
+  font-size: var(--tm-text-xs);
+}
+
+/* phone: role CARDS, shift lines without the time column */
+@media (max-width: 768px) {
+  .office-roles .office-role {
+    margin: var(--tm-space-2) var(--tm-space-3);
+    border: 1px solid var(--tm-border);
+    border-radius: var(--tm-radius-md);
+    background: var(--tm-bg);
+  }
+
+  .office-role-main {
+    flex-wrap: wrap;
+  }
+
+  .office-role-facts {
+    flex-basis: 100%;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .office-role-flags,
+  .office-role-actions,
+  .office-wake {
+    padding-left: 0;
+  }
+
+  .office-role-actions .btn {
+    min-height: var(--tm-tap);
+  }
+
+  .office-shift-line,
+  .office-shift-cmds {
+    padding-left: 0;
+  }
+
+  .office-shift-when {
+    min-width: 0;
+  }
+
+  .office-list-edit .field.mono {
+    width: 100%;
+  }
+}

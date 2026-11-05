@@ -221,6 +221,8 @@ describe('office scheduler', () => {
     const of = (id: string) => st!.states.find((s) => s.roleId === id)!;
     assert.deepEqual([of(plain.id).state, of(plain.id).detail], ['scheduled', 'next 09:00']);
     assert.equal(of(plain.id).nextSlotAt, '2026-11-05T09:00:00.000Z');
+    assert.equal(of(plain.id).spentTodayUsd, 0, 'the /office page reads today\'s spend off the states');
+    assert.equal(st!.spentTodayUsd, 0);
     assert.equal(of(guarded.id).state, 'guarded');
     assert.match(of(guarded.id).detail, /^skip: quiet hours \(00:00–23:59\) · next 09:00$/);
     const upd = h.sent.filter((e) => e.type === 'office.updated' && e.office.id === o.id);

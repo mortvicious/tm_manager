@@ -25,7 +25,9 @@ and the gate and day budget (§ Gate and budget): `server/src/office/gate.ts`,
 types at the end of `shared/src/office.ts`, and `server/src/routes/offices.test.ts`; and the shift runner (§ Shifts at run time): `server/src/office/shift.ts`,
 `shift-result.ts`, `feedback.ts` and `server/src/office/shift.test.ts`; and the
 scheduler (§ Scheduler and states): `server/src/office/scheduler.ts`, migration 57
-and `server/src/office/scheduler.test.ts`.
+and `server/src/office/scheduler.test.ts`; and the /office page (§ The /office page):
+`web/src/pages/Office.tsx`, the `office-*` rules in `web/src/theme.css` and
+`glass.css`, and the office calls in `web/src/api.ts`.
 
 ## Concepts
 
@@ -622,6 +624,8 @@ types are at the end of `shared/src/office.ts` (`OfficeDetail`,
 | `PATCH /api/offices/:id/roles/:roleId` | edit a role → `OfficeRoleWriteResult` |
 | `DELETE /api/offices/:id/roles/:roleId` | remove a role → `{ ok: true }` |
 | `POST /api/offices/:id/roles/:roleId/reset-notes` | reset the role's notes file → `OfficeRoleWriteResult` |
+| `GET /api/offices/:id/roles/:roleId/notes-review` | The notes Mark notes reviewed would vouch for → `OfficeNotesReview`: the file the next shift reads while tainted (the twin when it exists, `promotes: true`, else `roles/<key>.md`), its `text`, `sha256`, `modifiedAt` and the role's `notesTaintedAt` (§ The /office page) |
+| `POST /api/offices/:id/roles/:roleId/notes-reviewed` | Mark notes reviewed, body `{notesTaintedAt, sha256}` from the GET above (400 without): 409 when either no longer matches (a shift rewrote the notes since) or a shift of the role is open; else promotes exactly that twin text over `roles/<key>.md` (when the twin exists), then clears `notesTaintedAt` → `OfficeRoleWriteResult`; 400 when the promotion fails; 409 when the notes are not tainted; audited `office.taint-cleared` (§ The /office page) |
 | `PUT /api/offices/:id/roles/:roleId/commands` | replace the role's command allowlist (§ Command runs) → `OfficeRoleWriteResult` |
 | `POST /api/offices/:id/roles/:roleId/wake` | Wake now, `{ note? }` → 202 `{ shiftId }`; 409 `{ error, code }` with the hard-gate or runner reason (§ Scheduler and states) |
 | `GET /api/offices/:id/states` | every role's state → `OfficeStates` (§ Scheduler and states) |
@@ -1248,8 +1252,10 @@ row. A start answers 202 `{ shiftId }` and appends an `office.wake` event
 ### States
 
 `officeStates(storage, officeId, now)` gives `OfficeStates`
-(`{ officeId, at, states: OfficeRoleStateEntry[] }`, each entry = `roleState`'s
-`{ state, detail }` + `roleId` + `nextSlotAt`). It reads the latest facts and
+(`{ officeId, at, spentTodayUsd, states: OfficeRoleStateEntry[] }`, each entry = `roleState`'s
+`{ state, detail }` + `roleId` + `nextSlotAt` + the role's own `spentTodayUsd`;
+both spends are `officeSpendSince` from the office-local midnight, and a
+change in either re-broadcasts the states). It reads the latest facts and
 writes nothing (the budget is not settled):
 
 - the office row and Pause all;
@@ -1316,4 +1322,150 @@ follows `office.updated`. Details are in docs/board-versions.md § What shipped
 
 ## UI
 
-_To be filled by the UI phase._
+### The /office page
+
+`web/src/pages/Office.tsx` at `/office`, in the sidebar and the phone's More
+sheet (`NAV` in `Layout.tsx`, so every link carries `?ws` through `wsHref`).
+It is scoped by `useWorkspace()` like every view: the office shown is the
+CURRENT workspace's (`Office.workspaceId`). **All** (no `?ws`) lists every
+workspace with its office (on/off, paused, budget, autonomy) or "no office
+yet"; a pick switches the workspace, which is where the office lives. A
+workspace with no office gets the **create** form: folder (empty = the
+server's default, `<shared space folder>/office`, else it 400s with the reason)
+and time zone (the browser's zone, checked with `isValidTimeZone`). The office
+starts disabled, with the five preset roles.
+
+**Live.** The page reads `GET /api/offices` (upserted from every
+`office.updated`), then `GET /api/offices/:id` (office, roles, the latest
+`OFFICE_DETAIL_SHIFTS` shifts) and `…/states`. An `office.updated` for the
+office applies its `office`, `roles` and `states` at once and schedules a
+re-read of the detail 400 ms later, because no event carries shifts (a shift
+end, a skip and a command run all broadcast `office.updated`, so that re-read
+is what updates the log). A 60 s refresh catches what no event announces (the
+scheduler only broadcasts states that changed). The page writes nothing it
+then assumes: every button waits for the route and the broadcast redraws.
+
+**The top of the page.**
+
+- *Banner*: `officeBudgetTrippedToday` → **"Office over budget until
+  midnight"** with today's spend against the budget and the office-local
+  midnight (`nextOfficeDayStart`, `formatOfficeTime`, the zone named). A
+  paused office with any other reason gets a "paused" banner instead.
+- *Status bar* (both layouts): the on/off switch, today's spend
+  (`OfficeStates.spentTodayUsd`) of the budget, and **Pause / Continue**
+  (`PATCH { paused }`). The switch sends `PATCH { enabled }` as it is: turning
+  on an office with no day budget is refused BY THE SERVER (409, "set a day
+  budget above $0 …") and the page shows that sentence — there is no second,
+  client-side copy of the rule.
+- *Settings*: day budget, autonomy (with what each level files), max slots
+  (1…`CONCURRENCY_MAX`), tasks per shift, open tasks, time zone; Save sends
+  only the changed fields. The theme is shown read-only (a placeholder until
+  the themed view), the folder read-only.
+
+**Roles** — one row each (a card on a phone): avatar, name and title, the
+state chip (`OfficeRoleState`, one colour per state) and its detail line (the
+guard's skip reason for `guarded`), then **next** slot, **today** (the
+role's `spentTodayUsd`), **cap** and **autonomy** (the override, or
+"office's"). Flags: *role off*, *WebFetch · taints* (the role holds a web
+tool, so its shifts are tainted), *notes tainted* (`notesTaintedAt`),
+*session tainted*. Actions:
+
+- **Wake now** opens a note field, then `POST …/wake { note? }`. The note is
+  trusted prompt text. The hard gate's 409 reason is shown on the row, and
+  guards do not apply (§ Wake now).
+- **Edit** opens the editor: a panel below the roles on a desktop, a
+  `<Sheet>` on a phone.
+- **Reset notes** (two-press, `useArm`) → `POST …/reset-notes`.
+- **Mark notes reviewed**, shown only while `notesTaintedAt` is set
+  → **Review notes** opens the text inline (`GET …/notes-review`: the
+  file's path, when it was written, and whether it will be copied over),
+  and the two-press **Mark these notes reviewed** under it →
+  `POST …/notes-reviewed` with the `notesTaintedAt` and `sha256` that view
+  showed. "Reviewed" always names a concrete version: a role with a web
+  tool has every shift tainted, and each one that writes notes REPLACES the
+  twin and re-stamps `notesTaintedAt`, so a shift that ran between reading
+  and pressing makes either value stale → 409 ("read them again"; the view
+  re-reads), and a shift of the role still OPEN (`ended_at IS NULL`) → 409,
+  since it may be about to rewrite them. The text promoted is exactly the
+  text whose sha was checked, read once. A tainted shift never writes
+  `roles/<key>.md`: its notes go to the untrusted twin
+  `untrusted/roles/<key>.md` (§ Shifts at run time), and that twin is what
+  the next shift reads while `notesTaintedAt` is set — so THAT is the file
+  the human reads (the review view names it). Vouching for it PROMOTES
+  it: the twin is copied over `roles/<key>.md` (`writeOfficeFile`, temp file
+  + rename) and removed, and only then is `notesTaintedAt` cleared, so the
+  next shift reads the reviewed text as trusted. With no twin (never
+  written, or already gone) `roles/<key>.md` is what was read and only the
+  flag clears. A failed promotion is a 400 and leaves the flag set. Reset
+  notes is the other answer. A tainted SESSION stays tainted, because nobody
+  can review a conversation (`mayResume`). It needs Origin like every office
+  write, 409s on notes that are not tainted, and writes one
+  `office.taint-cleared` row (`actor: 'human'`, the role, its notes path,
+  `promotedFrom` — the twin's path or null —, the reviewed `sha256` and the
+  cleared `taintedAt`). The `office.changed` row is
+  deliberately not written: clearing taint is a trust decision, kept apart
+  so an audit can list exactly those.
+- **Add role** (below the rows): a preset and an optional key → `POST …/roles`.
+
+**The role editor** has name, avatar, title, on/off, the prompt, the model
+(`MODEL_OPTIONS`, plus the stored model if it is no longer offered so it is
+not silently changed), effort, an autonomy override, and a daily cap. It also
+has:
+
+- **Tools**: checkboxes over `SHIFT_TOOL_ALLOWLIST` ONLY. Web tools are
+  marked "taints the shift". Bash, Edit, Write and NotebookEdit are never
+  offered, and the editor says why.
+- **Schedules**: cron rows, each with `cronError` or its next slot in the
+  office zone.
+- **Triggers**: event (an `OFFICE_EVENT_NAMES` name, optionally one workspace
+  repo), signal (a source; it taints), or command-done.
+- **Guards**: an `OFFICE_GUARD_KINDS` kind with its parameters, each row
+  showing `guardError` or `describeGuard`.
+- **Saved commands this role may run**: the workspace repos' saved commands
+  that `allowlistCheck` would accept (one-shot, human-saved, not a check,
+  not archived), each with an **external** flag. An entry that is no longer
+  eligible is listed so it can be removed.
+
+Save sends the fields as one `PATCH …/roles/:roleId`. If the allowlist
+changed, it then sends `PUT …/commands`, the only route that can set the
+allowlist. The server's tainting-tools warning is shown after a save, and
+**Delete role** is a two-press.
+
+**The shift log** — newest first. Each row has the office-local time, the
+role, the trigger (`schedule <cron>`, `event …`, `signal …`, `wake now human`)
+and the verdict (*on shift* while it is open, *ran*, *error*, *skipped*). The
+rest of the row:
+
+- **skip: <reason> (<code>)** for a skipped shift.
+- The cost, the *tainted* chip and **taint from …**, every `taintSources`
+  entry in words.
+- The tasks it filed (each opens the task panel), the filing note, and how
+  many were held as proposals or dropped and why.
+- Each command run: name, `exit n` (red when non-zero) or its status, an
+  *external* chip and the reason. The output tail is in a `<details>`,
+  wrapped and never a scroller. The log also lists what was not run and the
+  command-done wake.
+- **Terminal** opens the shift's aux run in the terminal drawer over
+  `/ws/terminal/:runId`. The runs list links a `shift` run to `/office`.
+
+**Phone.** The status bar, then **Settings** and **Shift log** buttons, each
+of which opens a `<Sheet>`. The roles are cards, and the editor is a `<Sheet>`
+too (`disableDrag`, since it is a form). Nothing inside a sheet scrolls on its
+own: command output wraps and the prompt is a plain textarea. A sheet's
+title replaces the panel heading, so nothing is said twice.
+
+**Styling.** Every value is a `--tm-*` token (`office-*` rules at the end of
+`theme.css`). States use the status tokens: on-shift = running, guarded and
+paused = review, over-budget = failed, waiting-for-you = attention. Taint is
+the attention colour everywhere. Glass needs ONE rule of its own (`glass.css`),
+which gives a phone's role card the card material and rim inside the glassy
+roles panel. Everything else is remapped tokens and the existing
+`.panel`/`.chip`/`.btn` Glass rules.
+
+Checked headless with Playwright over a scratch build and fixtures for the
+office routes (no live server): desktop Classic, phone Glass, All and create.
+The checks covered the over-budget banner, a tainted shift's sources, a
+guard skip's reason, a live shift's Terminal opening the drawer, the editor
+offering only the seven allowlisted tools and only the eligible command (a
+check was filtered out), no nested scroller inside the sheets, and every
+write carrying `Origin`.

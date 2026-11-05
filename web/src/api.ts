@@ -51,6 +51,18 @@ import type {
   JobRun,
   JobScheduleInput,
 } from '@tm/shared';
+import type {
+  OfficeCreateBody,
+  OfficeCreateResult,
+  OfficePatchBody,
+  OfficeRoleCommand,
+  OfficeRoleCreateBody,
+  OfficeRolePatchBody,
+  OfficeNotesReview,
+  OfficeNotesReviewedBody,
+  OfficeRoleWriteResult,
+  OfficeStates,
+} from '@tm/shared';
 
 // Only user-editable fields — status/error/resultSummary are machine-owned and
 // the server rejects them with a 400 (.strict() schemas).
@@ -503,4 +515,23 @@ export const api = {
   events: (limit = 50) => req<AuditEvent[]>('GET', `/api/events?limit=${limit}`),
   orchestratorAction: (a: 'start' | 'stop' | 'stop-and-kill' | 'pause' | 'continue') =>
     req<{ enabled: boolean }>('POST', `/api/orchestrator/${a}`),
+
+  // Virtual Office (docs/office.md § API, § The /office page). Every write is
+  // Origin-gated on the server; the browser's fetch always sends one.
+  officeStates: (id: string) => req<OfficeStates>('GET', `/api/offices/${id}/states`),
+  createOffice: (b: OfficeCreateBody) => req<OfficeCreateResult>('POST', '/api/offices', b),
+  updateOffice: (id: string, b: OfficePatchBody) => req<Office>('PATCH', `/api/offices/${id}`, b),
+  createOfficeRole: (id: string, b: OfficeRoleCreateBody) => req<OfficeRoleWriteResult>('POST', `/api/offices/${id}/roles`, b),
+  updateOfficeRole: (id: string, roleId: string, b: OfficeRolePatchBody) =>
+    req<OfficeRoleWriteResult>('PATCH', `/api/offices/${id}/roles/${roleId}`, b),
+  setOfficeRoleCommands: (id: string, roleId: string, commands: OfficeRoleCommand[]) =>
+    req<OfficeRoleWriteResult>('PUT', `/api/offices/${id}/roles/${roleId}/commands`, { commands }),
+  deleteOfficeRole: (id: string, roleId: string) => req<{ ok: true }>('DELETE', `/api/offices/${id}/roles/${roleId}`),
+  resetOfficeRoleNotes: (id: string, roleId: string) =>
+    req<OfficeRoleWriteResult>('POST', `/api/offices/${id}/roles/${roleId}/reset-notes`, {}),
+  officeNotesReview: (id: string, roleId: string) => req<OfficeNotesReview>('GET', `/api/offices/${id}/roles/${roleId}/notes-review`),
+  markOfficeNotesReviewed: (id: string, roleId: string, b: OfficeNotesReviewedBody) =>
+    req<OfficeRoleWriteResult>('POST', `/api/offices/${id}/roles/${roleId}/notes-reviewed`, b),
+  wakeOfficeRole: (id: string, roleId: string, note?: string) =>
+    req<{ shiftId: string }>('POST', `/api/offices/${id}/roles/${roleId}/wake`, note ? { note } : {}),
 };

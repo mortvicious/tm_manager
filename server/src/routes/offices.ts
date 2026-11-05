@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
@@ -30,6 +33,7 @@ import {
   type OfficeGuard,
   type OfficeRole,
   type OfficeRoleFields,
+  type OfficeNotesReview,
   type OfficeRoleWriteResult,
   type OfficeTrigger,
 } from '@tm/shared';
@@ -37,6 +41,9 @@ import { broadcast } from '../events.ts';
 import { archiveRoleNotes, defaultOfficeFolder, resetRoleNotes, scaffoldOfficeFolder, validateOfficeFolder } from '../office/folder.ts';
 import { DEFAULT_OFFICE_THEME, OFFICE_THEMES, generateOfficeIdentities, generateRoleIdentity } from '../office/names.ts';
 import { allowlistCheck } from '../office/commands.ts';
+import { untrustedPath } from '../office/isolation.ts';
+import { readOfficeText } from '../office/shift.ts';
+import { SHIFT_NOTES_MAX_CHARS, officeRel, roleNotesRel, writeOfficeFile } from '../office/shift-result.ts';
 import { roleFromPreset } from '../office/presets.ts';
 import { officeScheduler, officeStates, type OfficeScheduler } from '../office/scheduler.ts';
 import type { NewOfficeRole, OfficePatch, OfficeRolePatch } from '../storage/office-sql.ts';
@@ -112,6 +119,11 @@ const wakeBody = z.object({ note: z.string().max(OFFICE_WAKE_NOTE_MAX).optional(
 type RoleInput = z.infer<typeof roleFieldsPartial>;
 
 /** `PUT …/roles/:roleId/commands`: the whole allowlist (docs/office.md § Command runs). */
+/** `POST …/notes-reviewed`: the version the human read, as GET …/notes-review showed it. */
+const notesReviewedBody = z
+  .object({ notesTaintedAt: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/).nullable() })
+  .strict();
+
 const roleCommandsBody = z
   .object({
     commands: z
@@ -660,6 +672,110 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opt
       key: role.key,
       notesPath: rel,
       wasTainted: cur.notesTaintedAt !== null,
+    });
+    await announce(office, true);
+    return roleResult(role);
+  });
+
+  // The notes a human is asked to review (docs/office.md § The /office page):
+  // the file the role's next shift would read while `notesTaintedAt` is set —
+  // the untrusted twin `untrusted/roles/<key>.md` when it exists, else
+  // `roles/<key>.md` — with the sha256 of exactly this text. Mark notes
+  // reviewed must name that sha (and the `notesTaintedAt` shown), so it can
+  // only vouch for the version the human actually read.
+  const notesUnderReview = (office: Office, role: OfficeRole) => {
+    const twin = officeRel(office, untrustedPath(office, roleNotesRel(role)));
+    // readOfficeText refuses a file that resolves outside the folder (a symlink)
+    const twinText = readOfficeText(office, twin, SHIFT_NOTES_MAX_CHARS * 4);
+    const rel = twinText !== null ? twin : roleNotesRel(role);
+    const text = twinText ?? readOfficeText(office, rel, SHIFT_NOTES_MAX_CHARS * 4);
+    let modifiedAt: string | null = null;
+    if (text !== null) {
+      try {
+        modifiedAt = fs.statSync(path.join(path.resolve(office.folderPath), rel)).mtime.toISOString();
+      } catch {
+        // gone between the read and the stat: the sha still names what was read
+      }
+    }
+    return {
+      path: rel,
+      promotes: twinText !== null,
+      text,
+      sha256: text === null ? null : createHash('sha256').update(text).digest('hex'),
+      modifiedAt,
+    };
+  };
+
+  app.get('/api/offices/:id/roles/:roleId/notes-review', async (req, reply) => {
+    const found = await loadRole(req, reply);
+    if (!found) return reply;
+    const { office, role } = found;
+    const review: OfficeNotesReview = { ...notesUnderReview(office, role), notesTaintedAt: role.notesTaintedAt };
+    return review;
+  });
+
+  // Mark notes reviewed (docs/office.md § The /office page): a human read the
+  // notes a tainted shift wrote and vouches for them. A tainted shift writes
+  // its notes to the untrusted twin (`untrusted/roles/<key>.md`), which is
+  // what the next shift reads while `notesTaintedAt` is set — so the twin is
+  // PROMOTED over `roles/<key>.md` (temp file + rename, `writeOfficeFile`)
+  // and removed, and only then is the flag cleared: the next shift reads the
+  // reviewed text as trusted. No twin (it was never written, or is gone) →
+  // `roles/<key>.md` is what was read, and only the flag clears. A tainted
+  // SESSION stays tainted (`mayResume`): nobody can review a conversation.
+  // The body names the version reviewed (`notesTaintedAt` + `sha256` from
+  // GET …/notes-review): a shift that rewrote the twin since re-stamps the
+  // flag and changes the sha, so either mismatch is a 409 ("read them
+  // again") — the promoted text is exactly the text whose sha was checked.
+  // A shift of the role still open → 409 too: it may be about to rewrite it.
+  app.post('/api/offices/:id/roles/:roleId/notes-reviewed', { preHandler: fromBrowser }, async (req, reply) => {
+    const parsed = notesReviewedBody.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: `notes-reviewed: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}` });
+    }
+    const found = await loadRole(req, reply);
+    if (!found) return reply;
+    const { office, role: cur } = found;
+    if (cur.notesTaintedAt === null) return reply.code(409).send({ error: 'these notes are not marked tainted' });
+    if (parsed.data.notesTaintedAt !== cur.notesTaintedAt) {
+      return reply.code(409).send({ error: 'a shift rewrote these notes after you opened them — read them again' });
+    }
+    const open = await storage.listShifts({ roleId: cur.id, open: true, limit: 1 });
+    if (open.length > 0) return reply.code(409).send({ error: 'a shift of this role is running and may rewrite its notes — wait for it to end' });
+    const review = notesUnderReview(office, cur);
+    if (review.sha256 !== parsed.data.sha256) {
+      return reply.code(409).send({ error: 'these notes changed after you opened them — read them again' });
+    }
+    let promotedFrom: string | null = null;
+    if (review.promotes && review.text !== null) {
+      try {
+        writeOfficeFile(office, roleNotesRel(cur), review.text);
+      } catch (e) {
+        return reply.code(400).send({ error: `could not promote the reviewed notes: ${(e as Error).message}` });
+      }
+      promotedFrom = review.path;
+      try {
+        fs.rmSync(path.join(path.resolve(office.folderPath), review.path), { force: true });
+      } catch (e) {
+        // harmless: the twin is read only while the flag is set
+        console.warn(`office ${office.id}: could not remove ${review.path}:`, (e as Error).message);
+      }
+    }
+    const role = await storage.updateOfficeRole(cur.id, { notesTaintedAt: null });
+    if (!role) return reply.code(404).send({ error: 'role not found in this office' });
+    await storage.appendEvent({
+      kind: 'office.taint-cleared',
+      actor: 'human',
+      data: {
+        officeId: office.id,
+        workspaceId: office.workspaceId,
+        roleId: role.id,
+        key: role.key,
+        notesPath: role.notesPath,
+        promotedFrom,
+        sha256: review.sha256,
+        taintedAt: cur.notesTaintedAt,
+      },
     });
     await announce(office, true);
     return roleResult(role);

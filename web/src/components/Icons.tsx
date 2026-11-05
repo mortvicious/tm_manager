@@ -137,6 +137,17 @@ export const IconJobs = () => (
   </svg>
 );
 
+/** the Virtual Office (docs/office.md): a desk with a person at it */
+export const IconOffice = () => (
+  <svg {...p}>
+    <circle cx="12" cy="6.5" r="2.5" />
+    <path d="M7.5 14a4.5 4.5 0 0 1 9 0" />
+    <path d="M3 14h18" />
+    <path d="M5 14v6" />
+    <path d="M19 14v6" />
+  </svg>
+);
+
 export const IconShared = () => (
   <svg {...p}>
     <circle cx="6" cy="12" r="2.5" />

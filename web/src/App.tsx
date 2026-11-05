@@ -21,6 +21,7 @@ import { DraftTriagePage } from './pages/DraftTriage.tsx';
 import { SharedPage } from './pages/Shared.tsx';
 import { ReportsPage } from './pages/Reports.tsx';
 import { JobsPage } from './pages/Jobs.tsx';
+import { OfficePage } from './pages/Office.tsx';
 import { ReposPage } from './pages/Repos.tsx';
 import { TerminalsPage } from './pages/Terminals.tsx';
 import { TimelinePage } from './pages/Timeline.tsx';
@@ -70,6 +71,7 @@ export function App() {
       <Route path="/features/:id" element={<FeaturePage onOpenTask={setOpenTask} />} />
       <Route path="/reports" element={<ReportsPage />} />
       <Route path="/jobs" element={<JobsPage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
+      <Route path="/office" element={<OfficePage onOpenTask={setOpenTask} onOpenTerminal={openTerm} />} />
       <Route path="/shared" element={<SharedPage onOpenTask={setOpenTask} />} />
       <Route path="/terminals" element={<TerminalsPage onOpenTerminal={openTerm} onOpenTask={setOpenTask} />} />
       <Route path="/repos" element={<ReposPage onOpenTerminal={openTerm} />} />
