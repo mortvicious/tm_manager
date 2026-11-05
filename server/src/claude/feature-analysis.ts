@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Feature, FeaturePlan, FeatureReview, PlanFinding, PlanReviewRound, Repo, RunStats } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
-import { READ_ONLY_TOOLS, acceptJson, aux, resultInstruction, withModelFallback, type AuxOutcome } from './aux.ts';
+import { officeFeatureContext, type OfficeFeatureContext } from '../office/feature-context.ts';
+import { READ_ONLY_DISALLOWED, READ_ONLY_TOOLS, acceptJson, aux, resultInstruction, withModelFallback, type AuxOutcome } from './aux.ts';
 import {
   PLAN_FIX_JSON_SCHEMA,
   PLAN_FIX_REVIEW_JSON_SCHEMA,
@@ -13,10 +14,11 @@ import {
   planFixReviewSchema,
 } from './plan-fix.ts';
 import {
-  PLAN_JSON_SCHEMA,
   PLAN_REVIEW_JSON_SCHEMA,
   buildPlanPrompt,
   buildPlanReviewPrompt,
+  officePlanAcceptor,
+  planJsonSchema,
   planReviewSchema,
   planSchema,
   toStoredPlan,
@@ -38,11 +40,40 @@ import {
 const PLAN_DISALLOWED = ['Edit', 'Write', 'NotebookEdit'];
 const PLAN_TOOLS = [...READ_ONLY_TOOLS, 'Bash'];
 
+/**
+ * Where the pipeline's sessions run. A repo feature: in the repo, the policy
+ * above. A cross-repo OFFICE feature (docs/office.md § Director features): in
+ * the office folder with every workspace repo as an `--add-dir`, the shift's
+ * read-only tools with Bash DENIED (the trusted read denies bind the
+ * Read-family tools only — `isolation.ts`), plus those denies when the
+ * feature is untainted.
+ */
+interface PlanPlace {
+  repoId: string | null;
+  cwd: string;
+  addDirs?: string[];
+  permissionsDeny?: string[];
+  tools: string[];
+  disallowed: string[];
+}
+
+export function planPlace(repo: Pick<Repo, 'id' | 'path'>, office: OfficeFeatureContext | null): PlanPlace {
+  if (!office) return { repoId: repo.id, cwd: repo.path, tools: PLAN_TOOLS, disallowed: PLAN_DISALLOWED };
+  return {
+    repoId: repo.id,
+    cwd: office.workspace.folderPath,
+    addDirs: office.repos.map((r) => r.path),
+    permissionsDeny: office.denies ?? undefined,
+    tools: [...READ_ONLY_TOOLS],
+    disallowed: [...READ_ONLY_DISALLOWED],
+  };
+}
+
 /** Fable → Opus 5.5 xhigh on `model_not_found` only — the shared `withModelFallback`. */
 async function runWithFallback<T>(opts: {
   kind: 'plan' | 'plan-review';
   feature: Feature;
-  repo: Repo;
+  place: PlanPlace;
   model: string;
   prompt: string;
   jsonSchema: object | string;
@@ -55,14 +86,16 @@ async function runWithFallback<T>(opts: {
     aux().run<T>({
       kind: opts.kind,
       subjectId: opts.feature.id,
-      repoId: opts.repo.id,
+      repoId: opts.place.repoId,
       label: opts.label,
-      cwd: opts.repo.path,
+      cwd: opts.place.cwd,
+      ...(opts.place.addDirs ? { addDirs: opts.place.addDirs } : {}),
+      ...(opts.place.permissionsDeny ? { permissionsDeny: opts.place.permissionsDeny } : {}),
       model,
       effort,
       prompt: opts.prompt + '\n' + resultInstruction(opts.jsonSchema),
-      tools: PLAN_TOOLS,
-      disallowedTools: PLAN_DISALLOWED,
+      tools: opts.place.tools,
+      disallowedTools: opts.place.disallowed,
       permission: 'dontAsk',
       lean: true,
       timeoutMs: opts.timeoutMs,
@@ -170,11 +203,16 @@ export async function startFeatureAnalysis(
     };
 
     try {
-      const openTasks = (await storage.listTasks({ repoId: repo.id }))
+      // a Director's cross-repo feature plans from the office folder over its workspace
+      const office = feature.officeId ? await officeFeatureContext(storage, feature) : null;
+      const place = planPlace(repo, office);
+      const workspace = office?.workspace ?? null;
+      const tainted = office?.tainted ?? false;
+      const openTasks = (office ? await storage.listTasks({ repoIds: office.repoIds }) : await storage.listTasks({ repoId: repo.id }))
         .filter((t) => ['draft', 'queued', 'running', 'waiting', 'review', 'blocked', 'failed'].includes(t.status))
         .filter((t) => t.featureId !== feature.id)
         .slice(0, 60)
-        .map((t) => ({ id: t.id, title: t.title, status: t.status }));
+        .map((t) => (office ? { id: t.id, title: t.title, status: t.status, repoId: t.repoId } : { id: t.id, title: t.title, status: t.status }));
 
       let plan: FeaturePlan | null = null;
       let rounds: PlanReviewRound[] = feature.review?.rounds ?? [];
@@ -217,10 +255,11 @@ export async function startFeatureAnalysis(
           // ---- FIX round: edit the plan for the numbered findings, review those + the edits ----
           const base = previous.plan;
           const handedOver = previous.findings;
+          const fixAcceptor = planFixAcceptor(base, () => randomUUID());
           const fixRes = await runWithFallback({
             kind: 'plan',
             feature,
-            repo,
+            place,
             model,
             prompt: buildPlanFixPrompt({
               repoName: repo.name,
@@ -230,9 +269,12 @@ export async function startFeatureAnalysis(
               plan: base,
               findings: handedOver,
               note: round === 0 ? (opts?.note ?? null) : null,
+              workspace,
+              tainted,
             }),
             jsonSchema: PLAN_FIX_JSON_SCHEMA,
-            schema: planFixAcceptor(base, () => randomUUID()),
+            // an office feature's edited plan must still name a workspace repo on every card
+            schema: office ? officePlanAcceptor(fixAcceptor, office.repoIds, (v) => v.applied.plan) : fixAcceptor,
             timeoutMs: CALL_TIMEOUT_MS,
             label: `plan fix: ${feature.title}`,
             signal: ctl.signal,
@@ -258,7 +300,7 @@ export async function startFeatureAnalysis(
           const reviewRes = await runWithFallback({
             kind: 'plan-review',
             feature,
-            repo,
+            place,
             model: settings['review.model'],
             prompt: buildPlanFixReviewPrompt({
               repoName: repo.name,
@@ -270,6 +312,8 @@ export async function startFeatureAnalysis(
               log: applied.log,
               changed: applied.changed,
               labels: applied.labels,
+              workspace,
+              tainted,
             }),
             jsonSchema: PLAN_FIX_REVIEW_JSON_SCHEMA,
             schema: planFixReviewSchema,
@@ -304,7 +348,7 @@ export async function startFeatureAnalysis(
           const planRes = await runWithFallback({
             kind: 'plan',
             feature,
-            repo,
+            place,
             model,
             prompt: buildPlanPrompt({
               repoName: repo.name,
@@ -314,9 +358,12 @@ export async function startFeatureAnalysis(
               request: feature.request,
               openTasks,
               note: opts?.note ?? null,
+              workspace,
+              tainted,
             }),
-            jsonSchema: PLAN_JSON_SCHEMA,
-            schema: planSchema,
+            jsonSchema: planJsonSchema(office?.repoIds),
+            // a card naming a repo outside the workspace rejects the plan (typed back as the correction)
+            schema: office ? officePlanAcceptor(planSchema, office.repoIds, (v) => v) : planSchema,
             timeoutMs: CALL_TIMEOUT_MS,
             label: `plan: ${feature.title}`,
             signal: ctl.signal,
@@ -348,13 +395,15 @@ export async function startFeatureAnalysis(
           const reviewRes = await runWithFallback({
             kind: 'plan-review',
             feature,
-            repo,
+            place,
             model: settings['review.model'],
             prompt: buildPlanReviewPrompt({
               repoName: repo.name,
               title: feature.title,
               request: feature.request,
               plan,
+              workspace,
+              tainted,
             }),
             jsonSchema: PLAN_REVIEW_JSON_SCHEMA,
             schema: planReviewSchema,

@@ -52,6 +52,7 @@ import type { Storage } from '../storage/types.ts';
 import { allowlistCheck, commandRunsBlock, type OfficeCommandRuns } from './commands.ts';
 import { fallbackBrief, standupInput, writeShiftBrief, type StandupInput } from './briefs.ts';
 import { ROADMAP_REL, plannableWishes, replanReason } from './docs.ts';
+import './features.ts'; // registers the `feature` shift section (Director only)
 import { readRoleFeedback, roleFeedbackRel } from './feedback.ts';
 import { officeStates } from './scheduler.ts';
 import { validateOfficeFolder } from './folder.ts';
@@ -553,8 +554,8 @@ export class ShiftRunner {
         ? '- Autonomy `proposals`: nothing you return in `tasks` is filed — each request becomes a PROPOSAL a human accepts or rejects (the decision lands in your feedback file).'
         : `- Autonomy \`${effectiveAutonomy(office, role)}\`: \`tasks\` are filed for you (queued, or drafts when tainted or the queue is stopped); \`proposals\` wait for a human decision.`,
       '- Your result is a set of sections; include only the ones you need:',
-      shiftSectionGuide(),
-      resultInstruction(shiftResultJsonSchema()),
+      shiftSectionGuide(role),
+      resultInstruction(shiftResultJsonSchema(role)),
     ];
     return lines.filter((l, i) => !(l === '' && lines[i - 1] === '')).join('\n');
   }
@@ -657,7 +658,7 @@ export class ShiftRunner {
         permission: 'dontAsk',
         lean: true,
         timeoutMs: SHIFT_TIMEOUT_MS,
-        accept: acceptJson(shiftResultSchema()),
+        accept: acceptJson(shiftResultSchema(role)),
         signal: live.ctl.signal,
       });
       ({ res } = await withModelFallback(
@@ -814,6 +815,7 @@ export class ShiftRunner {
             ...(a.taskIds ? { taskIds: a.taskIds } : {}),
             ...(a.commandIds ? { commandIds: a.commandIds } : {}),
             ...(a.briefId ? { briefId: a.briefId } : {}),
+            ...(a.featureId ? { featureId: a.featureId } : {}),
             ...(a.errors ? { errors: a.errors } : {}),
           })),
           files,

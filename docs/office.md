@@ -30,7 +30,11 @@ and `server/src/office/scheduler.test.ts`; and the /office page (§ The /office 
 `glass.css`, and the office calls in `web/src/api.ts`; and the briefings (§ Briefings):
 `server/src/office/briefs.ts`, the brief document in `server/src/telegram/report.ts`,
 the `office.brief` branches of the Telegram and push notifiers, and
-`server/src/office/briefs.test.ts`.
+`server/src/office/briefs.test.ts`; and the Director's cross-repo features
+(§ Director features): `server/src/office/features.ts` and `feature-context.ts`,
+the office branches of `server/src/claude/feature-plan.ts`, `feature-analysis.ts`
+and `plan-fix.ts`, both drivers' `approveFeature`/`resolveFeatureCompletion`,
+and `server/src/office/features.test.ts`.
 
 ## Concepts
 
@@ -593,12 +597,16 @@ both drivers):
 - **`officeSpendSince(officeId, sinceIso, roleId?)`** returns the
   `tm_runs.cost_usd` of every run **started** at or after `sinceIso`. This is
   the same measure as `spendSince`, which backs the `budget.dayUsd` fuse. It
-  counts two kinds of run:
+  counts three kinds of run:
   - the office's shift runs: a run linked by `tm_office_shifts.run_id`, or an
     aux run of kind `shift` whose `subject_id` is a shift of the office;
   - the runs of the tasks the office filed, attributed like `taskCostSql`:
     each task's own worker runs, plus the `review`/`compact` aux runs about
-    it.
+    it;
+  - the planning of the office's features (§ Director features): aux runs of
+    kind `plan`/`plan-review` whose `subject_id` is a `tm_features` row with
+    this `office_id`. Under `roleId` they count only for a Director role
+    (preset `director`), the one role that files features.
 
   A run that matches more than one branch is one row, so it is counted once.
   Other tasks, other offices' tasks, and other aux kinds about an office task
@@ -627,7 +635,8 @@ card (`FeaturePlanTask`) gains an optional `repoId` — the repo a cross-repo
 Director feature's card runs in. `planTaskSchema` accepts it (nullish),
 `toStoredPlan` keeps it only when set (a single-repo card carries no key), the
 Features route's `planCardSchema` and the plan-fix edits pass it through, and
-single-repo features ignore it.
+single-repo features ignore it. § Director features covers how it is asked
+for, checked and used.
 
 Storage methods (both drivers, SQL in `office-sql.ts`):
 
@@ -992,6 +1001,7 @@ Every write goes through `writeOfficeFile`, which:
 | `tasks` | ≤ 30 of `{repoId, title, description, category?, effort?}` | files worker tasks, turns them into proposals (proposals autonomy) or drops them past a cap — § Filing |
 | `commands` | ≤ 3 of `{commandId, why}` | runs allowlisted saved commands after the shift — § Command runs |
 | `proposals` | ≤ 3 of `{title, body, repoId?}` | stores improvement proposals a human accepts or rejects — § Proposals |
+| `feature` | ONE `{title, request}` (title ≤ 200, one line; request ≤ 20,000), **Director only** | files a cross-repo feature and starts its plan pipeline — § Director features |
 
 A **tainted** shift's notes and deliverables go to
 `untrustedPath(office, <their own path>)` instead, for example
@@ -1002,7 +1012,12 @@ While `notesTaintedAt` is set, the next shift reads the newest notes, which
 are the untrusted twin (or the trusted file if there is no twin). That shift
 is tainted (`tainted-notes`). A human clears this with reset-notes (§ API).
 
-`commands` is registered by § Command runs and `brief` by § Briefings (in `briefs.ts`, so `shift-result.ts` imports neither). The section context also
+`commands` is registered by § Command runs, `brief` by § Briefings (in `briefs.ts`), `roadmap`/`wishUpdates` by § Wishes and vision (in `docs.ts`, refused in `apply` for a non-Director) and `feature` by § Director features (in `features.ts`), so `shift-result.ts` imports none of them.
+A section may be limited to some roles (`availableTo(role)`): `shiftResultSchema(role)`,
+`shiftResultJsonSchema(role)` and `shiftSectionGuide(role)` leave it out for any
+other role, so it is neither offered in the prompt nor accepted in the result,
+and `applyShiftResult` records it as an error if it arrives anyway. Called
+without a role they list every section. The section context also
 carries the shift's `runId` and the orchestrator (to kick the scheduler after a
 queued filing).
 
@@ -1660,6 +1675,134 @@ is a section error):
   and list (status select, done/dropped folded), each doc rendered (safe
   markdown) with **Edit** → a textarea with an Edit/Preview toggle and Save,
   which sends the loaded `sha256` as `baseSha256`. Roadmap is read-only.
+
+## Director features
+
+A Director's shift may file ONE big cross-repo request per shift as a
+**feature** (docs/features.md): the `feature` result section, `{title,
+request}`. Small work stays in `tasks`. Nothing becomes a task until a human
+approves the plan. Code: `server/src/office/features.ts` (the section and
+`fileOfficeFeature`), `feature-context.ts` (where it is planned), the office
+branches of the feature pipeline (`claude/feature-plan.ts`,
+`feature-analysis.ts`, `plan-fix.ts`) and of both drivers' `approveFeature` and
+`resolveFeatureCompletion`. decisions.md 2026-11-05 records the choices.
+
+### Filing
+
+`fileOfficeFeature` refuses (the section's error, an `office.feature` row with
+`dropped`):
+
+- a role that is not the Director (`isStandupRole`, preset `director`). The
+  section is not even offered to other roles (§ The result: a section
+  registry);
+- a workspace with no repos;
+- an office with `OFFICE_OPEN_FEATURES_MAX` (3) features not yet `done` or
+  `cancelled`. A Director cannot pile up plans nobody reads.
+
+Otherwise it creates the `tm_features` row with `office_id`, `repo_id` = the
+workspace's FIRST repo and `tainted_at` = the shift's time when the shift was
+tainted. The repo is only a listing key (the Features page, the repo filter);
+every card names its own repo. The actor is `office:<role key>`. While the
+office is on and not paused, the row moves to `analyzing` and the ordinary
+pipeline starts. A paused or disabled office leaves a `draft` whose `error`
+says why (`not analyzed: the office is paused (…) — press Analyze to plan
+it`). A human's Analyze starts the same office pipeline. Each filing is an
+`office.feature` audit row (repos, taint, whether it is analyzing), and the
+shift's brief lists `filed feature <id8>`.
+
+### Planning from the office folder
+
+`officeFeatureContext` resolves where an office feature is planned, whoever
+started the pipeline. It is the shift's place: `cwd` = the office folder,
+`--add-dir=<repo>` for every workspace repo that still exists. The tools are
+`READ_ONLY_TOOLS` under `dontAsk` with `READ_ONLY_DISALLOWED`, so **Bash is
+denied**. A repo-cwd plan keeps Bash under the repo's own allow rules, but from
+the office folder no single repo's rules apply. An UNTAINTED feature also gets
+the trusted shift's `permissions.deny` (`trustedShiftDenies`: the untrusted
+storage plus every role's notes a tainted shift wrote), so a trusted plan never
+reads untrusted text. The context throws, and so fails the feature with the
+reason, when the office, its workspace, its repos or its folder are gone.
+
+The prompts get a workspace variant (`planWorkspaceLines`): the repos as JSON
+(`repoId`, name, path, role), with the rule that every card carries `"repoId"`
+from that list, that a change spanning two repos is two cards ordered by phase
+or `dependsOn`, and, for the reviewer, a hunt for a card in the wrong repo or
+one spanning two. The full round's `--json-schema` makes `repoId` required with
+an enum of the workspace's ids (`planJsonSchema(repoIds)`). A TAINTED feature's
+request goes in a fenced `untrusted-request` data block under a warning that it
+is data, not instructions (`planRequestBlock`); an untainted one keeps the
+plain `--- the request ---` block. The single-repo prompts are unchanged.
+
+**Every card's repo is validated against the workspace.** In the pipeline,
+`officePlanAcceptor` wraps the plan schema (and the fix round's
+`planFixAcceptor`, over the plan after the edits): a card with no `repoId`, or
+one outside the workspace, fails the result with a message listing the
+offenders and the allowed ids. The aux runner types that back into the same
+session as the correction, at most twice, after which the round fails like any
+invalid result. A human's `PATCH /plan` naming a repo outside the workspace is
+a 400. At approval `approvalCardRepos` checks again against the workspace as it
+is NOW. An out-of-workspace card throws `FeatureApprovalRefused` inside the
+transaction, so nothing is created, the feature stays `proposed` and the route
+answers 409 (Telegram shows the reason). A card with NO `repoId` (one a human
+added on the approval surface) files into the listing repo; the Feature page
+shows it as `(default)`.
+
+### Approval
+
+`approveFeature` (both drivers) files each card as usual (`draft`, source
+`'feature'`, standing caps, phase, `dependsOn`), plus for an office feature:
+
+- `repo_id` = the card's repo;
+- `office_id` = the feature's office;
+- `role_id` = the office's Director (looked up at approval: the oldest role
+  with preset `director`. `tm_features` has no `role_id` column, see
+  decisions.md);
+- `tainted_at` = the feature's, when it is tainted.
+
+So every card is external (`isExternalTask` is true on `officeId`) and lands
+`supervised`; the office's claim share (§ Claim share) and day budget apply to
+it like any office task; and a fresh worker prompt leads with the Director's
+role block (§ Role-tagged work).
+
+### The phase pump and tainted cards
+
+Start and the phase pump work as for any feature: each phase's drafts are
+queued when the phases before it are resolved. Cards in different repos of one
+phase run in parallel, one per repo (same-repo exclusivity and the office's
+`max_slots` still apply). The one difference: **the pump never queues a
+tainted card.** `planFeatureProgress` (pure, `feature-plan.ts`, used by both
+drivers) leaves any draft for which `isTaintedFeatureDraft` holds (`draft`,
+source `'feature'`, `tainted_at` set) where it is. Such a card still blocks
+its phase (`FEATURE_CLAIM_GATE` and `isFeatureTaskBlocking` are unchanged: a
+`'feature'` draft is phase work), so later phases wait for it too. The
+feature's `error` says `N tainted cards wait for you to queue them`
+(`featureTaintedWaitReason`). The pump rewrites only its own reason, as the
+held count changes, and clears it when nothing is held, so a human's error
+text is never touched. `resolveFeatureCompletion` returns the count as `held`,
+and Telegram's approve-and-start reply repeats the reason.
+
+A human **Enqueue** or **Add to queue** of such a card queues it normally (no
+special case in the claim), then re-runs the pump (`repumpHeldFeatureCard` in
+`task-actions.ts`) so the count follows. The Feature page marks each one
+`tainted — queue it yourself`, and its header shows `office · <workspace> · N
+repos` and a `tainted` chip.
+
+**The schedule simulator agrees.** `predictSchedule` never simulates the pump:
+it never predicts a draft to start, tainted or not. A tainted card's own wait
+reads `tainted feature card — waits for you to queue it`, and a later phase's
+wait names the first blocker that waits on a human (`… is a tainted draft that
+waits for you to queue it`) rather than a queued or running one ahead of it.
+The test (`server/src/office/features.test.ts`) checks the claim SQL,
+`isFeatureTaskBlocking` and `predictSchedule` against each other for an
+untainted feature (phase 0 in two repos, both queued and both claimed, phase 1
+held) and a tainted one (nothing queued; one card hand-queued is claimed, the
+rest of its phase and phase 1 still wait).
+
+### Spend
+
+The planning sessions (`plan`/`plan-review` aux runs of the feature) count
+toward the office's day budget and the Director's cap (`officeSpendSince`,
+§ Data model). The cards' worker runs count as office tasks.
 
 ## UI
 

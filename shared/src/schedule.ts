@@ -24,6 +24,7 @@ import {
   effectiveLanding,
   holdsRepoForClaim,
   isFeatureTaskBlocking,
+  isTaintedFeatureDraft,
   unmetDependency,
   repoHasRoom,
   repoParallelCap,
@@ -429,6 +430,8 @@ export function predictSchedule(input: ScheduleInput): PredictedSlot[] {
   const W = {
     paused: { code: 'paused', text: 'paused (Pause all)' },
     draft: { code: 'draft', text: 'draft — not queued' },
+    // a tainted office feature card: the phase pump never queues it, only a human (isTaintedFeatureDraft)
+    taintedDraft: { code: 'draft', text: 'tainted feature card — waits for you to queue it' },
     blocked: { code: 'blocked', text: 'blocked on its split children' },
     held: { code: 'held', text: 'held (Undo start)' },
     noRepo: { code: 'no-repo', text: 'no repo' },
@@ -455,11 +458,14 @@ export function predictSchedule(input: ScheduleInput): PredictedSlot[] {
       .sort((a, b) => a.featurePhase! - b.featurePhase!);
     if (!lower.length) return null;
     const lo = lower[0];
-    const why =
-      lo.status === 'failed' ? ` — ${short(lo.title)} failed`
-      : lo.status === 'review' && !verifyOpen(lo) ? ` — ${short(lo.title)} waits for you in review`
-      : lo.status === 'draft' ? ` — ${short(lo.title)} is a draft`
+    // name the first blocker that waits on a HUMAN (a queued/running one ahead of it explains nothing)
+    const reason = (b: Task): string =>
+      b.status === 'failed' ? ` — ${short(b.title)} failed`
+      : b.status === 'review' && !verifyOpen(b) ? ` — ${short(b.title)} waits for you in review`
+      : isTaintedFeatureDraft(b) ? ` — ${short(b.title)} is a tainted draft that waits for you to queue it`
+      : b.status === 'draft' ? ` — ${short(b.title)} is a draft`
       : '';
+    const why = lower.map(reason).find((r) => r !== '') ?? '';
     return { code: 'phase', text: `phase ${c.featurePhase} after phase ${lo.featurePhase}${why}` };
   };
   /** OFFICE_CLAIM_GATE (`officeClaimRefusal`) over the simulated rows, at virtual time `t` */
@@ -627,7 +633,7 @@ export function predictSchedule(input: ScheduleInput): PredictedSlot[] {
     switch (row.status) {
       case 'draft':
         s.listed = true;
-        addWait(s, W.draft);
+        addWait(s, isTaintedFeatureDraft(row) ? W.taintedDraft : W.draft);
         break;
       case 'blocked':
         s.listed = true;

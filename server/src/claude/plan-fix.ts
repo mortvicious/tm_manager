@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { FeaturePlan, FeaturePlanTask, PlanFinding, PlanResolution, PlanReviewRound } from '@tm/shared';
 import { AGENT_TITLE_MAX } from '@tm/shared';
-import { planTaskSchema } from './feature-plan.ts';
+import { planRequestBlock, planTaskSchema, planWorkspaceLines, type PlanWorkspace } from './feature-plan.ts';
 
 // Fix rounds of the Feature plan loop (docs/features.md § Fix rounds). After
 // the first full plan + review, a re-plan no longer rewrites the plan: the
@@ -436,18 +436,23 @@ export function buildPlanFixPrompt(opts: {
   plan: FeaturePlan;
   findings: PlanFinding[];
   note?: string | null;
+  /** a cross-repo office feature (docs/office.md § Director features) */
+  workspace?: PlanWorkspace | null;
+  tainted?: boolean;
 }): string {
+  const ws = opts.workspace ?? null;
   const lines = [
-    `You are the planning agent of a task manager, in a FIX ROUND. The phased plan below (repo "${opts.repoName}"`,
-    `at ${opts.repoPath}) was reviewed adversarially. Fix ONLY the numbered findings. Do not rewrite, reword,`,
+    ws
+      ? `You are the planning agent of a task manager, in a FIX ROUND. The phased plan below (workspace "${ws.name}",`
+      : `You are the planning agent of a task manager, in a FIX ROUND. The phased plan below (repo "${opts.repoName}"`,
+    ws
+      ? `one repoId per card) was reviewed adversarially. Fix ONLY the numbered findings. Do not rewrite, reword,`
+      : `at ${opts.repoPath}) was reviewed adversarially. Fix ONLY the numbered findings. Do not rewrite, reword,`,
     `reorganise or "improve" anything a finding does not require: every card you do not edit is kept exactly`,
     `as it is, and was already reviewed. Explore the repository READ-ONLY as needed to fix a finding correctly.`,
+    ...(ws ? [``, ...planWorkspaceLines(ws)] : []),
     ``,
-    `--- the request ---`,
-    opts.title,
-    ``,
-    opts.request,
-    `--- end of request ---`,
+    ...planRequestBlock(opts.title, opts.request, !!opts.tainted),
     ``,
     `--- the current plan (phases numbered from 1; every card has a "card" label) ---`,
     renderPlanForFix(opts.plan),
@@ -470,6 +475,12 @@ export function buildPlanFixPrompt(opts: {
     `A dependsOn may only name an EARLIER card (same phase above it, or an earlier phase). A phase left empty is dropped.`,
     `Split a too-large task by updating it and adding the rest as new cards. "summary"/"considerations" replace`,
     `the plan's only when you send them.`,
+    ...(ws
+      ? [
+          `Every card must keep a "repoId" from the workspace list above (update it with "repoId" in "set"; an added`,
+          `card REQUIRES one). A repoId outside the list rejects the whole result.`,
+        ]
+      : []),
     `"notes": one entry per finding — how you fixed it, or, if you are sure a finding is wrong, why (the reviewer`,
     `judges that). Rules: do NOT write any files. Do not spawn more than 3 subagents.`,
   ];
@@ -495,17 +506,19 @@ export function buildPlanFixReviewPrompt(opts: {
   changed: string[];
   /** the labels the planner used (applyPlanEdits' `labels`), so the edit log and the plan name a card alike */
   labels?: Map<string, string>;
+  workspace?: PlanWorkspace | null;
+  tainted?: boolean;
 }): string {
   const labels = opts.labels ?? cardLabels(opts.plan);
+  const ws = opts.workspace ?? null;
   return [
-    `You are the adversarial PLAN reviewer for repo "${opts.repoName}", in a FIX ROUND. An earlier review raised the`,
+    ws
+      ? `You are the adversarial PLAN reviewer for workspace "${ws.name}" (each card names its repoId), in a FIX ROUND. An earlier review raised the`
+      : `You are the adversarial PLAN reviewer for repo "${opts.repoName}", in a FIX ROUND. An earlier review raised the`,
     `numbered findings below; the planner has EDITED the plan to address them (it did not rewrite it).`,
+    ...(ws ? [``, ...planWorkspaceLines(ws)] : []),
     ``,
-    `--- the request ---`,
-    opts.title,
-    ``,
-    opts.request,
-    `--- end of request ---`,
+    ...planRequestBlock(opts.title, opts.request, !!opts.tainted),
     ``,
     `--- the current plan, after the edits ---`,
     renderPlanForFix(opts.plan, labels),

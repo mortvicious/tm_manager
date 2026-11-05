@@ -58,6 +58,8 @@ export interface ShiftSectionApplied {
   commandIds?: string[];
   /** the brief the section wrote (`brief`, briefs.ts) */
   briefId?: string;
+  /** the feature the section filed (`feature`, features.ts) */
+  featureId?: string;
   /** parts of the section that failed while the rest applied (one bad file of several) */
   errors?: string[];
 }
@@ -69,6 +71,12 @@ export interface ShiftSection<T> {
   schema: z.ZodType<T>;
   /** the JSON-schema twin of `schema`, shown to the model by `resultInstruction` */
   jsonSchema: Record<string, unknown>;
+  /**
+   * Which roles may return the section (absent = every role). A role it is not
+   * available to never sees it in the prompt, and its result schema refuses
+   * the key (the standard typed correction) — e.g. `feature`, Director only.
+   */
+  availableTo?(role: Pick<OfficeRole, 'preset'>): boolean;
   apply(value: T, ctx: ShiftSectionCtx): Promise<ShiftSectionApplied>;
 }
 
@@ -81,30 +89,30 @@ export function registerShiftSection<T>(section: ShiftSection<T>): void {
   registry.set(section.key, section as ShiftSection<unknown>);
 }
 
-/** Registered sections, in registration order. */
-export function shiftSections(): ShiftSection<unknown>[] {
-  return [...registry.values()];
+/** Registered sections, in registration order — with `role`, only the ones that role may return. */
+export function shiftSections(role?: Pick<OfficeRole, 'preset'>): ShiftSection<unknown>[] {
+  return [...registry.values()].filter((s) => !role || !s.availableTo || s.availableTo(role));
 }
 
 export type ShiftResult = Record<string, unknown>;
 
-/** The zod validator of a whole result: every section optional, unknown keys refused. */
-export function shiftResultSchema(): z.ZodType<ShiftResult> {
+/** The zod validator of a whole result: every section optional, unknown keys (and `role`'s unavailable ones) refused. */
+export function shiftResultSchema(role?: Pick<OfficeRole, 'preset'>): z.ZodType<ShiftResult> {
   const shape: Record<string, z.ZodType> = {};
-  for (const s of registry.values()) shape[s.key] = s.schema.optional();
+  for (const s of shiftSections(role)) shape[s.key] = s.schema.optional();
   return z.object(shape).strict() as unknown as z.ZodType<ShiftResult>;
 }
 
 /** The JSON schema the prompt shows (`resultInstruction`). */
-export function shiftResultJsonSchema(): Record<string, unknown> {
+export function shiftResultJsonSchema(role?: Pick<OfficeRole, 'preset'>): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
-  for (const s of registry.values()) properties[s.key] = s.jsonSchema;
+  for (const s of shiftSections(role)) properties[s.key] = s.jsonSchema;
   return { type: 'object', additionalProperties: false, properties };
 }
 
 /** The prompt's bullet list of sections. */
-export function shiftSectionGuide(): string {
-  return shiftSections()
+export function shiftSectionGuide(role?: Pick<OfficeRole, 'preset'>): string {
+  return shiftSections(role)
     .map((s) => `- \`${s.key}\`: ${s.describe}`)
     .join('\n');
 }
@@ -123,6 +131,10 @@ export async function applyShiftResult(result: ShiftResult, ctx: ShiftSectionCtx
   const out: ShiftApplyOutcome = { applied: [], errors: [] };
   for (const s of registry.values()) {
     if (result[s.key] === undefined) continue;
+    if (s.availableTo && !s.availableTo(ctx.role)) {
+      out.errors.push({ section: s.key, error: `the ${s.key} section is not available to this role` });
+      continue;
+    }
     try {
       out.applied.push(await s.apply(result[s.key], ctx));
     } catch (e) {

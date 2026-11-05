@@ -339,6 +339,8 @@ describe('office briefs, proposals, wishes (migration 58)', () => {
 
   test('wishes CRUD, oldest first', async () => {
     const w1 = await storage.createWish({ officeId: 'ow', text: 'faster pages' });
+    // a later millisecond: within one, `created_at` ties and the random id decides
+    await new Promise((r) => setTimeout(r, 2));
     const w2 = await storage.createWish({ officeId: 'ow', text: 'dark mode' });
     assert.equal(w1.status, 'open');
     assert.deepEqual((await storage.listWishes({ officeId: 'ow' })).map((w) => w.id), [w1.id, w2.id]);

@@ -1,6 +1,7 @@
-import type { Task } from '@tm/shared';
+import { isFeatureTaintedWaitReason, type Task } from '@tm/shared';
 import type { ActionResult } from '../app-types.ts';
 import { startFeatureAnalysis } from '../claude/feature-analysis.ts';
+import { FeatureApprovalRefused } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { NewTask, Storage } from '../storage/types.ts';
@@ -499,7 +500,14 @@ export async function approveFeature(deps: ActionDeps, featureId: string, actor:
   if (!cur) return fail('feature not found');
   if (cur.status !== 'proposed') return fail(`cannot approve from status '${cur.status}'`);
   if (!cur.repoId) return fail('this feature has no repo (it was removed)');
-  const result = await deps.storage.approveFeature(featureId, actor);
+  let result: Awaited<ReturnType<typeof deps.storage.approveFeature>>;
+  try {
+    result = await deps.storage.approveFeature(featureId, actor);
+  } catch (e) {
+    // an office feature's card outside its workspace (docs/office.md § Director features)
+    if (e instanceof FeatureApprovalRefused) return fail(e.message);
+    throw e;
+  }
   if (!result) return fail('nothing to approve — the plan has no included tasks');
   broadcast({ type: 'feature.updated', feature: result.feature });
   for (const task of result.tasks) broadcast({ type: 'task.updated', task });
@@ -507,5 +515,8 @@ export async function approveFeature(deps: ActionDeps, featureId: string, actor:
   if (!started) return done(`“${cur.title}” approved (${result.tasks.length} task(s) created), but it could not start.`);
   broadcast({ type: 'feature.updated', feature: started });
   await deps.orchestrator.advanceFeature(featureId, actor);
-  return done(`“${cur.title}” approved and started — ${result.tasks.length} task(s) created.`);
+  // a tainted office feature's cards wait for a human Enqueue: say so rather than "started"
+  const after = await deps.storage.getFeature(featureId);
+  const held = after && isFeatureTaintedWaitReason(after.error) ? ` ${after.error} (tainted office feature).` : '';
+  return done(`“${cur.title}” approved and started — ${result.tasks.length} task(s) created.${held}`);
 }

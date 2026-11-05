@@ -737,6 +737,30 @@ export function rowToOfficeWish(r: any): OfficeWish {
   };
 }
 
+// ---- office features (docs/office.md § Director features) ----
+
+/**
+ * The office's Director role — preset `director` (`isStandupRole`), the only
+ * role whose shift may file a feature — oldest first. An office feature's cards
+ * carry it as `role_id` at approval (features keep no role column).
+ */
+export const OFFICE_DIRECTOR_ROLE_SQL = `SELECT id FROM tm_office_roles WHERE office_id = ? AND preset = 'director' ORDER BY created_at ASC, id ASC LIMIT 1`;
+
+/** The office's workspace's `repo_ids` (JSON) — no row when the office or its workspace is gone. */
+export const OFFICE_WORKSPACE_REPOS_SQL = `SELECT w.repo_ids AS repo_ids FROM tm_offices o JOIN tm_workspaces w ON w.id = o.workspace_id WHERE o.id = ?`;
+
+export const REPO_EXISTS_SQL = `SELECT id FROM tm_repos WHERE id = ?`;
+
+/** `repo_ids` as stored: a JSON array of ids (anything else = none). */
+export function parseRepoIds(raw: unknown): string[] {
+  try {
+    const v = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 // ---- roll-ups ----
 
 /**
@@ -745,13 +769,19 @@ export function rowToOfficeWish(r: any): OfficeWish {
  * office — its shifts' aux runs (linked by `tm_office_shifts.run_id`, or an
  * aux `shift` run whose subject is the shift) plus the runs of the tasks it
  * filed, attributed the way `taskCostSql` attributes a task (its own worker
- * runs plus the review/compact aux runs about it). A run matching several
- * branches is still one row, so it is counted once. With `roleId`, only that
- * role's shifts and tasks.
+ * runs plus the review/compact aux runs about it) and the `plan`/`plan-review`
+ * aux runs of the features its Director filed (docs/office.md § Director
+ * features). A run matching several branches is still one row, so it is
+ * counted once. With `roleId`, only that role's shifts and tasks — and the
+ * office's feature planning only when that role is a Director (features keep
+ * no role column; only a Director files one).
  */
 export function officeSpendSql(officeId: string, sinceIso: string, roleId?: string | null): { sql: string; params: unknown[] } {
   const shiftScope = roleId ? `s.office_id = ? AND s.role_id = ?` : `s.office_id = ?`;
   const taskScope = roleId ? `t.office_id = ? AND t.role_id = ?` : `t.office_id = ?`;
+  const featureScope = roleId
+    ? `f.office_id = ? AND f.office_id IN (SELECT ro.office_id FROM tm_office_roles ro WHERE ro.id = ? AND ro.preset = 'director')`
+    : `f.office_id = ?`;
   const scope = (roleId ? [officeId, roleId] : [officeId]) as unknown[];
   return {
     sql: `SELECT COALESCE(SUM(r.cost_usd), 0) AS s FROM tm_runs r
@@ -759,8 +789,9 @@ export function officeSpendSql(officeId: string, sinceIso: string, roleId?: stri
         AND (r.id IN (SELECT s.run_id FROM tm_office_shifts s WHERE ${shiftScope} AND s.run_id IS NOT NULL)
           OR (r.mode = 'aux' AND r.kind = 'shift' AND r.subject_id IN (SELECT s.id FROM tm_office_shifts s WHERE ${shiftScope}))
           OR r.task_id IN (SELECT t.id FROM tm_tasks t WHERE ${taskScope})
-          OR (r.mode = 'aux' AND r.kind IN ('review', 'compact') AND r.subject_id IN (SELECT t.id FROM tm_tasks t WHERE ${taskScope})))`,
-    params: [sinceIso, ...scope, ...scope, ...scope, ...scope],
+          OR (r.mode = 'aux' AND r.kind IN ('review', 'compact') AND r.subject_id IN (SELECT t.id FROM tm_tasks t WHERE ${taskScope}))
+          OR (r.mode = 'aux' AND r.kind IN ('plan', 'plan-review') AND r.subject_id IN (SELECT f.id FROM tm_features f WHERE ${featureScope})))`,
+    params: [sinceIso, ...scope, ...scope, ...scope, ...scope, ...scope],
   };
 }
 

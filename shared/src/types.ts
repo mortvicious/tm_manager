@@ -2200,6 +2200,27 @@ export function isFeatureTaskBlocking(t: { status: string; source: string }): bo
   return true;
 }
 
+/**
+ * A card of a TAINTED office feature still waiting as a draft (docs/office.md
+ * § Director features): the phase pump (`planFeatureProgress`, both drivers'
+ * `resolveFeatureCompletion`) never queues it — only a human Enqueue does —
+ * yet it still holds its phase open (`isFeatureTaskBlocking` is unchanged).
+ * JS twin: predictSchedule (shared/src/schedule.ts) words its wait.
+ */
+export function isTaintedFeatureDraft(t: { status: string; source: string; taintedAt?: string | null }): boolean {
+  return t.status === 'draft' && t.source === 'feature' && t.taintedAt != null;
+}
+
+/** The feature's `error` while the pump holds `n` tainted cards of its current phase. */
+export function featureTaintedWaitReason(n: number): string {
+  return n === 1 ? '1 tainted card waits for you to queue it' : `${n} tainted cards wait for you to queue them`;
+}
+
+/** Is `error` the pump's own tainted-wait reason (so the pump may replace or clear it)? */
+export function isFeatureTaintedWaitReason(error: string | null | undefined): boolean {
+  return !!error && /^\d+ tainted cards? waits? for you to queue (it|them)$/.test(error);
+}
+
 /** One planned task card. Nothing exists as a tm_tasks row until approval. */
 export interface FeaturePlanTask {
   /** stable client-side id so edits/reorders survive re-renders (not a task id) */
@@ -2464,6 +2485,8 @@ export type AuditKind =
   | 'office.wishes'
   /** vision.md or priorities.md changed — saved from the dashboard or edited by hand (docs/office.md § Wishes and vision) */
   | 'office.vision-changed'
+  /** a Director's shift filed a cross-repo feature, or the `feature` section was dropped with the reason (docs/office.md § Director features) */
+  | 'office.feature'
   | 'approval.requested'
   | 'approval.decided'
   | 'approval.finished'

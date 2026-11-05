@@ -26,9 +26,9 @@ import {
   type Workspace,
   type Task,
 } from '@tm/shared';
-import { planCards } from '../claude/feature-plan.ts';
+import { approvalCardRepos, planCards, planFeatureProgress } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
-import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
+import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE } from './feature-sql.ts';
 import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, CUSTOM_QUEUE_WAITING_SQL, OFFICE_CLAIM_GATE, OFFICE_TRIPPED_SQL, REPO_EXCLUSIVE_GATE, planQueueReorder, reorderAudit, skipRepos, type QueueMoveAnchor } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
 import { REPO_PARALLEL_SQL, repoParallelParams, worktreePatchSql } from './worktree-sql.ts';
@@ -119,6 +119,10 @@ import {
   officeShiftListSql,
   officeShiftPatchSql,
   officeSpendSql,
+  OFFICE_DIRECTOR_ROLE_SQL,
+  OFFICE_WORKSPACE_REPOS_SQL,
+  REPO_EXISTS_SQL,
+  parseRepoIds,
   rowToOffice,
   rowToOfficeRole,
   rowToOfficeShift,
@@ -1996,14 +2000,26 @@ export class SqliteStorage implements Storage {
       if (feature.status !== 'proposed' || !feature.repoId || !feature.analysis) return null;
       const cards = planCards(feature);
       if (cards.length === 0) return null;
+      // A cross-repo office feature (docs/office.md § Director features): each
+      // card lands in ITS repo of the workspace, carries the office and its
+      // Director, and is tainted when the feature is. A refusal throws, so the
+      // whole approval rolls back.
+      let roleId: string | null = null;
+      let workspaceRepoIds: string[] | null = null;
+      if (feature.officeId) {
+        const ws = this.db.prepare(OFFICE_WORKSPACE_REPOS_SQL).get(feature.officeId) as { repo_ids: string } | undefined;
+        workspaceRepoIds = ws ? parseRepoIds(ws.repo_ids).filter((r) => !!this.db.prepare(REPO_EXISTS_SQL).get(r)) : null;
+        roleId = (this.db.prepare(OFFICE_DIRECTOR_ROLE_SQL).get(feature.officeId) as { id: string } | undefined)?.id ?? null;
+      }
+      const repoOfCard = approvalCardRepos(feature, cards, workspaceRepoIds);
       const tasks: Task[] = [];
       const taskOfCard = new Map<string, string>();
-      for (const c of cards) {
+      cards.forEach((c, i) => {
         const task = this.insertTaskSync(
             {
               title: c.card.title,
               description: c.description,
-              repoId: feature.repoId,
+              repoId: repoOfCard[i],
               // Approved ≠ started: cards land as drafts and only the feature's
               // phase gate moves them to queued.
               status: 'draft',
@@ -2016,12 +2032,13 @@ export class SqliteStorage implements Storage {
               // planCards keeps only edges onto EARLIER cards, so each is
               // already inserted (docs/task-waits.md § Feature plans)
               dependsOn: c.dependsOnCards.map((id) => taskOfCard.get(id)).filter((id): id is string => !!id),
+              ...(feature.officeId ? { officeId: feature.officeId, roleId, taintedAt: feature.taintedAt } : {}),
             },
             actor,
           );
         taskOfCard.set(c.card.id, task.id);
         tasks.push(task);
-      }
+      });
       const updated = this.transitionFeatureSync(id, ['proposed'], 'approved', actor, { error: null });
       // Unreachable (status was read inside this transaction), but returning
       // null here would COMMIT the inserts above and leave orphan tasks under a
@@ -2042,25 +2059,23 @@ export class SqliteStorage implements Storage {
       ).map(rowToTask);
       if (tasks.length === 0) return null;
 
-      const failed = tasks.filter((t) => t.status === 'failed');
-      if (failed.length > 0) {
-        const paused = this.transitionFeatureSync(featureId, ['running'], 'paused', actor, {
-          error: `${failed.length} task(s) failed — retry or cancel them, then Resume`,
-        });
+      // the decision is shared with the pg driver (planFeatureProgress); this only executes it
+      const plan = planFeatureProgress(feature, tasks);
+      if (plan.kind === 'paused') {
+        const paused = this.transitionFeatureSync(featureId, ['running'], 'paused', actor, { error: plan.error });
         return paused ? { feature: paused, tasks: [], action: 'paused' } : null;
       }
-
-      const pending = tasks.filter(isFeatureTaskBlocking);
-      if (pending.length === 0) {
+      if (plan.kind === 'review') {
         const done = this.transitionFeatureSync(featureId, ['running'], 'review', actor, { error: null });
         return done ? { feature: done, tasks: [], action: 'review' } : null;
       }
 
-      const phase = Math.min(...pending.map((t) => t.featurePhase ?? 0));
+      const { phase } = plan;
+      // a tainted office card stays a draft for the human (plan.held); its count is the feature's reason
+      const shown = plan.error !== undefined ? (this.writeFeaturePatchSync(featureId, { error: plan.error }) ?? feature) : feature;
+      const held = plan.held.length;
       const started: Task[] = [];
-      for (const t of pending) {
-        if ((t.featurePhase ?? 0) !== phase || t.status !== 'draft' || t.source !== 'feature') continue;
-        if (!t.repoId) continue; // never queue a repo-less task: the claim loop skips it forever
+      for (const t of plan.queue) {
         const r = this.db
           .prepare(`UPDATE tm_tasks SET status = 'queued', error = NULL, updated_at = ? WHERE id = ? AND status = 'draft' RETURNING *`)
           .get(now(), t.id);
@@ -2075,8 +2090,8 @@ export class SqliteStorage implements Storage {
           data: { from: 'draft', to: 'queued', featureId, featurePhase: phase },
         });
       }
-      if (started.length === 0) return { feature, tasks: [], action: 'none', phase };
-      return { feature, tasks: started, action: 'phase-started', phase };
+      if (started.length === 0) return { feature: shown, tasks: [], action: 'none', phase, held };
+      return { feature: shown, tasks: started, action: 'phase-started', phase, held };
     });
   }
 

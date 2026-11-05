@@ -24,9 +24,9 @@ import {
   type Workspace,
   type Task,
 } from '@tm/shared';
-import { planCards } from '../claude/feature-plan.ts';
+import { approvalCardRepos, planCards, planFeatureProgress } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
-import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE, isFeatureTaskBlocking } from './feature-sql.ts';
+import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE } from './feature-sql.ts';
 import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, CUSTOM_QUEUE_WAITING_SQL, OFFICE_CLAIM_GATE, OFFICE_TRIPPED_SQL, REPO_EXCLUSIVE_GATE, planQueueReorder, reorderAudit, skipRepos, type QueueMoveAnchor } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
 import { REPO_PARALLEL_SQL, repoParallelParams, worktreePatchSql } from './worktree-sql.ts';
@@ -117,6 +117,10 @@ import {
   officeShiftListSql,
   officeShiftPatchSql,
   officeSpendSql,
+  OFFICE_DIRECTOR_ROLE_SQL,
+  OFFICE_WORKSPACE_REPOS_SQL,
+  REPO_EXISTS_SQL,
+  parseRepoIds,
   rowToOffice,
   rowToOfficeRole,
   rowToOfficeShift,
@@ -1973,15 +1977,29 @@ export class PostgresStorage implements Storage {
       if (feature.status !== 'proposed' || !feature.repoId || !feature.analysis) return null;
       const cards = planCards(feature);
       if (cards.length === 0) return null;
+      // see the sqlite driver: an office feature's cards land in their own repos
+      let roleId: string | null = null;
+      let workspaceRepoIds: string[] | null = null;
+      if (feature.officeId) {
+        const ws = (await c.query(toPg(OFFICE_WORKSPACE_REPOS_SQL), [feature.officeId])).rows[0];
+        if (ws) {
+          workspaceRepoIds = [];
+          for (const r of parseRepoIds(ws.repo_ids)) {
+            if ((await c.query(toPg(REPO_EXISTS_SQL), [r])).rows[0]) workspaceRepoIds.push(r);
+          }
+        }
+        roleId = (await c.query(toPg(OFFICE_DIRECTOR_ROLE_SQL), [feature.officeId])).rows[0]?.id ?? null;
+      }
+      const repoOfCard = approvalCardRepos(feature, cards, workspaceRepoIds);
       const tasks: Task[] = [];
       const taskOfCard = new Map<string, string>();
-      for (const card of cards) {
+      for (const [i, card] of cards.entries()) {
         const task = await this.insertTaskWith(
             c,
             {
               title: card.card.title,
               description: card.description,
-              repoId: feature.repoId,
+              repoId: repoOfCard[i],
               status: 'draft',
               source: 'feature',
               category: card.card.category ?? null,
@@ -1991,6 +2009,7 @@ export class PostgresStorage implements Storage {
               featurePhase: card.phase,
               // see the sqlite driver: edges onto EARLIER cards only
               dependsOn: card.dependsOnCards.map((id) => taskOfCard.get(id)).filter((id): id is string => !!id),
+              ...(feature.officeId ? { officeId: feature.officeId, roleId, taintedAt: feature.taintedAt } : {}),
             },
             actor,
             sink,
@@ -2014,25 +2033,23 @@ export class PostgresStorage implements Storage {
       const tasks = (await c.query(`SELECT * FROM tm_tasks WHERE feature_id = $1`, [featureId])).rows.map(rowToTask);
       if (tasks.length === 0) return null;
 
-      const failed = tasks.filter((t) => t.status === 'failed');
-      if (failed.length > 0) {
-        const paused = await this.transitionFeatureWith(c, sink, featureId, ['running'], 'paused', actor, {
-          error: `${failed.length} task(s) failed — retry or cancel them, then Resume`,
-        });
+      // the decision is shared with the sqlite driver (planFeatureProgress); this only executes it
+      const plan = planFeatureProgress(feature, tasks);
+      if (plan.kind === 'paused') {
+        const paused = await this.transitionFeatureWith(c, sink, featureId, ['running'], 'paused', actor, { error: plan.error });
         return paused ? { feature: paused, tasks: [], action: 'paused' as const } : null;
       }
-
-      const pending = tasks.filter(isFeatureTaskBlocking);
-      if (pending.length === 0) {
+      if (plan.kind === 'review') {
         const done = await this.transitionFeatureWith(c, sink, featureId, ['running'], 'review', actor, { error: null });
         return done ? { feature: done, tasks: [], action: 'review' as const } : null;
       }
 
-      const phase = Math.min(...pending.map((t) => t.featurePhase ?? 0));
+      const { phase } = plan;
+      // a tainted office card stays a draft for the human (plan.held); its count is the feature's reason
+      const shown = plan.error !== undefined ? ((await this.writeFeaturePatchWith(c, featureId, { error: plan.error })) ?? feature) : feature;
+      const held = plan.held.length;
       const started: Task[] = [];
-      for (const t of pending) {
-        if ((t.featurePhase ?? 0) !== phase || t.status !== 'draft' || t.source !== 'feature') continue;
-        if (!t.repoId) continue; // never queue a repo-less task
+      for (const t of plan.queue) {
         const r = await c.query(
           `UPDATE tm_tasks SET status = 'queued', error = NULL, updated_at = $1 WHERE id = $2 AND status = 'draft' RETURNING *`,
           [now(), t.id],
@@ -2052,8 +2069,8 @@ export class PostgresStorage implements Storage {
           sink,
         );
       }
-      if (started.length === 0) return { feature, tasks: [], action: 'none' as const, phase };
-      return { feature, tasks: started, action: 'phase-started' as const, phase };
+      if (started.length === 0) return { feature: shown, tasks: [], action: 'none' as const, phase, held };
+      return { feature: shown, tasks: started, action: 'phase-started' as const, phase, held };
     });
   }
 

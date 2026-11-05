@@ -1,5 +1,5 @@
 import { DEPENDS_ON_EDITABLE, dependsOnRefusal, edgeIndex } from './task-wait.ts';
-import { GROUP_COLOR_COUNT, LOOP_DEFAULT_MAX_ITERATIONS, LOOP_MAX_ITERATIONS_LIMIT, TASK_MOVE_PLACES, isExternalTask, type EffortLevel, type LandingTier, type TaskMovePlace, type Task, type TaskStatus } from '@tm/shared';
+import { GROUP_COLOR_COUNT, LOOP_DEFAULT_MAX_ITERATIONS, LOOP_MAX_ITERATIONS_LIMIT, TASK_MOVE_PLACES, isExternalTask, isTaintedFeatureDraft, type EffortLevel, type LandingTier, type TaskMovePlace, type Task, type TaskStatus } from '@tm/shared';
 import type { ActionResult, OrchestratorApi } from './app-types.ts';
 import { broadcast } from './events.ts';
 import type { MoveAnchor } from './storage/group.ts';
@@ -355,8 +355,19 @@ export async function enqueueTask(
     });
   }
   broadcast({ type: 'task.updated', task });
+  await repumpHeldFeatureCard(deps, cur, actor);
   deps.orchestrator?.maybeSchedule();
   return { task };
+}
+
+/**
+ * A human queued a TAINTED office feature card the phase pump held as a draft
+ * (docs/office.md § Director features): re-run the pump so the feature's
+ * "N tainted cards wait" count follows. Only for such a card, so every other
+ * enqueue behaves exactly as before.
+ */
+async function repumpHeldFeatureCard(deps: TaskActionDeps, cur: Task, actor: string): Promise<void> {
+  if (cur.featureId && isTaintedFeatureDraft(cur)) await deps.orchestrator?.advanceFeature(cur.featureId, actor);
 }
 
 /**
@@ -403,6 +414,7 @@ export async function queueAddTask(deps: TaskActionDeps, id: string, actor: stri
     data: { queue: 'custom', action: 'add' },
   });
   broadcast({ type: 'task.updated', task });
+  await repumpHeldFeatureCard(deps, cur, actor);
   deps.orchestrator?.maybeSchedule();
   return { task };
 }

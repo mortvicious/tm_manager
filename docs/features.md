@@ -122,7 +122,8 @@ Implemented as designed; the deltas below are the decisions taken while building
 | Structured-output contract, prompts, caps injection (pure) | `server/src/claude/feature-plan.ts` |
 | The two-session pipeline (plan → plan-review terminals) | `server/src/claude/feature-analysis.ts` |
 | REST + events | `server/src/routes/features.ts` |
-| Phase pump | `Orchestrator.advanceFeature` / `resolveCompletion` |
+| Phase pump | `Orchestrator.advanceFeature` / `resolveCompletion`; per phase, `planFeatureProgress` in `feature-plan.ts` |
+| Office features (cross-repo, a Director's) | `server/src/office/features.ts`, `feature-context.ts`; `docs/office.md` § Director features |
 | UI | `web/src/pages/{Features,Feature}.tsx`, `components/FeatureBadge.tsx`, `theme.css` |
 
 ### Deltas from the design above
@@ -150,9 +151,19 @@ Only the FIRST round of a plan is full: a whole plan written, then reviewed whol
 - **Only what the round touched is held to the rules.** Titles and dependency order are checked strictly on the cards the edits changed. On untouched cards, a human's edits that the approval surface allows (a long title, a dependency moved below it or onto a deleted card) never fail the fix: such an edge is dropped, exactly as approval would drop it. A move that breaks an untouched card's previously valid dependency IS refused, and the message names both cards. `null` in an update means unchanged. A numeric phase id such as `"2"` is phase 2. Phases added after the same phase keep their order. A fix may not leave a plan with no tasks. An unreviewed fix keeps a blocker verdict when a blocker is open.
 - **Re-analyze** continues with a fix round whenever the last round still has blocker/major findings: the button reads **Fix findings**, and a note may widen the edits. **Re-plan from scratch** (`{fresh: true}`) writes a whole new plan instead. So does a request rewritten since the last round: every round stores `requestHash`, a sha256 prefix of the request it planned for.
 
+### Office features (2026-11-05)
+
+A Virtual Office's Director may file a feature from a shift (`docs/office.md` § Director features). It is the same entity, pipeline, approval surface and phase pump, with these differences, all keyed on `tm_features.office_id`:
+
+- **Repo per card.** `repo_id` is the workspace's first repo, a listing key only. Every plan card carries `repoId` from the office's workspace. The full round's `--json-schema` makes it required with an enum of the workspace's ids. The pipeline's acceptor (`officePlanAcceptor`, also over a fix round's edited plan) rejects a card outside the workspace with a typed correction. `PATCH /plan` refuses one (400), and so does approval, inside its transaction (`FeatureApprovalRefused` → 409, nothing created). A card without one (a human-added card) files into the listing repo. Single-repo features ignore `repoId` and behave exactly as before.
+- **Planned from the office folder** (`officeFeatureContext`, `planPlace`): `cwd` = the office folder, `--add-dir` per workspace repo, read-only tools with Bash denied, and the trusted shift's read denies for an untainted feature. The prompts list the workspace's repos. A tainted feature's request is a fenced data block. Planning runs count toward the office's day budget.
+- **Approval** files each card into its own repo with `office_id`, `role_id` = the office's Director and, when the feature is tainted, `tainted_at`. So the cards are external and land `supervised`, and the office's claim share and budget apply to them.
+- **Tainted cards are held.** The phase pump (`planFeatureProgress`, shared by both drivers' `resolveFeatureCompletion`) never queues a `draft` with `tainted_at` set (`isTaintedFeatureDraft`). The card stays a draft and still blocks its phase: `FEATURE_CLAIM_GATE` and `isFeatureTaskBlocking` are unchanged, so later phases wait. The feature's `error` reads `N tainted cards wait for you to queue them`; the pump rewrites only that reason of its own and clears it at zero. A human Enqueue / Add to queue queues the card normally and re-runs the pump, so the count follows.
+- **`predictSchedule` needed no gate change**: it never simulates the pump and never predicts a draft to start. A tainted card's wait says so, and a later phase's wait names the first blocker waiting on a human. `server/src/office/features.test.ts` checks the SQL gate, `isFeatureTaskBlocking` and `predictSchedule` against each other for both cases.
+
 ### Open questions, as decided
 
-1. *Cross-repo features* — not modeled. A feature is one repo; work belonging elsewhere should be filed as a normal task in that repo.
+1. *Cross-repo features* — a human's feature is still one repo, and work belonging elsewhere should be filed as a normal task in that repo. The exception, since 2026-11-05, is an **office feature** (§ Office features below): a Virtual Office Director files it, and each card names its own workspace repo.
 2. *Auto-approve tier* — not built. Approval is the whole point of the interface.
 3. *Analysis context budget* — the plan prompt explicitly instructs the agent to read `CLAUDE.md` and `docs/` first, and carries up to 60 of the repo's open tasks (excluding this feature's own) so it does not duplicate them.
 4. *Where the request is written* — DB-only. No "export to docs/" action yet.

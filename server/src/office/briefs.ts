@@ -179,7 +179,7 @@ registerShiftSection<ShiftBriefInput>({
 export function fallbackBrief(f: {
   status: string;
   error: string | null;
-  sections: { section: string; files: string[]; taskIds?: string[]; commandIds?: string[] }[];
+  sections: { section: string; files: string[]; taskIds?: string[]; commandIds?: string[]; featureId?: string }[];
 }): ShiftBriefInput {
   const ok = f.status === 'ok';
   const err = f.error ? f.error.replace(/\s+/g, ' ').trim() : null;
@@ -199,6 +199,7 @@ export function fallbackBrief(f: {
         s.files.length ? `wrote ${s.files.join(', ')}` : '',
         s.taskIds?.length ? `filed ${s.taskIds.length} task(s)` : '',
         s.commandIds?.length ? `asked for ${s.commandIds.length} command run(s)` : '',
+        s.featureId ? `filed feature ${s.featureId.slice(0, 8)} (its plan waits for a human's approval)` : '',
       ].filter(Boolean);
       lines.push(`  - \`${s.section}\`${parts.length ? `: ${parts.join('; ')}` : ''}`);
     }

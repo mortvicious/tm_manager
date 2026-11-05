@@ -2,7 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Feature, FeatureStatus } from '@tm/shared';
 import { startFeatureAnalysis } from '../claude/feature-analysis.ts';
+import { FeatureApprovalRefused } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
+import { officeWorkspaceRepos } from '../office/feature-context.ts';
 import type { Storage } from '../storage/types.ts';
 
 // Feature interface (docs/features.md): a big request → planning session →
@@ -127,6 +129,15 @@ export function registerFeatureRoutes(app: FastifyInstance, storage: Storage) {
     }
     const ids = body.analysis.phases.flatMap((p) => p.tasks.map((t) => t.id));
     if (new Set(ids).size !== ids.length) return reply.code(400).send({ error: 'duplicate card ids in the plan' });
+    // a cross-repo office feature's card may only name a repo of its workspace
+    // (docs/office.md § Director features); a single-repo feature ignores repoId
+    if (cur.officeId) {
+      const office = await storage.getOffice(cur.officeId);
+      const ws = office ? await officeWorkspaceRepos(storage, office) : null;
+      const allowed = new Set(ws?.repos.map((r) => r.id) ?? []);
+      const bad = body.analysis.phases.flatMap((p) => p.tasks).find((t) => t.repoId && !allowed.has(t.repoId));
+      if (bad) return reply.code(400).send({ error: `card "${bad.title.slice(0, 80)}" names repo ${bad.repoId}, which is not a repo of the office's workspace` });
+    }
     const feature = await storage.updateFeature(
       id,
       {
@@ -202,7 +213,14 @@ export function registerFeatureRoutes(app: FastifyInstance, storage: Storage) {
     if (!cur) return reply.code(404).send({ error: 'feature not found' });
     if (cur.status !== 'proposed') return reply.code(409).send({ error: `cannot approve from status '${cur.status}'` });
     if (!cur.repoId) return reply.code(409).send({ error: 'this feature has no repo (it was removed)' });
-    const result = await storage.approveFeature(id, 'human');
+    let result: Awaited<ReturnType<Storage['approveFeature']>>;
+    try {
+      result = await storage.approveFeature(id, 'human');
+    } catch (e) {
+      // an office feature's card outside its workspace — the approval rolled back
+      if (e instanceof FeatureApprovalRefused) return reply.code(409).send({ error: e.message });
+      throw e;
+    }
     if (!result) {
       return reply.code(409).send({ error: 'nothing to approve — the plan has no included tasks' });
     }

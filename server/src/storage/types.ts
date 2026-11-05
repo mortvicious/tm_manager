@@ -241,6 +241,8 @@ export interface FeatureResolution {
   action: 'paused' | 'phase-started' | 'review' | 'none';
   /** 0-based index of the phase that was just enqueued */
   phase?: number;
+  /** tainted office cards of that phase the pump left as drafts for a human (docs/office.md § Director features) */
+  held?: number;
 }
 
 export interface NewRun {

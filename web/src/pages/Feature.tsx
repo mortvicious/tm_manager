@@ -26,6 +26,22 @@ const RESOLVED = ['published', 'done', 'cancelled'];
 /** Deep clone that survives the structuredClone gaps in older Safari. */
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
+/**
+ * A cross-repo office feature's repos (docs/office.md § Director features):
+ * the workspace's, and the listing repo a card without one is filed into.
+ * null for an ordinary single-repo feature.
+ */
+interface CardRepos {
+  repos: { id: string; name: string }[];
+  fallbackId: string | null;
+}
+
+function cardRepoName(r: CardRepos, repoId: string | null | undefined): string {
+  const id = repoId ?? r.fallbackId;
+  const name = r.repos.find((x) => x.id === id)?.name ?? 'repo not in the workspace';
+  return repoId ? name : `${name} (default)`;
+}
+
 const newCardId = () =>
   typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `card-${Date.now()}-${Math.random()}`;
 
@@ -33,14 +49,31 @@ function PlanCardEditor({
   card,
   onChange,
   onDone,
+  cardRepos,
 }: {
   card: FeaturePlanTask;
   onChange: (patch: Partial<FeaturePlanTask>) => void;
   onDone: () => void;
+  cardRepos: CardRepos | null;
 }) {
   return (
     <>
       <input className="field" value={card.title} onChange={(e) => onChange({ title: e.target.value })} />
+      {cardRepos && (
+        <select
+          className="field"
+          title="the repo this card runs in"
+          value={card.repoId ?? ''}
+          onChange={(e) => onChange({ repoId: e.target.value || null })}
+        >
+          <option value="">repo: {cardRepoName(cardRepos, null)}</option>
+          {cardRepos.repos.map((r) => (
+            <option key={r.id} value={r.id}>
+              repo: {r.name}
+            </option>
+          ))}
+        </select>
+      )}
       <textarea
         className="field"
         rows={8}
@@ -97,10 +130,12 @@ function PlanColumns({
   plan,
   onPlan,
   editable,
+  cardRepos = null,
 }: {
   plan: FeaturePlan;
   onPlan: (next: FeaturePlan) => void;
   editable: boolean;
+  cardRepos?: CardRepos | null;
 }) {
   const [editing, setEditing] = useState<string | null>(null);
 
@@ -146,6 +181,7 @@ function PlanColumns({
                   card={card}
                   onChange={(patch) => mutate((d) => Object.assign(d.phases[pi].tasks[ti], patch))}
                   onDone={() => setEditing(null)}
+                  cardRepos={cardRepos}
                 />
               ) : (
                 <>
@@ -159,6 +195,11 @@ function PlanColumns({
                     </ul>
                   )}
                   <div className="card-meta">
+                    {cardRepos && (
+                      <span className="chip" title="the repo this card runs in">
+                        {cardRepoName(cardRepos, card.repoId)}
+                      </span>
+                    )}
                     {card.category && (
                       <span className="chip" style={{ color: 'var(--tm-accent)' }}>
                         {card.category}
@@ -255,10 +296,13 @@ function TaskColumns({
   plan,
   tasks,
   onOpenTask,
+  repoName = null,
 }: {
   plan: FeaturePlan | null;
   tasks: Task[];
   onOpenTask: (id: string) => void;
+  /** a cross-repo office feature: each card shows its repo */
+  repoName?: ((repoId: string | null) => string) | null;
 }) {
   const phaseCount = Math.max(
     plan?.phases.length ?? 0,
@@ -290,6 +334,12 @@ function TaskColumns({
                 <span className="card-title">{t.title}</span>
                 <div className="card-meta">
                   <StatusBadge status={t.status} reviewState={t.reviewState} checkState={t.checkState} loopState={t.loopState} />
+                  {repoName && <span className="chip">{repoName(t.repoId)}</span>}
+                  {t.taintedAt && t.status === 'draft' && (
+                    <span className="chip office-taint" title="a tainted office feature's card: queue it yourself (Enqueue) once you have read it">
+                      tainted — queue it yourself
+                    </span>
+                  )}
                   {t.category && (
                     <span className="chip" style={{ color: 'var(--tm-accent)' }}>
                       {t.category}
@@ -310,8 +360,20 @@ function TaskColumns({
 export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }) {
   const { id = '' } = useParams();
   const navigate = useNavigate();
-  const { features, tasks, repos, refresh } = useApp();
+  const { features, tasks, repos, offices, workspaces, refresh } = useApp();
   const feature: Feature | undefined = features.find((f) => f.id === id);
+  // a Director's cross-repo feature: cards run in the office workspace's repos
+  const office = feature?.officeId ? offices.find((o) => o.id === feature.officeId) : undefined;
+  const cardRepos = useMemo<CardRepos | null>(() => {
+    if (!feature?.officeId) return null;
+    const ws = office ? workspaces.find((w) => w.id === office.workspaceId) : undefined;
+    const ids = ws?.repoIds ?? [];
+    return {
+      repos: ids.map((rid) => repos.find((r) => r.id === rid)).filter((r): r is NonNullable<typeof r> => !!r).map((r) => ({ id: r.id, name: r.name })),
+      fallbackId: feature.repoId,
+    };
+  }, [feature?.officeId, feature?.repoId, office, workspaces, repos]);
+  const workspaceName = office ? workspaces.find((w) => w.id === office.workspaceId)?.name : undefined;
   const featureTasks = useMemo(
     () =>
       tasks
@@ -424,7 +486,23 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
         <div className="grow">
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <FeatureBadge status={feature.status} />
-            {repo ? <span className="chip">{repo.name}</span> : <span className="chip">repo removed</span>}
+            {cardRepos ? (
+              <span className="chip" title="a Director's cross-repo feature: every card runs in its own repo of the workspace">
+                office · {workspaceName ?? 'workspace'} · {cardRepos.repos.length} repos
+              </span>
+            ) : repo ? (
+              <span className="chip">{repo.name}</span>
+            ) : (
+              <span className="chip">repo removed</span>
+            )}
+            {feature.taintedAt && (
+              <span
+                className="chip office-taint"
+                title="filed by a shift that read untrusted input: its cards wait as drafts until you queue them"
+              >
+                tainted
+              </span>
+            )}
             {feature.analysis && (
               <span className="chip mono">
                 {feature.analysis.phases.length} phases · {included} tasks
@@ -694,15 +772,21 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
           <PlanColumns
             plan={plan}
             editable
+            cardRepos={cardRepos}
             onPlan={(next) => {
               setDraftPlan(next);
               setDirty(true);
             }}
           />
         ) : featureTasks.length > 0 ? (
-          <TaskColumns plan={plan} tasks={featureTasks} onOpenTask={onOpenTask} />
+          <TaskColumns
+            plan={plan}
+            tasks={featureTasks}
+            onOpenTask={onOpenTask}
+            repoName={cardRepos ? (rid) => repos.find((r) => r.id === rid)?.name ?? 'repo removed' : null}
+          />
         ) : (
-          <PlanColumns plan={plan} editable={false} onPlan={() => {}} />
+          <PlanColumns plan={plan} editable={false} onPlan={() => {}} cardRepos={cardRepos} />
         )
       ) : (
         <div className="empty panel">
