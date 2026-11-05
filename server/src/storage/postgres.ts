@@ -2473,7 +2473,9 @@ export class PostgresStorage implements Storage {
   async appendOfficeMessage(m: NewOfficeMessage): Promise<OfficeMessage> {
     const id = randomUUID();
     await this.q(OFFICE_MESSAGE_INSERT_SQL, officeMessageInsertParams(id, m, now()));
-    return (await this.getOfficeMessage(id))!;
+    const message = (await this.getOfficeMessage(id))!;
+    queueMicrotask(() => broadcast({ type: 'office-message.created', message }));
+    return message;
   }
 
   async getOfficeMessage(id: string): Promise<OfficeMessage | null> {

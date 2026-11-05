@@ -43,7 +43,7 @@ and `server/src/office/features.test.ts`.
 | `Office` | One per workspace. Has a knowledge folder (`folderPath`, outside every repo), an autonomy level, a day budget (`dayBudgetUsd`, per office-local day; 0 means nothing runs), shift concurrency (`maxSlots`), filing caps (`maxTasksPerShift`, `maxOpenTasks`), a pause (`pausedAt`/`pausedReason`), `budgetTrippedOn` (the local day the budget tripped), a `theme` and a `timezone` (IANA). Schedules, quiet hours and the budget day are all read in that zone. |
 | `OfficeRole` | A standing role. Has a kebab `key` (`OFFICE_ROLE_KEY_RE`), a name, avatar and title, its human-written `prompt`, model and effort, and `tools` (always a subset of `SHIFT_TOOL_ALLOWLIST`). It can override autonomy (`autonomy`) and set a per-day cap (`capUsd`). It wakes on `schedules` (5-field cron) and `triggers`, and pre-run `guards` can skip a wake. `notesPath` is its notes file and `notesTaintedAt` marks notes written by a tainted shift. `sessionId` is the session it resumes, and `sessionTainted` marks that session as tainted. |
 | `OfficeShift` | One wake: its `trigger` (`cron`/`event`/`signal`/`request`, a `ref`, and `at` = the slot or event time), a `verdict` of `ran` or `skipped` with a readable `skipReason`, the aux run, cost, the taint and its sources (`kind:ref` strings), the brief, the tasks filed, and the times and error. |
-| Trigger | `{kind:'event', event}` is something this server did (`OFFICE_EVENT_NAMES`: task-landed, task-failed, review-flagged, checks-red, job-attention), so it is trusted. `{kind:'signal', source}` comes from outside (a webhook, an alert), so it is untrusted. `{kind:'command-done'}` (opt-in) wakes the role once after the saved commands one of its shifts asked for have run (§ Command runs). |
+| Trigger | `{kind:'event', event}` is something this server did (`OFFICE_EVENT_NAMES`: task-landed, bug-filed, deploy-done, office-message, task-failed, review-flagged, checks-red, job-attention — § Event triggers), so it is trusted. `{kind:'signal', source}` comes from outside (a webhook, an alert), so it is untrusted. `{kind:'command-done'}` (opt-in) wakes the role once after the saved commands one of its shifts asked for have run (§ Command runs). |
 | Presets | `OFFICE_ROLE_PRESETS` are the ids of the built-in role templates (director, developer, devops, qa, seo). Their content is in `server/src/office/presets.ts` (§ Presets). |
 
 ### Tools
@@ -1463,6 +1463,64 @@ it in the dashboard). It goes into the shift prompt as a `## The request` block
 row. A start answers 202 `{ shiftId }` and appends an `office.wake` event
 (actor `human`, with the note). 404 for an unknown office or role.
 
+### Event triggers
+
+A role with `{ kind: 'event', event, repoId? }` in `triggers` is woken when
+this server records the event (`server/src/office/event-triggers.ts`,
+`OfficeEventTriggers`, started after listen beside the scheduler). Nothing
+polls: the service subscribes IN-PROCESS to the event bus (`onEvent`) — the
+audit rows both storage drivers already broadcast as `event.appended`, plus
+three live broadcasts.
+
+| Event | Fires on |
+| --- | --- |
+| `task-landed` | a `task.transition` into `done` or `published` from anything else (`done → published` is the same landing, not a second one) |
+| `bug-filed` | a task `isBugTask` reads as a bug (category naming bugs, or Sentry-filed): created as one (`task.created`), or an OPEN task a later category edit turns into one (`task.edited` with `category` in `fields` — the analysis pass, the agent category route, a human edit). Once per task: the service keeps each open task's bug state in memory, primed from the open tasks at start, so a task already a bug never re-fires and a terminal one never fires. Never the waking role's own filing |
+| `deploy-done` | a `task.transition` into `published`, or a `command.run` broadcast of a HUMAN-saved command (`ownerTaskId` null; not a check, baseline, office run or one-shot) whose name contains the word *deploy* (`isDeployCommandName` — the name is the tag) exiting 0 |
+| `office-message` | `office-message.created` (broadcast by `appendOfficeMessage` in both drivers): the addressee role, or for the channel (`toRoleId` null) every subscribed role but the writer |
+| `task-failed` | a `task.transition` into `failed` |
+| `review-flagged` | a `run.reviewed` row with `state: 'flagged'` |
+| `checks-red` | a `task.checked` row with `state: 'red'` and a `stop` (the fix loop is spent — a red with a fix turn coming is not news) |
+| `job-attention` | `job-run.updated` with verdict `attention` |
+
+**Routing.** A repo event goes to every ENABLED office whose workspace
+contains the repo, and there to every enabled role whose trigger matches
+(`roleWantsEvent`; a `repoId`-scoped trigger only its repo). A re-broadcast of
+the same run is one event (ids remembered 6 h; audit-row events are keyed by
+the row, so the same task landing again later is a new event).
+
+**Debounce.** Per role, ≥ `OFFICE_EVENT_DEBOUNCE_MS` (2 min): the first event
+opens a bucket due 2 min later — never sooner than 2 min after the role's
+previous event wake — and every event until then joins it. A burst is ONE wake
+carrying every ref (≤ `OFFICE_EVENT_REFS_MAX` = 20 listed, the rest counted).
+Buckets are memory: a restart drops a pending wake (the events stay in the
+audit log, and a cron shift's `tasks-landed-since` guard still sees them).
+
+**Gate.** The wake goes through `officeGate` WITH the guards, exactly like a
+cron slot. A refusal (a guard, the hard gate, a runner refusal no retry fixes)
+is a `skipped` shift row (trigger `event`, the refs as `ref`, `skip_code`) plus
+the scheduler's coalesced `office.shift-skipped` row (`coalescedEvent`, data
+`trigger: 'event'`). A busy slot (`slots`, `office-busy`, `busy`, `paused`)
+DEFERS: the bucket is retried every minute and keeps collecting, for at most an
+hour (one coalesced `office.shift-deferred` row), then it is skipped.
+
+**On the shift.** `trigger = { kind: 'event', ref, at }` where `ref` is
+`officeEventTriggerRef`: `event:id` per ref, space-separated (`task-landed:<task
+id> task-landed:<task id>`, `+N` past the cap), and `at` the first event's time.
+The refs themselves (`ShiftTriggerInput.events`) become the prompt's
+`## What happened` block (`officeEventsBlock`), fenced JSON stated as data.
+
+**Payloads are server facts** (`OfficeEventRef`): event, time, repo, task id
+and status, command run id + the human-set command name, job/run ids, message
+id/kind and the writer's role key. A task's title is carried only when
+`officeEventTitle` allows it: never for a TAINTED task (`taintedAt`, flagged
+`tainted: true` — it appears as its id alone) and never for a Sentry-filed one
+(the issue title is outside text). A message's body and a task's description
+are never carried. An event wake is trusted (`shiftTaint` taints only
+signals), which is why the payload must hold nothing a tainted writer chose
+(`event-triggers.test.ts` asserts a tainted task's text never reaches the
+prompt).
+
 ### States
 
 `officeStates(storage, officeId, now)` gives `OfficeStates`
@@ -2018,8 +2076,9 @@ has:
   offered, and the editor says why.
 - **Schedules**: cron rows, each with `cronError` or its next slot in the
   office zone.
-- **Triggers**: event (an `OFFICE_EVENT_NAMES` name, optionally one workspace
-  repo), signal (a source; it taints), or command-done.
+- **Triggers**: event (an `OFFICE_EVENT_NAMES` name with its
+  `OFFICE_EVENT_LABELS` wording, optionally one workspace repo — § Event
+  triggers), signal (a source; it taints), or command-done.
 - **Guards**: an `OFFICE_GUARD_KINDS` kind with its parameters, each row
   showing `guardError` or `describeGuard`.
 - **Saved commands this role may run**: the workspace repos' saved commands

@@ -40,6 +40,7 @@ import { ShiftRunner, initShifts } from './office/shift.ts';
 import { OfficeCommandRuns, initOfficeCommandRuns } from './office/commands.ts';
 import { officeRel, writeOfficeFile } from './office/shift-result.ts';
 import { OfficeScheduler, initOfficeScheduler } from './office/scheduler.ts';
+import { OfficeEventTriggers, initOfficeEventTriggers } from './office/event-triggers.ts';
 import { registerJobRoutes } from './routes/jobs.ts';
 import { registerAgentJobRoutes } from './routes/agent-jobs.ts';
 import { registerCommandRoutes } from './routes/commands.ts';
@@ -167,6 +168,14 @@ orchestrator.setShifts(shiftRunner);
 // cron tick through the gate; started after the shift runner's boot recovery.
 const officeScheduler = new OfficeScheduler({ storage, shifts: () => shiftRunner });
 initOfficeScheduler(officeScheduler);
+// Event triggers (docs/office.md § Event triggers): in-process subscribers on
+// the event bus, debounced per role, through the same gate and skip audit.
+const officeEventTriggers = new OfficeEventTriggers({
+  storage,
+  shifts: () => shiftRunner,
+  audit: (...a) => officeScheduler.coalescedEvent(...a),
+});
+initOfficeEventTriggers(officeEventTriggers);
 await orchestrator.recoverOnBoot({ lastStop });
 await storage.appendEvent({
   kind: 'server.started',
@@ -405,6 +414,7 @@ app.post('/api/server/restart', async (req, reply) => {
   jobs.stop();
   // the same for a shift: its open row is boot recovery's; no new cron wake either
   officeScheduler.stop();
+  officeEventTriggers.stop();
   shiftRunner.stop();
   aux().stopAll();
   // Abort the in-flight long poll NOW so the socket is not still open when the
@@ -588,6 +598,7 @@ const stop = async (cause: Omit<StopCause, 'at' | 'pid'> | null) => {
   jobs.stop();
   // the same for a shift: its open row is boot recovery's; no new cron wake either
   officeScheduler.stop();
+  officeEventTriggers.stop();
   shiftRunner.stop();
   aux().stopAll();
   // A resume gate (docs/token-budget.md § The fourth) sits between "task marked
@@ -663,6 +674,7 @@ if (!servingSpa) {
 // runner's boot recovery above, so a closed row frees its slot and a slot
 // missed while the server was down wakes right away — once (docs/office.md § Scheduler and states).
 officeScheduler.start();
+officeEventTriggers.start();
 telegram.start();
 void pushNotifier.start();
 if (!supervised) {

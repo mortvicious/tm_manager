@@ -2488,7 +2488,9 @@ export class SqliteStorage implements Storage {
   async appendOfficeMessage(m: NewOfficeMessage): Promise<OfficeMessage> {
     const id = randomUUID();
     this.db.prepare(OFFICE_MESSAGE_INSERT_SQL).run(...(officeMessageInsertParams(id, m, now()) as any[]));
-    return (await this.getOfficeMessage(id))!;
+    const message = (await this.getOfficeMessage(id))!;
+    queueMicrotask(() => broadcast({ type: 'office-message.created', message }));
+    return message;
   }
 
   async getOfficeMessage(id: string): Promise<OfficeMessage | null> {

@@ -301,7 +301,7 @@ export class OfficeScheduler {
    * rows, so a restart does not write a second one. The next written row
    * carries how many were folded into the previous one (`suppressed`).
    */
-  private async coalescedEvent(
+  async coalescedEvent(
     kind: 'office.shift-skipped' | 'office.shift-deferred',
     office: Office,
     role: OfficeRole,

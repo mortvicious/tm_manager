@@ -5,6 +5,7 @@ import {
   EFFORT_LEVELS,
   MODEL_OPTIONS,
   OFFICE_AUTONOMY_LEVELS,
+  OFFICE_EVENT_LABELS,
   OFFICE_EVENT_NAMES,
   OFFICE_GUARD_KINDS,
   OFFICE_MAX_OPEN_TASKS_MAX,
@@ -1285,8 +1286,8 @@ function TriggerRow({
             onChange={(e) => onChange({ ...trigger, event: e.target.value as OfficeEventName })}
           >
             {OFFICE_EVENT_NAMES.map((n) => (
-              <option key={n} value={n}>
-                {n}
+              <option key={n} value={n} title={OFFICE_EVENT_LABELS[n]}>
+                {n} — {OFFICE_EVENT_LABELS[n]}
               </option>
             ))}
           </select>
