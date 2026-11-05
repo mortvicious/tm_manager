@@ -159,7 +159,7 @@ export const OFFICE_PRESETS: Readonly<Record<OfficeRolePreset, OfficePresetDef>>
 /** Tools a preset may grant on top of its default (the UI flags these as tainting). */
 export const OFFICE_OPTIONAL_WEB_TOOLS: readonly string[] = SHIFT_WEB_TOOLS;
 
-export type OfficeRoleDraft = Omit<OfficeRole, 'id' | 'officeId' | 'name' | 'avatar' | 'notesPath'>;
+export type OfficeRoleDraft = Omit<OfficeRole, 'id' | 'officeId' | 'name' | 'avatar' | 'notesPath' | 'armedAt'>;
 
 /**
  * A fresh, editable role body from a preset: every array and object is a COPY,

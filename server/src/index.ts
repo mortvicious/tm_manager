@@ -39,6 +39,7 @@ import { JobService } from './jobs.ts';
 import { ShiftRunner, initShifts } from './office/shift.ts';
 import { OfficeCommandRuns, initOfficeCommandRuns } from './office/commands.ts';
 import { officeRel, writeOfficeFile } from './office/shift-result.ts';
+import { OfficeScheduler, initOfficeScheduler } from './office/scheduler.ts';
 import { registerJobRoutes } from './routes/jobs.ts';
 import { registerAgentJobRoutes } from './routes/agent-jobs.ts';
 import { registerCommandRoutes } from './routes/commands.ts';
@@ -161,6 +162,10 @@ const shiftRunner: ShiftRunner = new ShiftRunner({
 });
 initShifts(shiftRunner);
 orchestrator.setShifts(shiftRunner);
+// The office scheduler (docs/office.md § Scheduler and states): a one-minute
+// cron tick through the gate; started after the shift runner's boot recovery.
+const officeScheduler = new OfficeScheduler({ storage, shifts: () => shiftRunner });
+initOfficeScheduler(officeScheduler);
 await orchestrator.recoverOnBoot({ lastStop });
 await storage.appendEvent({
   kind: 'server.started',
@@ -397,7 +402,8 @@ app.post('/api/server/restart', async (req, reply) => {
   shellRunner.stopAll();
   // before the aux stop: a job run ended by the restart is boot recovery's to re-arm, not a human's kill
   jobs.stop();
-  // the same for a shift: its open row is boot recovery's
+  // the same for a shift: its open row is boot recovery's; no new cron wake either
+  officeScheduler.stop();
   shiftRunner.stop();
   aux().stopAll();
   // Abort the in-flight long poll NOW so the socket is not still open when the
@@ -578,7 +584,8 @@ const stop = async (cause: Omit<StopCause, 'at' | 'pid'> | null) => {
   shellRunner.stopAll();
   // before the aux stop: a job run ended by the restart is boot recovery's to re-arm, not a human's kill
   jobs.stop();
-  // the same for a shift: its open row is boot recovery's
+  // the same for a shift: its open row is boot recovery's; no new cron wake either
+  officeScheduler.stop();
   shiftRunner.stop();
   aux().stopAll();
   // A resume gate (docs/token-budget.md § The fourth) sits between "task marked
@@ -650,6 +657,10 @@ if (!servingSpa) {
       `    Development: use \`npm run dev\` (or dev:lan) and open the Vite port 5173 instead.`,
   );
 }
+// After listen: a shift's hooks curl back to this port. After the shift
+// runner's boot recovery above, so a closed row frees its slot and a slot
+// missed while the server was down wakes right away — once (docs/office.md § Scheduler and states).
+officeScheduler.start();
 telegram.start();
 void pushNotifier.start();
 if (!supervised) {

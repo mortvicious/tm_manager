@@ -23,7 +23,9 @@ and the gate and day budget (§ Gate and budget): `server/src/office/gate.ts`,
 `server/src/office/budget.ts`, the office branch of `budgetAllows`, and
 `server/src/office/gate.test.ts`; and the REST API (§ API): `server/src/routes/offices.ts`, its
 types at the end of `shared/src/office.ts`, and `server/src/routes/offices.test.ts`; and the shift runner (§ Shifts at run time): `server/src/office/shift.ts`,
-`shift-result.ts`, `feedback.ts` and `server/src/office/shift.test.ts`.
+`shift-result.ts`, `feedback.ts` and `server/src/office/shift.test.ts`; and the
+scheduler (§ Scheduler and states): `server/src/office/scheduler.ts`, migration 57
+and `server/src/office/scheduler.test.ts`.
 
 ## Concepts
 
@@ -317,7 +319,7 @@ apply, the first one in this list wins:
 | `in-huddle` | in a huddle | `in a huddle` |
 | `on-shift` | a shift is live | the shift's label |
 | `over-budget` | the office day budget is spent or tripped today, or the role cap is spent | `role spent $2.00 of its $2.00 cap today` |
-| `guarded` | the latest due wake was skipped by a guard and no shift has run since | `<skip reason> · next 09:00` |
+| `guarded` | the latest due wake was skipped by a guard and no shift has run since | `skip: <skip reason> · next 09:00` |
 | `scheduled` | a next cron slot exists | `next 09:00`, `next Thu 09:00`, `next 2026-12-01 09:00` |
 
 Times are formatted in the office zone (`formatOfficeTime`).
@@ -521,7 +523,8 @@ follow-up task 21ee2d45.
 
 ## Data model
 
-Migrations 53 and 54. The SQL is shared by both drivers in
+Migrations 53 and 54 (and 57, § Scheduler and states: `tm_office_roles.armed_at`,
+`tm_office_shifts.skip_code`). The SQL is shared by both drivers in
 `server/src/storage/office-sql.ts` (dialect-neutral, `?` placeholders, like
 `workspace-sql.ts`). Storage test: `server/src/storage/office.test.ts`.
 
@@ -579,7 +582,7 @@ both drivers):
   starts at 0, and nothing is filed yet), `updateShift` (`OfficeShiftPatch`:
   verdict, skip reason, run id, cost, taint, brief, filed task ids, filing, end time,
   error), `getShift`, and `listShifts(filter)`. The filter takes `officeId`,
-  `roleId`, `verdict`, `since` (≥), `until` (<), `open` (no `ended_at`) and
+  `roleId`, `verdict`, `triggerKind`, `since` (≥), `until` (<), `open` (no `ended_at`) and
   `limit` (default 500, at most 5000). Results are newest first.
 - **`officeSpendSince(officeId, sinceIso, roleId?)`** returns the
   `tm_runs.cost_usd` of every run **started** at or after `sinceIso`. This is
@@ -620,6 +623,8 @@ types are at the end of `shared/src/office.ts` (`OfficeDetail`,
 | `DELETE /api/offices/:id/roles/:roleId` | remove a role → `{ ok: true }` |
 | `POST /api/offices/:id/roles/:roleId/reset-notes` | reset the role's notes file → `OfficeRoleWriteResult` |
 | `PUT /api/offices/:id/roles/:roleId/commands` | replace the role's command allowlist (§ Command runs) → `OfficeRoleWriteResult` |
+| `POST /api/offices/:id/roles/:roleId/wake` | Wake now, `{ note? }` → 202 `{ shiftId }`; 409 `{ error, code }` with the hard-gate or runner reason (§ Scheduler and states) |
+| `GET /api/offices/:id/states` | every role's state → `OfficeStates` (§ Scheduler and states) |
 
 **Every write needs `Origin`** (403 `office edits come from the dashboard`
 otherwise). Every write acts as `human`, and a worker's `curl` sends no
@@ -1166,6 +1171,102 @@ commands every shift cannot loop.
 `pending` becomes `skipped` and `running` becomes `error`, both with
 `interrupted by restart`. A run is never re-run at boot, because the moment
 it was asked for has passed.
+
+## Scheduler and states
+
+`server/src/office/scheduler.ts`, test `scheduler.test.ts` (temp SQLite, an
+injected clock, a fake shift starter). Modelled on the daily digest
+(`telegram/digest.ts`): `OfficeScheduler` ticks every minute
+(`OFFICE_TICK_MS`), single-flight, and is started by `index.ts` after the
+server listens (a shift's hooks curl back to it) and after the shift runner's
+boot recovery. Shutdown calls `stop()` before `shiftRunner.stop()` and waits for
+nothing: a live shift is an aux run, ended by `aux().stopAll()` and closed by
+the runner's boot recovery.
+
+### Whether a slot is owed
+
+Two persisted facts per role, so a restart or a Mac asleep for hours changes
+nothing:
+
+- **lastSlot**: `trigger.at` of the role's newest **cron** shift row, ran or
+  skipped (`lastCronSlot`, `listShifts({ roleId, triggerKind: 'cron' })`).
+- **armedAt**: `tm_office_roles.armed_at` (migration 57, `OfficeRole.armedAt`),
+  when the schedule started counting. It is set on create, and re-set to now when
+  a role is turned on or its schedules change (`roleRearms`, role PATCH), and for
+  every role of an office that is turned on or re-zoned (office PATCH). Rows from
+  before migration 57 were back-filled with their creation time. An unreadable
+  value arms now (`roleArmedAt`), so a past slot is never invented.
+
+Each tick, for every **enabled** office and enabled role with schedules,
+`dueSlots(role, lastSlot, armedAt, now, tz)` gives at most one wake: the latest
+due slot. Six hours asleep is one wake per role, not one per missed slot (the
+test sleeps an hourly and a quarter-hourly role through 6 and 24 slots). Wakes in
+one office are judged oldest slot first, so a busy office cannot starve a role.
+A disabled office is not woken at all, and nothing is written for it.
+
+### What happens to a due wake
+
+Each wake goes through `officeGate(…, { kind: 'cron', ref: <schedule>, at: <slot> })`
+on fresh office and role rows, then `ShiftRunner.start`:
+
+| Outcome | Rows written |
+|---|---|
+| **pass** | the runner's shift row: trigger `cron`, `ref` = the schedule, `at` = the slot |
+| **skip**: a guard (`code: 'guard'`), a hard-gate refusal other than `slots` (office paused, Pause all, day budget, role cap…), or a runner refusal no retry fixes (`tools`, `folder`, `role`) | a shift row with verdict `skipped`, `skip_reason`, `skip_code` (migration 57), started and ended now; plus an `office.shift-skipped` event (coalesced, below). The slot is consumed. |
+| **defer**: the hard gate's `slots`, or the runner's `office-busy` / `busy` / `paused` | no shift row: the slot stays owed and is tried again next minute (once free, it runs with the original slot as `at`). One coalesced `office.shift-deferred` event. |
+
+Deferral exists because a role whose slot falls while another role of the same
+office is on shift (1 live shift per office) would otherwise lose that slot.
+
+**Coalescing.** An `office.shift-skipped` / `office.shift-deferred` row is
+written at most once per role per reason class per hour
+(`OFFICE_SKIP_COALESCE_MS`). The class is the code plus the guard's kind
+(`guard:cooldown`, `office-paused`), not the reason text, because a cooldown's
+"last shift 20 min ago" reads differently every minute. The map is in memory,
+and on a miss (a fresh process) the last hour of rows is searched by `roleId` +
+`reasonClass`, so a restart does not write a second row. The next row written
+for a key carries `suppressed`, the number of skips folded into the previous
+one. Event data: `officeId`, `workspaceId`, `roleId`, `roleKey`, `code`,
+`guard?`, `reasonClass`, `reason`, `schedule`, `slot`, and for a skip `shiftId`
+and `missed`. The shift rows themselves are never coalesced: there is one per
+judged slot.
+
+### Wake now
+
+`POST /api/offices/:id/roles/:roleId/wake` `{ note? }` (≤ `OFFICE_WAKE_NOTE_MAX`
+= 4000 chars). It needs Origin (403 without, like every office write) →
+`OfficeScheduler.wake`. It is a stakeholder request, so the trigger is
+`{ kind: 'request', ref: 'human' }`. It still passes the **hard gate**: 409
+`{ error, code }` with its reason (`office paused: holiday`, `office-paused`), and
+the same for a runner refusal (`a shift of this office is already running`). It
+skips the guards, cooldown included. The note is **trusted** text (a human typed
+it in the dashboard). It goes into the shift prompt as a `## The request` block
+(`ShiftTriggerInput.note`) and never taints the shift. A refusal writes no shift
+row. A start answers 202 `{ shiftId }` and appends an `office.wake` event
+(actor `human`, with the note). 404 for an unknown office or role.
+
+### States
+
+`officeStates(storage, officeId, now)` gives `OfficeStates`
+(`{ officeId, at, states: OfficeRoleStateEntry[] }`, each entry = `roleState`'s
+`{ state, detail }` + `roleId` + `nextSlotAt`). It reads the latest facts and
+writes nothing (the budget is not settled):
+
+- the office row and Pause all;
+- today's spend, office-wide and per role;
+- the live (open, ran) shifts, which give `on-shift` with `on shift since 14:02 (cron)`;
+- each role's newest shift. A `skipped` one with `skip_code = 'guard'` is the
+  `lastGuardSkip`, so the state reads `guarded` with `skip: quiet hours (22:00–07:00) · next 09:00`.
+  Hard-gate skips are not "guarded": the `paused` / `over-budget` / `off-duty`
+  states already say why.
+
+Otherwise the state is `scheduled` with `next 09:00`. `waitingForYou` and
+`inHuddle` are 0/false until the phases that bring proposals cards and huddles.
+
+`GET /api/offices/:id/states` returns them (404 for an unknown office). They are
+broadcast in `office.updated` (`states`): by the scheduler after each tick, only
+for an office whose states changed since its last broadcast; by every office
+route's `announce`; and by the shift runner when a shift ends.
 
 ## UI
 

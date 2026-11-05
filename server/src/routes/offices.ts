@@ -19,6 +19,8 @@ import {
   isValidTimeZone,
   OFFICE_MAX_OPEN_TASKS_MAX,
   OFFICE_MAX_TASKS_PER_SHIFT_MAX,
+  OFFICE_WAKE_NOTE_MAX,
+  roleRearms,
   shiftToolsRefusal,
   type Office,
   type OfficeAutonomy,
@@ -36,6 +38,7 @@ import { archiveRoleNotes, defaultOfficeFolder, resetRoleNotes, scaffoldOfficeFo
 import { DEFAULT_OFFICE_THEME, OFFICE_THEMES, generateOfficeIdentities, generateRoleIdentity } from '../office/names.ts';
 import { allowlistCheck } from '../office/commands.ts';
 import { roleFromPreset } from '../office/presets.ts';
+import { officeScheduler, officeStates, type OfficeScheduler } from '../office/scheduler.ts';
 import type { NewOfficeRole, OfficePatch, OfficeRolePatch } from '../storage/office-sql.ts';
 import type { Storage } from '../storage/types.ts';
 import { isUniqueViolation } from '../storage/workspace-sql.ts';
@@ -105,6 +108,7 @@ const roleCreateBody = roleFieldsPartial
   })
   .strict();
 const rolePatchBody = roleFieldsPartial.strict();
+const wakeBody = z.object({ note: z.string().max(OFFICE_WAKE_NOTE_MAX).optional() }).strict();
 type RoleInput = z.infer<typeof roleFieldsPartial>;
 
 /** `PUT …/roles/:roleId/commands`: the whole allowlist (docs/office.md § Command runs). */
@@ -235,16 +239,25 @@ function roleResult(role: OfficeRole): OfficeRoleWriteResult {
 
 const AUTONOMY_RANK: Record<OfficeAutonomy, number> = { proposals: 0, 'auto-run': 1, autonomous: 2 };
 
-export function registerOfficeRoutes(app: FastifyInstance, storage: Storage) {
+export interface OfficeRouteOptions {
+  /** Wake now's scheduler (default: the process-wide one, `initOfficeScheduler`) */
+  scheduler?: () => Pick<OfficeScheduler, 'wake'> | null;
+}
+
+export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opts: OfficeRouteOptions = {}) {
   const audit = (data: Record<string, unknown>) => storage.appendEvent({ kind: 'office.changed', actor: 'human', data });
+  const scheduler = opts.scheduler ?? officeScheduler;
+
+  /** The role states after an edit (docs/office.md § Scheduler and states); best effort — the row is the truth. */
+  const statesOf = async (office: Office) => (await officeStates(storage, office.id).catch(() => null)) ?? undefined;
 
   const announce = async (office: Office, withRoles = false): Promise<OfficeRole[] | undefined> => {
     if (!withRoles) {
-      broadcast({ type: 'office.updated', office });
+      broadcast({ type: 'office.updated', office, states: await statesOf(office) });
       return undefined;
     }
     const roles = await storage.listOfficeRoles(office.id);
-    broadcast({ type: 'office.updated', office, roles });
+    broadcast({ type: 'office.updated', office, roles, states: await statesOf(office) });
     return roles;
   };
 
@@ -273,6 +286,13 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage) {
       shifts: await storage.listShifts({ officeId: id, limit: OFFICE_DETAIL_SHIFTS }),
     };
     return detail;
+  });
+
+  app.get('/api/offices/:id/states', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const states = await officeStates(storage, id);
+    if (!states) return reply.code(404).send({ error: 'office not found' });
+    return states;
   });
 
   app.post('/api/offices', { preHandler: fromBrowser }, async (req, reply) => {
@@ -412,6 +432,12 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage) {
 
     let office = (await storage.updateOffice(id, patch)) ?? null;
     if (!office) return reply.code(404).send({ error: 'office not found' });
+    // Turned on, or re-zoned: every role's schedule counts from now — a slot
+    // from while it was off (or read in the old zone) was never owed.
+    if ((body.enabled === true && !cur.enabled) || (body.timezone !== undefined && body.timezone !== cur.timezone)) {
+      const armedAt = new Date().toISOString();
+      for (const r of await storage.listOfficeRoles(id)) await storage.updateOfficeRole(r.id, { armedAt });
+    }
     let pauseChanged = false;
     if (paused !== undefined && paused !== Boolean(office.pausedAt)) {
       const next = await storage.pauseOffice(id, paused ? OFFICE_HUMAN_PAUSE_REASON : null, !paused);
@@ -541,7 +567,9 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage) {
       const clash = (await storage.listOfficeRoles(office.id)).find((r) => r.id !== cur.id && r.name === f.name);
       if (clash) return reply.code(409).send({ error: `another role of this office is already called "${f.name}"` });
     }
-    const role = await storage.updateOfficeRole(cur.id, f as OfficeRolePatch);
+    const patch: OfficeRolePatch = { ...(f as OfficeRolePatch) };
+    if (roleRearms(cur, f)) patch.armedAt = new Date().toISOString();
+    const role = await storage.updateOfficeRole(cur.id, patch);
     if (!role) return reply.code(404).send({ error: 'role not found in this office' });
     if ((f.name !== undefined && f.name !== cur.name) || (f.title !== undefined && f.title !== cur.title)) await rescaffold(office);
     const raised =
@@ -635,5 +663,18 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage) {
     });
     await announce(office, true);
     return roleResult(role);
+  });
+
+  // Wake now (docs/office.md § Scheduler and states): a stakeholder request —
+  // the hard gate still applies (409 with its reason), guards and cooldown do
+  // not; the note reaches the shift as trusted text.
+  app.post('/api/offices/:id/roles/:roleId/wake', { preHandler: fromBrowser }, async (req, reply) => {
+    const body = wakeBody.parse(req.body ?? {});
+    const { id, roleId } = req.params as { id: string; roleId: string };
+    const s = scheduler();
+    if (!s) return reply.code(503).send({ error: 'the office scheduler is not running' });
+    const r = await s.wake(id, roleId, body.note ?? null, 'human');
+    if (!r.ok) return reply.code(r.status).send({ error: r.error, ...(r.code ? { code: r.code } : {}) });
+    return reply.code(202).send({ shiftId: r.shiftId });
   });
 }

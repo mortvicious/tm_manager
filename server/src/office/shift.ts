@@ -48,6 +48,7 @@ import type { OrchestratorApi } from '../app-types.ts';
 import type { Storage } from '../storage/types.ts';
 import { allowlistCheck, commandRunsBlock, type OfficeCommandRuns } from './commands.ts';
 import { readRoleFeedback, roleFeedbackRel } from './feedback.ts';
+import { officeStates } from './scheduler.ts';
 import { validateOfficeFolder } from './folder.ts';
 import { trustedShiftDenies, untrustedPath } from './isolation.ts';
 import {
@@ -96,6 +97,12 @@ export interface ShiftTriggerInput {
   ref?: string | null;
   /** the slot / event time the shift answers (default: now) */
   at?: string;
+  /**
+   * A human's words with a `request` (Wake now, docs/office.md § Scheduler and
+   * states): TRUSTED text — a human typed it in the dashboard — so it goes into
+   * the prompt as an instruction and never taints the shift.
+   */
+  note?: string | null;
 }
 
 export type ShiftRefusalCode = 'tools' | 'paused' | 'office-busy' | 'busy' | 'folder' | 'role';
@@ -434,6 +441,9 @@ export class ShiftRunner {
       `This is one SHIFT, started by ${why}. Now: ${now.toISOString()} (office time zone ${office.timezone}).`,
       plan.resumeSessionId ? 'This session continues your earlier shifts; what follows is current and replaces anything older.' : '',
       '',
+      ...(trigger.kind === 'request' && trigger.note?.trim()
+        ? ['## The request', '', 'A human woke you with this note. Put it first in this shift:', '', trigger.note.trim(), '']
+        : []),
       '## Your role',
       '',
       role.prompt.trim(),
@@ -731,7 +741,10 @@ export class ShiftRunner {
         },
       });
       const fresh = await storage.getOffice(office.id);
-      if (fresh) broadcast({ type: 'office.updated', office: fresh, roles: await storage.listOfficeRoles(office.id) });
+      if (fresh) {
+        const states = (await officeStates(storage, office.id, this.now().getTime()).catch(() => null)) ?? undefined;
+        broadcast({ type: 'office.updated', office: fresh, roles: await storage.listOfficeRoles(office.id), states });
+      }
     } catch {
       // the outcome still reaches the caller; boot recovery closes a row left open
     }

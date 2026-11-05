@@ -999,6 +999,22 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `ALTER TABLE tm_office_shifts ADD COLUMN commands TEXT`,
     ],
   },
+  {
+    id: 57,
+    // The office scheduler (docs/office.md § Scheduler and states): a role's
+    // `armed_at` is when its schedule started counting (created, enabled,
+    // schedules changed, office enabled) — slots before it never fire, and it
+    // is persisted so a restart does not re-arm and cancel a catch-up. Existing
+    // roles count from their creation. A skipped shift's `skip_code` is the
+    // gate's code (`guard`, a hard-gate code, a runner refusal), so the role
+    // card can tell a guard skip from a pause it already shows.
+    statements: [
+      `ALTER TABLE tm_office_roles ADD COLUMN armed_at TEXT`,
+      `UPDATE tm_office_roles SET armed_at = created_at WHERE armed_at IS NULL`,
+      `ALTER TABLE tm_office_shifts ADD COLUMN skip_code TEXT`,
+      `CREATE INDEX IF NOT EXISTS tm_office_shifts_role_trigger_idx ON tm_office_shifts (role_id, trigger_kind, started_at)`,
+    ],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */

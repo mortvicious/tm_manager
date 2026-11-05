@@ -2436,6 +2436,12 @@ export type AuditKind =
   | 'office.shift'
   /** a saved command a shift asked for ran, or was skipped with the reason (docs/office.md § Command runs) */
   | 'office.command'
+  /** the scheduler skipped a due wake (a guard, the hard gate, a runner refusal) — one row per role per reason per hour (docs/office.md § Scheduler and states) */
+  | 'office.shift-skipped'
+  /** a due wake waits for a free shift slot; coalesced like the skip */
+  | 'office.shift-deferred'
+  /** a human pressed Wake now on a role */
+  | 'office.wake'
   | 'approval.requested'
   | 'approval.decided'
   | 'approval.finished'
@@ -3076,7 +3082,7 @@ export type ServerEvent =
   | { type: 'job.updated'; job: Job }
   | { type: 'job.deleted'; jobId: string }
   /** an office row changed (docs/office.md § Gate and budget: the budget trip / midnight clear; § API: a human edit). `roles` = the office's full role list, sent after a role write. */
-  | { type: 'office.updated'; office: Office; roles?: OfficeRole[] }
+  | { type: 'office.updated'; office: Office; roles?: OfficeRole[]; states?: OfficeStates }
   | { type: 'job-run.updated'; run: JobRun }
   | { type: 'jobs.toggle'; enabled: boolean }
   | { type: 'orchestrator.status'; status: OrchestratorStatus };
@@ -3646,6 +3652,6 @@ export * from './triage.ts';
 // Scheduled jobs: schedule parsing + the firing rule (docs/jobs.md)
 export * from './jobs.ts';
 import { jobRunNeedsHuman, type Job, type JobRun, type JobsHold } from './jobs.ts';
-import type { Office, OfficeRole } from './office.ts';
+import type { Office, OfficeRole, OfficeStates } from './office.ts';
 // Virtual Office: types, cron, catch-up, guards, the hard gate, autonomy and taint (docs/office.md)
 export * from './office.ts';

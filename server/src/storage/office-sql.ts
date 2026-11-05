@@ -80,6 +80,8 @@ export interface NewOfficeRole {
   guards?: OfficeGuard[];
   notesPath: string;
   enabled?: boolean;
+  /** default: the creation time */
+  armedAt?: string;
 }
 
 /** Every role field but its id and office (a role never moves between offices). */
@@ -91,6 +93,8 @@ export interface NewOfficeShift {
   trigger: { kind: OfficeShiftTriggerKind; ref: string | null; at: string };
   verdict: OfficeShift['verdict'];
   skipReason?: string | null;
+  /** the gate's code for a skip (`OfficeShift.skipCode`) */
+  skipCode?: string | null;
   runId?: string | null;
   tainted?: boolean;
   taintSources?: string[];
@@ -113,6 +117,7 @@ export interface OfficeShiftFilter {
   officeId?: string;
   roleId?: string;
   verdict?: OfficeShift['verdict'];
+  triggerKind?: OfficeShift['trigger']['kind'];
   /** started at or after (ISO) */
   since?: string;
   /** started strictly before (ISO) */
@@ -219,8 +224,8 @@ export function rowToOffice(r: any): Office {
 
 // ---- roles ----
 
-export const OFFICE_ROLE_INSERT_SQL = `INSERT INTO tm_office_roles (id, office_id, preset, role_key, name, avatar, title, prompt, model, effort, tools, autonomy, cap_usd, schedules, triggers, guards, notes_path, notes_tainted_at, session_id, session_tainted, enabled, created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?)`;
+export const OFFICE_ROLE_INSERT_SQL = `INSERT INTO tm_office_roles (id, office_id, preset, role_key, name, avatar, title, prompt, model, effort, tools, autonomy, cap_usd, schedules, triggers, guards, notes_path, notes_tainted_at, session_id, session_tainted, enabled, armed_at, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?)`;
 
 export function officeRoleInsertParams(id: string, r: NewOfficeRole, at: string): unknown[] {
   return [
@@ -242,6 +247,7 @@ export function officeRoleInsertParams(id: string, r: NewOfficeRole, at: string)
     JSON.stringify(r.guards ?? []),
     r.notesPath,
     r.enabled === false ? 0 : 1,
+    r.armedAt ?? at,
     at,
     at,
   ];
@@ -279,6 +285,7 @@ const ROLE_PATCH_COLUMNS: Record<keyof OfficeRolePatch, [string, (v: any) => unk
   sessionId: ['session_id', (v) => v],
   sessionTainted: ['session_tainted', (v) => (v ? 1 : 0)],
   enabled: ['enabled', (v) => (v ? 1 : 0)],
+  armedAt: ['armed_at', (v) => v],
 };
 
 export function officeRolePatchSql(id: string, p: OfficeRolePatch, at: string): { sql: string; params: unknown[] } | null {
@@ -309,13 +316,14 @@ export function rowToOfficeRole(r: any): OfficeRole {
     sessionId: r.session_id ?? null,
     sessionTainted: !!Number(r.session_tainted),
     enabled: !!Number(r.enabled),
+    armedAt: r.armed_at ?? r.created_at ?? null,
   };
 }
 
 // ---- shifts ----
 
-export const OFFICE_SHIFT_INSERT_SQL = `INSERT INTO tm_office_shifts (id, office_id, role_id, trigger_kind, trigger_ref, trigger_at, verdict, skip_reason, run_id, cost_usd, tainted, taint_sources, brief_id, filed_task_ids, started_at, ended_at, error)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL, '[]', ?, ?, ?)`;
+export const OFFICE_SHIFT_INSERT_SQL = `INSERT INTO tm_office_shifts (id, office_id, role_id, trigger_kind, trigger_ref, trigger_at, verdict, skip_reason, run_id, cost_usd, tainted, taint_sources, brief_id, filed_task_ids, started_at, ended_at, error, skip_code)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL, '[]', ?, ?, ?, ?)`;
 
 export function officeShiftInsertParams(id: string, s: NewOfficeShift, at: string): unknown[] {
   return [
@@ -333,6 +341,7 @@ export function officeShiftInsertParams(id: string, s: NewOfficeShift, at: strin
     s.startedAt ?? at,
     s.endedAt ?? null,
     s.error ?? null,
+    s.skipCode ?? null,
   ];
 }
 
@@ -372,6 +381,7 @@ export function officeShiftListSql(f: OfficeShiftFilter = {}): { sql: string; pa
   if (f.officeId) eq('office_id', f.officeId);
   if (f.roleId) eq('role_id', f.roleId);
   if (f.verdict) eq('verdict', f.verdict);
+  if (f.triggerKind) eq('trigger_kind', f.triggerKind);
   if (f.since) {
     where.push(`started_at >= ?`);
     params.push(f.since);
@@ -437,6 +447,7 @@ export function rowToOfficeShift(r: any): OfficeShift {
     trigger: { kind: r.trigger_kind, ref: r.trigger_ref ?? null, at: r.trigger_at },
     verdict: r.verdict,
     skipReason: r.skip_reason ?? null,
+    skipCode: r.skip_code ?? null,
     runId: r.run_id ?? null,
     costUsd: Number(r.cost_usd ?? 0) || 0,
     tainted: !!Number(r.tainted),

@@ -382,6 +382,7 @@ describe('roleState', () => {
     sessionId: null,
     sessionTainted: false,
     enabled: true,
+    armedAt: null,
   };
   const facts: OfficeRoleStateFacts = {
     now: T('2026-11-04T08:00:00Z'),
@@ -397,7 +398,7 @@ describe('roleState', () => {
     assert.deepEqual(roleState(role, facts), { state: 'scheduled', detail: 'next 09:00' });
     assert.deepEqual(roleState(role, { ...facts, lastGuardSkip: 'no new code since the last shift' }), {
       state: 'guarded',
-      detail: 'no new code since the last shift · next 09:00',
+      detail: 'skip: no new code since the last shift · next 09:00',
     });
     assert.equal(roleState(role, { ...facts, roleSpentTodayUsd: 2 }).state, 'over-budget');
     assert.equal(roleState(role, { ...facts, office: { ...facts.office, budgetTrippedOn: '2026-11-04' } }).state, 'over-budget');

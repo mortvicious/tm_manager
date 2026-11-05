@@ -145,6 +145,12 @@ export interface OfficeRole {
   /** a tainted shift ran in this session (`mayResume`) */
   sessionTainted: boolean;
   enabled: boolean;
+  /**
+   * When the schedule started counting (`dueSlots`' `armedAt`): created,
+   * enabled, schedules changed, or its office enabled (`roleRearms`). Null
+   * only on a row read before migration 57 — the creation time stands in.
+   */
+  armedAt: string | null;
 }
 
 export type OfficeShiftTriggerKind = 'cron' | 'event' | 'signal' | 'request';
@@ -163,6 +169,8 @@ export interface OfficeShift {
   verdict: 'ran' | 'skipped';
   /** readable line from `evalGuards` / `officeHardGate` when skipped */
   skipReason: string | null;
+  /** why it was skipped, as a code: `guard`, an `OfficeGateCode`, or a runner refusal (`tools`, `folder`, `role`) */
+  skipCode: string | null;
   runId: string | null;
   costUsd: number;
   tainted: boolean;
@@ -1232,7 +1240,8 @@ export function roleState(role: OfficeRole, f: OfficeRoleStateFacts): OfficeRole
   const next = nextRoleSlot(role, f.now, tz);
   const nextLine = next !== null ? `next ${formatOfficeTime(next, f.now, tz)}` : null;
   if (f.lastGuardSkip) {
-    return { state: 'guarded', detail: nextLine ? `${f.lastGuardSkip} · ${nextLine}` : f.lastGuardSkip };
+    const skip = `skip: ${f.lastGuardSkip}`;
+    return { state: 'guarded', detail: nextLine ? `${skip} · ${nextLine}` : skip };
   }
   if (nextLine) return { state: 'scheduled', detail: nextLine };
   if (role.triggers.length) {
@@ -1243,6 +1252,43 @@ export function roleState(role: OfficeRole, f: OfficeRoleStateFacts): OfficeRole
   }
   return { state: 'off-duty', detail: 'no schedule' };
 }
+
+/** One role's card line, as the scheduler computes it (docs/office.md § Scheduler and states). */
+export interface OfficeRoleStateEntry extends OfficeRoleStatus {
+  roleId: string;
+  /** the role's next cron slot (ISO), or null when it has none */
+  nextSlotAt: string | null;
+}
+
+/** `GET /api/offices/:id/states`, and `states` on `office.updated` */
+export interface OfficeStates {
+  officeId: string;
+  /** when they were computed (ISO) */
+  at: string;
+  states: OfficeRoleStateEntry[];
+}
+
+/**
+ * Whether a role write re-arms its schedule (`armedAt` = now): it was off and
+ * is turned on, or its schedules changed. A slot from before that moment was
+ * never owed — turning a role on at 10:00 must not fire its 09:00 slot.
+ */
+export function roleRearms(cur: Pick<OfficeRole, 'enabled' | 'schedules'>, patch: Partial<Pick<OfficeRole, 'enabled' | 'schedules'>>): boolean {
+  if (patch.enabled === true && !cur.enabled) return true;
+  if (patch.schedules !== undefined) {
+    const a = [...patch.schedules].map((x) => x.trim()).sort();
+    const b = [...cur.schedules].map((x) => x.trim()).sort();
+    if (a.length !== b.length || a.some((x, i) => x !== b[i])) return true;
+  }
+  return false;
+}
+
+/** `POST /api/offices/:id/roles/:roleId/wake` */
+export interface OfficeWakeBody {
+  /** the requester's words, handed to the shift as TRUSTED text */
+  note?: string;
+}
+export const OFFICE_WAKE_NOTE_MAX = 4000;
 
 // ---------------------------------------------------------------------------
 // REST API (/api/offices — docs/office.md § API)
