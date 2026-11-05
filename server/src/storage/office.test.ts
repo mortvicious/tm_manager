@@ -12,6 +12,7 @@ import { SqliteStorage } from './sqlite.ts';
 import { MIGRATIONS } from './migrations.ts';
 import { isUniqueViolation } from './workspace-sql.ts';
 import type { NewOfficeRole } from './office-sql.ts';
+import { planSchema, toStoredPlan } from '../claude/feature-plan.ts';
 
 let tmp = '';
 let storage: SqliteStorage;
@@ -252,5 +253,131 @@ describe('office storage', () => {
     assert.equal(await storage.countOpenOfficeTasks(o.id, 'rb'), 1);
     await storage.updateTask(a.id, { status: 'published' });
     assert.equal(await storage.countOpenOfficeTasks(o.id, 'ra'), 1);
+  });
+});
+
+describe('office briefs, proposals, wishes (migration 58)', () => {
+  test('fresh DB has the tables and the feature columns', () => {
+    const file = path.join(tmp, 'tm.db');
+    for (const c of ['kind', 'path', 'summary', 'tainted_at', 'reviewed_at', 'shift_id']) assert.ok(columns(file, 'tm_office_briefs').includes(c), c);
+    for (const c of ['status', 'repo_id', 'decided_at', 'decided_by', 'filed_task_id', 'tainted_at', 'reviewed_at'])
+      assert.ok(columns(file, 'tm_office_proposals').includes(c), c);
+    for (const c of ['text', 'status', 'updated_at']) assert.ok(columns(file, 'tm_office_wishes').includes(c), c);
+    for (const c of ['office_id', 'tainted_at']) assert.ok(columns(file, 'tm_features').includes(c), c);
+  });
+
+  test('an existing DB (migrated up to 57, with a feature) gains them on the next migrate', async () => {
+    const file = path.join(tmp, 'old57.db');
+    const db = new Database(file);
+    db.exec(`CREATE TABLE tm_migrations (id INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`);
+    for (const m of MIGRATIONS.filter((m) => m.id <= 57)) {
+      for (const st of m.statements) db.exec(st);
+      db.prepare(`INSERT INTO tm_migrations (id, applied_at) VALUES (?, ?)`).run(m.id, new Date().toISOString());
+    }
+    const at = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO tm_features (id, repo_id, title, request, status, analysis_rounds, created_at, updated_at) VALUES ('f-old', NULL, 'old', 'r', 'draft', 0, ?, ?)`,
+    ).run(at, at);
+    db.close();
+    assert.ok(!columns(file, 'tm_features').includes('office_id'));
+    const s = new SqliteStorage(file);
+    await s.migrate();
+    const f = await s.getFeature('f-old');
+    assert.equal(f?.officeId, null);
+    assert.equal(f?.taintedAt, null);
+    assert.deepEqual(await s.listOfficeProposals(), []);
+    await s.close();
+  });
+
+  test('features carry the create-only office columns', async () => {
+    const f = await storage.createFeature({ repoId, title: 'X', request: 'r', officeId: 'off-1', taintedAt: '2026-11-05T00:00:00.000Z' }, 'test');
+    assert.equal(f.officeId, 'off-1');
+    assert.equal(f.taintedAt, '2026-11-05T00:00:00.000Z');
+    const plain = await storage.createFeature({ repoId, title: 'Y', request: 'r' }, 'test');
+    assert.equal(plain.officeId, null);
+  });
+
+  test('briefs round-trip, filter and markReviewed stamps once', async () => {
+    const b = await storage.appendBrief({ officeId: 'ob', roleId: 'r1', shiftId: 's1', kind: 'standup', path: 'deliverables/a.md', summary: 'all quiet' });
+    assert.equal(b.taintedAt, null);
+    assert.equal(b.reviewedAt, null);
+    await storage.appendBrief({ officeId: 'ob', roleId: 'r2', shiftId: 's2', kind: 'brief', path: 'b.md', summary: 's', taintedAt: '2026-11-05T00:00:00.000Z' });
+    assert.equal((await storage.listBriefs({ officeId: 'ob' })).length, 2);
+    assert.equal((await storage.listBriefs({ officeId: 'ob', kind: 'brief' })).length, 1);
+    const r = await storage.markReviewed('brief', b.id);
+    assert.ok(r?.reviewedAt);
+    const again = await storage.markReviewed('brief', b.id);
+    assert.equal(again?.reviewedAt, r?.reviewedAt, 'a repeat keeps the first time');
+    assert.equal(await storage.markReviewed('brief', 'nope'), null);
+    assert.deepEqual((await storage.listBriefs({ officeId: 'ob', unreviewed: true })).map((x) => x.roleId), ['r2']);
+  });
+
+  test('decideProposal is conditional on pending: a second decision returns null', async () => {
+    const p = await storage.appendOfficeProposal({ officeId: 'op', roleId: 'r', shiftId: 's', title: 'Add caching', body: 'why', repoId });
+    assert.equal(p.status, 'pending');
+    assert.equal(p.repoId, repoId);
+    const a = await storage.decideProposal(p.id, 'accepted', 'human');
+    assert.equal(a?.status, 'accepted');
+    assert.equal(a?.decidedBy, 'human');
+    assert.ok(a?.decidedAt);
+    assert.equal(await storage.decideProposal(p.id, 'rejected', 'telegram'), null, 'the second decision loses');
+    assert.equal(await storage.decideProposal(p.id, 'accepted', 'telegram'), null, 'even the same decision');
+    assert.equal((await storage.getOfficeProposal(p.id))?.decidedBy, 'human');
+    const f = await storage.setProposalFiledTask(p.id, 'task-1');
+    assert.equal(f?.filedTaskId, 'task-1');
+    assert.equal(await storage.setProposalFiledTask(p.id, 'task-2'), null, 'the filed task is written once');
+
+    const rej = await storage.appendOfficeProposal({ officeId: 'op', roleId: 'r', shiftId: 's', title: 'No', body: '' });
+    assert.equal(rej.repoId, null);
+    assert.equal((await storage.decideProposal(rej.id, 'rejected', 'telegram'))?.status, 'rejected');
+    assert.equal(await storage.setProposalFiledTask(rej.id, 'task-3'), null, 'a rejected proposal files nothing');
+    assert.equal(await storage.decideProposal('nope', 'accepted', 'human'), null);
+    assert.deepEqual((await storage.listOfficeProposals({ officeId: 'op', status: 'pending' })).length, 0);
+    assert.equal((await storage.listOfficeProposals({ officeId: 'op' })).length, 2);
+    assert.ok((await storage.markReviewed('proposal', rej.id))?.reviewedAt);
+  });
+
+  test('wishes CRUD, oldest first', async () => {
+    const w1 = await storage.createWish({ officeId: 'ow', text: 'faster pages' });
+    const w2 = await storage.createWish({ officeId: 'ow', text: 'dark mode' });
+    assert.equal(w1.status, 'open');
+    assert.deepEqual((await storage.listWishes({ officeId: 'ow' })).map((w) => w.id), [w1.id, w2.id]);
+    const u = await storage.updateWish(w1.id, { status: 'planned' });
+    assert.equal(u?.status, 'planned');
+    assert.deepEqual((await storage.listWishes({ officeId: 'ow', status: 'open' })).map((w) => w.id), [w2.id]);
+    assert.ok(await storage.deleteWish(w2.id));
+    assert.equal(await storage.getWish(w2.id), null);
+    assert.equal(await storage.updateWish('nope', { text: 'x' }), null);
+  });
+
+  test('deleteOffice takes its briefs, proposals and wishes', async () => {
+    const o = await storage.createOffice({ workspaceId: 'ws-del58', folderPath: '/tmp/d', timezone: 'UTC' });
+    await storage.appendBrief({ officeId: o.id, roleId: 'r', shiftId: 's', kind: 'brief', path: 'p.md', summary: 's' });
+    await storage.appendOfficeProposal({ officeId: o.id, roleId: 'r', shiftId: 's', title: 't', body: 'b' });
+    await storage.createWish({ officeId: o.id, text: 'w' });
+    assert.ok(await storage.deleteOffice(o.id));
+    assert.equal((await storage.listBriefs({ officeId: o.id })).length, 0);
+    assert.equal((await storage.listOfficeProposals({ officeId: o.id })).length, 0);
+    assert.equal((await storage.listWishes({ officeId: o.id })).length, 0);
+  });
+
+  test('FeaturePlanTask.repoId is optional and round-trips through toStoredPlan', () => {
+    const raw = planSchema.parse({
+      summary: 's',
+      considerations: [],
+      phases: [
+        {
+          title: 'P',
+          goal: 'g',
+          tasks: [
+            { title: 'API', description: 'd', repoId: 'repo-nest' },
+            { title: 'UI', description: 'd' },
+          ],
+        },
+      ],
+    });
+    const plan = toStoredPlan(raw, (p, i) => `c${p}${i}`);
+    assert.equal(plan.phases[0].tasks[0].repoId, 'repo-nest');
+    assert.ok(!('repoId' in plan.phases[0].tasks[1]), 'a single-repo card carries no repoId');
   });
 });

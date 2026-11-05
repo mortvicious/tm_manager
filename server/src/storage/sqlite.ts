@@ -63,6 +63,37 @@ import {
 } from './workspace-sql.ts';
 import {
   OFFICE_BY_WORKSPACE_SQL,
+  OFFICE_BRIEF_GET_SQL,
+  OFFICE_BRIEF_INSERT_SQL,
+  OFFICE_BRIEFS_DELETE_SQL,
+  OFFICE_PROPOSAL_GET_SQL,
+  OFFICE_PROPOSAL_INSERT_SQL,
+  OFFICE_PROPOSALS_DELETE_SQL,
+  OFFICE_WISH_DELETE_SQL,
+  OFFICE_WISH_GET_SQL,
+  OFFICE_WISH_INSERT_SQL,
+  OFFICE_WISHES_DELETE_SQL,
+  officeBriefInsertParams,
+  officeBriefListSql,
+  officeMarkReviewedSql,
+  officeProposalDecideSql,
+  officeProposalFiledSql,
+  officeProposalInsertParams,
+  officeProposalListSql,
+  officeWishInsertParams,
+  officeWishListSql,
+  officeWishPatchSql,
+  rowToOfficeBrief,
+  rowToOfficeProposal,
+  rowToOfficeWish,
+  type NewOfficeBrief,
+  type NewOfficeProposal,
+  type NewOfficeWish,
+  type OfficeBriefFilter,
+  type OfficeProposalFilter,
+  type OfficeReviewable,
+  type OfficeWishFilter,
+  type OfficeWishPatch,
   OFFICE_DELETE_SQL,
   OFFICE_GET_SQL,
   OFFICE_INSERT_SQL,
@@ -96,7 +127,7 @@ import {
   type OfficeShiftFilter,
   type OfficeShiftPatch,
 } from './office-sql.ts';
-import type { Office, OfficeRole, OfficeShift } from '@tm/shared';
+import type { Office, OfficeBrief, OfficeProposal, OfficeRole, OfficeShift, OfficeWish } from '@tm/shared';
 import { officeTrippedParam } from '@tm/shared';
 import {
   APPROVAL_DECIDE_SQL,
@@ -1842,10 +1873,10 @@ export class SqliteStorage implements Storage {
       const ts = now();
       this.db
         .prepare(
-          `INSERT INTO tm_features (id, repo_id, title, request, status, analysis, review, analysis_rounds, error, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'draft', NULL, NULL, 0, NULL, ?, ?)`,
+          `INSERT INTO tm_features (id, repo_id, title, request, status, analysis, review, analysis_rounds, error, office_id, tainted_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'draft', NULL, NULL, 0, NULL, ?, ?, ?, ?)`,
         )
-        .run(id, f.repoId, f.title, f.request, ts, ts);
+        .run(id, f.repoId, f.title, f.request, f.officeId ?? null, f.taintedAt ?? null, ts, ts);
       const feature = rowToFeature(this.db.prepare(`SELECT * FROM tm_features WHERE id = ?`).get(id));
       this.appendEventSync({
         kind: 'feature.created',
@@ -2200,6 +2231,9 @@ export class SqliteStorage implements Storage {
   async deleteOffice(id: string): Promise<boolean> {
     return this.inTxn(() => {
       this.db.prepare(OFFICE_SHIFTS_DELETE_SQL).run(id);
+      this.db.prepare(OFFICE_BRIEFS_DELETE_SQL).run(id);
+      this.db.prepare(OFFICE_PROPOSALS_DELETE_SQL).run(id);
+      this.db.prepare(OFFICE_WISHES_DELETE_SQL).run(id);
       this.db.prepare(OFFICE_ROLES_DELETE_SQL).run(id);
       return this.db.prepare(OFFICE_DELETE_SQL).run(id).changes > 0;
     });
@@ -2271,6 +2305,93 @@ export class SqliteStorage implements Storage {
     const q = officeOpenTasksSql(officeId, roleId);
     const r = this.db.prepare(q.sql).get(...(q.params as any[])) as { n: number };
     return Number(r.n ?? 0);
+  }
+
+  // ---- office briefs, proposals, wishes (migration 58; SQL in office-sql.ts) ----
+
+  async appendBrief(b: NewOfficeBrief): Promise<OfficeBrief> {
+    const id = randomUUID();
+    this.db.prepare(OFFICE_BRIEF_INSERT_SQL).run(...(officeBriefInsertParams(id, b, now()) as any[]));
+    return (await this.getBrief(id))!;
+  }
+
+  async getBrief(id: string): Promise<OfficeBrief | null> {
+    const r = this.db.prepare(OFFICE_BRIEF_GET_SQL).get(...([id] as any[]));
+    return r ? rowToOfficeBrief(r) : null;
+  }
+
+  async listBriefs(f?: OfficeBriefFilter): Promise<OfficeBrief[]> {
+    const q = officeBriefListSql(f);
+    return (this.db.prepare(q.sql).all(...(q.params as any[])) as any[]).map(rowToOfficeBrief);
+  }
+
+  async appendOfficeProposal(p: NewOfficeProposal): Promise<OfficeProposal> {
+    const id = randomUUID();
+    this.db.prepare(OFFICE_PROPOSAL_INSERT_SQL).run(...(officeProposalInsertParams(id, p, now()) as any[]));
+    return (await this.getOfficeProposal(id))!;
+  }
+
+  async getOfficeProposal(id: string): Promise<OfficeProposal | null> {
+    const r = this.db.prepare(OFFICE_PROPOSAL_GET_SQL).get(...([id] as any[]));
+    return r ? rowToOfficeProposal(r) : null;
+  }
+
+  async listOfficeProposals(f?: OfficeProposalFilter): Promise<OfficeProposal[]> {
+    const q = officeProposalListSql(f);
+    return (this.db.prepare(q.sql).all(...(q.params as any[])) as any[]).map(rowToOfficeProposal);
+  }
+
+  async decideProposal(
+    id: string,
+    to: 'accepted' | 'rejected',
+    by: string,
+    filedTaskId: string | null = null,
+  ): Promise<OfficeProposal | null> {
+    const q = officeProposalDecideSql(id, to, by, now(), filedTaskId);
+    const r = this.db.prepare(q.sql).get(...(q.params as any[]));
+    return r ? rowToOfficeProposal(r) : null;
+  }
+
+  async setProposalFiledTask(id: string, taskId: string): Promise<OfficeProposal | null> {
+    const q = officeProposalFiledSql(id, taskId);
+    const r = this.db.prepare(q.sql).get(...(q.params as any[]));
+    return r ? rowToOfficeProposal(r) : null;
+  }
+
+  async markReviewed(table: 'brief', id: string): Promise<OfficeBrief | null>;
+  async markReviewed(table: 'proposal', id: string): Promise<OfficeProposal | null>;
+  async markReviewed(table: OfficeReviewable, id: string): Promise<OfficeBrief | OfficeProposal | null> {
+    const q = officeMarkReviewedSql(table, id, now());
+    const r = this.db.prepare(q.sql).get(...(q.params as any[]));
+    if (!r) return null;
+    return table === 'brief' ? rowToOfficeBrief(r) : rowToOfficeProposal(r);
+  }
+
+  async createWish(w: NewOfficeWish): Promise<OfficeWish> {
+    const id = randomUUID();
+    this.db.prepare(OFFICE_WISH_INSERT_SQL).run(...(officeWishInsertParams(id, w, now()) as any[]));
+    return (await this.getWish(id))!;
+  }
+
+  async getWish(id: string): Promise<OfficeWish | null> {
+    const r = this.db.prepare(OFFICE_WISH_GET_SQL).get(...([id] as any[]));
+    return r ? rowToOfficeWish(r) : null;
+  }
+
+  async listWishes(f?: OfficeWishFilter): Promise<OfficeWish[]> {
+    const q = officeWishListSql(f);
+    return (this.db.prepare(q.sql).all(...(q.params as any[])) as any[]).map(rowToOfficeWish);
+  }
+
+  async updateWish(id: string, patch: OfficeWishPatch): Promise<OfficeWish | null> {
+    const q = officeWishPatchSql(id, patch, now());
+    if (!q) return this.getWish(id);
+    const r = this.db.prepare(q.sql).get(...(q.params as any[]));
+    return r ? rowToOfficeWish(r) : null;
+  }
+
+  async deleteWish(id: string): Promise<boolean> {
+    return this.db.prepare(OFFICE_WISH_DELETE_SQL).run(id).changes > 0;
   }
 
   // ---- Workspaces (docs/workspaces.md) ----

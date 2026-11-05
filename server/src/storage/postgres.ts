@@ -61,6 +61,37 @@ import {
 } from './workspace-sql.ts';
 import {
   OFFICE_BY_WORKSPACE_SQL,
+  OFFICE_BRIEF_GET_SQL,
+  OFFICE_BRIEF_INSERT_SQL,
+  OFFICE_BRIEFS_DELETE_SQL,
+  OFFICE_PROPOSAL_GET_SQL,
+  OFFICE_PROPOSAL_INSERT_SQL,
+  OFFICE_PROPOSALS_DELETE_SQL,
+  OFFICE_WISH_DELETE_SQL,
+  OFFICE_WISH_GET_SQL,
+  OFFICE_WISH_INSERT_SQL,
+  OFFICE_WISHES_DELETE_SQL,
+  officeBriefInsertParams,
+  officeBriefListSql,
+  officeMarkReviewedSql,
+  officeProposalDecideSql,
+  officeProposalFiledSql,
+  officeProposalInsertParams,
+  officeProposalListSql,
+  officeWishInsertParams,
+  officeWishListSql,
+  officeWishPatchSql,
+  rowToOfficeBrief,
+  rowToOfficeProposal,
+  rowToOfficeWish,
+  type NewOfficeBrief,
+  type NewOfficeProposal,
+  type NewOfficeWish,
+  type OfficeBriefFilter,
+  type OfficeProposalFilter,
+  type OfficeReviewable,
+  type OfficeWishFilter,
+  type OfficeWishPatch,
   OFFICE_DELETE_SQL,
   OFFICE_GET_SQL,
   OFFICE_INSERT_SQL,
@@ -94,7 +125,7 @@ import {
   type OfficeShiftFilter,
   type OfficeShiftPatch,
 } from './office-sql.ts';
-import type { Office, OfficeRole, OfficeShift } from '@tm/shared';
+import type { Office, OfficeBrief, OfficeProposal, OfficeRole, OfficeShift, OfficeWish } from '@tm/shared';
 import { officeTrippedParam } from '@tm/shared';
 import {
   APPROVAL_DECIDE_SQL,
@@ -1811,9 +1842,9 @@ export class PostgresStorage implements Storage {
       const id = randomUUID();
       const ts = now();
       await c.query(
-        `INSERT INTO tm_features (id, repo_id, title, request, status, analysis, review, analysis_rounds, error, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'draft', NULL, NULL, 0, NULL, $5, $6)`,
-        [id, f.repoId, f.title, f.request, ts, ts],
+        `INSERT INTO tm_features (id, repo_id, title, request, status, analysis, review, analysis_rounds, error, office_id, tainted_at, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'draft', NULL, NULL, 0, NULL, $5, $6, $7, $8)`,
+        [id, f.repoId, f.title, f.request, f.officeId ?? null, f.taintedAt ?? null, ts, ts],
       );
       const feature = rowToFeature((await c.query(`SELECT * FROM tm_features WHERE id = $1`, [id])).rows[0]);
       await this.appendEventWith(
@@ -2181,6 +2212,9 @@ export class PostgresStorage implements Storage {
   async deleteOffice(id: string): Promise<boolean> {
     return this.tx(async (c) => {
       await c.query(toPg(OFFICE_SHIFTS_DELETE_SQL), [id]);
+      await c.query(toPg(OFFICE_BRIEFS_DELETE_SQL), [id]);
+      await c.query(toPg(OFFICE_PROPOSALS_DELETE_SQL), [id]);
+      await c.query(toPg(OFFICE_WISHES_DELETE_SQL), [id]);
       await c.query(toPg(OFFICE_ROLES_DELETE_SQL), [id]);
       const r = await c.query(toPg(`${OFFICE_DELETE_SQL} RETURNING id`), [id]);
       return (r.rowCount ?? 0) > 0;
@@ -2254,6 +2288,93 @@ export class PostgresStorage implements Storage {
     const q = officeOpenTasksSql(officeId, roleId);
     const r = await this.q(q.sql, q.params);
     return Number(r[0]?.n ?? 0);
+  }
+
+  // ---- office briefs, proposals, wishes (migration 58; SQL in office-sql.ts) ----
+
+  async appendBrief(b: NewOfficeBrief): Promise<OfficeBrief> {
+    const id = randomUUID();
+    await this.q(OFFICE_BRIEF_INSERT_SQL, officeBriefInsertParams(id, b, now()));
+    return (await this.getBrief(id))!;
+  }
+
+  async getBrief(id: string): Promise<OfficeBrief | null> {
+    const r = (await this.q(OFFICE_BRIEF_GET_SQL, [id]))[0];
+    return r ? rowToOfficeBrief(r) : null;
+  }
+
+  async listBriefs(f?: OfficeBriefFilter): Promise<OfficeBrief[]> {
+    const q = officeBriefListSql(f);
+    return (await this.q(q.sql, q.params)).map(rowToOfficeBrief);
+  }
+
+  async appendOfficeProposal(p: NewOfficeProposal): Promise<OfficeProposal> {
+    const id = randomUUID();
+    await this.q(OFFICE_PROPOSAL_INSERT_SQL, officeProposalInsertParams(id, p, now()));
+    return (await this.getOfficeProposal(id))!;
+  }
+
+  async getOfficeProposal(id: string): Promise<OfficeProposal | null> {
+    const r = (await this.q(OFFICE_PROPOSAL_GET_SQL, [id]))[0];
+    return r ? rowToOfficeProposal(r) : null;
+  }
+
+  async listOfficeProposals(f?: OfficeProposalFilter): Promise<OfficeProposal[]> {
+    const q = officeProposalListSql(f);
+    return (await this.q(q.sql, q.params)).map(rowToOfficeProposal);
+  }
+
+  async decideProposal(
+    id: string,
+    to: 'accepted' | 'rejected',
+    by: string,
+    filedTaskId: string | null = null,
+  ): Promise<OfficeProposal | null> {
+    const q = officeProposalDecideSql(id, to, by, now(), filedTaskId);
+    const r = (await this.q(q.sql, q.params))[0];
+    return r ? rowToOfficeProposal(r) : null;
+  }
+
+  async setProposalFiledTask(id: string, taskId: string): Promise<OfficeProposal | null> {
+    const q = officeProposalFiledSql(id, taskId);
+    const r = (await this.q(q.sql, q.params))[0];
+    return r ? rowToOfficeProposal(r) : null;
+  }
+
+  async markReviewed(table: 'brief', id: string): Promise<OfficeBrief | null>;
+  async markReviewed(table: 'proposal', id: string): Promise<OfficeProposal | null>;
+  async markReviewed(table: OfficeReviewable, id: string): Promise<OfficeBrief | OfficeProposal | null> {
+    const q = officeMarkReviewedSql(table, id, now());
+    const r = (await this.q(q.sql, q.params))[0];
+    if (!r) return null;
+    return table === 'brief' ? rowToOfficeBrief(r) : rowToOfficeProposal(r);
+  }
+
+  async createWish(w: NewOfficeWish): Promise<OfficeWish> {
+    const id = randomUUID();
+    await this.q(OFFICE_WISH_INSERT_SQL, officeWishInsertParams(id, w, now()));
+    return (await this.getWish(id))!;
+  }
+
+  async getWish(id: string): Promise<OfficeWish | null> {
+    const r = (await this.q(OFFICE_WISH_GET_SQL, [id]))[0];
+    return r ? rowToOfficeWish(r) : null;
+  }
+
+  async listWishes(f?: OfficeWishFilter): Promise<OfficeWish[]> {
+    const q = officeWishListSql(f);
+    return (await this.q(q.sql, q.params)).map(rowToOfficeWish);
+  }
+
+  async updateWish(id: string, patch: OfficeWishPatch): Promise<OfficeWish | null> {
+    const q = officeWishPatchSql(id, patch, now());
+    if (!q) return this.getWish(id);
+    const r = (await this.q(q.sql, q.params))[0];
+    return r ? rowToOfficeWish(r) : null;
+  }
+
+  async deleteWish(id: string): Promise<boolean> {
+    return (await this.q(`${OFFICE_WISH_DELETE_SQL} RETURNING id`, [id])).length > 0;
   }
 
   // ---- Workspaces (docs/workspaces.md) ----

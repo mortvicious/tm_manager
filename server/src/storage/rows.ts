@@ -234,6 +234,8 @@ export function rowToFeature(r: any): Feature {
     review: safeParse<FeatureReview | null>(r.review, null),
     analysisRounds: Number(r.analysis_rounds ?? 0),
     error: r.error ?? null,
+    officeId: r.office_id ?? null,
+    taintedAt: r.tainted_at ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };

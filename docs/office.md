@@ -17,7 +17,7 @@ Code so far: `shared/src/office.ts` (types and pure logic, no I/O, exported from
 `@tm/shared`), `server/src/office/presets.ts`, `names.ts` and `folder.ts`, the
 shared folder rule in `server/src/folder-guard.ts`, and the tests
 `server/src/office/office-pure.test.ts` and `office-scaffold.test.ts`, plus the
-data layer (§ Data model): migrations 53–54, `server/src/storage/office-sql.ts`,
+data layer (§ Data model): migrations 53–54 and 58, `server/src/storage/office-sql.ts`,
 the Storage methods in both drivers, and `server/src/storage/office.test.ts`;
 and the gate and day budget (§ Gate and budget): `server/src/office/gate.ts`,
 `server/src/office/budget.ts`, the office branch of `budgetAllows`, and
@@ -526,7 +526,7 @@ follow-up task 21ee2d45.
 ## Data model
 
 Migrations 53 and 54 (and 57, § Scheduler and states: `tm_office_roles.armed_at`,
-`tm_office_shifts.skip_code`). The SQL is shared by both drivers in
+`tm_office_shifts.skip_code`; and 58, the phase-3 tables below). The SQL is shared by both drivers in
 `server/src/storage/office-sql.ts` (dialect-neutral, `?` placeholders, like
 `workspace-sql.ts`). Storage test: `server/src/storage/office.test.ts`.
 
@@ -605,6 +605,52 @@ both drivers):
   `office_id` (and `role_id`) whose status is not in
   `TERMINAL_TASK_STATUSES`. This is the measure for `Office.maxOpenTasks` and
   for the `no-open-task-of-this-role` guard.
+
+**Briefings, proposals, wishes (migration 58, phase 3)**. Three more FK-less
+tables, types `OfficeBrief` / `OfficeProposal` / `OfficeWish` at the end of
+`shared/src/office.ts`:
+
+| Table | Columns | Indexes |
+|---|---|---|
+| `tm_office_briefs` | `office_id`, `role_id`, `shift_id`, `kind` (`standup` \| `brief`), `path` (office-folder-relative markdown — the row is the index, the text is the file), `summary`, `tainted_at`, `reviewed_at`, `created_at` | `(office_id, created_at)`, `(shift_id)` |
+| `tm_office_proposals` | `office_id`, `role_id`, `shift_id`, `title`, `body`, `repo_id` (null = decided at accept time), `status` (`pending` \| `accepted` \| `rejected`, default `pending`), `tainted_at`, `reviewed_at`, `decided_at`, `decided_by`, `filed_task_id`, `created_at` | `(office_id, status, created_at)`, `(shift_id)` |
+| `tm_office_wishes` | `office_id`, `text`, `status` (`open` \| `planned` \| `done` \| `dropped`, default `open`), `created_at`, `updated_at` | `(office_id, status, created_at)` |
+
+`tm_features` gains `office_id` and `tainted_at` (nullable, index on
+`office_id`; `Feature.officeId`/`taintedAt`), **create-only** like the task
+columns: `NewFeature` carries them, `updateFeature` never writes them. A plan
+card (`FeaturePlanTask`) gains an optional `repoId` — the repo a cross-repo
+Director feature's card runs in. `planTaskSchema` accepts it (nullish),
+`toStoredPlan` keeps it only when set (a single-repo card carries no key), the
+Features route's `planCardSchema` and the plan-fix edits pass it through, and
+single-repo features ignore it.
+
+Storage methods (both drivers, SQL in `office-sql.ts`):
+
+- Briefs: `appendBrief`, `getBrief`, `listBriefs(filter)` — `officeId`,
+  `roleId`, `shiftId`, `kind`, `unreviewed`, `since` (≥ `created_at`), `limit`
+  (default 200, at most 2000); newest first.
+- Proposals: `appendOfficeProposal` (always `pending`), `getOfficeProposal`,
+  `listOfficeProposals(filter)` (`officeId`, `roleId`, `shiftId`, `status`,
+  `limit`; newest first). The `Office` prefix keeps them apart from the split
+  proposals' `appendProposal`/`getProposal`.
+- **`decideProposal(id, to, by, filedTaskId?)`** is the conditional composite
+  that owns `status`: `pending → accepted|rejected`, stamping `decided_at` and
+  `decided_by`, landing only while the row is still `pending`. The second of
+  two decisions (the SPA and Telegram racing, or a repeat of the same one)
+  gets null back — the route answers 409. An accept that files its task
+  afterwards records it with **`setProposalFiledTask(id, taskId)`**, which
+  writes only on an `accepted` row with no task yet.
+- **`markReviewed(table, id)`** — `table` is `'brief'` or `'proposal'`, mapped
+  to the table name in `office-sql.ts` (never interpolated from the caller).
+  It stamps `reviewed_at` once: a repeat keeps the first time and still
+  returns the row; null = no such row.
+- Wishes: `createWish`, `getWish`, `listWishes(filter)` (`officeId`, `status`;
+  oldest first), `updateWish` (`text`, `status`), `deleteWish`.
+- `deleteOffice` also deletes the office's briefs, proposals and wishes, in the
+  same transaction.
+
+Push kinds for them are in `PUSH_KINDS` (`briefing`, `proposal` — docs/push.md).
 
 ## API
 

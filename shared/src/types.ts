@@ -2216,6 +2216,12 @@ export interface FeaturePlanTask {
    * Feature plans) — become the task's `dependsOn` at approval
    */
   dependsOn?: string[];
+  /**
+   * the repo this card runs in, for a cross-repo (office Director) feature
+   * (docs/office.md § Data model); absent/null = the feature's own repo.
+   * Single-repo features ignore it.
+   */
+  repoId?: string | null;
   /** excluded from approval (card toggled off) */
   excluded?: boolean;
 }
@@ -2288,6 +2294,10 @@ export interface Feature {
   /** how many analysis rounds have run (bounded by feature.analysisMaxRounds) */
   analysisRounds: number;
   error: string | null;
+  /** the office whose Director filed it (docs/office.md § Data model) — create-only; null = a human's */
+  officeId: string | null;
+  /** when the filing shift was tainted — create-only */
+  taintedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -3207,7 +3217,8 @@ export type PushKind =
   | 'report'
   | 'queue'
   | 'anomaly'
-  | 'job';
+  | 'job'
+  | 'briefing';
 
 /** The one list every surface renders (SPA toggles, server validation, defaults). */
 export const PUSH_KINDS: { kind: PushKind; label: string; hint: string; default: boolean }[] = [
@@ -3220,7 +3231,8 @@ export const PUSH_KINDS: { kind: PushKind; label: string; hint: string; default:
   { kind: 'blocked', label: 'Blocked', hint: 'a task is waiting on its subtasks', default: true },
   { kind: 'published', label: 'Published', hint: 'a task was committed and pushed', default: true },
   { kind: 'started', label: 'Started', hint: 'an agent picked a task up', default: false },
-  { kind: 'proposal', label: 'Proposals', hint: 'an agent proposed a split or follow-up', default: true },
+  { kind: 'proposal', label: 'Proposals', hint: 'an agent proposed a split or follow-up, or an office role proposed a task', default: true },
+  { kind: 'briefing', label: 'Office briefings', hint: 'an office role filed a standup or a briefing', default: true },
   { kind: 'feature', label: 'Features', hint: 'a feature plan is ready to approve, or a feature paused', default: true },
   { kind: 'chat', label: 'Chat replies', hint: 'claude answered in a chat', default: true },
   { kind: 'report', label: 'Reports', hint: 'a client report finished or failed', default: true },

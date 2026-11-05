@@ -1404,3 +1404,67 @@ export interface OfficeNotesReviewedBody {
   notesTaintedAt: string;
   sha256: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Briefings, proposals, wishes (docs/office.md § Data model, phase 3)
+// ---------------------------------------------------------------------------
+
+/** `standup` = a role's routine shift report; `brief` = a Director's briefing to the human. */
+export type OfficeBriefKind = 'standup' | 'brief';
+
+/** A markdown deliverable a shift wrote (`tm_office_briefs`); the text lives in the office folder at `path`. */
+export interface OfficeBrief {
+  id: string;
+  officeId: string;
+  roleId: string;
+  shiftId: string;
+  kind: OfficeBriefKind;
+  /** office-folder-relative path of the markdown file */
+  path: string;
+  /** one short line for lists and pings */
+  summary: string;
+  /** set when the writing shift was tainted — the text is untrusted until reviewed */
+  taintedAt: string | null;
+  /** set by a human's Mark reviewed (`markReviewed('brief', id)`) */
+  reviewedAt: string | null;
+  createdAt: string;
+}
+
+export type OfficeProposalStatus = 'pending' | 'accepted' | 'rejected';
+
+/**
+ * A task a shift wants filed, held for a human's decision (`tm_office_proposals`).
+ * `repoId` null = the office decides at accept time (a cross-repo idea). Decided
+ * only through the conditional `decideProposal` (pending → accepted|rejected).
+ */
+export interface OfficeProposal {
+  id: string;
+  officeId: string;
+  roleId: string;
+  shiftId: string;
+  title: string;
+  body: string;
+  repoId: string | null;
+  status: OfficeProposalStatus;
+  taintedAt: string | null;
+  decidedAt: string | null;
+  /** the actor that decided (`human`, `telegram`) */
+  decidedBy: string | null;
+  /** the task an accept filed */
+  filedTaskId: string | null;
+  /** set by `markReviewed('proposal', id)` — a tainted proposal's text read by a human */
+  reviewedAt: string | null;
+  createdAt: string;
+}
+
+export type OfficeWishStatus = 'open' | 'planned' | 'done' | 'dropped';
+
+/** A human's standing wish for the office's vision (`tm_office_wishes`); the Director plans from the open ones. */
+export interface OfficeWish {
+  id: string;
+  officeId: string;
+  text: string;
+  status: OfficeWishStatus;
+  createdAt: string;
+  updatedAt: string;
+}

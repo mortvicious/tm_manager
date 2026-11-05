@@ -41,6 +41,8 @@ const planCardSchema = z
     // card ids of earlier cards (docs/task-waits.md § Feature plans); approval
     // drops any that is not an earlier included card
     dependsOn: z.array(z.string().min(1).max(64)).max(12).optional(),
+    // cross-repo office features only (docs/office.md § Data model)
+    repoId: z.string().min(1).max(64).nullish(),
     excluded: z.boolean().optional(),
   })
   .strict();

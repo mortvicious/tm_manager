@@ -67,6 +67,7 @@ const TASK_FIELDS_JSON = {
   review: { type: ['boolean', 'null'] },
   exitCriteria: { type: ['array', 'null'], maxItems: 12, items: { type: 'string' } },
   dependsOn: { type: ['array', 'null'], maxItems: 12, items: { type: 'string' } },
+  repoId: { type: ['string', 'null'] },
 };
 const PHASE_REF_JSON = { type: ['integer', 'string'] };
 
@@ -171,6 +172,7 @@ export function renderPlanForFix(plan: FeaturePlan, labels = cardLabels(plan)): 
           review: t.review ?? null,
           exitCriteria: t.exitCriteria,
           dependsOn: (t.dependsOn ?? []).map((d) => labels.get(d) ?? d),
+          ...(t.repoId ? { repoId: t.repoId } : {}),
           ...(t.excluded ? { excluded: true } : {}),
         })),
       })),
@@ -274,6 +276,7 @@ export function applyPlanEdits(plan: FeaturePlan, fix: PlanFix, newId: () => str
           review: task.review ?? null,
           exitCriteria: task.exitCriteria ?? [],
           dependsOn: [],
+          ...(task.repoId ? { repoId: task.repoId } : {}),
           excluded: false,
           depRefs: dependsOn ?? [],
         };

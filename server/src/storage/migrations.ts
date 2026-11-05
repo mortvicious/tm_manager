@@ -1015,6 +1015,64 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS tm_office_shifts_role_trigger_idx ON tm_office_shifts (role_id, trigger_kind, started_at)`,
     ],
   },
+  {
+    id: 58,
+    // Office briefings, proposals, wishes (docs/office.md § Data model, phase
+    // 3). FK-less like the rest of the office: a brief/proposal names its
+    // office, role and shift by id and outlives them (history). A brief's text
+    // is a file in the office folder (`path`); the row is the index. A
+    // proposal's `status` moves only through the conditional `decideProposal`
+    // (pending → accepted|rejected), so a second decision is a no-op. Both
+    // carry `tainted_at` (the shift's taint) and `reviewed_at` (`markReviewed`).
+    // `tm_features.office_id`/`tainted_at`: a Director's cross-repo feature,
+    // create-only like the task columns of migration 54.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_office_briefs (
+        id TEXT PRIMARY KEY,
+        office_id TEXT NOT NULL,
+        role_id TEXT NOT NULL,
+        shift_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        path TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        tainted_at TEXT,
+        reviewed_at TEXT,
+        created_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_office_briefs_office_idx ON tm_office_briefs (office_id, created_at)`,
+      `CREATE INDEX IF NOT EXISTS tm_office_briefs_shift_idx ON tm_office_briefs (shift_id)`,
+      `CREATE TABLE IF NOT EXISTS tm_office_proposals (
+        id TEXT PRIMARY KEY,
+        office_id TEXT NOT NULL,
+        role_id TEXT NOT NULL,
+        shift_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        repo_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        tainted_at TEXT,
+        reviewed_at TEXT,
+        decided_at TEXT,
+        decided_by TEXT,
+        filed_task_id TEXT,
+        created_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_office_proposals_office_idx ON tm_office_proposals (office_id, status, created_at)`,
+      `CREATE INDEX IF NOT EXISTS tm_office_proposals_shift_idx ON tm_office_proposals (shift_id)`,
+      `CREATE TABLE IF NOT EXISTS tm_office_wishes (
+        id TEXT PRIMARY KEY,
+        office_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_office_wishes_office_idx ON tm_office_wishes (office_id, status, created_at)`,
+      `ALTER TABLE tm_features ADD COLUMN office_id TEXT`,
+      `ALTER TABLE tm_features ADD COLUMN tainted_at TEXT`,
+      `CREATE INDEX IF NOT EXISTS tm_features_office_idx ON tm_features (office_id)`,
+    ],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */

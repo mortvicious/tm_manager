@@ -19,6 +19,9 @@ export const planTaskSchema = z.object({
   // "phase.task", 1-based, of an EARLIER task in the plan (docs/task-waits.md
   // § Feature plans); anything else is dropped by toStoredPlan
   dependsOn: z.array(z.string().max(20)).max(12).nullish(),
+  // the repo id this card runs in, for a cross-repo office feature
+  // (docs/office.md § Data model); single-repo features ignore it
+  repoId: z.string().min(1).max(64).nullish(),
 });
 
 export const planSchema = z.object({
@@ -190,6 +193,7 @@ export function toStoredPlan(raw: z.infer<typeof planSchema>, idFor: (phase: num
         review: t.review ?? null,
         exitCriteria: t.exitCriteria ?? [],
         dependsOn: [...new Set((t.dependsOn ?? []).map((r) => ref(r, pi, ti)).filter((id): id is string => !!id))],
+        ...(t.repoId ? { repoId: t.repoId } : {}),
         excluded: false,
       })),
     })),

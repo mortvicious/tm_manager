@@ -5,6 +5,13 @@ import type {
   NewOffice,
   NewOfficeRole,
   NewOfficeShift,
+  NewOfficeBrief,
+  NewOfficeProposal,
+  NewOfficeWish,
+  OfficeBriefFilter,
+  OfficeProposalFilter,
+  OfficeWishFilter,
+  OfficeWishPatch,
   OfficePatch,
   OfficeRolePatch,
   OfficeShiftFilter,
@@ -22,6 +29,9 @@ import type {
   Office,
   OfficeRole,
   OfficeShift,
+  OfficeBrief,
+  OfficeProposal,
+  OfficeWish,
   PushDevice,
   PushKind,
 } from '@tm/shared';
@@ -209,6 +219,9 @@ export interface NewFeature {
   repoId: string;
   title: string;
   request: string;
+  /** a Director's feature (docs/office.md § Data model) — create-only */
+  officeId?: string | null;
+  taintedAt?: string | null;
 }
 
 export interface FeaturePatch {
@@ -905,6 +918,38 @@ export interface Storage {
   officeSpendSince(officeId: string, sinceIso: string, roleId?: string): Promise<number>;
   /** tasks with this `office_id` (and `role_id`) not in `TERMINAL_TASK_STATUSES` */
   countOpenOfficeTasks(officeId: string, roleId?: string): Promise<number>;
+  /**
+   * Briefings, proposals, wishes (docs/office.md § Data model, migration 58;
+   * SQL in `office-sql.ts`). FK-less; `deleteOffice` removes them with the
+   * office. A proposal's status moves ONLY through `decideProposal`, which is
+   * conditional on `pending` — the second of two decisions gets null back
+   * (re-read; it lost). `setProposalFiledTask` records the accept's task once.
+   * `markReviewed` stamps `reviewed_at` once (a repeat keeps the first time);
+   * null = no such row.
+   */
+  appendBrief(b: NewOfficeBrief): Promise<OfficeBrief>;
+  getBrief(id: string): Promise<OfficeBrief | null>;
+  /** newest first */
+  listBriefs(f?: OfficeBriefFilter): Promise<OfficeBrief[]>;
+  appendOfficeProposal(p: NewOfficeProposal): Promise<OfficeProposal>;
+  getOfficeProposal(id: string): Promise<OfficeProposal | null>;
+  /** newest first */
+  listOfficeProposals(f?: OfficeProposalFilter): Promise<OfficeProposal[]>;
+  decideProposal(
+    id: string,
+    to: 'accepted' | 'rejected',
+    by: string,
+    filedTaskId?: string | null,
+  ): Promise<OfficeProposal | null>;
+  setProposalFiledTask(id: string, taskId: string): Promise<OfficeProposal | null>;
+  markReviewed(table: 'brief', id: string): Promise<OfficeBrief | null>;
+  markReviewed(table: 'proposal', id: string): Promise<OfficeProposal | null>;
+  createWish(w: NewOfficeWish): Promise<OfficeWish>;
+  getWish(id: string): Promise<OfficeWish | null>;
+  /** oldest first */
+  listWishes(f?: OfficeWishFilter): Promise<OfficeWish[]>;
+  updateWish(id: string, patch: OfficeWishPatch): Promise<OfficeWish | null>;
+  deleteWish(id: string): Promise<boolean>;
 
   getSettings(): Promise<AppSettings>;
   /** Total `cost_usd` of every run (any mode) STARTED at or after this ISO time — the `budget.dayUsd` measure. */

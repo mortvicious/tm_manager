@@ -4,7 +4,7 @@
  * other. Dialect-neutral with `?` placeholders (the pg driver rewrites them;
  * never put a `?` inside a string literal here). Tables are FK-less
  * (migration 53); the task columns `office_id`/`role_id`/`tainted_at` are
- * migration 54 and create-only.
+ * migration 54 and create-only. Briefs, proposals and wishes are migration 58.
  */
 import {
   OFFICE_MAX_OPEN_TASKS_DEFAULT,
@@ -13,6 +13,12 @@ import {
   type EffortLevel,
   type Office,
   type OfficeAutonomy,
+  type OfficeBrief,
+  type OfficeBriefKind,
+  type OfficeProposal,
+  type OfficeProposalStatus,
+  type OfficeWish,
+  type OfficeWishStatus,
   type OfficeGuard,
   type OfficeRole,
   type OfficeRoleCommand,
@@ -462,6 +468,231 @@ export function rowToOfficeShift(r: any): OfficeShift {
   };
 }
 
+// ---- briefs, proposals, wishes (migration 58) ----
+
+export interface NewOfficeBrief {
+  officeId: string;
+  roleId: string;
+  shiftId: string;
+  kind: OfficeBriefKind;
+  path: string;
+  summary: string;
+  taintedAt?: string | null;
+}
+
+export interface OfficeBriefFilter {
+  officeId?: string;
+  roleId?: string;
+  shiftId?: string;
+  kind?: OfficeBriefKind;
+  /** only rows with no `reviewed_at` */
+  unreviewed?: boolean;
+  /** created at or after (ISO) */
+  since?: string;
+  /** default 200, capped at 2000 */
+  limit?: number;
+}
+
+export interface NewOfficeProposal {
+  officeId: string;
+  roleId: string;
+  shiftId: string;
+  title: string;
+  body: string;
+  repoId?: string | null;
+  taintedAt?: string | null;
+}
+
+export interface OfficeProposalFilter {
+  officeId?: string;
+  roleId?: string;
+  shiftId?: string;
+  status?: OfficeProposalStatus;
+  /** default 200, capped at 2000 */
+  limit?: number;
+}
+
+export interface NewOfficeWish {
+  officeId: string;
+  text: string;
+  status?: OfficeWishStatus;
+}
+
+export type OfficeWishPatch = Partial<Pick<OfficeWish, 'text' | 'status'>>;
+
+export interface OfficeWishFilter {
+  officeId?: string;
+  status?: OfficeWishStatus;
+}
+
+/** What `markReviewed` may stamp; the table name comes from this map, never from the caller. */
+export type OfficeReviewable = 'brief' | 'proposal';
+const REVIEWABLE_TABLES: Record<OfficeReviewable, string> = {
+  brief: 'tm_office_briefs',
+  proposal: 'tm_office_proposals',
+};
+
+export const OFFICE_BRIEF_INSERT_SQL = `INSERT INTO tm_office_briefs (id, office_id, role_id, shift_id, kind, path, summary, tainted_at, reviewed_at, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`;
+
+export function officeBriefInsertParams(id: string, b: NewOfficeBrief, at: string): unknown[] {
+  return [id, b.officeId, b.roleId, b.shiftId, b.kind, b.path, b.summary, b.taintedAt ?? null, at];
+}
+
+export const OFFICE_BRIEF_GET_SQL = `SELECT * FROM tm_office_briefs WHERE id = ?`;
+export const OFFICE_BRIEFS_DELETE_SQL = `DELETE FROM tm_office_briefs WHERE office_id = ?`;
+
+/** Newest first. */
+export function officeBriefListSql(f: OfficeBriefFilter = {}): { sql: string; params: unknown[] } {
+  const { where, params, eq } = whereBuilder();
+  if (f.officeId) eq('office_id', f.officeId);
+  if (f.roleId) eq('role_id', f.roleId);
+  if (f.shiftId) eq('shift_id', f.shiftId);
+  if (f.kind) eq('kind', f.kind);
+  if (f.unreviewed) where.push(`reviewed_at IS NULL`);
+  if (f.since) {
+    where.push(`created_at >= ?`);
+    params.push(f.since);
+  }
+  return {
+    sql: `SELECT * FROM tm_office_briefs ${whereSql(where)} ORDER BY created_at DESC, id DESC LIMIT ${listLimit(f.limit)}`,
+    params,
+  };
+}
+
+export function rowToOfficeBrief(r: any): OfficeBrief {
+  return {
+    id: r.id,
+    officeId: r.office_id,
+    roleId: r.role_id,
+    shiftId: r.shift_id,
+    kind: r.kind,
+    path: r.path,
+    summary: r.summary ?? '',
+    taintedAt: r.tainted_at ?? null,
+    reviewedAt: r.reviewed_at ?? null,
+    createdAt: r.created_at,
+  };
+}
+
+export const OFFICE_PROPOSAL_INSERT_SQL = `INSERT INTO tm_office_proposals (id, office_id, role_id, shift_id, title, body, repo_id, status, tainted_at, reviewed_at, decided_at, decided_by, filed_task_id, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL, NULL, ?)`;
+
+export function officeProposalInsertParams(id: string, p: NewOfficeProposal, at: string): unknown[] {
+  return [id, p.officeId, p.roleId, p.shiftId, p.title, p.body, p.repoId ?? null, p.taintedAt ?? null, at];
+}
+
+export const OFFICE_PROPOSAL_GET_SQL = `SELECT * FROM tm_office_proposals WHERE id = ?`;
+export const OFFICE_PROPOSALS_DELETE_SQL = `DELETE FROM tm_office_proposals WHERE office_id = ?`;
+
+/** Newest first. */
+export function officeProposalListSql(f: OfficeProposalFilter = {}): { sql: string; params: unknown[] } {
+  const { where, params, eq } = whereBuilder();
+  if (f.officeId) eq('office_id', f.officeId);
+  if (f.roleId) eq('role_id', f.roleId);
+  if (f.shiftId) eq('shift_id', f.shiftId);
+  if (f.status) eq('status', f.status);
+  return {
+    sql: `SELECT * FROM tm_office_proposals ${whereSql(where)} ORDER BY created_at DESC, id DESC LIMIT ${listLimit(f.limit)}`,
+    params,
+  };
+}
+
+/**
+ * `decideProposal`'s conditional write: `pending → accepted|rejected`, landing
+ * only while the row is still `pending`, so the second of two racing decisions
+ * (the SPA and Telegram) gets no row back and reports a 409. `filedTaskId` may
+ * be named up front; an accept that files afterwards records it through
+ * `officeProposalFiledSql`.
+ */
+export function officeProposalDecideSql(
+  id: string,
+  to: Exclude<OfficeProposalStatus, 'pending'>,
+  by: string,
+  at: string,
+  filedTaskId: string | null = null,
+): { sql: string; params: unknown[] } {
+  return {
+    sql: `UPDATE tm_office_proposals SET status = ?, decided_at = ?, decided_by = ?, filed_task_id = ? WHERE id = ? AND status = 'pending' RETURNING *`,
+    params: [to, at, by, filedTaskId, id],
+  };
+}
+
+/** The task an accept filed, written once: only on an `accepted` row with no task yet. */
+export function officeProposalFiledSql(id: string, taskId: string): { sql: string; params: unknown[] } {
+  return {
+    sql: `UPDATE tm_office_proposals SET filed_task_id = ? WHERE id = ? AND status = 'accepted' AND filed_task_id IS NULL RETURNING *`,
+    params: [taskId, id],
+  };
+}
+
+export function rowToOfficeProposal(r: any): OfficeProposal {
+  return {
+    id: r.id,
+    officeId: r.office_id,
+    roleId: r.role_id,
+    shiftId: r.shift_id,
+    title: r.title,
+    body: r.body ?? '',
+    repoId: r.repo_id ?? null,
+    status: r.status,
+    taintedAt: r.tainted_at ?? null,
+    decidedAt: r.decided_at ?? null,
+    decidedBy: r.decided_by ?? null,
+    filedTaskId: r.filed_task_id ?? null,
+    reviewedAt: r.reviewed_at ?? null,
+    createdAt: r.created_at,
+  };
+}
+
+/**
+ * `markReviewed`: stamps `reviewed_at` once — a second call keeps the first
+ * time (COALESCE) and still returns the row; null back = no such row.
+ */
+export function officeMarkReviewedSql(table: OfficeReviewable, id: string, at: string): { sql: string; params: unknown[] } {
+  const t = REVIEWABLE_TABLES[table];
+  if (!t) throw new Error(`markReviewed: unknown table ${String(table)}`);
+  return { sql: `UPDATE ${t} SET reviewed_at = COALESCE(reviewed_at, ?) WHERE id = ? RETURNING *`, params: [at, id] };
+}
+
+export const OFFICE_WISH_INSERT_SQL = `INSERT INTO tm_office_wishes (id, office_id, text, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`;
+
+export function officeWishInsertParams(id: string, w: NewOfficeWish, at: string): unknown[] {
+  return [id, w.officeId, w.text, w.status ?? 'open', at, at];
+}
+
+export const OFFICE_WISH_GET_SQL = `SELECT * FROM tm_office_wishes WHERE id = ?`;
+export const OFFICE_WISH_DELETE_SQL = `DELETE FROM tm_office_wishes WHERE id = ?`;
+export const OFFICE_WISHES_DELETE_SQL = `DELETE FROM tm_office_wishes WHERE office_id = ?`;
+
+/** Oldest first — a wish list reads top-down in the order it was written. */
+export function officeWishListSql(f: OfficeWishFilter = {}): { sql: string; params: unknown[] } {
+  const { where, params, eq } = whereBuilder();
+  if (f.officeId) eq('office_id', f.officeId);
+  if (f.status) eq('status', f.status);
+  return { sql: `SELECT * FROM tm_office_wishes ${whereSql(where)} ORDER BY created_at ASC, id ASC`, params };
+}
+
+const WISH_PATCH_COLUMNS: Record<keyof OfficeWishPatch, [string, (v: any) => unknown]> = {
+  text: ['text', (v) => v],
+  status: ['status', (v) => v],
+};
+
+export function officeWishPatchSql(id: string, p: OfficeWishPatch, at: string): { sql: string; params: unknown[] } | null {
+  return patchSql('tm_office_wishes', WISH_PATCH_COLUMNS, id, p, at);
+}
+
+export function rowToOfficeWish(r: any): OfficeWish {
+  return {
+    id: r.id,
+    officeId: r.office_id,
+    text: r.text,
+    status: r.status,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
 // ---- roll-ups ----
 
 /**
@@ -502,6 +733,19 @@ export function officeOpenTasksSql(officeId: string, roleId?: string | null): { 
 }
 
 // ---- helpers ----
+
+function whereBuilder() {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  const eq = (col: string, v: unknown) => {
+    where.push(`${col} = ?`);
+    params.push(v);
+  };
+  return { where, params, eq };
+}
+
+const whereSql = (where: string[]) => (where.length ? 'WHERE ' + where.join(' AND ') : '');
+const listLimit = (n: number | undefined) => Math.max(1, Math.min(2000, Math.floor(n ?? 200)));
 
 function patchSets<P extends object>(
   columns: Record<keyof P, [string, (v: any) => unknown]>,

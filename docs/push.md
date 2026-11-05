@@ -42,7 +42,8 @@ state a review verdict the same way.
 | `done` | a task that reached `done` without a human: an on-green landing (`autoLandedAt`, `docs/design.md` § Landing tiers — "✅ Auto-landed · <title>", body "auto-landed: <reason>" + the reviewer's summary), or `running`/`waiting` → `done`. A human's Mark done is silent | auto-landed `/?task=<id>&tab=review`; otherwise `/?task=<id>` |
 | `failed` / `blocked` / `published` | the transition, re-read at flush | failed `/?task=<id>&tab=history`; blocked/published `/?task=<id>` |
 | `started` | `queued` → `running` (**off by default**) | `/?task=<id>` |
-| `proposal` | a pending proposal (once per id) | its task, or `/` |
+| `proposal` | a pending proposal (once per id). The kind also covers an office role's task proposals (`tm_office_proposals`, docs/office.md § Data model) | its task, or `/` |
+| `briefing` | an office role filed a standup or a Director briefing (`tm_office_briefs`, docs/office.md § Data model). The kind is listed (on by default) ahead of its notifier, which lands with the office's phase-3 briefings | — |
 | `feature` | a plan is ready to approve (`proposed`), or the feature `paused` | `/features/<id>` |
 | `chat` | claude replied in a chat whose last message was typed in the **browser**. A phone-typed turn is already answered in Telegram | `/chat/<id>` |
 | `report` | a client report became `ready` or `failed` | `/reports` |
@@ -54,7 +55,7 @@ The kinds and their defaults live in ONE list, `PUSH_KINDS` in `shared/`. The
 server's validation, the defaults for a new device and the SPA toggles all read it.
 A kind added later (`anomaly`, 2026-10-19) is on by default for a NEW
 subscription only: a device subscribed before keeps its stored list until you
-toggle the kind on in its settings.
+toggle the kind on in its settings. `briefing` (2026-11-05) is the same.
 
 **The `budget.runMinutes` fuse rides `attention`**, not `anomaly`: it raises the
 run's needs-attention flag, so the ping is the attention ping with its own words
