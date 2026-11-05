@@ -1135,7 +1135,7 @@ export class SqliteStorage implements Storage {
 
   async countQueuedAgentTasks(): Promise<number> {
     const r = this.db
-      .prepare(`SELECT COUNT(*) AS n FROM tm_tasks WHERE status = 'queued' AND created_by_run IS NOT NULL`)
+      .prepare(`SELECT COUNT(*) AS n FROM tm_tasks WHERE status = 'queued' AND created_by_run IS NOT NULL AND office_id IS NULL`)
       .get() as { n: number };
     return Number(r.n);
   }

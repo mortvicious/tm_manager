@@ -141,7 +141,7 @@ const jobs = new JobService({
 orchestrator.setJobs(jobs);
 // Virtual Office shifts (docs/office.md § Shifts at run time): aux terminals
 // (kind `shift`), never a worker slot; Pause all suspends them.
-const shiftRunner = new ShiftRunner({ storage, isPaused: (settings) => orchestrator.isPaused(settings) });
+const shiftRunner = new ShiftRunner({ storage, orchestrator, isPaused: (settings) => orchestrator.isPaused(settings) });
 initShifts(shiftRunner);
 orchestrator.setShifts(shiftRunner);
 await orchestrator.recoverOnBoot({ lastStop });

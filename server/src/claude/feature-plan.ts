@@ -133,6 +133,11 @@ export function stripStandingCaps(description: string): string {
   return (i === -1 ? description : description.slice(0, i)).trimEnd();
 }
 
+/** `description` with exactly one standing-caps block at its end (office filings, docs/office.md § Filing). */
+export function withStandingCaps(description: string): string {
+  return [stripStandingCaps(description), '', CAPS_BLOCK].join('\n').trim();
+}
+
 /**
  * The worker-facing description of one planned card: the plan's body, its exit
  * criteria, then the standing caps. Idempotent — safe to call on a description

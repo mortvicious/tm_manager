@@ -587,6 +587,7 @@ export interface Storage {
   /** Lifetime count of tasks a run has filed (per-run creation cap). */
   countTasksCreatedByRun(runId: string): Promise<number>;
   /** Currently-queued agent-created tasks (global flood ceiling, review R8). */
+  /** queued AGENT filings (`created_by_run` set) for the agent ceiling — office tasks excluded (`office_id IS NULL`, docs/office.md § Filing) */
   countQueuedAgentTasks(): Promise<number>;
   /** Overflow claim (review R1): claim a queued task created by one of the
    *  given runs even when the concurrency cap is reached. */

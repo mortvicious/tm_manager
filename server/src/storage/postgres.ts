@@ -1132,7 +1132,7 @@ export class PostgresStorage implements Storage {
   }
 
   async countQueuedAgentTasks(): Promise<number> {
-    const r = await this.q(`SELECT COUNT(*) AS n FROM tm_tasks WHERE status = 'queued' AND created_by_run IS NOT NULL`);
+    const r = await this.q(`SELECT COUNT(*) AS n FROM tm_tasks WHERE status = 'queued' AND created_by_run IS NOT NULL AND office_id IS NULL`);
     return Number(r[0].n);
   }
 

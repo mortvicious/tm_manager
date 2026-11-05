@@ -1,12 +1,40 @@
 import { z } from 'zod';
 import type { AppSettings } from '@tm/shared';
 import { AGENT_BRIEF_MAX, agentTitleProblem, DEFAULT_SETTINGS } from '@tm/shared';
+import type { Storage } from '../storage/types.ts';
 
 // The agent API's caps, shared by routes/agent.ts and routes/agent-shared.ts
 // (its own module so neither route file imports the other).
 
 /** Agent-created tasks that may sit `queued` at once before new ones degrade to drafts (R8). */
 export const QUEUED_AGENT_CEILING = 10;
+
+/**
+ * Enqueue gating of `POST /api/agent/tasks` (R6/R8): the explicit opt-in
+ * setting AND the queue on; same-repo creations are ALWAYS drafts (two agents
+ * must not edit one working tree); the global ceiling degrades to a draft,
+ * never a retry-bait 4xx. The ceiling counts AGENT filings only —
+ * `countQueuedAgentTasks` leaves office tasks out (docs/office.md § Filing),
+ * so a busy office never pushes a worker's filing down to a draft.
+ */
+export async function agentEnqueueGate(
+  storage: Pick<Storage, 'countQueuedAgentTasks'>,
+  settings: AppSettings,
+  o: { enqueue: boolean; targetRepoId: string; runRepoId: string | null },
+): Promise<{ status: 'draft' | 'queued'; note: string | null }> {
+  if (!o.enqueue) return { status: 'draft', note: null };
+  if (!settings['agent.allowEnqueue']) {
+    return { status: 'draft', note: 'enqueue disabled (agent.allowEnqueue is off) — created as draft for human review' };
+  }
+  if (!settings['orchestrator.enabled']) return { status: 'draft', note: 'queue is stopped — created as draft' };
+  if (o.targetRepoId === o.runRepoId) {
+    return { status: 'draft', note: 'same-repo follow-ups are always drafts (no concurrent edits to one working tree)' };
+  }
+  if ((await storage.countQueuedAgentTasks()) >= QUEUED_AGENT_CEILING) {
+    return { status: 'draft', note: `agent queue ceiling (${QUEUED_AGENT_CEILING}) reached — created as draft` };
+  }
+  return { status: 'queued', note: null };
+}
 
 /**
  * Depth cap (R4, raised and made a setting by docs/shared-spaces.md § Depth):

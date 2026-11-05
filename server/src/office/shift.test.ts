@@ -500,6 +500,72 @@ describe('result registry', () => {
     assert.equal(schema.safeParse({}).success, true);
     assert.equal(schema.safeParse({ deliverables: [{ path: 'deliverables/x.md', markdown: 'm' }, { path: 'deliverables/x.md', markdown: 'n' }] }).success, false);
     assert.equal(schema.safeParse({ notes: 'x'.repeat(24_001) }).success, false);
-    assert.equal(schema.safeParse({ tasks: [] }).success, false, 'an unregistered section is refused');
+    assert.equal(schema.safeParse({ briefs: [] }).success, false, 'an unregistered section is refused');
+    assert.equal(schema.safeParse({ tasks: [] }).success, true, 'tasks is registered (filing.ts)');
+  });
+});
+
+describe('tasks section (docs/office.md § Filing)', () => {
+  const ask = (i: number) => ({ repoId, title: `Add tests for parser ${i}`, description: `Cover parser ${i}.`, effort: 'low' });
+
+  test('a trusted auto-run shift files queued role-tagged tasks; ids on the shift row and the office.shift row', async () => {
+    await storage.setSetting('orchestrator.enabled', true);
+    const o = (await storage.updateOffice((await office()).id, { autonomy: 'auto-run' }))!;
+    const r = await role(o);
+    const start = await runner.start(o, r, { kind: 'request' });
+    assert.ok(start.ok);
+    const sp = await spawnedNth(sessions.spawned.length + 1);
+    assert.ok(promptOf(sp.args).includes('(repoId `' + repoId + '`)'), 'the prompt lists the repo id');
+    assert.match(promptOf(sp.args), /`tasks`:/);
+    // the second asks by repo NAME: mapped to the workspace repo
+    await stop(sp.runId, result({ tasks: [ask(1), { ...ask(2), repoId: 'R' }] }));
+    const out = await start.done;
+    assert.equal(out.status, 'ok');
+    assert.equal(out.error, null);
+    const row = (await storage.getShift(start.shiftId))!;
+    assert.equal(row.filedTaskIds.length, 2);
+    assert.deepEqual(row.filing, { status: 'queued', note: null, held: [], dropped: [] });
+    for (const id of row.filedTaskIds) {
+      const t = (await storage.getTask(id))!;
+      assert.equal(t.status, 'queued');
+      assert.equal(t.source, 'office');
+      assert.equal(t.officeId, o.id);
+      assert.equal(t.roleId, r.id);
+      assert.equal(t.createdByRun, sp.runId);
+      assert.equal(t.repoId, repoId);
+      assert.equal(t.taintedAt, null);
+    }
+    const ev = (await storage.listEvents({ kind: 'office.shift', limit: 200 })).find((e) => (e.data as any)?.shiftId === start.shiftId);
+    assert.deepEqual((ev?.data as any).sections, [{ section: 'tasks', files: [], taskIds: row.filedTaskIds }]);
+  });
+
+  test('a tainted (WebFetch) shift files drafts with tainted_at', async () => {
+    await storage.setSetting('orchestrator.enabled', true);
+    const o = (await storage.updateOffice((await office()).id, { autonomy: 'autonomous' }))!;
+    const r = await role(o, { tools: ['Read', 'WebFetch'] });
+    const start = await runner.start(o, r, { kind: 'request' });
+    assert.ok(start.ok);
+    const sp = await spawnedNth(sessions.spawned.length + 1);
+    await stop(sp.runId, result({ tasks: [ask(3)] }));
+    await start.done;
+    const row = (await storage.getShift(start.shiftId))!;
+    assert.equal(row.tainted, true);
+    const t = (await storage.getTask(row.filedTaskIds[0]))!;
+    assert.equal(t.status, 'draft');
+    assert.ok(t.taintedAt);
+  });
+
+  test('proposals (the default autonomy) files nothing and holds the requests', async () => {
+    const o = await office();
+    const r = await role(o);
+    const start = await runner.start(o, r, { kind: 'request' });
+    assert.ok(start.ok);
+    const sp = await spawnedNth(sessions.spawned.length + 1);
+    await stop(sp.runId, result({ tasks: [ask(4)] }));
+    await start.done;
+    const row = (await storage.getShift(start.shiftId))!;
+    assert.deepEqual(row.filedTaskIds, []);
+    assert.equal(row.filing?.status, 'proposal');
+    assert.equal(row.filing?.held[0].title, 'Add tests for parser 4');
   });
 });

@@ -2428,6 +2428,8 @@ export type AuditKind =
   | 'office.resumed'
   /** a human created / edited an office or one of its roles (docs/office.md § API) */
   | 'office.changed'
+  /** what a shift's `tasks` section became: filed / held / dropped (docs/office.md § Filing) */
+  | 'office.filing'
   /** a role's shift finished: outcome, sections applied, taint (docs/office.md § Shifts at run time) */
   | 'office.shift'
   | 'approval.requested'

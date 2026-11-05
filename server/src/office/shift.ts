@@ -41,6 +41,7 @@ import {
 } from '../claude/aux.ts';
 import { broadcast } from '../events.ts';
 import { isInside, realPathDeep } from '../folder-guard.ts';
+import type { OrchestratorApi } from '../app-types.ts';
 import type { Storage } from '../storage/types.ts';
 import { readRoleFeedback, roleFeedbackRel } from './feedback.ts';
 import { validateOfficeFolder } from './folder.ts';
@@ -120,6 +121,8 @@ export interface ShiftRunnerDeps {
   aux?: () => Pick<AuxRunner, 'run'>;
   isPaused?: (settings: AppSettings) => boolean | Promise<boolean>;
   now?: () => Date;
+  /** kicked when a shift filed queued tasks (docs/office.md § Filing) */
+  orchestrator?: OrchestratorApi;
 }
 
 interface LiveShift {
@@ -369,14 +372,14 @@ export class ShiftRunner {
     return null;
   }
 
-  private async workspaceRepos(office: Office): Promise<{ name: string; path: string }[]> {
+  private async workspaceRepos(office: Office): Promise<{ id: string; name: string; path: string }[]> {
     const { storage } = this.deps;
     const ws = await storage.getWorkspace(office.workspaceId);
     if (!ws) return [];
     const ids = new Set(ws.repoIds);
     return (await storage.listRepos())
       .filter((r) => ids.has(r.id) && fs.statSync(r.path, { throwIfNoEntry: false })?.isDirectory())
-      .map((r) => ({ name: r.name, path: r.path }));
+      .map((r) => ({ id: r.id, name: r.name, path: r.path }));
   }
 
   // ---- the prompt ----
@@ -386,7 +389,7 @@ export class ShiftRunner {
     role: OfficeRole,
     trigger: ShiftTriggerInput,
     plan: ShiftPlan,
-    repos: { name: string; path: string }[],
+    repos: { id?: string; name: string; path: string }[],
   ): Promise<string> {
     const now = this.now();
     const feedback = await readRoleFeedback(office, role);
@@ -413,7 +416,7 @@ export class ShiftRunner {
       '## The office',
       '',
       `Your working directory is the office folder (${path.resolve(office.folderPath)}). The workspace's repos are readable at:`,
-      ...(repos.length ? repos.map((r) => `- ${r.name}: ${r.path}`) : ['- (none)']),
+      ...(repos.length ? repos.map((r) => `- ${r.name}${r.id ? ` (repoId \`${r.id}\`)` : ''}: ${r.path}`) : ['- (none)']),
       '',
       '### Vision (vision.md)',
       '',
@@ -615,6 +618,8 @@ export class ShiftRunner {
         tainted: plan.tainted,
         now,
         untrustedPath: (rel) => this.isolation.untrustedPath(office, rel),
+        runId: runId ?? shift.runId,
+        orchestrator: this.deps.orchestrator,
       });
       outcome.applied = applied.applied;
       outcome.sectionErrors = applied.errors;
@@ -660,7 +665,12 @@ export class ShiftRunner {
           taintSources: plan.taintSources,
           resumed: plan.resumeSessionId !== null,
           ...(plan.freshReason ? { freshReason: plan.freshReason } : {}),
-          sections: outcome.applied.map((a) => ({ section: a.section, files: a.files, ...(a.errors ? { errors: a.errors } : {}) })),
+          sections: outcome.applied.map((a) => ({
+            section: a.section,
+            files: a.files,
+            ...(a.taskIds ? { taskIds: a.taskIds } : {}),
+            ...(a.errors ? { errors: a.errors } : {}),
+          })),
           files,
         },
       });

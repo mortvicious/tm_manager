@@ -11,7 +11,7 @@ import type { Storage } from '../storage/types.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import { spaceForRepo } from '../spaces/service.ts';
 import type { CommandRunner } from '../commands/runner.ts';
-import { agentBrief, agentTitle, maxSpawnDepth, perRunCap, QUEUED_AGENT_CEILING } from './agent-caps.ts';
+import { agentBrief, agentEnqueueGate, agentTitle, maxSpawnDepth, perRunCap } from './agent-caps.ts';
 import { AGENT_COMMAND_DEFINE_CAP, AGENT_ONE_SHOT_TASK_CAP, registerAgentCommandRoutes } from './agent-commands.ts';
 import { registerAgentSharedRoutes, SHARED_NOTE_RUN_CAP } from './agent-shared.ts';
 import { AGENT_CLOSE_RUN_CAP, registerAgentTaskRoutes } from './agent-tasks.ts';
@@ -211,24 +211,12 @@ export function registerAgentRoutes(
       });
     }
 
-    // Enqueue gating (R6): needs the explicit opt-in setting AND the queue on;
-    // same-repo creations are ALWAYS drafts (two agents must not edit one
-    // working tree); global ceiling degrades to draft (R8), never a retry-bait 4xx.
-    let status: 'draft' | 'queued' = 'draft';
-    let note: string | null = null;
-    if (body.enqueue) {
-      if (!settings['agent.allowEnqueue']) {
-        note = 'enqueue disabled (agent.allowEnqueue is off) — created as draft for human review';
-      } else if (!settings['orchestrator.enabled']) {
-        note = 'queue is stopped — created as draft';
-      } else if (target.id === run.repoId) {
-        note = 'same-repo follow-ups are always drafts (no concurrent edits to one working tree)';
-      } else if ((await storage.countQueuedAgentTasks()) >= QUEUED_AGENT_CEILING) {
-        note = `agent queue ceiling (${QUEUED_AGENT_CEILING}) reached — created as draft`;
-      } else {
-        status = 'queued';
-      }
-    }
+    // Enqueue gating (R6/R8) — `agentEnqueueGate` (agent-caps.ts).
+    const { status, note } = await agentEnqueueGate(storage, settings, {
+      enqueue: !!body.enqueue,
+      targetRepoId: target.id,
+      runRepoId: run.repoId,
+    });
 
     // linkToParent (R2): only for split-children adding a sibling under a
     // parent that is genuinely blocked, and only when the sibling will run.

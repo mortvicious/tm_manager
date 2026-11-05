@@ -7,6 +7,8 @@
  * migration 54 and create-only.
  */
 import {
+  OFFICE_MAX_OPEN_TASKS_DEFAULT,
+  OFFICE_MAX_TASKS_PER_SHIFT_DEFAULT,
   TERMINAL_TASK_STATUSES,
   type EffortLevel,
   type Office,
@@ -15,6 +17,7 @@ import {
   type OfficeRole,
   type OfficeRolePreset,
   type OfficeShift,
+  type OfficeShiftFiling,
   type OfficeShiftTriggerKind,
   type OfficeTrigger,
 } from '@tm/shared';
@@ -100,7 +103,7 @@ export interface NewOfficeShift {
 export type OfficeShiftPatch = Partial<
   Pick<
     OfficeShift,
-    'verdict' | 'skipReason' | 'runId' | 'costUsd' | 'tainted' | 'taintSources' | 'briefId' | 'filedTaskIds' | 'endedAt' | 'error'
+    'verdict' | 'skipReason' | 'runId' | 'costUsd' | 'tainted' | 'taintSources' | 'briefId' | 'filedTaskIds' | 'filing' | 'endedAt' | 'error'
   >
 >;
 
@@ -131,8 +134,8 @@ export function officeInsertParams(id: string, o: NewOffice, at: string): unknow
     o.autonomy ?? 'proposals',
     o.dayBudgetUsd ?? 0,
     o.maxSlots ?? 1,
-    o.maxTasksPerShift ?? 3,
-    o.maxOpenTasks ?? 10,
+    o.maxTasksPerShift ?? OFFICE_MAX_TASKS_PER_SHIFT_DEFAULT,
+    o.maxOpenTasks ?? OFFICE_MAX_OPEN_TASKS_DEFAULT,
     o.theme ?? null,
     o.timezone,
     o.enabled ? 1 : 0,
@@ -340,6 +343,7 @@ const SHIFT_PATCH_COLUMNS: Record<keyof OfficeShiftPatch, [string, (v: any) => u
   taintSources: ['taint_sources', json],
   briefId: ['brief_id', (v) => v],
   filedTaskIds: ['filed_task_ids', json],
+  filing: ['filing', (v) => (v == null ? null : JSON.stringify(v))],
   endedAt: ['ended_at', (v) => v],
   error: ['error', (v) => v],
 };
@@ -379,6 +383,23 @@ export function officeShiftListSql(f: OfficeShiftFilter = {}): { sql: string; pa
   };
 }
 
+/** The `filing` JSON column; anything unreadable is null (a list is never invented). */
+function shiftFiling(v: unknown): OfficeShiftFiling | null {
+  if (v == null || v === '') return null;
+  try {
+    const f = typeof v === 'string' ? JSON.parse(v) : v;
+    if (!f || typeof f !== 'object' || typeof f.status !== 'string') return null;
+    return {
+      status: f.status,
+      note: typeof f.note === 'string' ? f.note : null,
+      held: Array.isArray(f.held) ? f.held : [],
+      dropped: Array.isArray(f.dropped) ? f.dropped : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function rowToOfficeShift(r: any): OfficeShift {
   return {
     id: r.id,
@@ -393,6 +414,7 @@ export function rowToOfficeShift(r: any): OfficeShift {
     taintSources: stringList(r.taint_sources),
     briefId: r.brief_id ?? null,
     filedTaskIds: stringList(r.filed_task_ids),
+    filing: shiftFiling(r.filing),
     startedAt: r.started_at,
     endedAt: r.ended_at ?? null,
     error: r.error ?? null,

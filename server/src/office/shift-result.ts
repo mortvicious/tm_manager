@@ -7,14 +7,16 @@
 // being silently dropped. Every section is optional: a shift that found
 // nothing returns `{}`.
 //
-// This module registers `notes` and `deliverables`; later phases register
-// theirs (tasks, command runs, briefs) with `registerShiftSection`.
+// This module registers `notes`, `deliverables` and `tasks` (filing.ts);
+// later phases register theirs (command runs, briefs) with `registerShiftSection`.
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import type { Office, OfficeRole } from '@tm/shared';
 import { isInside, realPathDeep } from '../folder-guard.ts';
+import type { OrchestratorApi } from '../app-types.ts';
 import type { Storage } from '../storage/types.ts';
+import { SHIFT_TASKS_DESCRIBE, SHIFT_TASKS_JSON_SCHEMA, fileShiftTasks, shiftTasksSchema, type ShiftTaskInput } from './filing.ts';
 import { untrustedPath } from './isolation.ts';
 
 export interface ShiftSectionCtx {
@@ -31,6 +33,10 @@ export interface ShiftSectionCtx {
    * never a path hard-coded here.
    */
   untrustedPath: (rel: string) => string;
+  /** the shift's run (`created_by_run` of what it files); default: the shift row's */
+  runId?: string | null;
+  /** kicked when a section filed queued work (`tasks`) */
+  orchestrator?: OrchestratorApi;
 }
 
 export interface ShiftSectionApplied {
@@ -38,6 +44,8 @@ export interface ShiftSectionApplied {
   /** folder-relative paths the section wrote, as the server observed them */
   files: string[];
   tainted: boolean;
+  /** tasks the section filed (`tasks`) */
+  taskIds?: string[];
   /** parts of the section that failed while the rest applied (one bad file of several) */
   errors?: string[];
 }
@@ -266,5 +274,25 @@ registerShiftSection<ShiftDeliverable[]>({
     }
     if (!files.length && errors.length) throw new Error(errors.join('; '));
     return { section: 'deliverables', files, tainted: ctx.tainted, ...(errors.length ? { errors } : {}) };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// tasks — worker tasks the server files (docs/office.md § Filing)
+// ---------------------------------------------------------------------------
+
+registerShiftSection<ShiftTaskInput[]>({
+  key: 'tasks',
+  describe: SHIFT_TASKS_DESCRIBE,
+  schema: shiftTasksSchema,
+  jsonSchema: SHIFT_TASKS_JSON_SCHEMA,
+  async apply(value, ctx) {
+    const { filed } = await fileShiftTasks(
+      { storage: ctx.storage, orchestrator: ctx.orchestrator },
+      { office: ctx.office, role: ctx.role, shiftId: ctx.shiftId, tainted: ctx.tainted, now: ctx.now, runId: ctx.runId },
+      value,
+    );
+    // held and dropped requests are on the shift row (`filing`), not section errors: a cap is not a failure
+    return { section: 'tasks', files: [], tainted: ctx.tainted, taskIds: filed.map((t) => t.id) };
   },
 });

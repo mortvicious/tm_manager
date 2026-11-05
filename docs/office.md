@@ -530,9 +530,9 @@ it is history. Money is `DOUBLE PRECISION` (pg `REAL` is float4). Flags are
 
 | Table | Columns (beyond the `Office` / `OfficeRole` / `OfficeShift` fields) | Indexes |
 |---|---|---|
-| `tm_offices` | `workspace_id`, `folder_path`, `autonomy` (default `proposals`), `day_budget_usd` (0), `max_slots` (1), `max_tasks_per_shift` (3), `max_open_tasks` (10), `paused_at`, `paused_reason`, `budget_tripped_on`, `theme`, `timezone`, `enabled` (0), `created_at`, `updated_at` | **unique** `(workspace_id)`: one office per workspace |
+| `tm_offices` | `workspace_id`, `folder_path`, `autonomy` (default `proposals`), `day_budget_usd` (0), `max_slots` (1), `max_tasks_per_shift` (8), `max_open_tasks` (12) — the insert's defaults, migration 55 (§ Filing), `paused_at`, `paused_reason`, `budget_tripped_on`, `theme`, `timezone`, `enabled` (0), `created_at`, `updated_at` | **unique** `(workspace_id)`: one office per workspace |
 | `tm_office_roles` | `office_id`, `preset`, `role_key` (the role's `key`), name/avatar/title/prompt/model/effort, `tools`/`schedules`/`triggers`/`guards` (JSON), `autonomy`, `cap_usd`, `notes_path`, `notes_tainted_at`, `session_id`, `session_tainted` (0), `enabled` (1), `created_at`, `updated_at` | **unique** `(office_id, role_key)` |
-| `tm_office_shifts` | `office_id`, `role_id`, `trigger_kind`/`trigger_ref`/`trigger_at` (the `trigger` object), `verdict`, `skip_reason`, `run_id`, `cost_usd`, `tainted`, `taint_sources` (JSON), `brief_id`, `filed_task_ids` (JSON), `started_at`, `ended_at`, `error` | `(office_id, started_at)`, `(role_id, started_at)`, `(run_id)` |
+| `tm_office_shifts` | `office_id`, `role_id`, `trigger_kind`/`trigger_ref`/`trigger_at` (the `trigger` object), `verdict`, `skip_reason`, `run_id`, `cost_usd`, `tainted`, `taint_sources` (JSON), `brief_id`, `filed_task_ids` (JSON), `filing` (JSON `OfficeShiftFiling`, migration 55 — § Filing), `started_at`, `ended_at`, `error` | `(office_id, started_at)`, `(role_id, started_at)`, `(run_id)` |
 
 **Task columns (migration 54)**. `tm_tasks.office_id`, `role_id` and
 `tainted_at` are all nullable, with an index on `office_id`. On the `Task`
@@ -573,7 +573,7 @@ both drivers):
   `deleteOfficeRole` (the role's shifts stay).
 - Shifts: `appendShift` (`NewOfficeShift`; `startedAt` defaults to now, cost
   starts at 0, and nothing is filed yet), `updateShift` (`OfficeShiftPatch`:
-  verdict, skip reason, run id, cost, taint, brief, filed task ids, end time,
+  verdict, skip reason, run id, cost, taint, brief, filed task ids, filing, end time,
   error), `getShift`, and `listShifts(filter)`. The filter takes `officeId`,
   `roleId`, `verdict`, `since` (≥), `until` (<), `open` (no `ended_at`) and
   `limit` (default 500, at most 5000). Results are newest first.
@@ -652,7 +652,7 @@ secret, so nothing is stripped.
 **PATCH office** (`OfficePatchBody`, strict: an unknown field is 400):
 
 - Fields: `folderPath`, `autonomy`, `dayBudgetUsd` (0…100000), `maxSlots`
-  (1…`CONCURRENCY_MAX`), `maxTasksPerShift` (1…20), `maxOpenTasks` (1…200),
+  (1…`CONCURRENCY_MAX`), `maxTasksPerShift` (1…15), `maxOpenTasks` (1…200),
   `theme`, `timezone`, `enabled`, `paused`.
 - **An enabled office needs `dayBudgetUsd > 0`.** Enabling without one, in
   the same body or already stored, is 409 `set a day budget above $0
@@ -773,7 +773,8 @@ sessions) with these settings:
 - **Model.** The role's model and effort, through `withModelFallback`.
 
 A shift never executes or edits. Execution work leaves it as a filed worker
-task or a saved-command run (later phases register those result sections).
+task (the `tasks` section, § Filing) or a saved-command run (a later phase
+registers that result section).
 
 **Refusals.** The runner refuses to spawn in these cases, whatever the caller
 says:
@@ -871,7 +872,8 @@ In order:
 1. The role's identity and the trigger. An outside signal is named as
    untrusted data.
 2. The role's prompt.
-3. The office folder and the workspace repos.
+3. The office folder and the workspace repos, each with its `repoId` (what
+   the `tasks` section names).
 4. `vision.md` and `priorities.md` inline, up to 16 KB each.
 5. The role's notes inline.
 6. The role's **feedback file** (trusted, the last 50 entries).
@@ -917,6 +919,7 @@ Every write goes through `writeOfficeFile`, which:
 |---|---|---|
 | `notes` | markdown, ≤ 24,000 chars, not empty | **replaces** `roles/<key>.md` whole |
 | `deliverables` | ≤ 10 of `{path, markdown}` (≤ 100,000 chars each); `path` is `deliverables/<name>.md`, up to three subfolders, plain segments with no leading dot, each path at most once | writes each file (an existing one is replaced); the path is re-checked at the write |
+| `tasks` | ≤ 30 of `{repoId, title, description, category?, effort?}` | files worker tasks, holds them (proposals) or drops them past a cap — § Filing |
 
 A **tainted** shift's notes and deliverables go to
 `untrustedPath(office, <their own path>)` instead, for example
@@ -927,7 +930,9 @@ While `notesTaintedAt` is set, the next shift reads the newest notes, which
 are the untrusted twin (or the trusted file if there is no twin). That shift
 is tainted (`tainted-notes`). A human clears this with reset-notes (§ API).
 
-Later phases register `tasks` (filing), command runs and briefs.
+Later phases register command runs and briefs. The section context also
+carries the shift's `runId` and the orchestrator (to kick the scheduler after a
+queued filing).
 
 ### Notes vs feedback
 
@@ -959,15 +964,86 @@ server-written and trusted.
 **The shift row** gets `verdict: 'ran'`, the trigger, `runId` (the last
 attempt's, set as soon as the PTY is spawned), `costUsd` (every attempt,
 including a model fallback), `tainted`, `taintSources`, `endedAt` and
-`error`. `error` is null on success, the aux error otherwise, `stopped`, or
+`error`, plus `filedTaskIds` and `filing` from the `tasks` section (§ Filing).
+`error` is null on success, the aux error otherwise, `stopped`, or
 `suspended by Pause all`. It is `result partly applied — …` when a section
 failed.
 
 **The audit row** is `office.shift`: status, code, error, cost, taint,
-`resumed`, `freshReason`, the sections with the files they wrote, and
-`files`. The history block reads the files back from it.
+`resumed`, `freshReason`, the sections with the files they wrote (and, for
+`tasks`, the `taskIds` filed), and `files`. The history block reads the files back from it.
 
 **The broadcast** is `office.updated` with the roles.
+
+### Filing
+
+`server/src/office/filing.ts` (registered as the `tasks` section in
+`shift-result.ts`), tests in `filing.test.ts` and `shift.test.ts`;
+decisions.md 2026-11-05 (open decision 5). A shift asks for work in the
+result's `tasks` section: a list of `{repoId, title, description, category?,
+effort?}` (`shiftTasksSchema`, at most 30 items). `repoId` is the id the prompt
+lists; an exact (case-insensitive) repo NAME of the workspace is mapped to it. Execution work the brief names as shift
+work — an exploratory QA pass, writing tests — is filed here as an ordinary
+worker task tagged with the role, so it runs with normal worker tools, the
+review, the checks and the landing tiers. The shift itself never executes.
+
+**The server files them** (`fileShiftTasks`) through `task-actions.ts`
+`createTask`, like every other creation, as source `office` with `office_id`,
+`role_id`, `created_by_run` = the shift's run, `spawn_depth` 1, the category and
+effort asked for, and `tainted_at` when the shift is tainted. The description
+gets a `Filed by <role> — office shift <id8>` line on top and the standing caps
+at the end (`withStandingCaps`). Every office task is external, so it lands
+supervised (§ Data model). The audit actor is `office:<role key>`.
+
+**Status.** `filingStatus(effectiveAutonomy(office, role), tainted,
+{queueStopped: !orchestrator.enabled})`, with the office and role RE-READ at
+filing time (a human may lower the autonomy while the shift runs):
+
+| Case | Filed as | Note on the shift row |
+|---|---|---|
+| `proposals` autonomy | nothing — the requests are **held** on the shift row until the proposals card converts them | `proposals autonomy — nothing filed; held for the proposals card` |
+| tainted shift | `draft`, `tainted_at` set | `tainted shift — created as draft for human review` |
+| global queue stopped (`orchestrator.enabled` off) | `draft` | `queue is stopped — created as draft` (the agents' own words) |
+| otherwise (`auto-run`, `autonomous`) | `queued` (the scheduler is kicked) | — |
+
+- **`agent.allowEnqueue` is NOT consulted.** It governs worker filings through
+  `/api/agent/tasks`. An office's filings are governed by its own
+  Origin-gated opt-ins: it starts disabled, it cannot be enabled without a
+  day budget, and its autonomy level decides whether anything is queued.
+- **The stopped queue IS honoured**: queue off means drafts, exactly as for
+  agents.
+- **No same-repo draft rule**: a shift owns no checkout, so there is no
+  working tree two agents could share.
+
+**Caps** (the office's own, never the agent ceiling):
+
+- `maxTasksPerShift` — default 8, at most 15 (a stored value above 15 is
+  clamped). The first N valid requests are kept.
+- `maxOpenTasks` — default 12: the office's tasks not in a terminal status
+  (`countOpenOfficeTasks`). Only the room left is filed. Held proposals do not
+  count (no task exists). Filings of one office are serialized in-process, so
+  two shifts settling together cannot both see the same room.
+- Requests for a repo outside the office workspace, and a repeat of a title in
+  the same shift, are dropped first.
+
+Everything left out is **dropped and listed** on the shift row with its reason
+(`OfficeShift.filing.dropped`). A list over the cap is never a validation error
+— that would type a correction into the session.
+
+**Decoupled from the agent ceiling.** `countQueuedAgentTasks`
+(`QUEUED_AGENT_CEILING`, the 10 queued agent filings past which an agent's
+filing becomes a draft) counts `office_id IS NULL` only, in both drivers. Office
+tasks carry `created_by_run`, so without that a busy office would turn real
+workers' filings into drafts. Agent filings never count against the office caps
+either. The agent route's gate is `agentEnqueueGate` (`routes/agent-caps.ts`).
+
+**On the shift row** (migration 55): `filed_task_ids` gets the filed ids
+(appended), and `filing` (JSON `OfficeShiftFiling`; null = no tasks asked for)
+records the status, the note, the `held` requests and the `dropped` ones. One
+`office.filing` audit row per shift lists the filed ids, the held count and the
+drops. Held and dropped entries are the shift's own text: for a tainted shift
+they are untrusted, so a trusted reader gets them only through
+`taintedDigest`, which copies no titles.
 
 ## UI
 

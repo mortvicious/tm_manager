@@ -40,9 +40,9 @@ export interface Office {
   dayBudgetUsd: number;
   /** shifts live at once in this office */
   maxSlots: number;
-  /** tasks one shift may file */
+  /** tasks one shift may file (`OFFICE_MAX_TASKS_PER_SHIFT_DEFAULT`, at most `OFFICE_MAX_TASKS_PER_SHIFT_MAX`) */
   maxTasksPerShift: number;
-  /** open (not terminal) tasks the office may have filed at once */
+  /** open (not terminal) tasks the office may have filed at once (`OFFICE_MAX_OPEN_TASKS_DEFAULT`) */
   maxOpenTasks: number;
   pausedAt: string | null;
   pausedReason: string | null;
@@ -154,6 +154,8 @@ export interface OfficeShift {
   taintSources: string[];
   briefId: string | null;
   filedTaskIds: string[];
+  /** what the `tasks` section became (docs/office.md § Filing); null = the shift asked for no tasks */
+  filing: OfficeShiftFiling | null;
   startedAt: string;
   endedAt: string | null;
   error: string | null;
@@ -897,6 +899,44 @@ export function filingStatus(
   if (opts.queueStopped) return 'draft';
   if (autonomy === 'auto-run' || autonomy === 'autonomous') return 'queued';
   return 'draft';
+}
+
+// ---------------------------------------------------------------------------
+// Filing caps and the shift row's record (docs/office.md § Filing)
+// ---------------------------------------------------------------------------
+
+/** Office filing caps (decisions.md 2026-11-05, open decision 5) — the office's own, never the agent ceiling. */
+export const OFFICE_MAX_TASKS_PER_SHIFT_DEFAULT = 8;
+export const OFFICE_MAX_TASKS_PER_SHIFT_MAX = 15;
+export const OFFICE_MAX_OPEN_TASKS_DEFAULT = 12;
+export const OFFICE_MAX_OPEN_TASKS_MAX = 200;
+
+/** The note a stopped global queue puts on a filing — the same words an agent's filing gets. */
+export const OFFICE_QUEUE_STOPPED_NOTE = 'queue is stopped — created as draft';
+export const OFFICE_TAINTED_NOTE = 'tainted shift — created as draft for human review';
+export const OFFICE_PROPOSALS_NOTE = 'proposals autonomy — nothing filed; held for the proposals card';
+
+/** One task a shift asked for (the `tasks` result section). Agent text: a tainted shift's is untrusted. */
+export interface ShiftTaskRequest {
+  repoId: string;
+  title: string;
+  description: string;
+  category: string | null;
+  effort: EffortLevel | null;
+}
+
+/**
+ * What a shift's `tasks` section became, on the shift row. `filed` ids are
+ * `OfficeShift.filedTaskIds`; this is the rest: the status they were filed
+ * at, why not `queued`, the requests HELD under proposals autonomy (no task
+ * exists until the proposals card converts one) and the ones DROPPED, each
+ * with its reason (a cap, a repo outside the workspace).
+ */
+export interface OfficeShiftFiling {
+  status: OfficeFilingStatus;
+  note: string | null;
+  held: ShiftTaskRequest[];
+  dropped: (ShiftTaskRequest & { reason: string })[];
 }
 
 // ---------------------------------------------------------------------------

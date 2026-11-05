@@ -977,6 +977,16 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS tm_tasks_office_idx ON tm_tasks (office_id)`,
     ],
   },
+  {
+    id: 55,
+    // Shift filing (docs/office.md § Filing): what a shift's `tasks` section
+    // became beyond the filed ids — the status, the note, the requests held
+    // under proposals autonomy and the ones dropped by a cap (JSON
+    // `OfficeShiftFiling`; NULL = no tasks asked for). The office caps' new
+    // defaults (8 per shift, 12 open) are written by the insert, which always
+    // names both columns, so the column DEFAULTs of migration 53 are never read.
+    statements: [`ALTER TABLE tm_office_shifts ADD COLUMN filing TEXT`],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */
