@@ -35,6 +35,8 @@ import { officeGate, type CommitCounter } from './gate.ts';
 import type { OfficeSignals } from './signals.ts';
 import type { ShiftStart, ShiftTriggerInput } from './shift.ts';
 import { checkOfficeDocs } from './docs.ts';
+import { wakeChannelRouting } from './channel.ts';
+import { rolesInHuddle, type HuddleRunner } from './huddles.ts';
 
 /** One minute: the cron grid's own resolution. */
 export const OFFICE_TICK_MS = 60_000;
@@ -60,6 +62,8 @@ export interface OfficeSchedulerDeps {
   log?: (line: string) => void;
   /** the signal poller (docs/office.md § Signals), stepped once per office per tick */
   signals?: () => Pick<OfficeSignals, 'onTick'> | null;
+  /** the huddle runner (docs/office.md § Huddles), advanced once per office per tick */
+  huddles?: () => Pick<HuddleRunner, 'advance'> | null;
 }
 
 export interface OfficeTickReport {
@@ -107,6 +111,8 @@ export async function officeStates(storage: Storage, officeId: string, now = Dat
   const live = await storage.listShifts({ officeId: office.id, verdict: 'ran', open: true });
   // pending proposals per role (docs/office.md § Proposals) — what `waiting-for-you` counts so far
   const waiting = new Map<string, number>();
+  // participants of an open huddle (docs/office.md § Huddles)
+  const inHuddle = await rolesInHuddle(storage, office.id);
   for (const p of await storage.listOfficeProposals({ officeId: office.id, status: 'pending' })) {
     waiting.set(p.roleId, (waiting.get(p.roleId) ?? 0) + 1);
   }
@@ -122,7 +128,7 @@ export async function officeStates(storage: Storage, officeId: string, now = Dat
       serverPaused,
       onShift: !!onShift,
       shiftLabel: onShift ? `on shift since ${formatOfficeTime(Date.parse(onShift.startedAt), now, tz)} (${onShift.trigger.kind})` : null,
-      inHuddle: false,
+      inHuddle: inHuddle.has(role.id),
       // pending proposals; a role's questions / approvals reach the human in a later phase
       waitingForYou: waiting.get(role.id) ?? 0,
       officeSpentTodayUsd: officeSpent,
@@ -205,12 +211,28 @@ export class OfficeScheduler {
         await this.deps.signals?.()
           ?.onTick(office, now)
           .catch((e) => console.warn(`office ${office.id}: signals failed:`, (e as Error).message));
+        // the Director's routing pass, owed to unrouted channel messages (docs/office.md § Channel)
+        if (office.enabled && !this.stopped) await this.routeChannel(office, now);
+        // open huddles: the next turn, or close a spent / stale one (docs/office.md § Huddles)
+        if (!this.stopped) {
+          const fresh = await storage.getOffice(office.id);
+          if (fresh) await this.deps.huddles?.()?.advance(fresh).catch((e) => console.warn(`office ${office.id}: huddles failed:`, (e as Error).message));
+        }
         await this.publishStates(office.id, now);
       } catch (e) {
         console.warn(`office ${office.id}: scheduler pass failed:`, (e as Error).message);
       }
     }
     return report;
+  }
+
+  private async routeChannel(office: Office, now: number): Promise<void> {
+    const fresh = await this.deps.storage.getOffice(office.id);
+    if (!fresh?.enabled) return;
+    const r = await wakeChannelRouting({ storage: this.deps.storage, start: (o, role, t) => this.deps.shifts().start(o, role, t), now }, fresh).catch(
+      (e) => ({ ok: false as const, reason: (e as Error).message }),
+    );
+    if (r?.ok) this.log(`office ${office.id}: routing pass started (shift ${r.shiftId})`);
   }
 
   private async wakeDue(office: Office, now: number, report: OfficeTickReport): Promise<void> {

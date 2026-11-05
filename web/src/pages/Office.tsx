@@ -56,6 +56,8 @@ import { useIsMobile } from '../components/Layout.tsx';
 import { Sheet } from '../components/Sheet.tsx';
 import { Markdown } from '../components/Markdown.tsx';
 import { OfficeVision } from '../components/OfficeVision.tsx';
+import { OfficeChannel } from '../components/OfficeChannel.tsx';
+import { OfficeHuddles } from '../components/OfficeHuddles.tsx';
 import { useNow } from '../components/TimeAgo.tsx';
 import { useArm } from '../arm.ts';
 import { toastError } from '../toast.ts';
@@ -88,6 +90,7 @@ const TRIGGER_KIND_LABEL: Record<OfficeShift['trigger']['kind'], string> = {
   event: 'event',
   signal: 'signal',
   request: 'wake now',
+  huddle: 'huddle turn',
 };
 
 /** a stored taint label (`kind:ref`) as words */
@@ -102,6 +105,7 @@ function taintText(label: string): string {
     'tainted-notes': 'tainted notes',
     'tainted-artifact': 'tainted artifact',
     'tainted-session': 'tainted session',
+    'tainted-huddle': 'tainted huddle',
   };
   return `${words[kind] ?? kind}${ref ? ` ${ref}` : ''}`;
 }
@@ -320,7 +324,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   const now = useNow();
   const { detail, states, error, reload } = useOfficeDetail(officeId);
   const [editing, setEditing] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | null>(null);
+  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | 'channel' | 'huddles' | null>(null);
   const briefs = useOfficeBriefs(officeId);
   const [briefId, setBriefId] = useBriefParam();
 
@@ -344,6 +348,8 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
     />
   );
   const ask = <AskDirector office={office} director={director} onAsked={reload} />;
+  const channel = <OfficeChannel office={office} roles={roles} inSheet={mobile} onOpenTask={onOpenTask} />;
+  const huddles = <OfficeHuddles office={office} roles={roles} inSheet={mobile} onOpenTask={onOpenTask} />;
   const briefList = (
     <BriefList office={office} roles={roles} briefs={briefs} selected={briefId} inSheet={mobile} onSelect={(id) => setBriefId(id === briefId ? null : id)} />
   );
@@ -366,6 +372,12 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
           </button>
           <button className="btn" onClick={() => setSheet('ask')}>
             Ask the Director
+          </button>
+          <button className="btn" onClick={() => setSheet('channel')}>
+            Channel
+          </button>
+          <button className="btn" onClick={() => setSheet('huddles')}>
+            Huddles
           </button>
           <button className="btn" onClick={() => setSheet('briefs')}>
             Briefs <span className="muted">{briefs?.length ?? ''}</span>
@@ -410,6 +422,18 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
           <div className="office-section-title">Ask the Director for a feature</div>
           {ask}
         </div>
+      )}
+      {!mobile && <div className="panel">{channel}</div>}
+      {!mobile && <div className="panel">{huddles}</div>}
+      {mobile && sheet === 'huddles' && (
+        <Sheet label="Office huddles" title="Huddles" onClose={() => setSheet(null)} disableDrag tall>
+          {huddles}
+        </Sheet>
+      )}
+      {mobile && sheet === 'channel' && (
+        <Sheet label="Office channel" title="Channel" onClose={() => setSheet(null)} disableDrag tall>
+          {channel}
+        </Sheet>
       )}
       {mobile && sheet === 'ask' && (
         <Sheet label="Ask the Director for a feature" title="Ask the Director" onClose={() => setSheet(null)} disableDrag>

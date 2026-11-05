@@ -298,6 +298,7 @@ these `TaintSourceKind`s:
 | `tainted-notes` | the role's notes were written by a tainted shift |
 | `tainted-artifact` | it read an office artifact a tainted shift wrote |
 | `tainted-session` | it resumes a session a tainted shift ran in |
+| `tainted-huddle` | it is a turn of a tainted huddle (§ Huddles) |
 
 What taint changes:
 
@@ -707,7 +708,8 @@ race or was refused, and the caller re-reads:
   only while `status = 'open' AND turns < max_turns` — a huddle can never take
   a turn past its cap however many roles race for it (test). **`closeHuddle(id,
   'decided' | 'expired', decision?)`** is `open → decided|expired`, once, and
-  stamps `closed_at`.
+  stamps `closed_at`. **`taintHuddle(id)`** stamps `tainted_at` only while
+  the huddle is open and untainted (a tainted turn, § Huddles).
 - Signals: **`appendSignal(s)`** is `INSERT … ON CONFLICT (source,
   external_id) DO NOTHING RETURNING *`, so a duplicate is never inserted twice
   (test) and needs no racy pre-read; it returns `{ signal, created }`, the
@@ -1478,7 +1480,7 @@ three live broadcasts.
 | `task-landed` | a `task.transition` into `done` or `published` from anything else (`done → published` is the same landing, not a second one) |
 | `bug-filed` | a task `isBugTask` reads as a bug (category naming bugs, or Sentry-filed): created as one (`task.created`), or an OPEN task a later category edit turns into one (`task.edited` with `category` in `fields` — the analysis pass, the agent category route, a human edit). Once per task: the service keeps each open task's bug state in memory, primed from the open tasks at start, so a task already a bug never re-fires and a terminal one never fires. Never the waking role's own filing |
 | `deploy-done` | a `task.transition` into `published`, or a `command.run` broadcast of a HUMAN-saved command (`ownerTaskId` null; not a check, baseline, office run or one-shot) whose name contains the word *deploy* (`isDeployCommandName` — the name is the tag) exiting 0 |
-| `office-message` | `office-message.created` (broadcast by `appendOfficeMessage` in both drivers): the addressee role, or for the channel (`toRoleId` null) every subscribed role but the writer |
+| `office-message` | `office-message.created` (broadcast by `appendOfficeMessage` in both drivers) of a DELIVERED message — one stored routed: a forward's copy or a Director's own message (§ Channel). An unrouted message waits for the Director and wakes nobody. The addressee role, or for the channel (`toRoleId` null) every subscribed role but the writer |
 | `task-failed` | a `task.transition` into `failed` |
 | `review-flagged` | a `run.reviewed` row with `state: 'flagged'` |
 | `checks-red` | a `task.checked` row with `state: 'red'` and a `stop` (the fix loop is spent — a red with a fix turn coming is not news) |
@@ -1616,8 +1618,8 @@ writes nothing (the budget is not settled):
 
 Otherwise the state is `scheduled` with `next 09:00`. `waitingForYou` counts
 the role's PENDING proposals (§ Proposals; a role's questions and approvals
-join it in a later phase). `inHuddle` is false until the phase that brings
-huddles.
+join it in a later phase). `inHuddle` is true while the role is a participant
+of an open huddle (`rolesInHuddle`, § Huddles).
 
 `GET /api/offices/:id/states` returns them (404 for an unknown office). They are
 broadcast in `office.updated` (`states`): by the scheduler after each tick, only
@@ -2054,6 +2056,314 @@ runs the pipeline above; its plan reaches the Inbox like any proposed plan.
   TAINTED card above the plan. The Russian summary (and so the upload's caption)
   says it is an office feature over N repos and, when tainted, that its tasks
   will not queue themselves.
+
+## Channel
+
+Roles talk to each other through the office CHANNEL, and the Director routes
+what they say (`server/src/office/channel.ts`, shared types and pure helpers
+at the end of `shared/src/office.ts`). A message is never work by itself: the
+Director decides whether it becomes a task, a note, a huddle (§ Huddles) or a forward.
+
+### Writing a message
+
+- **A role** returns the `messages` section (every role): at most
+  `SHIFT_MESSAGES_MAX` (3) of `{to, kind, subject, body}`, `to` a role key or
+  `director`, `kind` `request|finding|handoff|note`. The server stores each as a
+  `tm_office_messages` row: `from_role_id` = the role, `to_role_id` = the
+  addressee, `subject` = `{kind: 'shift', id: <the shift>}`, `body` = the subject
+  line, a blank line, the body (`officeMessageText`; `splitOfficeMessage` reads
+  it back) and `tainted_at` = the shift's taint. An unknown key or a message to
+  yourself is dropped and listed as a section error; the rest are stored.
+- **The Director's own message** to a role IS its routing decision: stored
+  already routed (`routedAt` on insert) with a `deliver` route record.
+- **The stakeholder** posts from /office: `POST /api/offices/:id/messages`
+  `{to: <key>|'director'|null, kind?, subject, body}` (Origin; 400 on an unknown
+  role or an empty subject; 201 with the row). Trusted text (a human typed it),
+  `from_role_id` NULL, unrouted, audited `office.message`.
+
+### The routing pass
+
+The scheduler tick (`OfficeScheduler.routeChannel` → `wakeChannelRouting`, every
+minute, enabled offices only) asks whether the office owes its Director a
+routing shift — the pure `officeRoutingDue`:
+
+- only messages shown to fewer than `OFFICE_ROUTE_MAX_PASSES` (3) Director
+  shifts since their last review count (the loop guard: a message the Director
+  keeps leaving alone stops waking it; it is still SHOWN to every Director
+  shift);
+- due = the later of the oldest counted message + `OFFICE_ROUTE_DEBOUNCE_MS`
+  (5 min) and the previous routing wake + 5 min, so a burst is ONE wake.
+
+When due, the Director gets an `event` shift with ref `office-message:<id> …`
+(`officeEventTriggerRef` over the owed ids) and `routing: true` (the opening
+line says why). It goes through `officeGate` with `skipGuards` — the hard gate
+(disabled, paused, Pause all, budget, role cap, slots) applies, the Director's
+guards do not: routing is owed work a message created, not the stand-up
+cadence its guards were written for. A refusal changes nothing — the messages
+stay unrouted and the next tick asks again (zero tokens, no skip rows). The
+wake is trusted: `shiftTaint` taints only signals, and a routing shift reads
+nothing a tainted writer chose (below).
+
+### What the Director sees
+
+EVERY Director shift — a routing wake, the stand-up, a wish — gets the
+`## Office channel — messages to route` block when messages are unrouted:
+at most `OFFICE_ROUTE_BATCH_MAX` (20), shown oldest first, stated as DATA.
+The batch is picked OWED first — messages shown to fewer than
+`OFFICE_ROUTE_MAX_PASSES` shifts — and only then filled with spent ones, so
+every message that woke the Director is in it (`officeRoutingDue` owes the
+oldest 20 owed). Picking plain oldest-first let 20 spent messages crowd out a
+new one forever: it woke the Director every 5 min, was never shown, and
+`routes` refused it (review round 1; `channel.test.ts` covers 22 spent + 1 new).
+
+- An **untainted** message is fenced JSON: id, from/to role keys, kind, time,
+  subject, body.
+- A **tainted** message (written by a tainted shift and not yet reviewed) is
+  ONLY its `taintedMessageDigest` line — the message counterpart of
+  `taintedDigest`: id, writer and addressee role keys, the kind enum, the time
+  and a length, never its subject or body. So the routing shift stays trusted
+  (`channel.test.ts` plants a string and asserts it never reaches the prompt).
+
+The ids a shift was shown are an `office.channel-presented` audit row written
+right after the shift row (`{officeId, roleId, shiftId, messageIds}`) — the
+pass count, and the only set its `routes` may name.
+
+### Routes
+
+The Director-only `routes` section (`availableTo: isStandupRole`; another
+role's schema refuses the key): at most one entry per message,
+`{messageId, action, note?}` plus
+
+| Action | Needs | What the server does |
+| --- | --- | --- |
+| `task` | `task` {repoId, title, description, category?, effort?} | `fileShiftTasks` with `viaMessageId` — the same rules as the `tasks` section: the workspace repo check, `maxTasksPerShift`/`maxOpenTasks`, `filingStatus` (a proposal under `proposals` autonomy, a draft when tainted or the queue is stopped). TAINTED when the shift is or the message is (a task decided over a digest is untrusted work). The shift row's `filing` record (the `tasks` section's) is left alone; the filed id is appended to `filed_task_ids`, and `routed_task_id` names it |
+| `huddle` | `roles` (2–3 role keys, `director` allowed), `maxTurns?` (2–6, default 4) | `openHuddle` (§ Huddles): subject `{kind: 'message', id}`, the route's `note` as the opening line, tainted when the message, a participant or the routing shift is; refused for a huddle's own decision or transcript |
+| `forward` | `to` (a role key, not the Director) | a delivery COPY to that role: same writer, kind, body and `tainted_at` (forwarding never launders), subject `{kind: 'message', id: <original>}`, stored routed with a `deliver` record — so the `office-message` event trigger wakes a subscribed addressee |
+| `note` | `note` (≤ 2000) | nothing else: the Director's answer, shown in the channel and to the writer |
+
+A route is refused (a section error, the rest still apply) for a message of
+another office, one this shift was not shown, or one already routed. After the
+action the conditional `routeMessage` stamps `routed_at` (once) and an
+`office.message-routed` audit row stores the ROUTE RECORD
+(`OfficeMessageRoute`: action, shift, the routing shift's taint, task /
+proposal / dropped reason / huddle / addressee / copy, note) — the message row
+itself has only `routed_at` and `routed_task_id`. `office-message.updated`
+tells the SPA.
+
+### What a role sees
+
+A non-Director shift's prompt gets `## Office channel` when there is something:
+
+- **delivered to it** since its previous ran shift (`deliver` records: forwards
+  and the Director's messages), ≤ 10 — untainted as fenced JSON, tainted as the
+  digest line;
+- **what the Director did with its own messages** routed since then: id, the
+  subject (not for a tainted one), action, task / proposal / huddle / addressee,
+  and the note — only when the routing shift was untainted.
+
+### Mark reviewed
+
+`POST /api/office-messages/:id/reviewed {taintedAt}` (Origin;
+`markMessageReviewed`): 404 unknown; 409 when the message is not tainted or its
+`tainted_at` is not the one the human read; otherwise the conditional
+`clearMessageTaint` clears `tainted_at` and stamps `reviewed_at`, audited
+`office.taint-cleared` (`messageId`, `taintedAt`, `routed`), broadcast
+`office-message.updated`. The pass count starts again from the review, so a
+message that had stopped waking the Director wakes it once more, and the next
+routing shift gets its FULL text. A forward's copy is reviewed on its own.
+
+### The channel view
+
+`GET /api/offices/:id/messages?limit=` (`officeChannel`, default 200, ≤ 500):
+the newest messages of the last 30 days, oldest first, with `routes` (message id
+→ route record), `passes` and `routingDueAt`. /office shows it as the
+**Channel** panel (`components/OfficeChannel.tsx`; a phone opens it from the
+bar as a `<Sheet>`): each message with writer → addressee, kind, the
+`untrusted` chip, its route (task link, proposal, huddle, forward, note) or why
+it waits (due time, `shown N×`, or "no longer wakes the Director"), Mark
+reviewed (two-press) on a tainted one, and the stakeholder composer. It re-reads
+on `office-message.created|updated` for the office.
+
+## Huddles
+
+A huddle is a short exchange between 2 or 3 roles of one office about ONE
+subject. It is bounded by a turn cap, and it ends in a decision row. It is not
+a chat: there is no huddle without a subject, and every turn is a normal
+read-only shift of one participant, in that role's own session, with that
+role's own notes. Code: `server/src/office/huddles.ts`; the row and its
+conditional writes are migration 60's `tm_office_huddles` (§ Data model).
+
+### Opening one
+
+There are two ways to open a huddle, and both go through `openHuddle`:
+
+- **The Director's routing.** A `routes` entry with action `huddle`
+  (§ Channel → Routes) opens one about the routed message (subject
+  `{kind: 'message', id}`). The route's `note` becomes the opening line.
+- **The stakeholder.** `POST /api/offices/:id/huddles` (Origin), from the
+  /office **Huddles** panel.
+
+`openHuddle` refuses (`OfficeHuddleRefused`, 400 unless noted):
+
+- **No subject**: "a huddle needs a subject (a task, proposal, signal or
+  message) — no free chat". The subject kinds are
+  `OFFICE_HUDDLE_SUBJECT_KINDS`: a task in the office's workspace, or a
+  proposal, signal or channel message of this office.
+- **A huddle's own transcript line or decision** as the subject. A decision is
+  routed as a task or a note, never huddled again.
+- **A bad role set.** A huddle needs 2..3 (`OFFICE_HUDDLE_MIN_ROLES` /
+  `OFFICE_HUDDLE_MAX_ROLES`) different, enabled roles of the office. They are
+  given by key, and `director` names the Director.
+- **A bad turn cap.** `maxTurns` must be 2..6 (`OFFICE_HUDDLE_MIN_TURNS` /
+  `OFFICE_HUDDLE_MAX_TURNS`, default 4).
+- **An opening question** longer than 2000 characters.
+- **A second open huddle on the same subject** (409).
+- **A fourth open huddle** in the office (409; `OFFICE_HUDDLE_MAX_OPEN` 3).
+
+The route also refuses an office that is off (409).
+
+After the checks, `openHuddle` writes the row and the opening line, appends an
+`office.huddle` audit row (`phase: 'opened'`, `openedBy`, `taintSources`),
+broadcasts `office-huddle.updated`, and kicks the runner.
+
+### Turns and the cap
+
+The `HuddleRunner` drives turns. Three things advance it: the scheduler's
+minute tick, the open itself, and the end of each turn. Each pass goes oldest
+open huddle first, with ONE live turn per office (the shift runner's own
+ceiling).
+
+For each huddle, the next participant is `huddleNextRoleId` (`roleIds[turns %
+n]`, round-robin). Its turn:
+
+1. **Gate.** The turn passes `officeGate` with `skipGuards`. A huddle is owed
+   work, not a guarded cadence. A hard-gate refusal (paused, over budget, role
+   cap, slots) or a busy shift runner means it waits for a later pass.
+2. **Cap.** `stepHuddle` takes the turn BEFORE the spawn, in one conditional
+   write (`turns + 1` only while open and `turns < max_turns`). However many
+   passes race, a huddle never runs more than `max_turns` shifts.
+3. **Spawn.** The turn is a shift with trigger `{kind: 'huddle', ref:
+   'huddle:<id>#<n>'}` (`huddleTriggerRef`). It is the normal shift machinery:
+   - The role's own session is resumed under § Resume's rule (`mayResume` +
+     `agent.resumeContextCap`).
+   - The role's own notes are in the prompt.
+   - The role's own tools are granted, and taint is decided before spawn.
+
+The prompt is lean:
+
+- the role brief and notes, then `## Huddle — turn N of M`;
+- the subject, as fenced data. An external subject (a signal, a Sentry task)
+  sits under the untrusted-data heading. A tainted subject's title is never in
+  a label.
+- the transcript so far, as fenced JSON. Each entry is turn, writer key, text
+  and an `untrusted` flag.
+
+The prompt has no history, saved commands, channel, stand-up input, roadmap or
+feature blocks. On the LAST turn it says the turn MUST return `decision`.
+
+A turn may return only two result sections (`ShiftScope.huddle` filters the
+registry, its schema and its guide):
+
+- `huddle` `{say ≤ 4000, decision? ≤ 4000}`, the turn's line and optionally
+  the decision;
+- `notes`, the role keeping its own memory.
+
+A turn files nothing and writes no fallback brief. "Previous shift" readers
+skip huddle turns: the gate's last-ran fact, the stand-up window, the channel
+window and previous command runs.
+
+The transcript lives in `tm_office_messages`, as rows with subject `{kind:
+'huddle', id}` and `to_role_id` NULL, stored routed on insert. The channel view
+and the `office-message` event trigger leave them out (`isHuddleTranscriptLine`).
+Turn numbers and server lines come from the `office.huddle` audit rows (`phase:
+'turn'`).
+
+When a turn says nothing, the runner appends a server line, `(turn N: <key>
+said nothing — <why>)`: no `huddle` section, a section error, a failed shift,
+or a spawn that could not start.
+
+### The decision
+
+A huddle closes in one of these ways:
+
+- **Decided.** Any turn that returns `decision` closes it through the
+  conditional `closeHuddle` (open → `decided`, once). The decision becomes an
+  UNROUTED channel message from the deciding role to the Director: kind
+  `finding`, subject `{kind: 'huddle', id}`, body `Huddle decision — <subject
+  label>` plus the decision. In the Director's channel block it carries
+  `huddleId`. The routing pass then turns it into work (`task`) or closes it
+  with a `note`, by the same rules as any message (§ Channel). Its block says
+  never to huddle it again, and `openHuddle` refuses that anyway.
+- **Expired: last turn without a decision.** `the last turn (N) ended without
+  a decision`.
+- **Expired: out of turns** on the next pass.
+- **Expired: stale.** No turn could run for 24 hours
+  (`OFFICE_HUDDLE_STALE_MS`).
+- **Expired: participant removed.**
+- **Expired: closed by a human.** `POST /api/office-huddles/:id/close`
+  (Origin).
+
+An expired huddle's `decision` is `No decision: <reason>.` and nothing is sent
+to the Director. Both endings append an `office.huddle` audit row (`decided` /
+`expired`) and broadcast.
+
+### Taint
+
+A huddle is TAINTED at open when any of these is:
+
+- **The subject.**
+  - A task with `tainted_at` or source `sentry`.
+  - An unreviewed tainted proposal.
+  - Any signal.
+  - A tainted message.
+- **A participant.** Notes a tainted shift wrote (`notesTaintedAt`), or a web
+  tool among its tools (`participantTaint`).
+- **The opener.** A tainted routing shift.
+
+A trusted huddle becomes tainted the moment a turn's shift is tainted: the
+shift runner calls the conditional `taintHuddle` BEFORE that turn spawns
+(`office.huddle` `phase: 'tainted'`).
+
+From then on, taint reaches:
+
+- **Every later turn.** `shiftTaint` adds `{kind: 'tainted-huddle', ref: <id>}`.
+  So a trusted role's later turn is tainted too, and under `mayResume` it does
+  not resume its trusted session.
+- **Its transcript lines.** Earlier lines stay as they were.
+- **Its decision message.**
+- **The work filed from it.** The Director sees the decision only as a digest,
+  and `fileShiftTasks` taints a task routed from a tainted message, so it is a
+  draft.
+
+### Role state
+
+`officeStates` reads `rolesInHuddle(storage, officeId)`, the participants of
+every open huddle. `roleState` gives `in-huddle` (`in a huddle`) while one is
+open, and the usual state after it closes.
+
+### API and UI
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/offices/:id/huddles` | `OfficeHuddlesResponse`, the newest 30 as `OfficeHuddleView` (row + transcript `entries` + `subjectLabel` + `openedBy` + `decisionMessageId`) |
+| `POST /api/offices/:id/huddles` | Origin. `OfficeHuddleOpenBody` `{subject, roles, maxTurns?, question?}` → 201 with the row. 400/409 per § Opening one |
+| `POST /api/office-huddles/:id/close` | Origin. Expires an open huddle (`closed by a human`). 404 if unknown, 409 if not open |
+
+`office-huddle.updated` (`{huddle}`) is broadcast on every change.
+
+/office shows a **Huddles** panel (`components/OfficeHuddles.tsx`). A phone
+opens it from the bar as a `<Sheet>`. Each huddle shows:
+
+- its subject (a task opens the task panel), status, `turn n/max`, an
+  `untrusted` chip, the participants and who is next;
+- the decision ("sent to the Director to route");
+- the transcript, folded;
+- a two-press **Close**.
+
+The open form has a subject picker (the workspace's open tasks, or an id for a
+proposal, signal or message), 2–3 role checkboxes, the turn cap and an optional
+question. It is disabled while the office is off. The shift log names a turn
+`huddle turn`.
 
 ## UI
 

@@ -281,7 +281,7 @@ describe('the gate', () => {
 });
 
 describe('other events', () => {
-  test('bug-filed (category bug; not the role’s own filing), deploy-done on publish, office-message to the addressee', async () => {
+  test('bug-filed (category bug; not the role’s own filing), deploy-done on publish, office-message (delivered only) to the addressee', async () => {
     const h = harness();
     try {
       const o = await office();
@@ -293,7 +293,10 @@ describe('other events', () => {
       const bug = await storage.createTask({ title: 'checkout 500s', repoId, category: 'bug' }, 'test');
       await storage.createTask({ title: 'own bug', repoId, category: 'bug', source: 'office', officeId: o.id, roleId: bugs.id }, 'test');
       const pub = await land('ship it', {}, 'published');
-      await storage.appendOfficeMessage({ officeId: o.id, fromRoleId: other.id, toRoleId: inbox.id, kind: 'note', body: 'SECRET BODY' } as never);
+      // unrouted: waits for the Director's routing (docs/office.md § Channel) — wakes nobody
+      await storage.appendOfficeMessage({ officeId: o.id, fromRoleId: other.id, toRoleId: inbox.id, kind: 'note', body: 'NOT YET ROUTED' });
+      // delivered (a forward's copy): the addressee is woken
+      await storage.appendOfficeMessage({ officeId: o.id, fromRoleId: other.id, toRoleId: inbox.id, kind: 'note', body: 'SECRET BODY', routedAt: new Date().toISOString() });
       await h.settle();
       h.advance(OFFICE_EVENT_DEBOUNCE_MS);
       await h.trig.flush();
@@ -301,6 +304,7 @@ describe('other events', () => {
       assert.deepEqual(by(bugs.id)[0]?.trigger.events?.map((e) => e.taskId), [bug.id]);
       assert.deepEqual(by(deploys.id)[0]?.trigger.events?.map((e) => e.taskId), [pub.id]);
       assert.equal(by(inbox.id).length, 1);
+      assert.equal(by(inbox.id)[0].trigger.events?.length, 1, 'only the delivered message, never the unrouted one');
       assert.equal(by(other.id).length, 0, 'the writer is not woken by its own message');
       const msg = by(inbox.id)[0].trigger.events![0];
       assert.equal(msg.event, 'office-message');

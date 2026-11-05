@@ -289,7 +289,8 @@ function fenceFor(text: string): string {
  */
 async function standupSince(storage: Storage, role: OfficeRole, now: Date): Promise<string> {
   for (const s of await storage.listShifts({ roleId: role.id, verdict: 'ran', limit: 50 })) {
-    if (s.endedAt && !s.error) return s.startedAt;
+    // a huddle turn digested no briefs (docs/office.md § Huddles)
+    if (s.endedAt && !s.error && s.trigger.kind !== 'huddle') return s.startedAt;
   }
   return new Date(now.getTime() - STANDUP_FIRST_WINDOW_MS).toISOString();
 }

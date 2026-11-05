@@ -997,12 +997,16 @@ export interface Storage {
   /** oldest first */
   listOfficeMessages(f?: OfficeMessageFilter): Promise<OfficeMessage[]>;
   routeMessage(id: string, taskId?: string | null): Promise<OfficeMessage | null>;
+  /** Mark reviewed on a TAINTED message: `tainted_at` cleared only while it still equals `expectedTaintedAt` (docs/office.md § Channel). */
+  clearMessageTaint(id: string, expectedTaintedAt: string): Promise<OfficeMessage | null>;
   createHuddle(h: NewOfficeHuddle): Promise<OfficeHuddle>;
   getHuddle(id: string): Promise<OfficeHuddle | null>;
   /** newest first */
   listHuddles(f?: OfficeHuddleFilter): Promise<OfficeHuddle[]>;
   stepHuddle(id: string): Promise<OfficeHuddle | null>;
   closeHuddle(id: string, to: 'decided' | 'expired', decision?: string | null): Promise<OfficeHuddle | null>;
+  /** stamps `tainted_at` once, only while open and untainted (null = refused) — docs/office.md § Huddles */
+  taintHuddle(id: string): Promise<OfficeHuddle | null>;
   appendSignal(s: NewOfficeSignal): Promise<{ signal: OfficeSignal; created: boolean }>;
   getSignal(id: string): Promise<OfficeSignal | null>;
   /** oldest first */

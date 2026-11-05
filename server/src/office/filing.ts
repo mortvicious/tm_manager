@@ -199,6 +199,13 @@ export interface ShiftFilingCtx {
   now: Date;
   /** the shift's run; default: the shift row's `run_id` */
   runId?: string | null;
+  /**
+   * A Director's `task` route of a channel message (docs/office.md § Channel):
+   * the same rules, but the shift row's `filing` record (the `tasks` section's)
+   * is left alone — only the filed ids are appended — and the audit row names
+   * the message.
+   */
+  viaMessageId?: string;
 }
 
 export interface ShiftFilingResult {
@@ -325,7 +332,10 @@ export async function fileShiftTasks(
     }
     const filing: OfficeShiftFiling = { status: plan.status, note: plan.note, held, dropped, ...(proposalIds ? { proposalIds } : {}) };
     const ids = filed.map((t) => t.id);
-    await storage.updateShift(ctx.shiftId, { filedTaskIds: [...(shift?.filedTaskIds ?? []), ...ids], filing });
+    await storage.updateShift(
+      ctx.shiftId,
+      ctx.viaMessageId ? { filedTaskIds: [...(shift?.filedTaskIds ?? []), ...ids] } : { filedTaskIds: [...(shift?.filedTaskIds ?? []), ...ids], filing },
+    );
     await storage.appendEvent({
       kind: 'office.filing',
       actor,
@@ -334,6 +344,7 @@ export async function fileShiftTasks(
         officeId: ctx.office.id,
         roleId: role.id,
         shiftId: ctx.shiftId,
+        ...(ctx.viaMessageId ? { messageId: ctx.viaMessageId } : {}),
         status: plan.status,
         note: plan.note,
         tainted: ctx.tainted,

@@ -71,6 +71,7 @@ import {
   OFFICE_WISH_GET_SQL,
   OFFICE_WISH_INSERT_SQL,
   OFFICE_MESSAGE_GET_SQL,
+  OFFICE_MESSAGE_CLEAR_TAINT_SQL,
   OFFICE_MESSAGE_INSERT_SQL,
   OFFICE_MESSAGES_DELETE_SQL,
   OFFICE_HUDDLE_GET_SQL,
@@ -87,6 +88,7 @@ import {
   officeHuddleListSql,
   officeHuddleStepSql,
   officeHuddleCloseSql,
+  officeHuddleTaintSql,
   officeSignalInsertParams,
   officeSignalListSql,
   officeSignalConsumeSql,
@@ -2494,6 +2496,11 @@ export class PostgresStorage implements Storage {
     return r ? rowToOfficeMessage(r) : null;
   }
 
+  async clearMessageTaint(id: string, expectedTaintedAt: string): Promise<OfficeMessage | null> {
+    const r = (await this.q(OFFICE_MESSAGE_CLEAR_TAINT_SQL, [now(), id, expectedTaintedAt]))[0];
+    return r ? rowToOfficeMessage(r) : null;
+  }
+
   async createHuddle(h: NewOfficeHuddle): Promise<OfficeHuddle> {
     const id = randomUUID();
     await this.q(OFFICE_HUDDLE_INSERT_SQL, officeHuddleInsertParams(id, h, now()));
@@ -2512,6 +2519,12 @@ export class PostgresStorage implements Storage {
 
   async stepHuddle(id: string): Promise<OfficeHuddle | null> {
     const q = officeHuddleStepSql(id, now());
+    const r = (await this.q(q.sql, q.params))[0];
+    return r ? rowToOfficeHuddle(r) : null;
+  }
+
+  async taintHuddle(id: string): Promise<OfficeHuddle | null> {
+    const q = officeHuddleTaintSql(id, now());
     const r = (await this.q(q.sql, q.params))[0];
     return r ? rowToOfficeHuddle(r) : null;
   }

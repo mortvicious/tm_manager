@@ -55,6 +55,27 @@ export interface ShiftSectionCtx {
    * dropped (`SIGNAL_SHIFT_COMMANDS_REASON`), never run.
    */
   signal?: boolean;
+  /**
+   * The shift is one TURN of a huddle (docs/office.md § Huddles): only the
+   * huddle sections apply (`ShiftSection.huddle`), and `huddle` records the
+   * turn's contribution and closes the huddle on a decision.
+   */
+  huddleTurn?: ShiftHuddleTurn | null;
+}
+
+/** A huddle turn as the result sections see it. */
+export interface ShiftHuddleTurn {
+  huddleId: string;
+  /** 1-based */
+  turn: number;
+  /** the huddle's last turn: a decision is required */
+  last: boolean;
+}
+
+/** What kind of shift a result belongs to — which sections it may carry. */
+export interface ShiftScope {
+  /** a huddle turn: only sections with `huddle` set */
+  huddle?: boolean;
 }
 
 export interface ShiftSectionApplied {
@@ -72,6 +93,14 @@ export interface ShiftSectionApplied {
   briefId?: string;
   /** the feature the section filed (`feature`, features.ts) */
   featureId?: string;
+  /** the messages the section stored (`messages`, channel.ts) */
+  messageIds?: string[];
+  /** the channel messages the section routed (`routes`, channel.ts) */
+  routedMessageIds?: string[];
+  /** the huddle the section spoke in (`huddle`, huddles.ts) */
+  huddleId?: string;
+  /** the turn's `decision` closed the huddle (`huddle`) */
+  decided?: boolean;
   /** parts of the section that failed while the rest applied (one bad file of several) */
   errors?: string[];
 }
@@ -89,6 +118,12 @@ export interface ShiftSection<T> {
    * the key (the standard typed correction) — e.g. `feature`, Director only.
    */
   availableTo?(role: Pick<OfficeRole, 'preset'>): boolean;
+  /**
+   * Huddle turns (docs/office.md § Huddles): `only` = the section exists only
+   * in a huddle turn; `also` = it is kept in one. A section without it is
+   * left out of a huddle turn — a turn talks, it does not file work.
+   */
+  huddle?: 'only' | 'also';
   apply(value: T, ctx: ShiftSectionCtx): Promise<ShiftSectionApplied>;
 }
 
@@ -101,30 +136,35 @@ export function registerShiftSection<T>(section: ShiftSection<T>): void {
   registry.set(section.key, section as ShiftSection<unknown>);
 }
 
-/** Registered sections, in registration order — with `role`, only the ones that role may return. */
-export function shiftSections(role?: Pick<OfficeRole, 'preset'>): ShiftSection<unknown>[] {
-  return [...registry.values()].filter((s) => !role || !s.availableTo || s.availableTo(role));
+function inScope(s: ShiftSection<unknown>, role: Pick<OfficeRole, 'preset'> | undefined, scope: ShiftScope | undefined): boolean {
+  if (role && s.availableTo && !s.availableTo(role)) return false;
+  return scope?.huddle ? s.huddle === 'only' || s.huddle === 'also' : s.huddle !== 'only';
+}
+
+/** Registered sections, in registration order — with `role`, only the ones that role may return; `scope` = the kind of shift. */
+export function shiftSections(role?: Pick<OfficeRole, 'preset'>, scope?: ShiftScope): ShiftSection<unknown>[] {
+  return [...registry.values()].filter((s) => inScope(s, role, scope));
 }
 
 export type ShiftResult = Record<string, unknown>;
 
 /** The zod validator of a whole result: every section optional, unknown keys (and `role`'s unavailable ones) refused. */
-export function shiftResultSchema(role?: Pick<OfficeRole, 'preset'>): z.ZodType<ShiftResult> {
+export function shiftResultSchema(role?: Pick<OfficeRole, 'preset'>, scope?: ShiftScope): z.ZodType<ShiftResult> {
   const shape: Record<string, z.ZodType> = {};
-  for (const s of shiftSections(role)) shape[s.key] = s.schema.optional();
+  for (const s of shiftSections(role, scope)) shape[s.key] = s.schema.optional();
   return z.object(shape).strict() as unknown as z.ZodType<ShiftResult>;
 }
 
 /** The JSON schema the prompt shows (`resultInstruction`). */
-export function shiftResultJsonSchema(role?: Pick<OfficeRole, 'preset'>): Record<string, unknown> {
+export function shiftResultJsonSchema(role?: Pick<OfficeRole, 'preset'>, scope?: ShiftScope): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
-  for (const s of shiftSections(role)) properties[s.key] = s.jsonSchema;
+  for (const s of shiftSections(role, scope)) properties[s.key] = s.jsonSchema;
   return { type: 'object', additionalProperties: false, properties };
 }
 
 /** The prompt's bullet list of sections. */
-export function shiftSectionGuide(role?: Pick<OfficeRole, 'preset'>): string {
-  return shiftSections(role)
+export function shiftSectionGuide(role?: Pick<OfficeRole, 'preset'>, scope?: ShiftScope): string {
+  return shiftSections(role, scope)
     .map((s) => `- \`${s.key}\`: ${s.describe}`)
     .join('\n');
 }
@@ -145,6 +185,10 @@ export async function applyShiftResult(result: ShiftResult, ctx: ShiftSectionCtx
     if (result[s.key] === undefined) continue;
     if (s.availableTo && !s.availableTo(ctx.role)) {
       out.errors.push({ section: s.key, error: `the ${s.key} section is not available to this role` });
+      continue;
+    }
+    if (!inScope(s, undefined, { huddle: !!ctx.huddleTurn })) {
+      out.errors.push({ section: s.key, error: ctx.huddleTurn ? `the ${s.key} section is not available in a huddle turn` : `the ${s.key} section is only for a huddle turn` });
       continue;
     }
     try {
@@ -223,6 +267,7 @@ export const SHIFT_NOTES_MAX_CHARS = 24_000;
 
 registerShiftSection<string>({
   key: 'notes',
+  huddle: 'also',
   describe:
     `the COMPLETE new text of your notes file \`roles/<your key>.md\` (markdown, at most ${SHIFT_NOTES_MAX_CHARS} characters). ` +
     'It REPLACES the file whole, so carry over what still matters. Omit the section to leave your notes as they are.',

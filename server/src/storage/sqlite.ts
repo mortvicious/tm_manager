@@ -73,6 +73,7 @@ import {
   OFFICE_WISH_GET_SQL,
   OFFICE_WISH_INSERT_SQL,
   OFFICE_MESSAGE_GET_SQL,
+  OFFICE_MESSAGE_CLEAR_TAINT_SQL,
   OFFICE_MESSAGE_INSERT_SQL,
   OFFICE_MESSAGES_DELETE_SQL,
   OFFICE_HUDDLE_GET_SQL,
@@ -89,6 +90,7 @@ import {
   officeHuddleListSql,
   officeHuddleStepSql,
   officeHuddleCloseSql,
+  officeHuddleTaintSql,
   officeSignalInsertParams,
   officeSignalListSql,
   officeSignalConsumeSql,
@@ -2509,6 +2511,11 @@ export class SqliteStorage implements Storage {
     return r ? rowToOfficeMessage(r) : null;
   }
 
+  async clearMessageTaint(id: string, expectedTaintedAt: string): Promise<OfficeMessage | null> {
+    const r = this.db.prepare(OFFICE_MESSAGE_CLEAR_TAINT_SQL).get(now(), id, expectedTaintedAt);
+    return r ? rowToOfficeMessage(r) : null;
+  }
+
   async createHuddle(h: NewOfficeHuddle): Promise<OfficeHuddle> {
     const id = randomUUID();
     this.db.prepare(OFFICE_HUDDLE_INSERT_SQL).run(...(officeHuddleInsertParams(id, h, now()) as any[]));
@@ -2527,6 +2534,12 @@ export class SqliteStorage implements Storage {
 
   async stepHuddle(id: string): Promise<OfficeHuddle | null> {
     const q = officeHuddleStepSql(id, now());
+    const r = this.db.prepare(q.sql).get(...(q.params as any[]));
+    return r ? rowToOfficeHuddle(r) : null;
+  }
+
+  async taintHuddle(id: string): Promise<OfficeHuddle | null> {
+    const q = officeHuddleTaintSql(id, now());
     const r = this.db.prepare(q.sql).get(...(q.params as any[]));
     return r ? rowToOfficeHuddle(r) : null;
   }

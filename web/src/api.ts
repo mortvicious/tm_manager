@@ -65,6 +65,13 @@ import type {
   OfficeBrief,
   OfficeBriefReviewedBody,
   OfficeBriefView,
+  OfficeChannelResponse,
+  OfficeHuddle,
+  OfficeHuddleOpenBody,
+  OfficeHuddlesResponse,
+  OfficeMessage,
+  OfficeMessagePostBody,
+  OfficeMessageReviewBody,
   OfficeNotesReviewedBody,
   OfficeRoleWriteResult,
   OfficeStates,
@@ -553,6 +560,15 @@ export const api = {
   patchOfficeWish: (wishId: string, b: OfficeWishPatchBody) => req<OfficeWish>('PATCH', `/api/office-wishes/${encodeURIComponent(wishId)}`, b),
   getOfficeDoc: (id: string, name: OfficeReadableDoc) => req<OfficeDocView>('GET', `/api/offices/${id}/docs/${name}`),
   putOfficeDoc: (id: string, name: OfficeEditableDoc, b: OfficeDocPutBody) => req<OfficeDocPutResult>('PUT', `/api/offices/${id}/docs/${name}`, b),
+  // The channel (docs/office.md § Channel)
+  officeChannel: (id: string, limit = 200) => req<OfficeChannelResponse>('GET', `/api/offices/${id}/messages?limit=${limit}`),
+  postOfficeMessage: (id: string, b: OfficeMessagePostBody) => req<OfficeMessage>('POST', `/api/offices/${id}/messages`, b),
+  markOfficeMessageReviewed: (messageId: string, b: OfficeMessageReviewBody) =>
+    req<OfficeMessage>('POST', `/api/office-messages/${encodeURIComponent(messageId)}/reviewed`, b),
+  // Huddles (docs/office.md § Huddles)
+  officeHuddles: (id: string) => req<OfficeHuddlesResponse>('GET', `/api/offices/${id}/huddles`),
+  openOfficeHuddle: (id: string, b: OfficeHuddleOpenBody) => req<OfficeHuddle>('POST', `/api/offices/${id}/huddles`, b),
+  closeOfficeHuddle: (huddleId: string) => req<OfficeHuddle>('POST', `/api/office-huddles/${encodeURIComponent(huddleId)}/close`, {}),
   listOfficeBriefs: (id: string, limit = 50) => req<OfficeBrief[]>('GET', `/api/offices/${id}/briefs?limit=${limit}`),
   getOfficeBrief: (briefId: string) => req<OfficeBriefView>('GET', `/api/office-briefs/${encodeURIComponent(briefId)}`),
   markOfficeBriefReviewed: (briefId: string, b: OfficeBriefReviewedBody) =>

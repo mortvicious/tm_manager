@@ -40,6 +40,7 @@ import { ShiftRunner, initShifts } from './office/shift.ts';
 import { OfficeCommandRuns, initOfficeCommandRuns } from './office/commands.ts';
 import { officeRel, writeOfficeFile } from './office/shift-result.ts';
 import { OfficeScheduler, initOfficeScheduler } from './office/scheduler.ts';
+import { HuddleRunner, initHuddles } from './office/huddles.ts';
 import { OfficeEventTriggers, initOfficeEventTriggers } from './office/event-triggers.ts';
 import { OfficeSignals, initOfficeSignals } from './office/signals.ts';
 import { registerJobRoutes } from './routes/jobs.ts';
@@ -167,7 +168,16 @@ initShifts(shiftRunner);
 orchestrator.setShifts(shiftRunner);
 // The office scheduler (docs/office.md § Scheduler and states): a one-minute
 // cron tick through the gate; started after the shift runner's boot recovery.
-const officeScheduler: OfficeScheduler = new OfficeScheduler({ storage, shifts: () => shiftRunner, signals: (): OfficeSignals => officeSignalPoller });
+// Huddles (docs/office.md § Huddles): one turn at a time per office, advanced
+// by the scheduler's tick and kicked after an open and after every turn.
+const huddleRunner: HuddleRunner = new HuddleRunner({ storage, shifts: () => shiftRunner });
+initHuddles(huddleRunner);
+const officeScheduler: OfficeScheduler = new OfficeScheduler({
+  storage,
+  shifts: () => shiftRunner,
+  signals: (): OfficeSignals => officeSignalPoller,
+  huddles: () => huddleRunner,
+});
 initOfficeScheduler(officeScheduler);
 // Event triggers (docs/office.md § Event triggers): in-process subscribers on
 // the event bus, debounced per role, through the same gate and skip audit.
@@ -423,6 +433,7 @@ app.post('/api/server/restart', async (req, reply) => {
   jobs.stop();
   // the same for a shift: its open row is boot recovery's; no new cron wake either
   officeScheduler.stop();
+  huddleRunner.stop();
   officeEventTriggers.stop();
   officeSignalPoller.stop();
   shiftRunner.stop();
@@ -608,6 +619,7 @@ const stop = async (cause: Omit<StopCause, 'at' | 'pid'> | null) => {
   jobs.stop();
   // the same for a shift: its open row is boot recovery's; no new cron wake either
   officeScheduler.stop();
+  huddleRunner.stop();
   officeEventTriggers.stop();
   officeSignalPoller.stop();
   shiftRunner.stop();

@@ -266,6 +266,11 @@ export class OfficeEventTriggers {
   }
 
   private async fromMessage(m: OfficeMessage): Promise<void> {
+    // an unrouted message waits for the Director (docs/office.md § Channel): only
+    // a DELIVERED one — a forward's copy, a Director's own message — reaches a role
+    if (!m.routedAt) return;
+    // a huddle's transcript line is the huddle's, not a message to anyone (docs/office.md § Huddles)
+    if (m.subject?.kind === 'huddle' && m.toRoleId === null) return;
     const { storage } = this.deps;
     const from = m.fromRoleId ? await storage.getOfficeRole(m.fromRoleId) : null;
     const ref: OfficeEventRef = {

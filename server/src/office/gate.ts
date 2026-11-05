@@ -47,6 +47,12 @@ export interface OfficeGateOptions {
   now?: number;
   settings?: AppSettings;
   countCommits?: CommitCounter;
+  /**
+   * The hard gate only, like a `request`: the Director's routing pass
+   * (docs/office.md § Channel) — routing is owed work a message created, not
+   * a cadence its guards were written for.
+   */
+  skipGuards?: boolean;
 }
 
 /**
@@ -102,7 +108,8 @@ export async function officeGuardFacts(
 ): Promise<OfficeGuardFacts & OfficeGuardFactsExtra> {
   const need = needsOf(role.guards);
   const wants = (k: OfficeGuardKind) => opts.all || need.has(k);
-  const [lastRan] = await storage.listShifts({ roleId: role.id, verdict: 'ran', limit: 1 });
+  // a huddle turn is not the role's own cadence (docs/office.md § Huddles)
+  const lastRan = (await storage.listShifts({ roleId: role.id, verdict: 'ran', limit: 20 })).find((s) => s.trigger.kind !== 'huddle');
   const lastRanShiftAt = lastRan ? Date.parse(lastRan.startedAt) : null;
   const facts: OfficeGuardFacts & OfficeGuardFactsExtra = {
     now: opts.now,
@@ -241,7 +248,7 @@ export async function officeGate(
   const o = budget.office;
   const refusal = officeHardGate(hard);
   if (refusal) return { ok: false, skip: true, reason: refusal.reason, code: refusal.code, hard, facts: null };
-  if (trigger.kind === 'request') return { ok: true, hard, facts: null };
+  if (trigger.kind === 'request' || opts.skipGuards) return { ok: true, hard, facts: null };
 
   const facts = await officeGuardFacts(storage, o, role, {
     now,

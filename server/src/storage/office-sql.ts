@@ -782,6 +782,13 @@ export interface NewOfficeMessage {
   subject?: OfficeSubject | null;
   body: string;
   taintedAt?: string | null;
+  /**
+   * Stored already routed (docs/office.md § Channel): a forward's delivery
+   * copy and a Director's own message to a role — nothing left to route, and
+   * the `office-message.created` broadcast carries it routed, which is what
+   * the `office-message` event trigger waits for.
+   */
+  routedAt?: string | null;
 }
 
 export interface OfficeMessageFilter {
@@ -801,7 +808,7 @@ export interface OfficeMessageFilter {
 }
 
 export const OFFICE_MESSAGE_INSERT_SQL = `INSERT INTO tm_office_messages (id, office_id, from_role_id, to_role_id, kind, subject_kind, subject_id, body, tainted_at, reviewed_at, routed_at, routed_task_id, created_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)`;
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?)`;
 
 export function officeMessageInsertParams(id: string, m: NewOfficeMessage, at: string): unknown[] {
   return [
@@ -814,6 +821,7 @@ export function officeMessageInsertParams(id: string, m: NewOfficeMessage, at: s
     m.subject?.id ?? null,
     m.body,
     m.taintedAt ?? null,
+    m.routedAt ?? null,
     at,
   ];
 }
@@ -855,6 +863,15 @@ export function officeMessageRouteSql(id: string, taskId: string | null, at: str
     params: [at, taskId, id],
   };
 }
+
+/**
+ * `clearMessageTaint`: a human marked a tainted message reviewed (docs/office.md
+ * § Channel → Mark reviewed) — `tainted_at` cleared and `reviewed_at` stamped,
+ * in one write that lands only while `tainted_at` still equals what the human
+ * read. Null back = no such row, or it no longer matches.
+ */
+export const OFFICE_MESSAGE_CLEAR_TAINT_SQL = `UPDATE tm_office_messages SET tainted_at = NULL, reviewed_at = ?
+  WHERE id = ? AND tainted_at = ? RETURNING *`;
 
 export function rowToOfficeMessage(r: any): OfficeMessage {
   return {
@@ -926,6 +943,18 @@ export function officeHuddleStepSql(id: string, at: string): { sql: string; para
   return {
     sql: `UPDATE tm_office_huddles SET turns = turns + 1, updated_at = ? WHERE id = ? AND status = 'open' AND turns < max_turns RETURNING *`,
     params: [at, id],
+  };
+}
+
+/**
+ * `taintHuddle`: stamps `tainted_at` once, while the huddle is open and still
+ * trusted (docs/office.md § Huddles: a tainted turn taints the huddle and
+ * every turn after it). Null back = already tainted, closed, or no such row.
+ */
+export function officeHuddleTaintSql(id: string, at: string): { sql: string; params: unknown[] } {
+  return {
+    sql: `UPDATE tm_office_huddles SET tainted_at = ?, updated_at = ? WHERE id = ? AND status = 'open' AND tainted_at IS NULL RETURNING *`,
+    params: [at, at, id],
   };
 }
 

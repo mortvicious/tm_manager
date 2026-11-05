@@ -2507,6 +2507,14 @@ export type AuditKind =
   | 'office.vision-changed'
   /** a Director's shift filed a cross-repo feature, or the `feature` section was dropped with the reason (docs/office.md § Director features) */
   | 'office.feature'
+  /** a stakeholder posted to the office channel (docs/office.md § Channel) */
+  | 'office.message'
+  /** a Director shift was shown unrouted channel messages — the pass count (docs/office.md § Channel) */
+  | 'office.channel-presented'
+  /** a channel message was routed: task, note, huddle, forward, or a server delivery (docs/office.md § Channel) */
+  | 'office.message-routed'
+  /** a huddle opened, took a turn, or closed with its decision (docs/office.md § Huddles); `phase` says which */
+  | 'office.huddle'
   | 'approval.requested'
   | 'approval.decided'
   | 'approval.finished'
@@ -3158,6 +3166,10 @@ export type ServerEvent =
   | { type: 'office-wish.updated'; wish: OfficeWish }
   /** a row was appended to `tm_office_messages` (both drivers broadcast it) — the `office-message` event trigger listens (docs/office.md § Event triggers) */
   | { type: 'office-message.created'; message: OfficeMessage }
+  /** a message was routed or marked reviewed (docs/office.md § Channel); `route` = its routing record when it was routed */
+  | { type: 'office-message.updated'; message: OfficeMessage; route?: OfficeMessageRoute }
+  /** a huddle opened, took a turn, or closed (docs/office.md § Huddles) */
+  | { type: 'office-huddle.updated'; huddle: OfficeHuddle }
   | { type: 'job-run.updated'; run: JobRun }
   | { type: 'jobs.toggle'; enabled: boolean }
   | { type: 'orchestrator.status'; status: OrchestratorStatus };
@@ -3775,6 +3787,6 @@ export * from './triage.ts';
 // Scheduled jobs: schedule parsing + the firing rule (docs/jobs.md)
 export * from './jobs.ts';
 import { jobRunNeedsHuman, type Job, type JobRun, type JobsHold } from './jobs.ts';
-import type { Office, OfficeBrief, OfficeMessage, OfficeProposal, OfficeRole, OfficeStates, OfficeWish } from './office.ts';
+import type { Office, OfficeBrief, OfficeHuddle, OfficeMessage, OfficeMessageRoute, OfficeProposal, OfficeRole, OfficeStates, OfficeWish } from './office.ts';
 // Virtual Office: types, cron, catch-up, guards, the hard gate, autonomy and taint (docs/office.md)
 export * from './office.ts';

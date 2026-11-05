@@ -269,7 +269,8 @@ export interface OfficeRole {
   armedAt: string | null;
 }
 
-export type OfficeShiftTriggerKind = 'cron' | 'event' | 'signal' | 'request';
+/** `huddle` = one turn of a huddle (docs/office.md § Huddles), started by the huddle runner, never by a role's triggers. */
+export type OfficeShiftTriggerKind = 'cron' | 'event' | 'signal' | 'request' | 'huddle';
 
 export interface OfficeShift {
   id: string;
@@ -1198,7 +1199,8 @@ export type TaintSourceKind =
   | 'command-output'
   | 'tainted-notes'
   | 'tainted-artifact'
-  | 'tainted-session';
+  | 'tainted-session'
+  | 'tainted-huddle';
 export const TAINT_SOURCE_KINDS: readonly TaintSourceKind[] = [
   'signal',
   'web-tool',
@@ -1206,6 +1208,7 @@ export const TAINT_SOURCE_KINDS: readonly TaintSourceKind[] = [
   'tainted-notes',
   'tainted-artifact',
   'tainted-session',
+  'tainted-huddle',
 ];
 
 export interface TaintSource {
@@ -1230,6 +1233,8 @@ export interface ShiftTaintInputs {
   artifacts?: readonly { path: string; tainted: boolean }[];
   /** the session the shift resumes, if any */
   session?: { id: string; tainted: boolean } | null;
+  /** the huddle a `huddle` turn speaks in: a tainted huddle taints every turn after it (docs/office.md § Huddles) */
+  huddle?: { id: string; tainted: boolean } | null;
 }
 
 export function shiftTaint(inputs: ShiftTaintInputs): { tainted: boolean; sources: TaintSource[] } {
@@ -1248,6 +1253,7 @@ export function shiftTaint(inputs: ShiftTaintInputs): { tainted: boolean; source
   if (inputs.notes?.tainted) add({ kind: 'tainted-notes', ref: inputs.notes.path });
   for (const a of inputs.artifacts ?? []) if (a.tainted) add({ kind: 'tainted-artifact', ref: a.path });
   if (inputs.session?.tainted) add({ kind: 'tainted-session', ref: inputs.session.id });
+  if (inputs.huddle?.tainted) add({ kind: 'tainted-huddle', ref: inputs.huddle.id });
   return { tainted: sources.length > 0, sources };
 }
 
@@ -1958,4 +1964,243 @@ export function officeSignalsBlock(signals: readonly OfficeSignal[], dropped = 0
     fence,
     '',
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Channel: role messages routed by the Director (docs/office.md § Channel)
+// ---------------------------------------------------------------------------
+
+export const OFFICE_MESSAGE_KINDS: readonly OfficeMessageKind[] = ['request', 'finding', 'handoff', 'note'];
+/** Messages one shift's `messages` section may send. */
+export const SHIFT_MESSAGES_MAX = 3;
+export const OFFICE_MESSAGE_SUBJECT_MAX = 200;
+export const OFFICE_MESSAGE_BODY_MAX = 8000;
+/**
+ * The routing debounce: the Director is woken no sooner than 5 min after the
+ * oldest unrouted message, and no sooner than 5 min after its previous
+ * routing wake — a burst of messages is ONE routing shift.
+ */
+export const OFFICE_ROUTE_DEBOUNCE_MS = 5 * 60_000;
+/** Unrouted messages one Director shift is shown (oldest first); the rest wait for the next. */
+export const OFFICE_ROUTE_BATCH_MAX = 20;
+/**
+ * Director shifts that were shown a message and left it unrouted before it
+ * stops WAKING the Director (it is still shown to every Director shift, and a
+ * human Mark reviewed starts the count again) — a loop guard, not a deadline.
+ */
+export const OFFICE_ROUTE_MAX_PASSES = 3;
+export const OFFICE_ROUTE_NOTE_MAX = 2000;
+export const OFFICE_HUDDLE_DEFAULT_TURNS = 4;
+export const OFFICE_HUDDLE_MAX_TURNS = 6;
+export const OFFICE_HUDDLE_MIN_ROLES = 2;
+export const OFFICE_HUDDLE_MAX_ROLES = 3;
+/** `trigger.ref` prefix of a routing wake (the `office-message` event ref, `officeEventTriggerRef`). */
+export const OFFICE_ROUTE_REF_PREFIX = 'office-message:';
+
+/** What the Director may do with a message. */
+export type OfficeRouteAction = 'task' | 'note' | 'huddle' | 'forward';
+export const OFFICE_ROUTE_ACTIONS: readonly OfficeRouteAction[] = ['task', 'note', 'huddle', 'forward'];
+/** A route record: the Director's action, or `deliver` — the server's own (a forward's copy, a Director's message to a role). */
+export type OfficeMessageRouteKind = OfficeRouteAction | 'deliver';
+
+/**
+ * What became of a message — the `office.message-routed` audit row's data
+ * (the message row carries only `routed_at` / `routed_task_id`).
+ */
+export interface OfficeMessageRoute {
+  messageId: string;
+  action: OfficeMessageRouteKind;
+  at: string;
+  /** the Director shift that routed it (null for a stakeholder post's delivery) */
+  shiftId: string | null;
+  /** the routing shift was tainted: its `note` is untrusted text */
+  tainted: boolean;
+  /** `task`: the filed task */
+  taskId?: string | null;
+  /** `task` under proposals autonomy: the proposal it became */
+  proposalId?: string | null;
+  /** `task`: the request was dropped (a cap, a repo outside the workspace) — why */
+  dropped?: string | null;
+  /** `huddle`: the huddle row */
+  huddleId?: string | null;
+  /** `forward` / `deliver`: the addressee */
+  toRoleId?: string | null;
+  /** `forward`: the delivery copy */
+  forwardId?: string | null;
+  /** the Director's note (`note`; optional with the others) */
+  note?: string | null;
+}
+
+/** A message's stored text: the subject line, a blank line, the body. */
+export function officeMessageText(subject: string, body: string): string {
+  const s = subject.replace(/[\r\n]+/g, ' ').trim();
+  const b = body.trim();
+  return s ? (b ? `${s}\n\n${b}` : s) : b;
+}
+
+/** The subject (first line) and the rest of a stored message. */
+export function splitOfficeMessage(text: string): { subject: string; body: string } {
+  const i = text.indexOf('\n');
+  if (i < 0) return { subject: text.trim(), body: '' };
+  return { subject: text.slice(0, i).trim(), body: text.slice(i + 1).trim() };
+}
+
+/** Whether a message's text is still untrusted (tainted and not cleared by a human). */
+export function isMessageTainted(m: Pick<OfficeMessage, 'taintedAt'>): boolean {
+  return m.taintedAt !== null;
+}
+
+export interface TaintedMessageDigest {
+  id: string;
+  from: string;
+  to: string;
+  kind: string;
+  createdAt: string;
+  /** the text's length — a number, never the text */
+  chars: number;
+  line: string;
+}
+
+/**
+ * The message counterpart of `taintedDigest`: what a shift may know of a
+ * TAINTED message — server-known fields only (ids, role keys, the kind enum,
+ * times, a length), never its subject or body.
+ */
+export function taintedMessageDigest(
+  m: Pick<OfficeMessage, 'id' | 'kind' | 'createdAt' | 'body'>,
+  fromKey: string | null,
+  toKey: string | null,
+): TaintedMessageDigest {
+  const key = (s: string | null, fallback: string) => (s && s.length <= 64 && OFFICE_ROLE_KEY_RE.test(s) ? s : fallback);
+  const id = typeof m.id === 'string' && SAFE_ID_RE.test(m.id) ? m.id : '(id withheld)';
+  const kind = (OFFICE_MESSAGE_KINDS as readonly string[]).includes(m.kind) ? m.kind : 'note';
+  const createdAt = typeof m.createdAt === 'string' && ISO_RE.test(m.createdAt) ? m.createdAt : '(time withheld)';
+  const from = fromKey === null ? 'stakeholder' : key(fromKey, 'role');
+  const to = toKey === null ? 'channel' : key(toKey, 'role');
+  const chars = typeof m.body === 'string' ? m.body.length : 0;
+  const line =
+    `message ${id} from ${from} to ${to} (${kind}) at ${createdAt} — untrusted input, content withheld ` +
+    `(${chars} chars; a human can mark it reviewed to release the text)`;
+  return { id, from, to, kind, createdAt, chars, line };
+}
+
+/**
+ * When the Director's next routing wake is owed (pure; docs/office.md §
+ * Channel → The routing pass). `unrouted` = the office's unrouted messages with
+ * the Director shifts that were shown each since its last review. Messages at
+ * `OFFICE_ROUTE_MAX_PASSES` no longer count. Due = the later of (oldest
+ * counted message + debounce) and (previous routing wake + debounce).
+ */
+export function officeRoutingDue(input: {
+  unrouted: readonly { id: string; createdAt: string; passes: number }[];
+  lastRoutingWakeAt: number | null;
+  now: number;
+}): { dueAt: number | null; due: boolean; ids: string[] } {
+  const owed = input.unrouted.filter((m) => m.passes < OFFICE_ROUTE_MAX_PASSES);
+  if (!owed.length) return { dueAt: null, due: false, ids: [] };
+  const oldest = Math.min(...owed.map((m) => Date.parse(m.createdAt)).filter(Number.isFinite));
+  const fromMessages = Number.isFinite(oldest) ? oldest + OFFICE_ROUTE_DEBOUNCE_MS : input.now;
+  const fromWake = input.lastRoutingWakeAt !== null ? input.lastRoutingWakeAt + OFFICE_ROUTE_DEBOUNCE_MS : -Infinity;
+  const dueAt = Math.max(fromMessages, fromWake);
+  return { dueAt, due: input.now >= dueAt, ids: owed.slice(0, OFFICE_ROUTE_BATCH_MAX).map((m) => m.id) };
+}
+
+/** `POST /api/offices/:id/messages` — a stakeholder's message. `to`: a role key, `director`, or null = the channel. */
+export interface OfficeMessagePostBody {
+  to: string | null;
+  kind?: OfficeMessageKind;
+  subject: string;
+  body: string;
+}
+
+/** `POST /api/office-messages/:id/reviewed` — the taint the human read (409 when it changed). */
+export interface OfficeMessageReviewBody {
+  taintedAt: string;
+}
+
+/** `GET /api/offices/:id/messages` — the channel, oldest first, with what became of each. */
+export interface OfficeChannelResponse {
+  messages: OfficeMessage[];
+  /** message id → its routing record */
+  routes: Record<string, OfficeMessageRoute>;
+  /** unrouted message id → Director shifts shown it since its last review */
+  passes: Record<string, number>;
+  /** when the next routing wake is owed (null = nothing owed) */
+  routingDueAt: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Huddles: a bounded, problem-scoped exchange between 2..3 roles (docs/office.md § Huddles)
+// ---------------------------------------------------------------------------
+
+/** A huddle has at least this many turns (one per participant at the least). */
+export const OFFICE_HUDDLE_MIN_TURNS = 2;
+/** What a huddle may be about. A huddle with no subject is refused — no free chat. */
+export const OFFICE_HUDDLE_SUBJECT_KINDS: readonly OfficeSubjectKind[] = ['task', 'proposal', 'signal', 'message'];
+/** One turn's contribution (`huddle.say`) and the decision text. */
+export const OFFICE_HUDDLE_SAY_MAX = 4000;
+export const OFFICE_HUDDLE_DECISION_MAX = 4000;
+/** A stakeholder's opening question. */
+export const OFFICE_HUDDLE_QUESTION_MAX = 2000;
+/** An open huddle that made no progress for this long is expired (an office left off, a role removed). */
+export const OFFICE_HUDDLE_STALE_MS = 24 * 3_600_000;
+/** `trigger.ref` of a huddle turn: `huddle:<id>#<turn>`. */
+export const OFFICE_HUDDLE_REF_PREFIX = 'huddle:';
+
+/** Whether `kind` is a subject a huddle may be about. */
+export function isHuddleSubjectKind(kind: unknown): kind is OfficeSubjectKind {
+  return typeof kind === 'string' && (OFFICE_HUDDLE_SUBJECT_KINDS as readonly string[]).includes(kind);
+}
+
+/** The role whose turn is next (round-robin over `roleIds` by the turns already taken); null once spent or closed. */
+export function huddleNextRoleId(h: Pick<OfficeHuddle, 'roleIds' | 'turns' | 'maxTurns' | 'status'>): string | null {
+  if (h.status !== 'open' || !h.roleIds.length || h.turns >= h.maxTurns) return null;
+  return h.roleIds[h.turns % h.roleIds.length];
+}
+
+/** `huddle:<id>#<turn>` — server ids only. */
+export function huddleTriggerRef(huddleId: string, turn: number): string {
+  return `${OFFICE_HUDDLE_REF_PREFIX}${huddleId}#${turn}`;
+}
+
+/** One line of a huddle's transcript as /office shows it. */
+export interface OfficeHuddleEntry {
+  /** the `tm_office_messages` row */
+  messageId: string;
+  /** `opening`: the question it was opened with; `turn`: a role's contribution; `server`: the server's note on a turn that said nothing */
+  kind: 'opening' | 'turn' | 'server';
+  /** the turn (1-based); null for the opening line */
+  turn: number | null;
+  /** the speaker; null = the stakeholder (or the server, for `server`) */
+  roleId: string | null;
+  text: string;
+  /** set when a tainted shift wrote it: untrusted text */
+  taintedAt: string | null;
+  at: string;
+}
+
+/** A huddle with its transcript and the message its decision became (`GET /api/offices/:id/huddles`). */
+export interface OfficeHuddleView extends OfficeHuddle {
+  entries: OfficeHuddleEntry[];
+  /** a short, server-known line naming the subject (an id when its text is untrusted) */
+  subjectLabel: string;
+  /** who opened it: the Director's routing (`director`) or a human on /office (`stakeholder`) */
+  openedBy: 'director' | 'stakeholder' | null;
+  /** the unrouted channel message the decision became — the Director turns it into work or a note */
+  decisionMessageId: string | null;
+}
+
+export interface OfficeHuddlesResponse {
+  huddles: OfficeHuddleView[];
+}
+
+/** `POST /api/offices/:id/huddles` — a stakeholder opens a huddle. */
+export interface OfficeHuddleOpenBody {
+  subject: OfficeSubject;
+  /** 2..3 role keys (`director` = the Director) */
+  roles: string[];
+  /** default `OFFICE_HUDDLE_DEFAULT_TURNS`, 2..`OFFICE_HUDDLE_MAX_TURNS` */
+  maxTurns?: number;
+  /** the human's question (trusted text, the transcript's first line) */
+  question?: string | null;
 }

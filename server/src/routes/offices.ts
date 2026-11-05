@@ -46,12 +46,22 @@ import {
   type OfficeWishCreateResult,
   type OfficeFeatureAskResult,
   FEATURE_ASK_REF,
+  OFFICE_MESSAGE_BODY_MAX,
+  OFFICE_MESSAGE_KINDS,
+  OFFICE_MESSAGE_SUBJECT_MAX,
+  type OfficeChannelResponse,
+  type OfficeHuddlesResponse,
+  type OfficeSubject,
+  OFFICE_HUDDLE_QUESTION_MAX,
+  type OfficeMessageKind,
 } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import { archiveRoleNotes, defaultOfficeFolder, resetRoleNotes, scaffoldOfficeFolder, validateOfficeFolder } from '../office/folder.ts';
 import { DEFAULT_OFFICE_THEME, OFFICE_THEMES, generateOfficeIdentities, generateRoleIdentity } from '../office/names.ts';
 import { allowlistCheck } from '../office/commands.ts';
 import { briefView, markBriefReviewed } from '../office/briefs.ts';
+import { OfficeChannelRefused, markMessageReviewed, officeChannel, postStakeholderMessage } from '../office/channel.ts';
+import { OfficeHuddleRefused, expireHuddle, officeHuddles, openHuddle } from '../office/huddles.ts';
 import { untrustedPath } from '../office/isolation.ts';
 import { readOfficeText } from '../office/shift.ts';
 import { OfficeDocConflict, OfficeWishRefused, createOfficeWish, directorRole, readOfficeDoc, saveOfficeDoc } from '../office/docs.ts';
@@ -146,6 +156,24 @@ const featureAskBody = z
   .object({ text: z.string().max(OFFICE_WAKE_NOTE_MAX).refine((t) => t.trim().length > 0, 'the request must not be empty') })
   .strict();
 const wakeBody = z.object({ note: z.string().max(OFFICE_WAKE_NOTE_MAX).optional() }).strict();
+const messagePostBody = z
+  .object({
+    to: z.string().trim().max(64).nullable(),
+    kind: z.enum(OFFICE_MESSAGE_KINDS as [OfficeMessageKind, ...OfficeMessageKind[]]).optional(),
+    subject: z.string().trim().min(1, 'a message needs a subject').max(OFFICE_MESSAGE_SUBJECT_MAX),
+    body: z.string().max(OFFICE_MESSAGE_BODY_MAX),
+  })
+  .strict();
+const messageReviewBody = z.object({ taintedAt: z.string().min(1) }).strict();
+/** `POST /api/offices/:id/huddles` — the subject is checked by `openHuddle` (missing → 400: no free chat). */
+const huddleOpenBody = z
+  .object({
+    subject: z.object({ kind: z.string().trim().min(1).max(32), id: z.string().trim().min(1).max(100) }).strict().nullish(),
+    roles: z.array(z.string().trim().max(64)).max(10),
+    maxTurns: z.number().int().nullish(),
+    question: z.string().max(OFFICE_HUDDLE_QUESTION_MAX).nullish(),
+  })
+  .strict();
 type RoleInput = z.infer<typeof roleFieldsPartial>;
 
 /** `PUT …/roles/:roleId/commands`: the whole allowlist (docs/office.md § Command runs). */
@@ -882,6 +910,83 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opt
     if (!r.ok) return reply.code(r.status).send({ error: r.error, ...(r.code ? { code: r.code } : {}) });
     return reply.code(202).send({ shiftId: r.shiftId });
   });
+  // The channel (docs/office.md § Channel): history (+ route records), a
+  // stakeholder's message (Origin; unrouted until the Director's routing
+  // pass), and Mark reviewed on a tainted message (Origin; conditional on the
+  // taint the human read, audited `office.taint-cleared`).
+  app.get('/api/offices/:id/messages', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const office = await storage.getOffice(id);
+    if (!office) return reply.code(404).send({ error: 'office not found' });
+    const q = req.query as { limit?: string };
+    const limit = q.limit !== undefined ? Number(q.limit) : undefined;
+    const r: OfficeChannelResponse = await officeChannel(storage, office, { limit: Number.isFinite(limit) ? limit : undefined });
+    return r;
+  });
+
+  app.post('/api/offices/:id/messages', { preHandler: fromBrowser }, async (req, reply) => {
+    const body = messagePostBody.parse(req.body ?? {});
+    const { id } = req.params as { id: string };
+    const office = await storage.getOffice(id);
+    if (!office) return reply.code(404).send({ error: 'office not found' });
+    try {
+      return reply.code(201).send(await postStakeholderMessage(storage, office, body, 'human'));
+    } catch (e) {
+      if (e instanceof OfficeChannelRefused) return reply.code(400).send({ error: e.message });
+      throw e;
+    }
+  });
+
+  app.post('/api/office-messages/:messageId/reviewed', { preHandler: fromBrowser }, async (req, reply) => {
+    const body = messageReviewBody.parse(req.body ?? {});
+    const { messageId } = req.params as { messageId: string };
+    const r = await markMessageReviewed(storage, messageId, body.taintedAt, 'human');
+    if (!r.ok) return reply.code(r.status).send({ error: r.error });
+    return r.message;
+  });
+
+  // Huddles (docs/office.md § Huddles): the list with transcripts, a
+  // stakeholder's open (Origin; a subject is required — no free chat), and a
+  // human's Close (Origin; `expired`, the live turn's words are dropped).
+  app.get('/api/offices/:id/huddles', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const office = await storage.getOffice(id);
+    if (!office) return reply.code(404).send({ error: 'office not found' });
+    const r: OfficeHuddlesResponse = { huddles: await officeHuddles(storage, office) };
+    return r;
+  });
+
+  app.post('/api/offices/:id/huddles', { preHandler: fromBrowser }, async (req, reply) => {
+    const body = huddleOpenBody.parse(req.body ?? {});
+    const { id } = req.params as { id: string };
+    const office = await storage.getOffice(id);
+    if (!office) return reply.code(404).send({ error: 'office not found' });
+    if (!office.enabled) return reply.code(409).send({ error: 'the office is off — turn it on first' });
+    try {
+      const huddle = await openHuddle(storage, office, {
+        subject: (body.subject ?? null) as OfficeSubject | null,
+        roles: body.roles,
+        maxTurns: body.maxTurns ?? null,
+        openedBy: 'stakeholder',
+        opening: body.question ?? null,
+        actor: 'human',
+      });
+      return reply.code(201).send(huddle);
+    } catch (e) {
+      if (e instanceof OfficeHuddleRefused) return reply.code(e.status).send({ error: e.message });
+      throw e;
+    }
+  });
+
+  app.post('/api/office-huddles/:huddleId/close', { preHandler: fromBrowser }, async (req, reply) => {
+    const { huddleId } = req.params as { huddleId: string };
+    const h = await storage.getHuddle(huddleId);
+    if (!h) return reply.code(404).send({ error: 'huddle not found' });
+    const closed = h.status === 'open' ? await expireHuddle(storage, h, 'closed by a human', 'human') : null;
+    if (!closed) return reply.code(409).send({ error: 'the huddle is already closed' });
+    return closed;
+  });
+
   // Wishes and vision (docs/office.md § Wishes and vision): a wish wakes the
   // Director (`request`, ref `wish:<id>`; hard gate, no guards); a doc save
   // whose content changed wakes it for a re-plan (`re-plan:<doc>`). A wake
