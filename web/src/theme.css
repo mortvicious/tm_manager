@@ -13820,6 +13820,23 @@ button.explain-tap:active {
   border-color: currentColor;
 }
 
+/* a tainted office feature (docs/office.md § Director features → UI) */
+.office-taint-banner {
+  margin-bottom: var(--tm-space-3);
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-status-attention);
+  border-radius: var(--tm-radius-sm);
+  color: var(--tm-status-attention);
+  font-size: var(--tm-text-sm);
+}
+
+.btn.phase-queue-tainted {
+  align-self: flex-start;
+  font-size: var(--tm-text-xs);
+  white-space: normal;
+  text-align: left;
+}
+
 .office-add-role {
   display: flex;
   flex-wrap: wrap;

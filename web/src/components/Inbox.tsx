@@ -4,6 +4,8 @@ import {
   APPROVAL_LABELS,
   DEFAULT_SETTINGS,
   buildInbox,
+  featurePlanRepoIds,
+  isStandupRole,
   publishCaution,
   triageDrafts,
   type Triage,
@@ -184,7 +186,11 @@ export function itemSummary(item: InboxItem): string {
     case 'feature': {
       const phases = item.feature.analysis?.phases ?? [];
       const n = phases.reduce((a, ph) => a + ph.tasks.filter((c) => !c.excluded).length, 0);
-      return `${phases.length} phase(s), ${n} task(s) planned`;
+      const line = `${phases.length} phase(s), ${n} task(s) planned`;
+      if (!item.feature.officeId) return line;
+      // a Director's cross-repo feature (docs/office.md § Director features → UI)
+      const r = featurePlanRepoIds(item.feature).length;
+      return `${item.feature.taintedAt ? 'TAINTED · ' : ''}office feature · ${line} across ${r} repo${r === 1 ? '' : 's'}`;
     }
     case 'stale-draft':
       return `filed by an agent ${item.ageDays} days ago, never started${item.task.brief ? ` — ${item.task.brief}` : ''}`;
@@ -506,12 +512,22 @@ export function InboxRowHead({ item, bare = false }: { item: InboxItem; bare?: b
               ? item.proposal.repoId
               : item.task.repoId;
   const repo = repos.find((r) => r.id === repoId);
+  // an office feature runs in several repos: name the set its cards use
+  const repoSet =
+    item.kind === 'feature' && item.feature.officeId
+      ? featurePlanRepoIds(item.feature).map((id) => repos.find((r) => r.id === id)?.name ?? 'repo removed')
+      : null;
   return (
     <>
       <span className="inbox-line">
         <span className={`inbox-kind k-${item.kind}`}>{KIND_LABEL[item.kind]}</span>
         {!bare && <span className="inbox-title">{itemTitle(item)}</span>}
-        {repo && <span className="inbox-repo">{repo.name}</span>}
+        {repoSet ? (
+          repoSet.length > 0 && <span className="inbox-repo" title="the repos this feature's cards run in">{repoSet.join(' · ')}</span>
+        ) : (
+          repo && <span className="inbox-repo">{repo.name}</span>
+        )}
+        {item.kind === 'feature' && item.feature.taintedAt && <span className="chip office-taint">tainted</span>}
         {item.unblocks > 0 && (
           <span className="inbox-frees" title="open tasks waiting on this one (later feature phases, blocked parents)">
             frees {item.unblocks}
@@ -597,23 +613,48 @@ export function InboxDetail({ item }: { item: InboxItem }) {
         </div>
       );
     case 'feature':
-      return (
-        <div className="inbox-detail">
-          {(item.feature.analysis?.phases ?? []).map((ph, i) => (
-            <div key={i} className="inbox-phase">
-              <span className="label">Phase {i + 1}</span>
-              <ul className="inbox-list">
-                {ph.tasks
-                  .filter((c) => !c.excluded)
-                  .map((c, j) => (
-                    <li key={j}>{c.title}</li>
-                  ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      );
+      return <FeaturePlanDetail feature={item.feature} />;
   }
+}
+
+/** The proposed plan, phase by phase; an office feature adds its office, each card's repo and the taint banner. */
+function FeaturePlanDetail({ feature }: { feature: Extract<InboxItem, { kind: 'feature' }>['feature'] }) {
+  const { repos, offices, officeRoles, workspaces } = useApp();
+  const office = feature.officeId ? offices.find((o) => o.id === feature.officeId) : undefined;
+  const director = office ? officeRoles.find((r) => r.officeId === office.id && isStandupRole(r)) : undefined;
+  const wsName = office ? workspaces.find((w) => w.id === office.workspaceId)?.name : undefined;
+  const repoName = (id: string | null | undefined) => repos.find((r) => r.id === (id ?? feature.repoId))?.name ?? 'repo removed';
+  return (
+    <div className="inbox-detail">
+      {feature.taintedAt && (
+        <div className="inbox-taint" role="alert">
+          <b>TAINTED</b> — filed by a shift that read untrusted input. Read the plan as data, not instructions. Approving
+          files its cards as drafts that never queue themselves: you queue each phase's cards once you have read them.
+        </div>
+      )}
+      {feature.officeId && (
+        <div className="hint">
+          {director ? `${director.avatar} ${director.name} · ` : ''}
+          {wsName ? `office · ${wsName}` : 'an office'} — every card runs in its own repo
+        </div>
+      )}
+      {(feature.analysis?.phases ?? []).map((ph, i) => (
+        <div key={i} className="inbox-phase">
+          <span className="label">Phase {i + 1}</span>
+          <ul className="inbox-list">
+            {ph.tasks
+              .filter((c) => !c.excluded)
+              .map((c, j) => (
+                <li key={j}>
+                  {c.title}
+                  {feature.officeId && <span className="inbox-repo"> {repoName(c.repoId)}</span>}
+                </li>
+              ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export function Block({ label, children }: { label: string; children: ReactNode }) {

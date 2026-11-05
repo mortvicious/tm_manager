@@ -125,6 +125,23 @@ function legacyLanding<T extends { autoPublish?: boolean; landing?: LandingTier 
 /** how long one read of a task's diff answers repeat requests (same updatedAt) */
 const DIFF_CACHE_MS = 5_000;
 
+export const TAINTED_FROM_BROWSER =
+  "a tainted office feature's card waits for a human to read it and queue it: a browser action (Origin required)";
+
+/**
+ * A tainted office feature's card (source `feature` + `tainted_at`, docs/office.md
+ * § Director features) is queued only by a HUMAN who read it — the phase pump
+ * never does. A worker's curl carries no Origin, so Enqueue / Add to queue /
+ * Run now / Retry on such a card without Origin is 403, WHATEVER its status:
+ * gating only the draft would let cancel (no Origin) → retry re-queue it. The
+ * Telegram bot calls task-actions in-process and never reaches these routes.
+ */
+export async function taintedHoldRefusal(storage: Storage, id: string, origin: string | undefined): Promise<string | null> {
+  if (origin) return null;
+  const cur = await storage.getTask(id);
+  return cur && cur.source === 'feature' && cur.taintedAt != null ? TAINTED_FROM_BROWSER : null;
+}
+
 export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
   // The shared action layer (server/src/task-actions.ts) — the same functions
   // the Telegram bot calls, with 'human' as the actor here. `app.orchestrator`
@@ -222,6 +239,8 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
 
   app.post('/api/tasks/:id/queue', async (req, reply) => {
     const { id } = req.params as { id: string };
+    const tainted = await taintedHoldRefusal(storage, id, req.headers.origin);
+    if (tainted) return reply.code(403).send({ error: tainted });
     const r = await queueAddTask(deps(), id, 'human');
     if ('error' in r) return reply.code(r.code).send({ error: r.error });
     return r.task;
@@ -249,6 +268,8 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
 
   app.post('/api/tasks/:id/enqueue', async (req, reply) => {
     const { id } = req.params as { id: string };
+    const tainted = await taintedHoldRefusal(storage, id, req.headers.origin);
+    if (tainted) return reply.code(403).send({ error: tainted });
     const r = await enqueueTask(deps(), id, ENQUEUE_FROM, 'human');
     if ('error' in r) return reply.code(r.code).send({ error: r.error });
     return r.task;
@@ -256,6 +277,8 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
 
   app.post('/api/tasks/:id/retry', async (req, reply) => {
     const { id } = req.params as { id: string };
+    const tainted = await taintedHoldRefusal(storage, id, req.headers.origin);
+    if (tainted) return reply.code(403).send({ error: tainted });
     const r = await enqueueTask(deps(), id, RETRY_FROM, 'human');
     if ('error' in r) return reply.code(r.code).send({ error: r.error });
     return r.task;
@@ -271,6 +294,8 @@ export function registerTaskRoutes(app: FastifyInstance, storage: Storage) {
   app.post('/api/tasks/:id/run-now', async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!app.orchestrator) return reply.code(503).send({ error: 'orchestrator not ready' });
+    const tainted = await taintedHoldRefusal(storage, id, req.headers.origin);
+    if (tainted) return reply.code(403).send({ error: tainted });
     const result = await app.orchestrator.runNow(id);
     if ('error' in result) return reply.code(result.code).send({ error: result.error });
     return result.task;

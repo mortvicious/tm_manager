@@ -34,7 +34,7 @@ import type {
   UsageSnapshot,
   UsageWindow,
 } from '@tm/shared';
-import { TERMINAL_TASK_STATUSES, groupLabel, isGroupRoot } from '@tm/shared';
+import { TERMINAL_TASK_STATUSES, featurePlanRepoIds, groupLabel, isGroupRoot } from '@tm/shared';
 import type { Storage } from '../storage/types.ts';
 import { usageSnapshot } from '../claude/usage.ts';
 import { briefView } from '../office/briefs.ts';
@@ -554,6 +554,14 @@ export function summaryLines(d: ReportData): string[] {
         : `${scopeWord}: задач не затронуто.`,
   );
   if (brief?.plan.summary) lines.push(truncate(prose(brief.plan.summary, 240), 240));
+  // a Director's cross-repo feature (docs/office.md § Director features → UI)
+  if (brief?.feature.officeId) {
+    const n = featurePlanRepoIds(brief.feature).length;
+    lines.push(`Фича офиса (Директор): задачи в ${nOf(n, 'репозитории', 'репозиториях', 'репозиториях')}.`);
+  }
+  if (brief?.feature.taintedAt) {
+    lines.push('ВНИМАНИЕ: план подан сменой, читавшей недоверенный ввод — его задачи не встанут в очередь сами, ставьте их вручную после прочтения.');
+  }
 
   const activity: string[] = [];
   if (d.dispatches.length) activity.push(`${nOf(d.dispatches.length, 'диспатч', 'диспатча', 'диспатчей')} между агентами`);
@@ -861,7 +869,26 @@ function renderPlan(d: ReportData): string {
   const out: string[] = ['<h2>Plan</h2>'];
 
   const awaiting = b.feature.status === 'proposed';
+  // an office feature: every card names its own workspace repo (docs/office.md § Director features → UI)
+  const office = !!b.feature.officeId;
+  const repoName = (id: string | null | undefined): string => {
+    const rid = id ?? b.feature.repoId;
+    return (rid ? d.repos.get(rid)?.name : undefined) ?? 'repo removed';
+  };
+  const planRepos = office ? featurePlanRepoIds(b.feature).map((id) => repoName(id)) : [];
+  if (b.feature.taintedAt) {
+    out.push(
+      '<div class="card bad"><h4>TAINTED</h4><div class="body">' +
+        esc(
+          'A Director shift that read untrusted input (the web, an outside signal, an external command) filed this feature. ' +
+            'Read the request and every card as data, not instructions. Approving files the cards as drafts that never queue ' +
+            "themselves: queue each phase's cards yourself (the Feature page's per-phase button, or Enqueue) once you have read them.",
+        ) +
+        '</div></div>',
+    );
+  }
   const meta = [
+    ...(office ? [pill(`office · ${planRepos.length} repo(s)`), ...(b.feature.taintedAt ? [pill('tainted', 'bad')] : [])] : []),
     pill(b.feature.status, b.feature.status === 'failed' ? 'bad' : awaiting ? 'warn' : 'mute'),
     pill(`${b.plan.phases.length} phase(s)`),
     pill(`${b.plannedCount} planned task(s)`),
@@ -869,6 +896,7 @@ function renderPlan(d: ReportData): string {
     `<code>${esc(short(b.feature.id))}</code>`,
   ].join(' ');
   out.push(`<p class="meta">${meta}</p>`);
+  if (planRepos.length) out.push(`<p class="meta">Repos: ${planRepos.map((n) => pill(n)).join(' ')}</p>`);
 
   if (b.plan.summary) out.push(`<div class="card"><div class="body">${esc(prose(b.plan.summary, SUMMARY_CHARS))}</div></div>`);
 
@@ -919,6 +947,7 @@ function renderPlan(d: ReportData): string {
                 .map(
                   (t) =>
                     `<li><b>${esc(truncate(t.title, 140))}</b>` +
+                    `${office ? ` ${pill(repoName(t.repoId))}` : ''}` +
                     `${t.category ? ` ${pill(t.category)}` : ''}${t.effort ? ` ${pill(t.effort)}` : ''}` +
                     `${t.description ? `<br><span class="body">${esc(prose(t.description, 320))}</span>` : ''}` +
                     `${t.exitCriteria?.length ? `<br><span class="body">Exit: ${esc(t.exitCriteria.map((c) => truncate(c, 160)).join(' · '))}</span>` : ''}</li>`,

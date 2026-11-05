@@ -42,6 +42,8 @@ import {
   isOfficeReadableDoc,
   type OfficeDocPutResult,
   type OfficeWishCreateResult,
+  type OfficeFeatureAskResult,
+  FEATURE_ASK_REF,
 } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import { archiveRoleNotes, defaultOfficeFolder, resetRoleNotes, scaffoldOfficeFolder, validateOfficeFolder } from '../office/folder.ts';
@@ -50,7 +52,8 @@ import { allowlistCheck } from '../office/commands.ts';
 import { briefView, markBriefReviewed } from '../office/briefs.ts';
 import { untrustedPath } from '../office/isolation.ts';
 import { readOfficeText } from '../office/shift.ts';
-import { OfficeDocConflict, OfficeWishRefused, createOfficeWish, readOfficeDoc, saveOfficeDoc } from '../office/docs.ts';
+import { OfficeDocConflict, OfficeWishRefused, createOfficeWish, directorRole, readOfficeDoc, saveOfficeDoc } from '../office/docs.ts';
+import { officeFeatureCapRefusal } from '../office/features.ts';
 import { SHIFT_NOTES_MAX_CHARS, officeRel, roleNotesRel, writeOfficeFile } from '../office/shift-result.ts';
 import { roleFromPreset } from '../office/presets.ts';
 import { officeScheduler, officeStates, type OfficeScheduler } from '../office/scheduler.ts';
@@ -136,6 +139,9 @@ const docPutBody = z
     content: z.string().max(OFFICE_DOC_MAX_CHARS, `at most ${OFFICE_DOC_MAX_CHARS} characters`),
     baseSha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   })
+  .strict();
+const featureAskBody = z
+  .object({ text: z.string().max(OFFICE_WAKE_NOTE_MAX).refine((t) => t.trim().length > 0, 'the request must not be empty') })
   .strict();
 const wakeBody = z.object({ note: z.string().max(OFFICE_WAKE_NOTE_MAX).optional() }).strict();
 type RoleInput = z.infer<typeof roleFieldsPartial>;
@@ -331,6 +337,18 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opt
       roles: await storage.listOfficeRoles(id),
       shifts: await storage.listShifts({ officeId: id, limit: OFFICE_DETAIL_SHIFTS }),
     };
+    // the shift log links a Director shift to the feature it filed (docs/office.md § Director features → UI)
+    const oldest = detail.shifts.at(-1)?.startedAt;
+    if (oldest) {
+      const ids = new Set(detail.shifts.map((s) => s.id));
+      const rows = await storage.listEvents({ kind: 'office.feature', since: oldest, limit: 500 });
+      const map: Record<string, string> = {};
+      for (const e of rows) {
+        const d = e.data as { officeId?: unknown; shiftId?: unknown; featureId?: unknown } | null;
+        if (d?.officeId === id && typeof d.shiftId === 'string' && typeof d.featureId === 'string' && ids.has(d.shiftId)) map[d.shiftId] = d.featureId;
+      }
+      detail.shiftFeatures = map;
+    }
     return detail;
   });
 
@@ -882,6 +900,29 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opt
       if (e instanceof OfficeWishRefused) return reply.code(409).send({ error: e.message });
       throw e;
     }
+  });
+
+  // Ask the Director for a feature (docs/office.md § Director features → Ask
+  // the Director): a stakeholder `request` wake of the Director whose note is
+  // the human's text, trusted (it came behind Origin), with ref
+  // FEATURE_ASK_REF so the shift is told to file it as its `feature` section.
+  // Hard gate only, like Wake now; a refusal is 409 and nothing is kept for
+  // later (the text would be lost — the human presses again).
+  app.post('/api/offices/:id/ask-feature', { preHandler: fromBrowser }, async (req, reply) => {
+    const body = featureAskBody.parse(req.body ?? {});
+    const { id } = req.params as { id: string };
+    const office = await storage.getOffice(id);
+    if (!office) return reply.code(404).send({ error: 'office not found' });
+    const role = await directorRole(storage, office.id);
+    if (!role) return reply.code(409).send({ error: 'this office has no Director role' });
+    const full = await officeFeatureCapRefusal(storage, office.id);
+    if (full) return reply.code(409).send({ error: full });
+    const s = scheduler();
+    if (!s) return reply.code(503).send({ error: 'the office scheduler is not running' });
+    const r = await s.wake(office.id, role.id, body.text, 'human', { ref: FEATURE_ASK_REF, data: { reason: FEATURE_ASK_REF } });
+    if (!r.ok) return reply.code(r.status).send({ error: r.error, ...(r.code ? { code: r.code } : {}) });
+    const out: OfficeFeatureAskResult = { shiftId: r.shiftId, roleId: role.id };
+    return reply.code(201).send(out);
   });
 
   app.patch('/api/office-wishes/:wishId', { preHandler: fromBrowser }, async (req, reply) => {

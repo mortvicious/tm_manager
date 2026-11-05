@@ -14,6 +14,8 @@ import {
   OFFICE_ROLE_KEY_RE,
   OFFICE_ROLE_PRESETS,
   OFFICE_WAKE_NOTE_MAX,
+  isFeatureAskTrigger,
+  isStandupRole,
   SHIFT_FORBIDDEN_TOOLS,
   SHIFT_TOOL_ALLOWLIST,
   SHIFT_WEB_TOOLS,
@@ -315,19 +317,30 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   const now = useNow();
   const { detail, states, error, reload } = useOfficeDetail(officeId);
   const [editing, setEditing] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | null>(null);
+  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | null>(null);
   const briefs = useOfficeBriefs(officeId);
   const [briefId, setBriefId] = useBriefParam();
 
   if (!detail) return error ? <div className="warn-text">{error}</div> : <div className="muted">Loading…</div>;
   const { office, roles, shifts } = detail;
+  const shiftFeatures = detail.shiftFeatures ?? {};
+  const director = roles.find((r) => isStandupRole(r) && r.enabled) ?? roles.find((r) => isStandupRole(r)) ?? null;
   const stateOf = (id: string) => states?.states.find((s) => s.roleId === id) ?? null;
   const editRole = editing ? (roles.find((r) => r.id === editing) ?? null) : null;
 
   const settings = <OfficeSettings office={office} spentToday={states?.spentTodayUsd ?? null} />;
   const log = (
-    <ShiftLog office={office} roles={roles} shifts={shifts} inSheet={mobile} onOpenTask={onOpenTask} onOpenTerminal={onOpenTerminal} />
+    <ShiftLog
+      office={office}
+      roles={roles}
+      shifts={shifts}
+      shiftFeatures={shiftFeatures}
+      inSheet={mobile}
+      onOpenTask={onOpenTask}
+      onOpenTerminal={onOpenTerminal}
+    />
   );
+  const ask = <AskDirector office={office} director={director} onAsked={reload} />;
   const briefList = (
     <BriefList office={office} roles={roles} briefs={briefs} selected={briefId} inSheet={mobile} onSelect={(id) => setBriefId(id === briefId ? null : id)} />
   );
@@ -347,6 +360,9 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
           </button>
           <button className="btn" onClick={() => setSheet('vision')}>
             Vision &amp; wishes
+          </button>
+          <button className="btn" onClick={() => setSheet('ask')}>
+            Ask the Director
           </button>
           <button className="btn" onClick={() => setSheet('briefs')}>
             Briefs <span className="muted">{briefs?.length ?? ''}</span>
@@ -385,6 +401,17 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
           <div className="office-section-title">Vision &amp; wishes</div>
           <OfficeVision office={office} />
         </div>
+      )}
+      {!mobile && (
+        <div className="panel">
+          <div className="office-section-title">Ask the Director for a feature</div>
+          {ask}
+        </div>
+      )}
+      {mobile && sheet === 'ask' && (
+        <Sheet label="Ask the Director for a feature" title="Ask the Director" onClose={() => setSheet(null)} disableDrag>
+          {ask}
+        </Sheet>
       )}
       {mobile && sheet === 'vision' && (
         <Sheet label="Vision and wishes" title="Vision & wishes" onClose={() => setSheet(null)} disableDrag tall>
@@ -1351,10 +1378,57 @@ function GuardRow({ guard, onChange, onRemove }: { guard: OfficeGuard; onChange:
 // Shift log
 // ---------------------------------------------------------------------------
 
+/**
+ * Ask the Director for a feature (docs/office.md § Director features → Ask the
+ * Director): one `request` wake of the Director whose note is this text,
+ * trusted; the shift files it as its `feature` section, which the shift log
+ * then links. The hard gate applies (409 says why), guards do not.
+ */
+function AskDirector({ office, director, onAsked }: { office: Office; director: OfficeRole | null; onAsked: () => void }) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  if (!director) return <div className="muted office-pad">This office has no Director role — add one from the presets to ask for features.</div>;
+  const send = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.askOfficeFeature(office.id, text.trim());
+      setText('');
+      setMsg({ ok: true, text: `${director.name} is on it — the feature appears linked in the shift log once the shift files it, and its plan comes to your Inbox for approval.` });
+      onAsked();
+    } catch (e) {
+      setMsg({ ok: false, text: errText(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="office-wake office-ask">
+      <textarea
+        className="field"
+        rows={4}
+        maxLength={OFFICE_WAKE_NOTE_MAX}
+        placeholder={`What should ${director.name} plan? The goal, why, what done looks like — a feature spanning the workspace's repos.`}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+      />
+      <div className="office-actions">
+        <button className="btn primary" disabled={busy || !text.trim()} onClick={() => void send()}>
+          {busy ? 'Asking…' : `Ask ${director.avatar} ${director.name}`}
+        </button>
+        <span className="muted office-hint">wakes the Director now (the hard gate applies); you approve the plan before any task exists</span>
+      </div>
+      {msg && <div className={msg.ok ? 'muted office-pad' : 'warn-text office-pad'}>{msg.text}</div>}
+    </div>
+  );
+}
+
 function ShiftLog({
   office,
   roles,
   shifts,
+  shiftFeatures,
   inSheet,
   onOpenTask,
   onOpenTerminal,
@@ -1362,6 +1436,8 @@ function ShiftLog({
   office: Office;
   roles: OfficeRole[];
   shifts: OfficeShift[];
+  /** shift id → the feature it filed */
+  shiftFeatures: Record<string, string>;
   /** the Sheet's own title already says "Shift log" */
   inSheet: boolean;
 } & Props) {
@@ -1380,6 +1456,7 @@ function ShiftLog({
           office={office}
           shift={s}
           role={roles.find((r) => r.id === s.roleId) ?? null}
+          featureId={shiftFeatures[s.id] ?? null}
           now={now}
           onOpenTask={onOpenTask}
           onOpenTerminal={onOpenTerminal}
@@ -1393,15 +1470,20 @@ function ShiftRow({
   office,
   shift: s,
   role,
+  featureId,
   now,
   onOpenTask,
   onOpenTerminal,
-}: { office: Office; shift: OfficeShift; role: OfficeRole | null; now: number } & Props) {
-  const { tasks } = useApp();
+}: { office: Office; shift: OfficeShift; role: OfficeRole | null; featureId: string | null; now: number } & Props) {
+  const { tasks, features } = useApp();
+  const navigate = useNavigate();
+  const feature = featureId ? features.find((x) => x.id === featureId) : undefined;
   const openBrief = useContext(BriefOpen);
   const live = s.verdict === 'ran' && s.endedAt === null;
   const verdict = s.verdict === 'skipped' ? 'skipped' : live ? 'on shift' : s.error ? 'error' : 'ran';
-  const trigger = `${TRIGGER_KIND_LABEL[s.trigger.kind]}${s.trigger.ref ? ` ${s.trigger.ref}` : ''}`;
+  const trigger = isFeatureAskTrigger(s.trigger)
+    ? `${TRIGGER_KIND_LABEL[s.trigger.kind]} · feature ask`
+    : `${TRIGGER_KIND_LABEL[s.trigger.kind]}${s.trigger.ref ? ` ${s.trigger.ref}` : ''}`;
   const taskTitle = (id: string) => tasks.find((t) => t.id === id)?.title ?? short(id);
   const f = s.filing;
   const c = s.commands;
@@ -1439,6 +1521,21 @@ function ShiftRow({
         <div className="office-shift-line">
           <span className="muted">taint from </span>
           {s.taintSources.map(taintText).join(' · ')}
+        </div>
+      )}
+      {featureId && (
+        <div className="office-shift-line">
+          <span className="muted">filed feature: </span>
+          <button className="office-link" onClick={() => navigate(`/features/${featureId}`)}>
+            {feature?.title ?? short(featureId)}
+          </button>
+          {feature && <span className="muted"> · {feature.status}</span>}
+          {feature?.taintedAt && (
+            <>
+              {' '}
+              <span className="chip office-taint">tainted</span>
+            </>
+          )}
         </div>
       )}
       {s.filedTaskIds.length > 0 && (

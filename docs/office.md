@@ -1857,6 +1857,70 @@ The planning sessions (`plan`/`plan-review` aux runs of the feature) count
 toward the office's day budget and the Director's cap (`officeSpendSince`,
 § Data model). The cards' worker runs count as office tasks.
 
+### Ask the Director
+
+`POST /api/offices/:id/ask-feature {text}` (Origin; ≤ `OFFICE_WAKE_NOTE_MAX`
+chars, empty → 400) is a stakeholder request for a feature. It finds the
+office's Director (`directorRole`: the enabled `director` preset first) — none
+→ 409 — refuses up front when the open-feature cap is already reached (409, the
+same text `fileOfficeFeature` would drop the section with), then wakes it like
+Wake now: trigger `request`, `ref` = `FEATURE_ASK_REF` (`'feature-ask'`), the
+text as the note, an `office.wake` row. The hard gate applies (its 409 is the
+answer), guards and cooldown do not. Nothing is kept pending: a refused ask
+would lose its text, so the human presses again. → 201 `{shiftId, roleId}`.
+
+The text is TRUSTED (a human typed it behind `Origin`). For the Director,
+`isFeatureAskTrigger` swaps the prompt's `## The request` block for `## Feature
+request`, which tells the shift to file it as its `feature` section (a title,
+and a request written from the text plus what it knows of the workspace) and
+not to split it into `tasks`. Any other role woken with that ref gets the plain
+request block (the section is Director-only anyway). The shift's feature then
+runs the pipeline above; its plan reaches the Inbox like any proposed plan.
+
+### UI
+
+- **/office** — an *Ask the Director for a feature* panel (phone: a bar button
+  opening a `<Sheet>`): a textarea and **Ask <Director>**; the reply says the
+  feature will appear in the shift log, or the gate's reason. No Director → a
+  hint instead of the form. The **shift log** links each Director shift to the
+  feature it filed (`filed feature: <title> · <status>`, `tainted` chip),
+  opening `/features/:id`. The link comes from `OfficeDetail.shiftFeatures`
+  (shift id → feature id), which `GET /api/offices/:id` reads off the
+  `office.feature` audit rows of this office since the oldest listed shift — a
+  dropped section has no `featureId` and links nothing. A feature-ask shift's
+  trigger reads `request · feature ask`.
+- **Feature page** (`web/src/pages/Feature.tsx`) — the header chip `<Director>
+  · office · <workspace> · N repos` links to that workspace's /office. Each plan
+  card has a **repo picker** (the office workspace's repos only, plus `(default)`
+  = the listing repo) and a repo chip; after approval each task card shows its
+  repo. A tainted feature gets a full-width **TAINTED banner** and a `tainted`
+  chip on every plan card; each task card still a held draft reads `tainted —
+  queue it yourself`. A phase with held tainted drafts gets **Queue tainted
+  cards of this phase**: the first press arms it (4 s), the second enqueues
+  each card through the ordinary `POST /api/tasks/:id/enqueue` (the server
+  re-pumps the feature after each). One card's refusal is a toast and does not
+  stop the rest. **Only a human may queue such a card**: Enqueue, Add to queue
+  (`/queue`), Run now and Retry on a tainted feature card (source `feature` +
+  `tainted_at`, in ANY status — a cancel needs no Origin, so gating only the
+  draft would let cancel → retry re-queue it) without `Origin` — a worker's
+  curl — are 403 (`taintedHoldRefusal` in
+  `routes/tasks.ts`, `TAINTED_FROM_BROWSER`; test `tainted-hold.test.ts`).
+  Telegram calls `task-actions.ts` in-process and is the single-user gate's.
+- **Features list** — an office feature's repo column reads `office ·
+  cross-repo`; a tainted one has a `tainted` chip.
+- **Inbox** (proposed-plan kind `feature`) — an office feature's row names the
+  repo SET its included cards use (`featurePlanRepoIds`, shared: each card's
+  `repoId`, else the listing repo, de-duplicated in plan order) instead of one
+  repo, a `tainted` chip, and the summary `[TAINTED ·] office feature · N
+  phase(s), M task(s) planned across K repos`. The detail shows the TAINTED
+  banner, the Director and workspace, and each card's repo.
+- **Telegram** — the feature-plan document (`telegram/report.ts` `renderPlan`)
+  for an office feature adds `office · N repo(s)` and `tainted` pills, a
+  `Repos:` line, the repo pill on every card, and for a tainted feature a red
+  TAINTED card above the plan. The Russian summary (and so the upload's caption)
+  says it is an office feature over N repos and, when tainted, that its tasks
+  will not queue themselves.
+
 ## UI
 
 ### The /office page

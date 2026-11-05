@@ -19,6 +19,7 @@ import path from 'node:path';
 import {
   commandOutputTaint,
   isReplanTrigger,
+  isFeatureAskTrigger,
   isStandupRole,
   mayResume,
   shiftTaint,
@@ -460,9 +461,21 @@ export class ShiftRunner {
       `This is one SHIFT, started by ${why}. Now: ${now.toISOString()} (office time zone ${office.timezone}).`,
       plan.resumeSessionId ? 'This session continues your earlier shifts; what follows is current and replaces anything older.' : '',
       '',
-      ...(trigger.kind === 'request' && trigger.note?.trim()
-        ? ['## The request', '', 'A human woke you with this note. Put it first in this shift:', '', trigger.note.trim(), '']
-        : []),
+      ...(director && isFeatureAskTrigger(trigger) && trigger.note?.trim()
+        ? [
+            '## Feature request',
+            '',
+            'A human asked you for a FEATURE. File it in this shift as the `feature` result section — {title, request}:',
+            "a clear title, and a request written from the text below plus what you know of the workspace (the goal, why,",
+            'what done looks like, which repos it touches). The server plans it into phases of tasks across the',
+            "workspace's repos and the human approves the plan. Do not split it into `tasks` yourself.",
+            '',
+            trigger.note.trim(),
+            '',
+          ]
+        : trigger.kind === 'request' && trigger.note?.trim()
+          ? ['## The request', '', 'A human woke you with this note. Put it first in this shift:', '', trigger.note.trim(), '']
+          : []),
       ...(replan
         ? [
             '## Re-plan',

@@ -57,6 +57,13 @@ export const SHIFT_FEATURE_DESCRIBE =
   "workspace's repos, an adversarial review checks the plan, and a HUMAN approves it before any task exists. " +
   `Use it rarely; small work goes in \`tasks\`. At most ${OFFICE_OPEN_FEATURES_MAX} of the office's features may be open.`;
 
+/** The open-feature cap's refusal for this office, or null while there is room (also Ask the Director's pre-check). */
+export async function officeFeatureCapRefusal(storage: Storage, officeId: string): Promise<string | null> {
+  const open = (await storage.listFeatures()).filter((f) => f.officeId === officeId && !CLOSED.includes(f.status));
+  if (open.length < OFFICE_OPEN_FEATURES_MAX) return null;
+  return `the office already has ${open.length} open features (at most ${OFFICE_OPEN_FEATURES_MAX}) — a human must finish or cancel one first`;
+}
+
 export interface FiledOfficeFeature {
   feature: Feature;
   /** false: left a draft with the reason in `error` (the office is paused) */
@@ -75,10 +82,8 @@ export async function fileOfficeFeature(storage: Storage, ctx: Pick<ShiftSection
   if (!isStandupRole(role)) throw new Error('only the Director may file a feature');
   const ws = await officeWorkspaceRepos(storage, office);
   if (!ws?.repos.length) throw new Error("the office's workspace has no repos to plan in");
-  const open = (await storage.listFeatures()).filter((f) => f.officeId === office.id && !CLOSED.includes(f.status));
-  if (open.length >= OFFICE_OPEN_FEATURES_MAX) {
-    throw new Error(`the office already has ${open.length} open features (at most ${OFFICE_OPEN_FEATURES_MAX}) — a human must finish or cancel one first`);
-  }
+  const full = await officeFeatureCapRefusal(storage, office.id);
+  if (full) throw new Error(full);
   const actor = officeActor(role);
   const created = await storage.createFeature(
     {

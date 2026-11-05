@@ -161,9 +161,17 @@ export function FeaturesPage() {
                   <tr key={f.id}>
                     <td data-label="Feature" style={{ fontWeight: 600 }}>
                       <Link to={`/features/${f.id}`}>{f.title}</Link>
+                      {f.taintedAt && (
+                        <>
+                          {' '}
+                          <span className="chip office-taint" title="filed by a shift that read untrusted input">
+                            tainted
+                          </span>
+                        </>
+                      )}
                     </td>
                     <td className="muted" data-label="Repo">
-                      {repoName(f.repoId)}
+                      {f.officeId ? 'office · cross-repo' : repoName(f.repoId)}
                     </td>
                     <td data-label="Status">
                       <FeatureBadge status={f.status} />

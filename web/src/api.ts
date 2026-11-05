@@ -74,6 +74,7 @@ import type {
   OfficeReadableDoc,
   OfficeEditableDoc,
   OfficeWish,
+  OfficeFeatureAskResult,
   OfficeWishCreateResult,
   OfficeWishPatchBody,
 } from '@tm/shared';
@@ -562,6 +563,8 @@ export const api = {
     req<OfficeProposalDecided>('POST', `/api/office-proposals/${id}/accept`, b),
   rejectOfficeProposal: (id: string, note?: string) =>
     req<OfficeProposalDecided>('POST', `/api/office-proposals/${id}/reject`, note ? { note } : {}),
+  /** Ask the Director for a feature (docs/office.md § Director features → Ask the Director) */
+  askOfficeFeature: (id: string, text: string) => req<OfficeFeatureAskResult>('POST', `/api/offices/${id}/ask-feature`, { text }),
   wakeOfficeRole: (id: string, roleId: string, note?: string) =>
     req<{ shiftId: string }>('POST', `/api/offices/${id}/roles/${roleId}/wake`, note ? { note } : {}),
 };

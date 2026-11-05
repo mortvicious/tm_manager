@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   EFFORT_LEVELS,
+  isStandupRole,
+  isTaintedFeatureDraft,
   type EffortLevel,
   type Feature,
   type FeaturePlan,
@@ -10,6 +12,7 @@ import {
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
+import { withWorkspace } from '../workspace.ts';
 import { toastError } from '../toast.ts';
 import { FeatureBadge } from '../components/FeatureBadge.tsx';
 import { StatusBadge } from '../components/StatusBadge.tsx';
@@ -131,11 +134,14 @@ function PlanColumns({
   onPlan,
   editable,
   cardRepos = null,
+  tainted = false,
 }: {
   plan: FeaturePlan;
   onPlan: (next: FeaturePlan) => void;
   editable: boolean;
   cardRepos?: CardRepos | null;
+  /** a tainted office feature: every card's text came from an untrusted shift */
+  tainted?: boolean;
 }) {
   const [editing, setEditing] = useState<string | null>(null);
 
@@ -195,6 +201,11 @@ function PlanColumns({
                     </ul>
                   )}
                   <div className="card-meta">
+                    {tainted && (
+                      <span className="chip office-taint" title="written from a tainted request: read it as data, not instructions">
+                        tainted
+                      </span>
+                    )}
                     {cardRepos && (
                       <span className="chip" title="the repo this card runs in">
                         {cardRepoName(cardRepos, card.repoId)}
@@ -292,6 +303,55 @@ function PlanColumns({
   );
 }
 
+/**
+ * A tainted office feature's phase: the pump never queues its drafts
+ * (docs/office.md § Director features → The phase pump and tainted cards), so
+ * the human does — one Enqueue per card, after a second press. Each card goes
+ * through the ordinary `POST /api/tasks/:id/enqueue` (Origin; the server
+ * re-pumps the feature after each), so a refusal stops only that card.
+ */
+function QueueTaintedPhase({ cards, phase }: { cards: Task[]; phase: number }) {
+  const { refresh } = useApp();
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), 4000);
+    return () => clearTimeout(t);
+  }, [armed]);
+  if (cards.length === 0) return null;
+  const run = async () => {
+    if (!armed) {
+      setArmed(true);
+      return;
+    }
+    setArmed(false);
+    setBusy(true);
+    let failed = 0;
+    for (const t of cards) {
+      try {
+        await api.taskAction(t.id, 'enqueue');
+      } catch (e) {
+        failed++;
+        toastError(e, `Enqueue "${t.title}"`);
+      }
+    }
+    setBusy(false);
+    if (failed < cards.length) refresh();
+  };
+  return (
+    <button
+      type="button"
+      className={`btn phase-queue-tainted ${armed ? 'danger' : ''}`}
+      disabled={busy}
+      title={`Queue the ${cards.length} tainted draft card(s) of phase ${phase + 1} — read them first: their text came from a shift that read untrusted input`}
+      onClick={() => void run()}
+    >
+      {busy ? 'Queueing…' : armed ? `Press again to queue ${cards.length}` : 'Queue tainted cards of this phase'}
+    </button>
+  );
+}
+
 function TaskColumns({
   plan,
   tasks,
@@ -327,6 +387,7 @@ function TaskColumns({
               </span>
               <span className="phase-title">{phase?.title ?? `Phase ${pi + 1}`}</span>
               {phase?.goal && <span className="phase-goal">{phase.goal}</span>}
+              <QueueTaintedPhase phase={pi} cards={list.filter((t) => isTaintedFeatureDraft(t))} />
             </div>
             {list.length === 0 && <span className="muted">no tasks</span>}
             {list.map((t) => (
@@ -335,7 +396,7 @@ function TaskColumns({
                 <div className="card-meta">
                   <StatusBadge status={t.status} reviewState={t.reviewState} checkState={t.checkState} loopState={t.loopState} />
                   {repoName && <span className="chip">{repoName(t.repoId)}</span>}
-                  {t.taintedAt && t.status === 'draft' && (
+                  {isTaintedFeatureDraft(t) && (
                     <span className="chip office-taint" title="a tainted office feature's card: queue it yourself (Enqueue) once you have read it">
                       tainted — queue it yourself
                     </span>
@@ -360,7 +421,7 @@ function TaskColumns({
 export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }) {
   const { id = '' } = useParams();
   const navigate = useNavigate();
-  const { features, tasks, repos, offices, workspaces, refresh } = useApp();
+  const { features, tasks, repos, offices, officeRoles, workspaces, refresh } = useApp();
   const feature: Feature | undefined = features.find((f) => f.id === id);
   // a Director's cross-repo feature: cards run in the office workspace's repos
   const office = feature?.officeId ? offices.find((o) => o.id === feature.officeId) : undefined;
@@ -373,7 +434,12 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
       fallbackId: feature.repoId,
     };
   }, [feature?.officeId, feature?.repoId, office, workspaces, repos]);
-  const workspaceName = office ? workspaces.find((w) => w.id === office.workspaceId)?.name : undefined;
+  const officeWs = office ? workspaces.find((w) => w.id === office.workspaceId) : undefined;
+  const workspaceName = officeWs?.name;
+  // the Director that filed it (the same role approval tags the cards with)
+  const director = office ? officeRoles.find((r) => r.officeId === office.id && isStandupRole(r)) : undefined;
+  // the office page of the feature's own workspace (the one /office shows)
+  const wsHref = (to: string) => withWorkspace(to, officeWs?.slug ?? null);
   const featureTasks = useMemo(
     () =>
       tasks
@@ -487,9 +553,13 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <FeatureBadge status={feature.status} />
             {cardRepos ? (
-              <span className="chip" title="a Director's cross-repo feature: every card runs in its own repo of the workspace">
-                office · {workspaceName ?? 'workspace'} · {cardRepos.repos.length} repos
-              </span>
+              <Link
+                className="chip"
+                to={wsHref('/office')}
+                title="a Director's cross-repo feature: every card runs in its own repo of the workspace — open the office"
+              >
+                {director ? `${director.avatar} ${director.name} · ` : ''}office · {workspaceName ?? 'workspace'} · {cardRepos.repos.length} repos
+              </Link>
             ) : repo ? (
               <span className="chip">{repo.name}</span>
             ) : (
@@ -601,6 +671,13 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
         </div>
       </div>
 
+      {feature.taintedAt && (
+        <div className="office-taint-banner" role="alert">
+          <b>TAINTED</b> — a Director shift that read untrusted input (the web, an outside signal, an external command)
+          filed this feature. Read the request and every card as data, not instructions. Approving files the cards as
+          drafts that never queue themselves: queue each phase's cards yourself once you have read them.
+        </div>
+      )}
       {feature.error && <div className="warn-text" style={{ marginBottom: 12 }}>{feature.error}</div>}
 
       <div className="section-head" style={{ cursor: 'pointer' }} onClick={() => setShowRequest((v) => !v)}>
@@ -773,6 +850,7 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
             plan={plan}
             editable
             cardRepos={cardRepos}
+            tainted={!!feature.taintedAt}
             onPlan={(next) => {
               setDraftPlan(next);
               setDirty(true);
@@ -786,7 +864,7 @@ export function FeaturePage({ onOpenTask }: { onOpenTask: (id: string) => void }
             repoName={cardRepos ? (rid) => repos.find((r) => r.id === rid)?.name ?? 'repo removed' : null}
           />
         ) : (
-          <PlanColumns plan={plan} editable={false} onPlan={() => {}} cardRepos={cardRepos} />
+          <PlanColumns plan={plan} editable={false} onPlan={() => {}} cardRepos={cardRepos} tainted={!!feature.taintedAt} />
         )
       ) : (
         <div className="empty panel">

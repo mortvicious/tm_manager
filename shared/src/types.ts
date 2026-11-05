@@ -2221,6 +2221,24 @@ export function isFeatureTaintedWaitReason(error: string | null | undefined): bo
   return !!error && /^\d+ tainted cards? waits? for you to queue (it|them)$/.test(error);
 }
 
+/**
+ * The repos an office feature's plan runs in (docs/office.md § Director
+ * features → UI): each included card's `repoId`, or the feature's listing repo
+ * for a card without one, de-duplicated in plan order. Read by the Inbox's
+ * proposed-plan row and the Telegram plan document; [] without a plan.
+ */
+export function featurePlanRepoIds(feature: { repoId: string | null; analysis: FeaturePlan | null }): string[] {
+  const out: string[] = [];
+  for (const ph of feature.analysis?.phases ?? []) {
+    for (const c of ph.tasks) {
+      if (c.excluded) continue;
+      const id = c.repoId ?? feature.repoId;
+      if (id && !out.includes(id)) out.push(id);
+    }
+  }
+  return out;
+}
+
 /** One planned task card. Nothing exists as a tm_tasks row until approval. */
 export interface FeaturePlanTask {
   /** stable client-side id so edits/reorders survive re-renders (not a task id) */

@@ -1327,6 +1327,12 @@ export interface OfficeDetail {
   roles: OfficeRole[];
   /** newest first, at most `OFFICE_DETAIL_SHIFTS` */
   shifts: OfficeShift[];
+  /**
+   * shift id → the feature that shift filed (the Director's `feature`
+   * section, read off its `office.feature` audit row), so the shift log links
+   * it (docs/office.md § Director features → UI). Only shifts in `shifts`.
+   */
+  shiftFeatures?: Record<string, string>;
 }
 export const OFFICE_DETAIL_SHIFTS = 50;
 
@@ -1605,6 +1611,28 @@ export const WISH_REF_PREFIX = 'wish:';
 /** A Director shift a doc change or a wish started — its prompt asks for a re-plan. */
 export function isReplanTrigger(t: { kind: string; ref?: string | null }): boolean {
   return t.kind === 'request' && !!t.ref && (t.ref.startsWith(REPLAN_REF_PREFIX) || t.ref.startsWith(WISH_REF_PREFIX));
+}
+
+/**
+ * `trigger.ref` of an "Ask the Director for a feature" wake
+ * (`POST /api/offices/:id/ask-feature`, docs/office.md § Director features →
+ * Ask the Director): a `request` whose note is the human's feature request,
+ * trusted text the shift is told to file as its `feature` section.
+ */
+export const FEATURE_ASK_REF = 'feature-ask';
+
+export function isFeatureAskTrigger(t: { kind: string; ref?: string | null }): boolean {
+  return t.kind === 'request' && t.ref === FEATURE_ASK_REF;
+}
+
+/** `POST /api/offices/:id/ask-feature` — the request, at most `OFFICE_WAKE_NOTE_MAX` chars. */
+export interface OfficeFeatureAskBody {
+  text: string;
+}
+
+export interface OfficeFeatureAskResult {
+  shiftId: string;
+  roleId: string;
 }
 
 /** What a Director wake after a wish or a doc change came to. */
