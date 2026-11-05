@@ -14137,3 +14137,94 @@ button.explain-tap:active {
     width: 100%;
   }
 }
+
+/* Wishes and vision (docs/office.md § Wishes and vision) */
+.office-wish-form {
+  padding: var(--tm-space-3) var(--tm-space-4);
+}
+
+.office-wish-form > .field + .field {
+  margin-top: var(--tm-space-2);
+}
+
+.office-wish-form textarea.field {
+  width: 100%;
+}
+
+.inbox-wish {
+  margin-bottom: var(--tm-space-4);
+}
+
+.office-wish-list {
+  padding-bottom: var(--tm-space-3);
+}
+
+.office-wish-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2) var(--tm-space-3);
+  padding: var(--tm-space-2) var(--tm-space-4);
+  border-top: 1px solid var(--tm-border);
+}
+
+.office-wish-row.done .office-wish-text,
+.office-wish-row.dropped .office-wish-text {
+  color: var(--tm-text-muted);
+  text-decoration: line-through;
+}
+
+.office-wish-text {
+  flex: 1 1 16rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.office-wish-list > .btn {
+  margin-left: var(--tm-space-4);
+}
+
+.office-wish-status {
+  width: auto;
+}
+
+.office-doc-tabs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-1);
+}
+
+.office-doc-tabs .btn.on {
+  color: var(--tm-text);
+  background: var(--tm-bg-raised);
+}
+
+.office-doc,
+.office-doc-editor {
+  padding: var(--tm-space-3) var(--tm-space-4);
+}
+
+.office-doc-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  margin-bottom: var(--tm-space-2);
+}
+
+.office-doc-name {
+  font-weight: 600;
+}
+
+.office-doc-text {
+  width: 100%;
+  min-height: 16rem;
+  margin-top: var(--tm-space-2);
+  resize: vertical;
+}
+
+.office-doc-preview {
+  margin-top: var(--tm-space-2);
+  min-height: 16rem;
+}

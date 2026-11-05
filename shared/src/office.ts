@@ -1567,3 +1567,86 @@ export interface OfficeWish {
   createdAt: string;
   updatedAt: string;
 }
+
+// ---------------------------------------------------------------------------
+// Wishes and vision (docs/office.md § Wishes and vision, phase 3)
+// ---------------------------------------------------------------------------
+
+/** A wish's text cap. */
+export const OFFICE_WISH_TEXT_MAX = 4000;
+/** Open wishes per office; a POST past it is 409. */
+export const OFFICE_WISHES_OPEN_MAX = 50;
+/** The office docs a human edits through `PUT /api/offices/:id/docs/:name`. */
+export const OFFICE_EDITABLE_DOCS = ['vision.md', 'priorities.md'] as const;
+export type OfficeEditableDoc = (typeof OFFICE_EDITABLE_DOCS)[number];
+/** Docs `GET /api/offices/:id/docs/:name` reads: the editable two plus the Director's roadmap. */
+export const OFFICE_READABLE_DOCS = ['vision.md', 'priorities.md', 'roadmap.md'] as const;
+export type OfficeReadableDoc = (typeof OFFICE_READABLE_DOCS)[number];
+/** A doc's size cap on PUT (characters). */
+export const OFFICE_DOC_MAX_CHARS = 16_000;
+/** The roadmap section's cap (characters). */
+export const OFFICE_ROADMAP_MAX_CHARS = 30_000;
+/** Wish status updates per shift. */
+export const SHIFT_WISH_UPDATES_MAX = 50;
+
+export function isOfficeEditableDoc(name: string): name is OfficeEditableDoc {
+  return (OFFICE_EDITABLE_DOCS as readonly string[]).includes(name);
+}
+
+export function isOfficeReadableDoc(name: string): name is OfficeReadableDoc {
+  return (OFFICE_READABLE_DOCS as readonly string[]).includes(name);
+}
+
+/** `trigger.ref` of a Director shift a doc change started: `re-plan:<doc>`. */
+export const REPLAN_REF_PREFIX = 're-plan:';
+/** `trigger.ref` of a Director shift a new wish started: `wish:<id>`. */
+export const WISH_REF_PREFIX = 'wish:';
+
+/** A Director shift a doc change or a wish started — its prompt asks for a re-plan. */
+export function isReplanTrigger(t: { kind: string; ref?: string | null }): boolean {
+  return t.kind === 'request' && !!t.ref && (t.ref.startsWith(REPLAN_REF_PREFIX) || t.ref.startsWith(WISH_REF_PREFIX));
+}
+
+/** What a Director wake after a wish or a doc change came to. */
+export type OfficeDirectorWake =
+  | { ok: true; shiftId: string }
+  | { ok: false; error: string; code?: string; /** true: retried by the scheduler tick once the slot frees */ pending: boolean };
+
+/** `GET /api/offices/:id/docs/:name`; `content` is '' for a missing file. */
+export interface OfficeDocView {
+  name: OfficeReadableDoc;
+  content: string;
+  /** sha256 hex of `content` — PUT's optimistic check */
+  sha256: string;
+  exists: boolean;
+}
+
+/** `PUT /api/offices/:id/docs/:name`. */
+export interface OfficeDocPutBody {
+  content: string;
+  /** the version the editor started from; a different file on disk is 409 */
+  baseSha256?: string;
+}
+
+export interface OfficeDocPutResult {
+  doc: OfficeDocView;
+  /** false: the content was identical — no audit row, no wake */
+  changed: boolean;
+  wake: OfficeDirectorWake | null;
+}
+
+/** `POST /api/offices/:id/wishes`. */
+export interface OfficeWishCreateBody {
+  text: string;
+}
+
+export interface OfficeWishCreateResult {
+  wish: OfficeWish;
+  wake: OfficeDirectorWake;
+}
+
+/** `PATCH /api/office-wishes/:id` — a human's edit or status change. */
+export interface OfficeWishPatchBody {
+  text?: string;
+  status?: OfficeWishStatus;
+}

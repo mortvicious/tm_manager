@@ -36,6 +36,12 @@ import {
   type OfficeNotesReview,
   type OfficeRoleWriteResult,
   type OfficeTrigger,
+  OFFICE_DOC_MAX_CHARS,
+  OFFICE_WISH_TEXT_MAX,
+  isOfficeEditableDoc,
+  isOfficeReadableDoc,
+  type OfficeDocPutResult,
+  type OfficeWishCreateResult,
 } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import { archiveRoleNotes, defaultOfficeFolder, resetRoleNotes, scaffoldOfficeFolder, validateOfficeFolder } from '../office/folder.ts';
@@ -44,6 +50,7 @@ import { allowlistCheck } from '../office/commands.ts';
 import { briefView, markBriefReviewed } from '../office/briefs.ts';
 import { untrustedPath } from '../office/isolation.ts';
 import { readOfficeText } from '../office/shift.ts';
+import { OfficeDocConflict, OfficeWishRefused, createOfficeWish, readOfficeDoc, saveOfficeDoc } from '../office/docs.ts';
 import { SHIFT_NOTES_MAX_CHARS, officeRel, roleNotesRel, writeOfficeFile } from '../office/shift-result.ts';
 import { roleFromPreset } from '../office/presets.ts';
 import { officeScheduler, officeStates, type OfficeScheduler } from '../office/scheduler.ts';
@@ -116,6 +123,20 @@ const roleCreateBody = roleFieldsPartial
   })
   .strict();
 const rolePatchBody = roleFieldsPartial.strict();
+const wishBody = z.object({ text: z.string().trim().min(1, 'a wish needs some text').max(OFFICE_WISH_TEXT_MAX) }).strict();
+const wishPatchBody = z
+  .object({
+    text: z.string().trim().min(1).max(OFFICE_WISH_TEXT_MAX).optional(),
+    status: z.enum(['open', 'planned', 'done', 'dropped']).optional(),
+  })
+  .strict()
+  .refine((b) => b.text !== undefined || b.status !== undefined, 'nothing to change: send text or status');
+const docPutBody = z
+  .object({
+    content: z.string().max(OFFICE_DOC_MAX_CHARS, `at most ${OFFICE_DOC_MAX_CHARS} characters`),
+    baseSha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  })
+  .strict();
 const wakeBody = z.object({ note: z.string().max(OFFICE_WAKE_NOTE_MAX).optional() }).strict();
 type RoleInput = z.infer<typeof roleFieldsPartial>;
 
@@ -838,5 +859,70 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opt
     const r = await s.wake(id, roleId, body.note ?? null, 'human');
     if (!r.ok) return reply.code(r.status).send({ error: r.error, ...(r.code ? { code: r.code } : {}) });
     return reply.code(202).send({ shiftId: r.shiftId });
+  });
+  // Wishes and vision (docs/office.md § Wishes and vision): a wish wakes the
+  // Director (`request`, ref `wish:<id>`; hard gate, no guards); a doc save
+  // whose content changed wakes it for a re-plan (`re-plan:<doc>`). A wake
+  // refused for a busy slot stays pending — the scheduler tick retries it.
+  app.get('/api/offices/:id/wishes', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!(await storage.getOffice(id))) return reply.code(404).send({ error: 'office not found' });
+    return storage.listWishes({ officeId: id });
+  });
+
+  app.post('/api/offices/:id/wishes', { preHandler: fromBrowser }, async (req, reply) => {
+    const body = wishBody.parse(req.body ?? {});
+    const { id } = req.params as { id: string };
+    const office = await storage.getOffice(id);
+    if (!office) return reply.code(404).send({ error: 'office not found' });
+    try {
+      const r: OfficeWishCreateResult = await createOfficeWish({ storage, waker: scheduler() }, office, body.text, 'human');
+      return reply.code(201).send(r);
+    } catch (e) {
+      if (e instanceof OfficeWishRefused) return reply.code(409).send({ error: e.message });
+      throw e;
+    }
+  });
+
+  app.patch('/api/office-wishes/:wishId', { preHandler: fromBrowser }, async (req, reply) => {
+    const body = wishPatchBody.parse(req.body ?? {});
+    const { wishId } = req.params as { wishId: string };
+    const cur = await storage.getWish(wishId);
+    if (!cur) return reply.code(404).send({ error: 'wish not found' });
+    const wish = await storage.updateWish(wishId, body);
+    if (!wish) return reply.code(404).send({ error: 'wish not found' });
+    await storage.appendEvent({
+      kind: 'office.wish',
+      actor: 'human',
+      data: { officeId: wish.officeId, wishId: wish.id, change: 'edited', ...(body.status ? { from: cur.status, to: body.status } : {}), textChanged: body.text !== undefined },
+    });
+    broadcast({ type: 'office-wish.updated', wish });
+    return wish;
+  });
+
+  app.get('/api/offices/:id/docs/:name', async (req, reply) => {
+    const { id, name } = req.params as { id: string; name: string };
+    if (!isOfficeReadableDoc(name)) return reply.code(404).send({ error: 'unknown office doc — vision.md, priorities.md or roadmap.md' });
+    const office = await storage.getOffice(id);
+    if (!office) return reply.code(404).send({ error: 'office not found' });
+    return readOfficeDoc(office, name);
+  });
+
+  app.put('/api/offices/:id/docs/:name', { preHandler: fromBrowser }, async (req, reply) => {
+    const { id, name } = req.params as { id: string; name: string };
+    if (!isOfficeEditableDoc(name)) return reply.code(404).send({ error: 'only vision.md and priorities.md are edited here (the Director writes roadmap.md)' });
+    const body = docPutBody.parse(req.body ?? {});
+    const office = await storage.getOffice(id);
+    if (!office) return reply.code(404).send({ error: 'office not found' });
+    try {
+      const r: OfficeDocPutResult = await saveOfficeDoc({ storage, waker: scheduler() }, office, name, body.content, {
+        baseSha256: body.baseSha256,
+        actor: 'human',
+      });
+      return r;
+    } catch (e) {
+      if (e instanceof OfficeDocConflict) return reply.code(409).send({ error: e.message });
+      return reply.code(400).send({ error: `could not write ${name}: ${(e as Error).message}` });
+    }
   });
 }

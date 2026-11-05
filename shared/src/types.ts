@@ -2458,6 +2458,12 @@ export type AuditKind =
   | 'office.brief'
   | 'office.proposals'
   | 'office.proposal-decided'
+  /** a human added a wish, or edited / re-statused one (docs/office.md § Wishes and vision) */
+  | 'office.wish'
+  /** a Director shift's `wishUpdates` moved wish statuses (docs/office.md § Wishes and vision) */
+  | 'office.wishes'
+  /** vision.md or priorities.md changed — saved from the dashboard or edited by hand (docs/office.md § Wishes and vision) */
+  | 'office.vision-changed'
   | 'approval.requested'
   | 'approval.decided'
   | 'approval.finished'
@@ -3102,6 +3108,7 @@ export type ServerEvent =
   /** a shift wrote a brief (`created`) or a human marked a tainted one reviewed (`reviewed`) — docs/office.md § Briefings */
   | { type: 'office.brief'; brief: OfficeBrief; change: 'created' | 'reviewed' }
   | { type: 'office-proposal.updated'; proposal: OfficeProposal }
+  | { type: 'office-wish.updated'; wish: OfficeWish }
   | { type: 'job-run.updated'; run: JobRun }
   | { type: 'jobs.toggle'; enabled: boolean }
   | { type: 'orchestrator.status'; status: OrchestratorStatus };
@@ -3719,6 +3726,6 @@ export * from './triage.ts';
 // Scheduled jobs: schedule parsing + the firing rule (docs/jobs.md)
 export * from './jobs.ts';
 import { jobRunNeedsHuman, type Job, type JobRun, type JobsHold } from './jobs.ts';
-import type { Office, OfficeBrief, OfficeProposal, OfficeRole, OfficeStates } from './office.ts';
+import type { Office, OfficeBrief, OfficeProposal, OfficeRole, OfficeStates, OfficeWish } from './office.ts';
 // Virtual Office: types, cron, catch-up, guards, the hard gate, autonomy and taint (docs/office.md)
 export * from './office.ts';

@@ -50,6 +50,7 @@ import { onServerEvent, useApp } from '../state.tsx';
 import { useIsMobile } from '../components/Layout.tsx';
 import { Sheet } from '../components/Sheet.tsx';
 import { Markdown } from '../components/Markdown.tsx';
+import { OfficeVision } from '../components/OfficeVision.tsx';
 import { useNow } from '../components/TimeAgo.tsx';
 import { useArm } from '../arm.ts';
 import { toastError } from '../toast.ts';
@@ -314,7 +315,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   const now = useNow();
   const { detail, states, error, reload } = useOfficeDetail(officeId);
   const [editing, setEditing] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | null>(null);
+  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | null>(null);
   const briefs = useOfficeBriefs(officeId);
   const [briefId, setBriefId] = useBriefParam();
 
@@ -343,6 +344,9 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
         <div className="office-phone-bar">
           <button className="btn" onClick={() => setSheet('settings')}>
             Settings
+          </button>
+          <button className="btn" onClick={() => setSheet('vision')}>
+            Vision &amp; wishes
           </button>
           <button className="btn" onClick={() => setSheet('briefs')}>
             Briefs <span className="muted">{briefs?.length ?? ''}</span>
@@ -375,6 +379,18 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
       </div>
 
       {editor && !mobile && <div className="panel office-editor-panel">{editor}</div>}
+
+      {!mobile && (
+        <div className="panel">
+          <div className="office-section-title">Vision &amp; wishes</div>
+          <OfficeVision office={office} />
+        </div>
+      )}
+      {mobile && sheet === 'vision' && (
+        <Sheet label="Vision and wishes" title="Vision & wishes" onClose={() => setSheet(null)} disableDrag tall>
+          <OfficeVision office={office} />
+        </Sheet>
+      )}
       {editor && mobile && (
         <Sheet label={`Edit ${editRole!.name}`} title={`${editRole!.avatar} ${editRole!.name}`} onClose={() => setEditing(null)} disableDrag tall>
           {editor}

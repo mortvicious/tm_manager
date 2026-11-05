@@ -941,7 +941,10 @@ In order:
 2. The role's prompt.
 3. The office folder and the workspace repos, each with its `repoId` (what
    the `tasks` section names).
-4. `vision.md` and `priorities.md` inline, up to 16 KB each.
+4. `vision.md` and `priorities.md` inline, up to 16 KB each. A Director
+   (`isStandupRole`) also gets `roadmap.md` and its open/planned wishes as a
+   fenced JSON block, and on a re-plan trigger a `## Re-plan` block first
+   (§ Wishes and vision).
 5. The role's notes inline.
 6. The role's **feedback file** (trusted, the last 50 entries).
 7. The office's last 10 shifts, as a fenced ```` ```json ```` block of DATA:
@@ -1567,6 +1570,96 @@ The next stand-up then reads the text (the window's reviewed clause).
 
 A tainted brief goes out too — with the warning — because the human is the
 one who reviews it; only agents are kept from it.
+
+## Wishes and vision
+
+The human steers the office through three inputs the Director plans from.
+Code: `server/src/office/docs.ts` (+ `docs.test.ts`), routes in
+`routes/offices.ts`, types at the end of `shared/src/office.ts`, SPA in
+`web/src/components/OfficeVision.tsx`.
+
+- **`vision.md`, `priorities.md`** — the human's files, always TRUSTED.
+  Edited on /office (`GET|PUT /api/offices/:id/docs/:name`) or by hand in the
+  folder.
+- **Wishes** — `tm_office_wishes` rows (`open | planned | done | dropped`):
+  standing requests a human adds from the Inbox or /office.
+- **`roadmap.md`** — the Director's plan, written only by the server from a
+  Director shift's `roadmap` section.
+
+### Routes
+
+Every write needs `Origin` (403 without — a worker's curl has none).
+
+| Route | What |
+| --- | --- |
+| `GET /api/offices/:id/wishes` | every wish, oldest first |
+| `POST /api/offices/:id/wishes` `{text}` | stores an `open` wish (≤ 4000 chars, ≤ 50 open per office → 409), `office.wish` audit row, `office-wish.updated` broadcast, then wakes the Director → 201 `{wish, wake}` |
+| `PATCH /api/office-wishes/:id` `{text?, status?}` | a human's edit or status change (`office.wish` row) |
+| `GET /api/offices/:id/docs/:name` | `vision.md`, `priorities.md` or `roadmap.md` → `{name, content, sha256, exists}`; anything else 404 |
+| `PUT /api/offices/:id/docs/:name` `{content, baseSha256?}` | vision/priorities only (roadmap 404), ≤ 16 000 chars; the server writes the file (`writeOfficeFile`, temp + rename). A `baseSha256` that no longer matches the file is 409 (someone edited it meanwhile). → `{doc, changed, wake}` |
+
+### What wakes the Director
+
+ONE Director shift (the office's enabled `director` preset role) with trigger
+kind **`request`** — so the hard gate applies (office on, not paused, Pause
+all, budget, role cap, slots) and the guards do not, exactly like Wake now —
+and a `trigger.ref` saying why:
+
+- `wish:<id>` — a new wish.
+- `re-plan:<doc>` — a doc whose content hash CHANGED: a PUT with different
+  content, or a hand edit the scheduler noticed. Identical content (after the
+  trailing newline is normalised) writes no row and wakes nobody.
+
+Each change is one `office.vision-changed` audit row `{name, source:
+dashboard | hand-edit | baseline, sha256Before, sha256}` (actor `human`: no
+one else writes these files). The scheduler's one-minute tick hashes both
+files of every office (`checkOfficeDocs`) against the last recorded hash —
+cached in memory, else read off the newest `office.vision-changed` row, so a
+restart neither re-wakes for an old edit nor misses one made while the server
+was down. A doc seen for the first time gets a `baseline` row and no wake.
+Several docs edited between two ticks wake once (`re-plan:vision.md+priorities.md`).
+Saves and tick checks of one office are serialized, so a save cannot be
+counted twice. Each wake is also an `office.wake` row carrying the `ref`.
+
+A wake refused only because a slot is busy (`slots`, `office-busy`, `busy`,
+`paused`, `server-paused`) is **pending**: the tick retries it each minute
+(one per office, the latest reason wins) until it starts or is refused for
+good — office off or human-paused, budget, role cap, no Director. Pending is
+in memory: a restart drops it, and the next Director shift reads the same
+docs and wishes anyway. The route's answer says which (`wake.pending`).
+
+### The re-plan shift
+
+A Director shift reads vision, priorities, `roadmap.md` and the open and
+planned wishes (JSON: id, status, createdAt, text) on EVERY shift; a re-plan
+trigger (`isReplanTrigger`: `request` + `wish:`/`re-plan:` ref) adds a
+`## Re-plan` block naming what changed and asking for the two sections below
+plus `tasks`/`proposals` as usual. Wish text is trusted (a human typed it
+behind `Origin`).
+
+Two result sections, registered in `docs.ts`, Director only (another role's
+is a section error):
+
+- **`roadmap`** — the COMPLETE new `roadmap.md` (≤ 30 000 chars), replaced
+  whole. Untainted only: a TAINTED shift's roadmap goes to the untrusted twin
+  (`untrusted/roadmap.md`), which no shift reads — the trusted file is left
+  as it was.
+- **`wishUpdates`** — `[{id, status}]` (≤ 50, ids unique). Refused whole from
+  a tainted shift (wish statuses are the human's ledger); an id of another
+  office is listed as an error and the rest apply. One `office.wishes` audit
+  row with `{id, from, to}` per move, `office-wish.updated` per row.
+
+### UI
+
+- **Inbox** — a **+ Wish** button in the title opens the form (inline on
+  desktop, a `<Sheet>` on a phone) for the current workspace's office (under
+  All: a picker over every office). The toast says whether the Director was
+  woken, will be, or why not.
+- **/office** — a *Vision & wishes* panel (phone: a button in the bar opening
+  a `<Sheet>`) with tabs Wishes · Vision · Priorities · Roadmap: the wish form
+  and list (status select, done/dropped folded), each doc rendered (safe
+  markdown) with **Edit** → a textarea with an Edit/Preview toggle and Save,
+  which sends the loaded `sha256` as `baseSha256`. Roadmap is read-only.
 
 ## UI
 

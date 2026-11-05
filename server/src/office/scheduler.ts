@@ -33,6 +33,7 @@ import type { Storage } from '../storage/types.ts';
 import { officeZone } from './budget.ts';
 import { officeGate, type CommitCounter } from './gate.ts';
 import type { ShiftStart, ShiftTriggerInput } from './shift.ts';
+import { checkOfficeDocs } from './docs.ts';
 
 /** One minute: the cron grid's own resolution. */
 export const OFFICE_TICK_MS = 60_000;
@@ -192,6 +193,10 @@ export class OfficeScheduler {
     for (const office of await storage.listOffices()) {
       if (this.stopped) break;
       try {
+        // vision.md / priorities.md hand edits, and a Director wake still owed (docs/office.md § Wishes and vision)
+        await checkOfficeDocs({ storage, waker: this }, office).catch((e) =>
+          console.warn(`office ${office.id}: doc check failed:`, (e as Error).message),
+        );
         if (office.enabled) await this.wakeDue(office, now, report);
         await this.publishStates(office.id, now);
       } catch (e) {
@@ -378,7 +383,13 @@ export class OfficeScheduler {
    * note goes to the shift as trusted text. A refusal is the caller's answer
    * (409 with the reason); no shift row is written for it.
    */
-  async wake(officeId: string, roleId: string, note: string | null, actor = 'human'): Promise<OfficeWakeResult> {
+  async wake(
+    officeId: string,
+    roleId: string,
+    note: string | null,
+    actor = 'human',
+    opts: { ref?: string; data?: Record<string, unknown> } = {},
+  ): Promise<OfficeWakeResult> {
     const { storage } = this.deps;
     const office = await storage.getOffice(officeId);
     if (!office) return { ok: false, status: 404, error: 'office not found' };
@@ -386,7 +397,8 @@ export class OfficeScheduler {
     if (!role || role.officeId !== office.id) return { ok: false, status: 404, error: 'role not found in this office' };
     const now = this.now();
     const text = note?.trim() ? note.trim().slice(0, OFFICE_WAKE_NOTE_MAX) : null;
-    const trigger: ShiftTriggerInput = { kind: 'request', ref: actor, at: iso(now), note: text };
+    // `ref`: who asked (Wake now), or what did — `wish:<id>` / `re-plan:<doc>` (docs.ts)
+    const trigger: ShiftTriggerInput = { kind: 'request', ref: opts.ref ?? actor, at: iso(now), note: text };
     const gate = await officeGate(storage, office, role, trigger, { now });
     if (!gate.ok) return { ok: false, status: 409, error: gate.reason, code: gate.code };
     const res = await this.deps.shifts().start(office, role, trigger);
@@ -395,7 +407,16 @@ export class OfficeScheduler {
     await storage.appendEvent({
       kind: 'office.wake',
       actor,
-      data: { officeId: office.id, workspaceId: office.workspaceId, roleId: role.id, roleKey: role.key, shiftId: res.shiftId, note: text },
+      data: {
+        officeId: office.id,
+        workspaceId: office.workspaceId,
+        roleId: role.id,
+        roleKey: role.key,
+        shiftId: res.shiftId,
+        note: text,
+        ...(opts.ref ? { ref: opts.ref } : {}),
+        ...(opts.data ?? {}),
+      },
     });
     await this.publishStates(office.id, now).catch(() => null);
     return { ok: true, shiftId: res.shiftId };

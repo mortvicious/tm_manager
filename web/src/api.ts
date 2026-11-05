@@ -68,6 +68,14 @@ import type {
   OfficeNotesReviewedBody,
   OfficeRoleWriteResult,
   OfficeStates,
+  OfficeDocPutBody,
+  OfficeDocPutResult,
+  OfficeDocView,
+  OfficeReadableDoc,
+  OfficeEditableDoc,
+  OfficeWish,
+  OfficeWishCreateResult,
+  OfficeWishPatchBody,
 } from '@tm/shared';
 
 // Only user-editable fields — status/error/resultSummary are machine-owned and
@@ -538,6 +546,12 @@ export const api = {
   officeNotesReview: (id: string, roleId: string) => req<OfficeNotesReview>('GET', `/api/offices/${id}/roles/${roleId}/notes-review`),
   markOfficeNotesReviewed: (id: string, roleId: string, b: OfficeNotesReviewedBody) =>
     req<OfficeRoleWriteResult>('POST', `/api/offices/${id}/roles/${roleId}/notes-reviewed`, b),
+  // Wishes and vision (docs/office.md § Wishes and vision)
+  listOfficeWishes: (id: string) => req<OfficeWish[]>('GET', `/api/offices/${id}/wishes`),
+  createOfficeWish: (id: string, text: string) => req<OfficeWishCreateResult>('POST', `/api/offices/${id}/wishes`, { text }),
+  patchOfficeWish: (wishId: string, b: OfficeWishPatchBody) => req<OfficeWish>('PATCH', `/api/office-wishes/${encodeURIComponent(wishId)}`, b),
+  getOfficeDoc: (id: string, name: OfficeReadableDoc) => req<OfficeDocView>('GET', `/api/offices/${id}/docs/${name}`),
+  putOfficeDoc: (id: string, name: OfficeEditableDoc, b: OfficeDocPutBody) => req<OfficeDocPutResult>('PUT', `/api/offices/${id}/docs/${name}`, b),
   listOfficeBriefs: (id: string, limit = 50) => req<OfficeBrief[]>('GET', `/api/offices/${id}/briefs?limit=${limit}`),
   getOfficeBrief: (briefId: string) => req<OfficeBriefView>('GET', `/api/office-briefs/${encodeURIComponent(briefId)}`),
   markOfficeBriefReviewed: (briefId: string, b: OfficeBriefReviewedBody) =>

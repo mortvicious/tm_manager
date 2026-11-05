@@ -18,6 +18,8 @@ import {
 import { useIsMobile } from '../components/Layout.tsx';
 import type { InboxReturn } from '../returnTo.ts';
 import { useWorkspace } from '../workspace.ts';
+import { useApp } from '../state.tsx';
+import { InboxWishButton, InboxWishForm } from '../components/OfficeVision.tsx';
 
 /**
  * The decide view (docs/inbox.md). Desktop: one list, the selected item
@@ -32,6 +34,10 @@ export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav 
   const items = useInbox();
   const everywhere = useInbox(true);
   const { workspace, setWorkspace, wsHref } = useWorkspace();
+  // a wish goes to the current workspace's office; under All, to any office (docs/office.md § Wishes and vision)
+  const { offices } = useApp();
+  const wishOffices = workspace ? offices.filter((o) => o.workspaceId === workspace.id) : offices;
+  const [wishing, setWishing] = useState(false);
   const reviews = items.filter((i) => i.kind === 'review').length;
   const waiting = decisions(items).length;
   const stale = items.length - waiting;
@@ -65,7 +71,8 @@ export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav 
             </>
           )}
         </span>
-        {((reviews > 0 && !mobile) || triaged > 0) && <span style={{ flex: 1 }} />}
+        <span style={{ flex: 1 }} />
+        <InboxWishButton offices={wishOffices} open={wishing} onToggle={() => setWishing((v) => !v)} />
         {triaged > 0 && (
           <Link
             className="btn ghost deck-entry"
@@ -83,6 +90,7 @@ export function InboxPage({ onOpenTask, onOpenTerminal, inboxReturn }: InboxNav 
           </>
         )}
       </h1>
+      {wishing && <InboxWishForm offices={wishOffices} mobile={mobile} onClose={() => setWishing(false)} />}
       {!mobile && items.length > 0 && (
         <div className="inbox-keys">
           <kbd>j</kbd>/<kbd>k</kbd> move · <kbd>p</kbd> publish / resume · <kbd>d</kbd> mark done ·{' '}

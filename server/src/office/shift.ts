@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   commandOutputTaint,
+  isReplanTrigger,
   isStandupRole,
   mayResume,
   shiftTaint,
@@ -50,6 +51,7 @@ import type { OrchestratorApi } from '../app-types.ts';
 import type { Storage } from '../storage/types.ts';
 import { allowlistCheck, commandRunsBlock, type OfficeCommandRuns } from './commands.ts';
 import { fallbackBrief, standupInput, writeShiftBrief, type StandupInput } from './briefs.ts';
+import { ROADMAP_REL, plannableWishes, replanReason } from './docs.ts';
 import { readRoleFeedback, roleFeedbackRel } from './feedback.ts';
 import { officeStates } from './scheduler.ts';
 import { validateOfficeFolder } from './folder.ts';
@@ -438,6 +440,11 @@ export class ShiftRunner {
     const vision = readOfficeText(office, 'vision.md', OFFICE_DOC_MAX_BYTES);
     const priorities = readOfficeText(office, 'priorities.md', OFFICE_DOC_MAX_BYTES);
     const history = await this.history(office);
+    // The Director plans: it reads the roadmap and the wishes on every shift (docs/office.md § Wishes and vision)
+    const director = isStandupRole(role);
+    const roadmap = director ? readOfficeText(office, ROADMAP_REL, OFFICE_DOC_MAX_BYTES) : null;
+    const wishes = director ? await plannableWishes(this.deps.storage, office.id) : [];
+    const replan = director && isReplanTrigger(trigger) ? replanReason(trigger.ref ?? '') : null;
     const allowed = await this.allowedCommands(office, role);
     const why =
       trigger.kind === 'cron'
@@ -454,6 +461,17 @@ export class ShiftRunner {
       '',
       ...(trigger.kind === 'request' && trigger.note?.trim()
         ? ['## The request', '', 'A human woke you with this note. Put it first in this shift:', '', trigger.note.trim(), '']
+        : []),
+      ...(replan
+        ? [
+            '## Re-plan',
+            '',
+            `This shift is a RE-PLAN: ${replan}. Read the vision, priorities, current roadmap and wishes below, then:`,
+            '- return `roadmap` with the COMPLETE new roadmap.md (it replaces the file whole);',
+            '- return `wishUpdates` for every wish whose status changes (`planned` once the roadmap or a filed task covers it, `done` once delivered, `dropped` only when the vision rules it out — say why in your brief);',
+            '- file the next concrete steps as `tasks` or `proposals`, as usual.',
+            '',
+          ]
         : []),
       '## Your role',
       '',
@@ -472,6 +490,24 @@ export class ShiftRunner {
       '',
       priorities?.trim() || '(empty)',
       '',
+      ...(director
+        ? [
+            `### Roadmap (${ROADMAP_REL})`,
+            '',
+            'Yours: return the `roadmap` section to replace it.',
+            '',
+            roadmap?.trim() || '(empty)',
+            '',
+            '### Wishes',
+            '',
+            'Standing wishes a human wrote (trusted), open and planned, oldest first. Move their status with `wishUpdates`.',
+            '',
+            ...(wishes.length
+              ? ['```json', JSON.stringify(wishes.map((w) => ({ id: w.id, status: w.status, createdAt: w.createdAt, text: w.text })), null, 1), '```']
+              : ['(none)']),
+            '',
+          ]
+        : []),
       `## Your notes (${plan.notesRel})`,
       '',
       'Your own working notes from earlier shifts. To change them, return the `notes` section (it replaces the file whole).',
