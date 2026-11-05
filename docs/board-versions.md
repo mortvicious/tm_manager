@@ -89,6 +89,8 @@ const tasks = useBoardTasks();
 - Whether a click on a task focuses or opens is the version's call. The relation-map mockup focuses on click and opens from the card; a list-like version may focus from a dedicated affordance instead.
 - The original board does NOT get the layer (frozen).
 
+**Role chip and `role:`** (2026-11-05, task 1c9f9933; docs/office.md § Role-tagged work) — a task an office role filed (`Task.roleId`) shows a `RoleChip` (`components/RoleChip.tsx`: the role's avatar + name, `.chip.role-chip` in `theme.css`, accent colour, tokens only; Glass gets its tinted capsule from the ordinary `[data-design='glass'] .chip` rule, no rule of its own). It sits in `TaskRow` (desktop: before the row's chips; phone: first in `row-meta`) — so Stacks and the original board get it with no edit to `Board.tsx` — and beside the repo chip in Swimlanes' cards, Metro's rows and tooltip, the Relation map's nodes and phone list, the task panel head's meta line and the timeline's hover card. A role the store does not know (deleted, not loaded) renders nothing. The roles come from the store's `offices`/`officeRoles` slice (`GET /api/offices` + each office's detail at boot, then `office.updated`, whose `roles` is the office's full list). The board search gains `role:<name>` (also the key or title; value = the role id): because the search context is built in the frozen `Board.tsx`, the roles reach `boardSearch.ts` through `setSearchRoles`, which the store calls on every render; an explicit `SearchContext.roles` wins.
+
 
 ## Relation map
 

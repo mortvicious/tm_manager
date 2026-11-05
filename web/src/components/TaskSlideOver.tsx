@@ -32,6 +32,7 @@ import { PresetPicker, reviewChoiceOf, reviewValueOf, type ReviewChoice } from '
 import { ReviewerFields, reviewIsOn } from './ReviewerPicker.tsx';
 import { TaskStatsLine } from './RunMeta.tsx';
 import { BadgeStrip, StatusBadge } from './StatusBadge.tsx';
+import { RoleChip } from './RoleChip.tsx';
 import { KindBadge, liveReviewRun, runTaskId } from './RunKind.tsx';
 import { ReviewPanel } from './ReviewPanel.tsx';
 import { ChecksPanel } from './ChecksPanel.tsx';
@@ -790,6 +791,7 @@ export function TaskSlideOver({
             {repoName}
           </span>
         )}
+        <RoleChip task={task} />
         {task.category && (
           <span className="so-meta-item so-cat" title="category">
             {task.category}

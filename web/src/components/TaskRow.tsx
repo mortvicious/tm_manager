@@ -10,6 +10,7 @@ import { useArm } from '../arm.ts';
 import { IconCheck, IconEye, IconGrip, IconMore, IconPlay, IconPublish, IconQueue, IconStop, IconTerminal, IconX } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
 import { QueueMark } from './QueueMark.tsx';
+import { RoleChip, useTaskRole } from './RoleChip.tsx';
 import { Sheet, SheetAction } from './Sheet.tsx';
 import { ProgressBar } from './TaskProgress.tsx';
 import { useRowSwipe, type SwipeSide } from './RowSwipe.tsx';
@@ -345,6 +346,8 @@ export function TaskRow({
       }
     : null;
   const swipe = useRowSwipe(`row:${task.id}`, lead, trail, mobile && !select && !sheet);
+  // the office role that filed the task (docs/office.md § Role-tagged work) leads the row's chips
+  const hasRole = useTaskRole(task) !== null;
 
   if (mobile) {
     const close = () => setSheet(false);
@@ -435,7 +438,12 @@ export function TaskRow({
             <IconMore />
           </QuickBtn>
         </span>
-        {children && <span className="row-meta">{children}</span>}
+        {(children || hasRole) && (
+          <span className="row-meta">
+            <RoleChip task={task} />
+            {children}
+          </span>
+        )}
         {sheet && (
           <Sheet label={`Actions for ${task.title}`} title={task.title} onClose={close}>
             <div className="sheet-actions">
@@ -563,6 +571,7 @@ export function TaskRow({
           </span>
         )}
       </span>
+      <RoleChip task={task} />
       {children}
       <span className="row-actions">
         {shellWait && (

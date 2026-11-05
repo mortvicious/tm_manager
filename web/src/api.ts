@@ -27,6 +27,8 @@ import type {
   SpaceFile,
   Space,
   Workspace,
+  Office,
+  OfficeDetail,
   SharedNoteKind,
   SharedNote,
   ReportLanguage,
@@ -257,6 +259,9 @@ export const api = {
     if (!res.ok) throw new Error(res.status === 404 ? 'no report for this run' : `report failed (${res.status})`);
     return res.text();
   },
+  // Virtual Office (docs/office.md § API) — read-only here: the roles a task chip names
+  listOffices: () => req<Office[]>('GET', '/api/offices'),
+  getOffice: (id: string) => req<OfficeDetail>('GET', `/api/offices/${id}`),
   // Workspaces (docs/workspaces.md)
   listWorkspaces: () => req<Workspace[]>('GET', '/api/workspaces'),
   createWorkspace: (b: { name: string; slug?: string; repoIds: string[]; color?: number | null }) =>

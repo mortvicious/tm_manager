@@ -22,6 +22,7 @@ import { buildTrackLayout, segmentAt, type TrackBar, type TrackGhost, type Track
 import { IconGrip } from '../Icons.tsx';
 import { dropClassFor, slotDraggable, TimelineDragGhost, useTimelineDrag, type TimelineDropView, type TimelineGripProps } from './TimelineDrag.tsx';
 import { SCRUB_SPEEDS, ScrubChip, useScrub, type Scrub } from './scrub.tsx';
+import { RoleChip } from '../RoleChip.tsx';
 
 /**
  * The desktop timeline (docs/timeline.md § Tracks): one horizontal track per
@@ -778,6 +779,7 @@ function HoverCard({
         </span>
         <span className="chip">{task?.status ?? 'gone'}</span>
         {task?.repoId && <span className="muted">{names.repo(task.repoId)}</span>}
+        {task && <RoleChip task={task} />}
       </div>
       <dl className="tlt-card-lines">
         {lines.map(([k, v], i) => (

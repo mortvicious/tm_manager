@@ -1268,6 +1268,52 @@ broadcast in `office.updated` (`states`): by the scheduler after each tick, only
 for an office whose states changed since its last broadcast; by every office
 route's `announce`; and by the shift runner when a shift ends.
 
+## Role-tagged work
+
+A task a shift filed carries `role_id` (§ Filing). Its worker is an ordinary
+worker, but it should know who asked and what that role already knows.
+
+**The role block** (`Orchestrator.officeContext` beside `sharedContext()` in
+`startWorker`; text from `roleContextBlock` in `server/src/office/role-context.ts`;
+`buildWorkerInvocation`'s `officeNote`). A FRESH session of a task with a
+`roleId` starts with:
+
+```
+## Office role: <name> — <title>
+This task was filed by the office role "<name>". …
+### Role brief
+<the role's prompt>
+### Role notes (roles/<key>.md)
+<the notes file, read like a shift reads it: realpath-checked, ≤ 96 KB>
+```
+
+It goes above the shared-space block, at the very top of the prompt.
+
+- **Notes and taint.** Untainted notes (`notesTaintedAt` null) are always
+  inlined. Tainted notes are inlined only when the task itself is tainted
+  (`Task.taintedAt` set): such a task already carries untrusted input, so the
+  notes add no new exposure. It reads the untrusted twin first, as the shift
+  runner does. An untainted task of a role with tainted notes gets the
+  `ROLE_NOTES_WITHHELD` line instead ("withheld … a human has not reviewed
+  them"). Neither the trusted file nor the twin is inlined.
+- **Never on a resume.** The session already read it. The same goes for the
+  first resume after a gate compaction, unlike the definition of done: the
+  role is context, not a rule the compact summary must preserve.
+  `compactPreserve`/`postCompactRules` are deliberately unchanged, so the block
+  is never duplicated into compaction focus or post-compact context.
+- **Never on the publish turn**, fresh or resumed (`purpose === 'publish'`, and
+  `buildWorkerPrompt`'s `isPublishTurn` as a second belt).
+- **Best-effort**, like the shared space. A missing role or office, or a read
+  error, spawns without the block (logged).
+
+Tests: `server/src/office/role-context.test.ts`.
+
+**In the SPA.** A `RoleChip` (avatar + name) shows on `TaskRow`, the task panel
+head, the four board versions and the timeline hover card. The board search
+takes `role:<name>`. The roles come from the store's `offices` slice, which
+follows `office.updated`. Details are in docs/board-versions.md § What shipped
+→ Role chip.
+
 ## UI
 
 _To be filled by the UI phase._

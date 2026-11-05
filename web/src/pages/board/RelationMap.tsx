@@ -32,6 +32,7 @@ import { useIsMobile } from '../../components/Layout.tsx';
 import { StatusBadge } from '../../components/StatusBadge.tsx';
 import { ProgressPct } from '../../components/TaskProgress.tsx';
 import { useApp } from '../../state.tsx';
+import { RoleChip } from '../../components/RoleChip.tsx';
 
 type Scope = 'live' | 'all';
 interface Prefs {
@@ -281,6 +282,7 @@ function Canvas({ layout, columns, onOpenTask, multiRepo }: { layout: RelationMa
               <span className="rm-node-meta">
                 <StatusBadge status={t.status} reviewState={t.reviewState} checkState={t.checkState} loopState={t.loopState} explain={false} />
                 {multiRepo && t.repoId && <span className="chip">{repoName.get(t.repoId) ?? 'repo'}</span>}
+                <RoleChip task={t} />
                 <ProgressPct task={t} />
               </span>
             </button>
@@ -349,6 +351,7 @@ function PhoneList({ layout }: { layout: RelationMapLayout }) {
                             ⇢
                           </span>
                         )}
+                        <RoleChip task={t} />
                         <ProgressPct task={t} />
                       </span>
                     </button>

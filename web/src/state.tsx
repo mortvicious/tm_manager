@@ -31,6 +31,8 @@ import type {
   SharedNote,
   Space,
   Workspace,
+  Office,
+  OfficeRole,
   Task,
   Job,
   JobRun,
@@ -39,6 +41,7 @@ import { APPROVAL_LABELS, AUTOPILOT_ACTOR, jobRunNeedsHuman, questionWaitedMinut
 import { api, normalizeTask } from './api.ts';
 import { openTaskFromAnywhere } from './nav.ts';
 import { toastError, toastSticky } from './toast.ts';
+import { setSearchRoles } from './boardSearch.ts';
 
 interface AppState {
   repos: Repo[];
@@ -84,6 +87,10 @@ interface AppState {
    * heard yet", and `?ws=<slug>` must not be judged unknown (workspace.tsx).
    */
   workspacesLoaded: boolean;
+  /** Virtual Offices (docs/office.md), following `office.updated` */
+  offices: Office[];
+  /** every office's roles — what a task's `roleId` chip names (RoleChip) */
+  officeRoles: OfficeRole[];
   sharedNotes: SharedNote[];
   /** saved per-repo command definitions (docs/commands.md) */
   commands: RepoCommand[];
@@ -184,6 +191,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
+  const [offices, setOffices] = useState<Office[]>([]);
+  const [officeRoles, setOfficeRoles] = useState<OfficeRole[]>([]);
+  // The board search's `role:` term reads the roles from here (boardSearch.ts
+  // § registeredRoles — the legacy board that builds the search context is
+  // frozen). Set during render, idempotent, so the board's own render sees it.
+  setSearchRoles(officeRoles);
   const [sharedNotes, setSharedNotes] = useState<SharedNote[]>([]);
   const [commands, setCommands] = useState<RepoCommand[]>([]);
   const [commandRuns, setCommandRuns] = useState<CommandRun[]>([]);
@@ -227,6 +240,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .then((list) => {
         setWorkspaces(list);
         setWorkspacesLoaded(true);
+      })
+      .catch(() => {});
+    // Offices are few; each one's roles come with its detail.
+    api
+      .listOffices()
+      .then(async (list) => {
+        setOffices(list);
+        const details = await Promise.all(list.map((o) => api.getOffice(o.id).catch(() => null)));
+        setOfficeRoles(details.flatMap((d) => d?.roles ?? []));
       })
       .catch(() => {});
     api.listSharedNotes().then(setSharedNotes).catch(() => {});
@@ -512,6 +534,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
               return next.sort(byWorkspaceOrder);
             });
             break;
+          case 'office.updated':
+            setOffices((cur) => {
+              const i = cur.findIndex((x) => x.id === e.office.id);
+              const next = [...cur];
+              if (i === -1) next.push(e.office);
+              else next[i] = e.office;
+              return next;
+            });
+            // `roles` is the office's FULL list after a role write; absent = unchanged
+            if (e.roles) {
+              const roles = e.roles;
+              setOfficeRoles((cur) => [...cur.filter((r) => r.officeId !== e.office.id), ...roles]);
+            }
+            break;
           case 'workspace.deleted':
             setWorkspaces((cur) => cur.filter((x) => x.id !== e.workspaceId));
             break;
@@ -653,6 +689,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         spaces,
         workspaces,
         workspacesLoaded,
+        offices,
+        officeRoles,
         sharedNotes,
         commands,
         commandRuns,

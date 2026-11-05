@@ -32,6 +32,7 @@ import { ProgressPct } from '../../components/TaskProgress.tsx';
 import { useNow } from '../../components/TimeAgo.tsx';
 import { publishBusy, usePendingActions } from '../../pending.ts';
 import { useApp } from '../../state.tsx';
+import { RoleChip } from '../../components/RoleChip.tsx';
 
 interface Prefs {
   laneBy: SwimlaneLaneBy;
@@ -147,6 +148,7 @@ function Card({
           onOpenReviewer={rv ? () => onOpenTerminal(rv.id) : undefined}
         />
         {multiRepo && task.repoId && task.repoId !== lane.repoId && <span className="chip">{repoName.get(task.repoId) ?? 'repo'}</span>}
+        <RoleChip task={task} />
         {task.createdByRun && (
           <span className="chip" title="filed by an agent session">
             agent

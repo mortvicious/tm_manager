@@ -26,6 +26,7 @@ import { useIsMobile } from '../../components/Layout.tsx';
 import { StatusBadge } from '../../components/StatusBadge.tsx';
 import { ProgressPct } from '../../components/TaskProgress.tsx';
 import { useApp } from '../../state.tsx';
+import { RoleChip } from '../../components/RoleChip.tsx';
 
 type Scope = 'live' | 'all';
 const PREFS_KEY = 'tm.metro';
@@ -273,6 +274,7 @@ function TipCard({ t }: { t: Task }) {
       <span className="mt-tip-meta">
         <StatusBadge status={t.status} reviewState={t.reviewState} checkState={t.checkState} loopState={t.loopState} explain={false} />
         {repo && <span className="chip">{repo}</span>}
+        <RoleChip task={t} />
         <ProgressPct task={t} />
       </span>
       {t.costUsd > 0 && <span className="mt-tip-cost">${t.costUsd.toFixed(2)}</span>}
@@ -400,6 +402,7 @@ function TimetableRow({
           <span className="mt-row-meta">
             {origin && <span className="mt-row-origin">origin · split</span>}
             <StatusBadge status={t.status} reviewState={t.reviewState} checkState={t.checkState} loopState={t.loopState} explain={false} />
+            <RoleChip task={t} />
             <ProgressPct task={t} />
           </span>
         </span>

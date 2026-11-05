@@ -99,6 +99,7 @@ nothing.
 | `feature` (`f`)                       | a feature's title, or its id                                                                      |
 | `dispatch` (`dispatches`)             | `any`, `pending`                                                                                  |
 | `model`                               | a model id; `default`                                                                             |
+| `role`                                | an office role's name, key or title (docs/office.md § Role-tagged work): the tasks that role filed |
 | `id` (`task`)                         | an id prefix                                                                                      |
 | `parent` (`under`)                    | an id or unique prefix: the whole subtree below it                                                |
 | `created` (`filed`), `updated` (`touched`, `date`) | a date phrase (below)                                                                |

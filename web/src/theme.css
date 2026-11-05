@@ -1165,6 +1165,23 @@ button.badge.badge-link:hover {
   color: var(--tm-text-muted);
 }
 
+/* office role chip (RoleChip, docs/office.md § Role-tagged work): avatar + name */
+.chip.role-chip {
+  gap: var(--tm-space-1);
+  color: var(--tm-accent);
+  font-family: var(--tm-font-body);
+  max-width: 14em;
+}
+.role-chip-avatar {
+  flex: none;
+  line-height: 1;
+}
+.role-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------- task rows ---------- */
 
 /* a row takes focus back from the task panel (dialogFocus.ts): ring inside

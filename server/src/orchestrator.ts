@@ -134,6 +134,7 @@ import {
   type BudgetVerdict,
 } from './budget.ts';
 import { settleAllOfficeBudgets } from './office/budget.ts';
+import { roleContextBlock } from './office/role-context.ts';
 import { MAX_LIVE_SESSIONS, pidLooksLikeOurs, type SessionManager } from './pty/session-manager.ts';
 import { artifactsRoot } from './config.ts';
 import { attachedFilesNote, readAttachedFiles } from './attachments.ts';
@@ -2836,6 +2837,29 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /**
+   * Role-tagged work (docs/office.md § Role-tagged work): a task an office
+   * role filed leads its FRESH prompt with the role's name, title, brief and
+   * notes — tainted notes only to a tainted task, otherwise a "withheld" line.
+   * Nothing on a resume (the session has it; the compaction rules do not
+   * repeat it either) and nothing on the publish turn. Best-effort like
+   * `sharedContext`: a missing role or office, or a read error, spawns
+   * without it.
+   */
+  private async officeContext(task: Task, purpose: 'work' | 'publish', resumed: boolean): Promise<string | undefined> {
+    if (!task.roleId || purpose === 'publish' || resumed) return undefined;
+    try {
+      const role = await this.storage.getOfficeRole(task.roleId);
+      if (!role) return undefined;
+      const office = await this.storage.getOffice(role.officeId);
+      if (!office) return undefined;
+      return roleContextBlock(office, role, task);
+    } catch (e) {
+      console.error('office role context failed (spawning without it):', e);
+      return undefined;
+    }
+  }
+
+  /**
    * Does this repo have no room for `forTask` (null = anyone) among its live
    * non-idle worker sessions? Today's "any session editing this repo" for a
    * `direct` repo (cap 1); a `pr` repo admits up to its cap of worktree
@@ -3821,6 +3845,7 @@ export class Orchestrator implements OrchestratorApi {
       const fyi = await this.pendingFyiDispatches(task.id);
       const resumeSessionId = handoff.kind === 'fresh' ? undefined : resumeFrom?.sessionId ?? undefined;
       const shared = await this.sharedContext(task, purpose, resumeSessionId ? resumeFrom ?? null : null);
+      const officeNote = await this.officeContext(task, purpose, !!resumeSessionId);
       // Definition of done (docs/checks.md): the acceptance text plus the
       // checks the Stop will run — a fresh prompt only, never the publish turn.
       const checksForPrompt = selectChecks(await this.storage.listCommands(repo.id), task);
@@ -3856,6 +3881,7 @@ export class Orchestrator implements OrchestratorApi {
         followUp,
         dispatchNote: [depsNote, retargetNote, fyi.note].filter(Boolean).join('\n\n') || undefined,
         shared,
+        officeNote,
         doneNote: doneNote ?? undefined,
         // what the human attached (docs/design.md § Attached files): a fresh prompt names it
         filesNote:

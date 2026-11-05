@@ -1,4 +1,4 @@
-import { effectiveLanding, groupAncestors, type Feature, type Repo, type Task, type TaskStatus } from '@tm/shared';
+import { effectiveLanding, groupAncestors, type Feature, type OfficeRole, type Repo, type Task, type TaskStatus } from '@tm/shared';
 import { MAX_TASK_ID_CANDIDATES, MIN_TASK_ID_PREFIX, findTaskById, normalizeTaskId } from './taskId.ts';
 import { readyToShip } from './nextStep.ts';
 
@@ -25,6 +25,7 @@ export type FacetKind =
   | 'feature'
   | 'dispatch'
   | 'model'
+  | 'role'
   | 'id'
   | 'parent'
   | 'created'
@@ -40,6 +41,7 @@ export const FACET_KINDS: readonly FacetKind[] = [
   'feature',
   'dispatch',
   'model',
+  'role',
   'id',
   'parent',
   'created',
@@ -142,7 +144,24 @@ export interface SearchContext {
   attention: (t: Task) => boolean;
   asking: ReadonlySet<string>;
   now: Date;
+  /**
+   * Office roles a `role:` token can name (docs/office.md § Role-tagged work).
+   * Optional: the frozen Board.tsx builds its context without it, so absent
+   * means the roles the store registered (`setSearchRoles`).
+   */
+  roles?: readonly OfficeRole[];
 }
+
+/**
+ * The store's office roles (state.tsx keeps this current). A registry rather
+ * than a context field only because the legacy board, which owns the search,
+ * is frozen (docs/board-versions.md) and cannot pass them in.
+ */
+let registeredRoles: readonly OfficeRole[] = [];
+export function setSearchRoles(roles: readonly OfficeRole[]): void {
+  registeredRoles = roles;
+}
+const rolesOf = (ctx: SearchContext): readonly OfficeRole[] => ctx.roles ?? registeredRoles;
 
 // ---------------------------------------------------------------- dates
 
@@ -334,13 +353,16 @@ function facetOptions(kind: FacetKind, ctx: SearchContext): FacetOption[] {
       if (ctx.tasks.some((t) => !t.model)) out.push({ value: 'default', label: 'default model', words: ['default'] });
       return out;
     }
+    case 'role':
+      // value = the role id; a name shared by two offices lists both, told apart by title
+      return rolesOf(ctx).map((r) => ({ value: r.id, label: `${r.name} · ${r.title}`, words: [r.name, r.key, r.title] }));
     default:
       return [];
   }
 }
 
 /** Facets whose values are a list (the rest are ids and dates, parsed from what was typed). */
-const LISTED: readonly FacetKind[] = ['status', 'state', 'source', 'repo', 'cat', 'group', 'feature', 'dispatch', 'model'];
+const LISTED: readonly FacetKind[] = ['status', 'state', 'source', 'repo', 'cat', 'group', 'feature', 'dispatch', 'model', 'role'];
 
 /**
  * How well a query fragment names a value: 4 exact, 3 prefix, 2 the start of
@@ -380,6 +402,7 @@ const KEY_ALIASES: Record<string, FacetKind | 'is'> = {
   dispatch: 'dispatch',
   dispatches: 'dispatch',
   model: 'model',
+  role: 'role',
   id: 'id',
   task: 'id',
   parent: 'parent',
@@ -481,6 +504,8 @@ function tokenMatches(tok: SearchToken, t: Task, ctx: SearchContext, range: { fr
       return (tok.value === 'pending' ? ctx.dispatched.pending : ctx.dispatched.any).has(t.id);
     case 'model':
       return tok.value === 'default' ? !t.model : t.model === tok.value;
+    case 'role':
+      return t.roleId === tok.value;
     case 'id':
       return t.id.toLowerCase().startsWith(tok.value);
     case 'parent':
@@ -560,6 +585,7 @@ export function parseText(text: string, ctx: SearchContext): { typed: SearchToke
 export function buildHaystacks(ctx: SearchContext): Map<string, string> {
   const repoName = new Map(ctx.repos.map((r) => [r.id, r.name]));
   const featureTitle = new Map(ctx.features.map((f) => [f.id, f.title]));
+  const roleName = new Map(rolesOf(ctx).map((r) => [r.id, r.name]));
   const out = new Map<string, string>();
   for (const t of ctx.tasks) {
     const g = ctx.groups.get(t.groupId);
@@ -581,6 +607,7 @@ export function buildHaystacks(ctx: SearchContext): Map<string, string> {
         t.category,
         t.featureId ? featureTitle.get(t.featureId) : null,
         t.model,
+        t.roleId ? roleName.get(t.roleId) : null,
         t.error,
         localDay(new Date(t.createdAt)),
         localDay(new Date(t.updatedAt)),
@@ -663,6 +690,10 @@ export function tokenLive(tok: SearchToken, ctx: SearchContext): boolean {
       return ctx.tasks.length === 0 || (ctx.groups.get(tok.value)?.size ?? 0) > 1;
     case 'feature':
       return ctx.features.length === 0 || ctx.features.some((f) => f.id === tok.value);
+    case 'role': {
+      const roles = rolesOf(ctx);
+      return roles.length === 0 || roles.some((r) => r.id === tok.value);
+    }
     case 'dispatch':
       return ctx.dispatched.any.size > 0;
     case 'status':
@@ -689,6 +720,7 @@ const FACET_NAME: Record<FacetKind, string> = {
   feature: 'feature',
   dispatch: 'dispatches',
   model: 'model',
+  role: 'role',
   id: 'id',
   parent: 'under',
   created: 'created',
@@ -713,6 +745,8 @@ export function tokenLabel(tok: SearchToken, ctx: SearchContext): { facet: strin
       return { facet, value: tok.value === 'pending' ? 'pending' : 'any' };
     case 'model':
       return { facet, value: tok.value === 'default' ? 'default' : tok.value };
+    case 'role':
+      return { facet, value: rolesOf(ctx).find((r) => r.id === tok.value)?.name ?? 'role' };
     case 'id':
       return { facet, value: `#${tok.value.slice(0, 8)}` };
     case 'parent': {
@@ -749,6 +783,7 @@ const SECTION: Record<FacetKind, string> = {
   feature: 'Features',
   dispatch: 'Dispatches',
   model: 'Models',
+  role: 'Roles',
   id: 'Ids',
   parent: 'Ids',
   created: 'Dates',

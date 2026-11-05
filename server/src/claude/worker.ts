@@ -372,6 +372,12 @@ function buildWorkerPrompt(opts: {
   /** The shared-space block (docs/shared-spaces.md); a context note like `dispatchNote`. */
   sharedNote?: string;
   /**
+   * The office role block (docs/office.md § Role-tagged work): who filed the
+   * task, its brief and notes. Fresh prompts only, never the publish turn;
+   * leads the prompt above the shared-space block.
+   */
+  officeNote?: string;
+  /**
    * The definition-of-done block (docs/checks.md): acceptance + the checks the
    * server will run. Fresh prompts, plus the first resume after the resume
    * gate compacted the session (the summary may have dropped it).
@@ -434,6 +440,9 @@ function buildWorkerPrompt(opts: {
         // The shared-space block LEADS a fresh prompt: it is what to read
         // before planning, and between a long description and the standing
         // rules it was read past (docs/shared-spaces.md § What a worker gets).
+        // The office role block (docs/office.md § Role-tagged work) is who
+        // asked for the work — above even the shared-space block.
+        opts.officeNote && !isPublishTurn ? `${opts.officeNote}\n\n` : '',
         opts.sharedNote && !isPublishTurn ? `${opts.sharedNote}\n\n` : '',
         `# Task: ${task.title}`,
         task.description ? `\n${task.description}` : '',
@@ -561,6 +570,11 @@ export function buildWorkerInvocation(opts: {
    */
   shared?: { dir: string; note?: string };
   /**
+   * The office role block (docs/office.md § Role-tagged work, `officeContext`).
+   * Fresh prompts only — ignored on a resume and on the publish turn.
+   */
+  officeNote?: string;
+  /**
    * The definition of done (docs/checks.md, `definitionOfDone()`): the task's
    * acceptance text and the checks the server will run after the turn. Only a
    * fresh prompt carries it — a resumed session already has it.
@@ -613,6 +627,7 @@ export function buildWorkerInvocation(opts: {
       resumeSessionId: opts.resumeSessionId,
       dispatchNote: opts.dispatchNote,
       sharedNote: opts.shared?.note,
+      officeNote: opts.resumeSessionId ? undefined : opts.officeNote,
       doneNote: opts.doneNote,
       filesNote: opts.resumeSessionId ? undefined : opts.filesNote,
       previousSummary: opts.previousSummary,
@@ -827,6 +842,7 @@ export function buildWorkerInvocation(opts: {
     resumeSessionId: opts.resumeSessionId,
     dispatchNote: opts.dispatchNote,
     sharedNote: opts.shared?.note,
+    officeNote: opts.resumeSessionId ? undefined : opts.officeNote,
     doneNote: opts.doneNote,
     filesNote: opts.resumeSessionId ? undefined : opts.filesNote,
     previousSummary: opts.previousSummary,
