@@ -409,6 +409,9 @@ deliverables/
 untrusted/README.md  "agents never read this folder unreviewed"
 ```
 
+The `untrusted/` slot is not hard-coded: the scaffold, the README table and
+`archiveRoleNotes` resolve it through `untrustedPath` (§ Isolation).
+
 It is idempotent. Files are created with `wx`, so an existing file (or even a
 dangling symlink) is never overwritten, and an edited `vision.md` or role file
 survives every re-run. A directory slot taken by a non-directory or a symlink
@@ -418,6 +421,95 @@ shared-memory `CLAUDE.md`. Delete that line to take the file over. Role keys
 must match `OFFICE_ROLE_KEY_RE`, so `roles/<key>.md` cannot escape the folder.
 With `repos` given, the folder is validated first and nothing is written on a
 refusal. The result lists `created`, `kept` and `readmeUpdated`.
+
+## Isolation
+
+`server/src/office/isolation.ts`. Untrusted text (web pages, outside signals,
+command output, archived notes) and the notes a tainted shift wrote must never
+reach a **trusted** shift's context (§ The taint model). A trusted shift runs
+with `cwd` = the office folder, so the question was whether the CLI's own
+`permissions.deny` can wall off part of its cwd, or whether untrusted storage
+has to live outside it.
+
+**The resolvers.** Two functions are the only place the layout is known:
+
+- `untrustedPath(office, relPath)` — the absolute path of `relPath` inside the
+  untrusted storage (`''` = its root). Refuses an absolute or climbing
+  (`..`) `relPath` and a relative office folder. Notes, deliverables, briefs,
+  the roadmap, messages and the scaffold reach untrusted storage only through
+  it — never a literal `untrusted/`.
+- `trustedShiftDenies(office, taintedPaths)` — the `permissions.deny` list a
+  trusted shift's `--settings` carries: `Read(//<root>/untrusted/**)` plus one
+  rule per tainted path (relative to the office folder; a file exactly, a
+  directory with `/**`). Every target is denied on its lexical **and** real
+  path, so a symlinked office folder is covered either way. A tainted path
+  outside the folder, the folder itself, or a path holding a character a rule
+  would read as syntax (`* ? [ ] { } ( ) \ !`, control characters —
+  `denyRuleRefusal`) **throws**: the shift must not spawn rather than run with
+  a rule that silently matches nothing. `validateOfficeFolder` refuses such a
+  folder up front, so only a folder renamed behind the server's back reaches
+  the throw.
+
+Tainted notes stay where they are (`roles/<key>.md`); the rule is what keeps
+them out. The rules bind the read-family tools only (measured below). A shift
+has no Bash (`SHIFT_TOOL_ALLOWLIST`), and that is what makes them enough. A
+worker session has Bash, so a deny rule could not protect a worker. See
+**Known exposure** below.
+
+**The measurement** (2026-11-05, task 589d8bff, Claude Code **2.1.318**). A
+temp office folder held `untrusted/page.md` (canary `CANARY-UNTRUSTED-…`),
+`roles/scout.md` standing in for tainted notes (canary `CANARY-TAINTED-NOTES-…`),
+a trusted `roles/director.md` and `vision.md`, and a git repo beside it with
+`a.txt`. Each attempt was a separate session spawned the way an aux shift is:
+`cwd` = the office folder, `--add-dir=<repo>`, `--permission-mode dontAsk`,
+`--tools=Read,Glob,Grep,Agent,TodoWrite` (`READ_ONLY_TOOLS`),
+`--disallowedTools=Edit,Write,NotebookEdit,Bash` (`READ_ONLY_DISALLOWED`), and
+
+```json
+{"permissions":{"deny":[
+  "Read(//<office>/untrusted/**)",
+  "Read(//<office>/roles/scout.md)"]}}
+```
+
+as `--settings`. The sessions ran under `-p --output-format stream-json`, so
+every tool result could be checked for the canary bytes. `-p` and the
+interactive PTY share the permission engine and the @-mention expansion, and
+the no-deny control below shows the expansion happening under `-p`. The
+model was `sonnet`, and enforcement is client-side.
+
+| Attempt | Result with the deny rules |
+|---|---|
+| Read `untrusted/page.md`, `roles/scout.md` | `File is in a directory that is denied by your permission settings.` — `director.md` and the repo's `a.txt` read normally |
+| Grep `CANARY\|OK-` with no path | only `roles/director.md:1:…`; the denied files are skipped silently |
+| Grep with path `untrusted` / `roles/scout.md` | `Permission to read <abs path> has been denied.` |
+| Glob `**/*` / `untrusted/**` | `roles/director.md`, `vision.md` / `No files found`: even the denied files' **names** are hidden |
+| `@untrusted/page.md`, `@roles/scout.md` in the prompt | not expanded, while `@roles/director.md` was |
+| Agent (general-purpose subagent) told to Read both | the subagent got the same denial |
+| `UNTRUSTED/page.md`, `Untrusted/PAGE.md`, `roles/SCOUT.md` (APFS is case-insensitive) | denied |
+| `roles/../untrusted/page.md`, `./untrusted/./page.md`, `<repo>/../office/untrusted/page.md` | denied |
+| `roles/link.md` → symlink to `../untrusted/page.md` (Read, and Grep over `roles`) | denied / no match |
+| rules written with the `/tmp` alias while the files are read under `/private/tmp` | denied |
+| an office folder whose path contains spaces (`…/my office/untrusted/**`) | denied |
+
+The canary appeared in **no** tool result or reply in any of these runs. As a
+control, the same five base attempts **without** the deny rules leaked both
+canaries through Read, Grep, the @-mention and the subagent, and Glob listed
+`untrusted/page.md` and `roles/scout.md`.
+
+**Decision** (decisions.md 2026-11-05): the deny holds, so untrusted storage
+stays **inside** the office folder as `untrusted/`. Moving it to a sibling
+`<folder>.untrusted/` was the fallback and was not needed. If a later CLI
+breaks one of the rows above, the fix is a change to `untrustedPath` alone.
+Re-run the measurement when the CLI's permission handling changes. The
+harness is in the task's artifacts (`isolation-probe.sh`).
+
+**Known exposure, out of this section's reach.** When the office uses the
+default `<space folder>/office`, every WORKER in the space's member repos gets
+`--add-dir=<space folder>` and Bash, so it can read `office/untrusted/` (and
+tainted notes) directly. Read-deny rules cannot close that, because Bash
+`cat` ignores them. A sibling `<folder>.untrusted/` would not close it
+either, since it would still sit inside the space folder. It is tracked as
+follow-up task 21ee2d45.
 
 ## Data model
 
