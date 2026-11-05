@@ -8,6 +8,7 @@ import {
   landingReason,
   type Approval,
   type JobRun,
+  type OfficeBrief,
   type Question,
   type CheckState,
   type ReviewState,
@@ -22,7 +23,7 @@ import { onEvent } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 import { encodeAction } from './actions.ts';
 import { escapeHtml, type Reply } from './api.ts';
-import { buildReport, type ReportDocument } from './report.ts';
+import { buildBriefReport, buildReport, type ReportDocument } from './report.ts';
 import type { InlineKeyboardMarkup } from './types.ts';
 import { jobRunMessage } from './jobs.ts';
 import { questionMessages, settledNotice } from './questions.ts';
@@ -362,7 +363,29 @@ export class TelegramNotifier {
       case 'job-run.updated':
         await this.onJobRun(e.run);
         break;
+      case 'office.brief':
+        if (e.change === 'created') this.onBrief(e.brief);
+        break;
     }
+  }
+
+  /** briefs already scheduled — one document per brief */
+  private briefsSent = new Set<string>();
+
+  /**
+   * A shift wrote a brief or stand-up (docs/office.md § Briefings → Delivery):
+   * ONE self-contained HTML document, the Russian lines as its caption. Gated
+   * by `notify.briefing` at flush; the brief is re-read then (deleted → silent).
+   */
+  private onBrief(b: OfficeBrief): void {
+    if (this.briefsSent.has(b.id)) return;
+    this.briefsSent.add(b.id);
+    this.after(COALESCE_MS, async () => {
+      if (!this.deps.notify.briefing) return;
+      const doc = await buildBriefReport(this.deps.storage, b.id);
+      if (!doc) return;
+      await this.deps.sendDocument(doc, doc.summary);
+    });
   }
 
   /** job runs already pinged — a run is broadcast again on acknowledge */

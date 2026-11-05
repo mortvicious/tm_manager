@@ -655,6 +655,15 @@ export function officeMarkReviewedSql(table: OfficeReviewable, id: string, at: s
   return { sql: `UPDATE ${t} SET reviewed_at = COALESCE(reviewed_at, ?) WHERE id = ? RETURNING *`, params: [at, id] };
 }
 
+/**
+ * `clearBriefTaint`: a human marked a tainted brief reviewed (docs/office.md §
+ * Briefings) — the file moved out of the untrusted storage to `path`, so the
+ * row gets the new path, `tainted_at` cleared and `reviewed_at` stamped, in one
+ * write that lands only while `tainted_at` still equals what the human read.
+ */
+export const OFFICE_BRIEF_CLEAR_TAINT_SQL = `UPDATE tm_office_briefs SET tainted_at = NULL, path = ?, reviewed_at = COALESCE(reviewed_at, ?)
+  WHERE id = ? AND tainted_at = ? RETURNING *`;
+
 export const OFFICE_WISH_INSERT_SQL = `INSERT INTO tm_office_wishes (id, office_id, text, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`;
 
 export function officeWishInsertParams(id: string, w: NewOfficeWish, at: string): unknown[] {

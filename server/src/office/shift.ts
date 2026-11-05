@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   commandOutputTaint,
+  isStandupRole,
   mayResume,
   shiftTaint,
   shiftToolsRefusal,
@@ -47,6 +48,7 @@ import { isInside, realPathDeep } from '../folder-guard.ts';
 import type { OrchestratorApi } from '../app-types.ts';
 import type { Storage } from '../storage/types.ts';
 import { allowlistCheck, commandRunsBlock, type OfficeCommandRuns } from './commands.ts';
+import { fallbackBrief, standupInput, writeShiftBrief, type StandupInput } from './briefs.ts';
 import { readRoleFeedback, roleFeedbackRel } from './feedback.ts';
 import { officeStates } from './scheduler.ts';
 import { validateOfficeFolder } from './folder.ts';
@@ -174,6 +176,12 @@ export interface ShiftPlan {
    * `command-output` taint source of THIS shift.
    */
   prevCommands: { shiftId: string; runs: OfficeShiftCommandRun[] } | null;
+  /**
+   * A stand-up's input (docs/office.md § Briefings): the other roles' briefs
+   * since the last stand-up (untainted as text, tainted as a digest line) and
+   * the scorecard; null for a role that does not hold stand-ups.
+   */
+  standup: StandupInput | null;
 }
 
 export class ShiftRunner {
@@ -379,9 +387,11 @@ export class ShiftRunner {
         .filter((rel) => fs.existsSync(path.join(path.resolve(office.folderPath), rel)));
       denies = this.isolation.trustedShiftDenies(office, taintedNotes);
     }
+    const standup = isStandupRole(role) ? await standupInput(this.deps.storage, office, role, this.now()) : null;
     return {
       denies,
       prevCommands,
+      standup,
       tainted: final.tainted,
       taintSources: final.sources.map(taintLabel),
       resumeSessionId,
@@ -482,6 +492,7 @@ export class ShiftRunner {
       '```',
       '',
       ...(plan.prevCommands ? commandRunsBlock(plan.prevCommands.shiftId, plan.prevCommands.runs) : []),
+      ...(plan.standup ? plan.standup.block : []),
       '## Saved commands you may request',
       '',
       ...(allowed.length
@@ -685,11 +696,38 @@ export class ShiftRunner {
         untrustedPath: (rel) => this.isolation.untrustedPath(office, rel),
         runId: runId ?? shift.runId,
         orchestrator: this.deps.orchestrator,
+        briefHeader: plan.standup?.header ?? null,
       });
       outcome.applied = applied.applied;
       outcome.sectionErrors = applied.errors;
       if (applied.errors.length) error = `result partly applied — ${applied.errors.map((e) => `${e.section}: ${e.error}`).join('; ')}`;
       outcome.error = error;
+    }
+
+    // Every ran shift leaves a brief (docs/office.md § Briefings): one that
+    // returned none — failed, stopped, or left the section out — gets the
+    // server's, written from its own record (never the session's prose).
+    if (!outcome.applied.some((a) => a.section === 'brief')) {
+      try {
+        const fb = fallbackBrief({ status: res.status, error, sections: outcome.applied });
+        const brief = await writeShiftBrief(
+          {
+            storage,
+            office,
+            role,
+            shiftId: shift.id,
+            tainted: plan.tainted,
+            now: this.now(),
+            untrustedPath: (rel) => this.isolation.untrustedPath(office, rel),
+            header: plan.standup?.header ?? null,
+          },
+          fb,
+          { auto: true },
+        );
+        outcome.applied.push({ section: 'brief', files: [brief.path], tainted: plan.tainted, briefId: brief.id });
+      } catch (e) {
+        console.warn(`office ${office.id}: could not write the fallback brief of shift ${shift.id}:`, (e as Error).message);
+      }
     }
 
     // The session: a new id (fresh or resumed) is the role's, with this
@@ -735,6 +773,7 @@ export class ShiftRunner {
             files: a.files,
             ...(a.taskIds ? { taskIds: a.taskIds } : {}),
             ...(a.commandIds ? { commandIds: a.commandIds } : {}),
+            ...(a.briefId ? { briefId: a.briefId } : {}),
             ...(a.errors ? { errors: a.errors } : {}),
           })),
           files,

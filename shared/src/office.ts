@@ -87,6 +87,12 @@ export const OFFICE_COMMAND_DONE_REF = 'command-done';
 export type OfficeGuard =
   | { kind: 'new-commits-since' }
   | { kind: 'tasks-landed-since' }
+  /**
+   * Another role of the office wrote a brief since this role's last shift
+   * (docs/office.md § Briefings) — `orTasksLanded` also passes on a landed task,
+   * the Director's stand-up guard.
+   */
+  | { kind: 'briefs-since'; orTasksLanded?: boolean }
   | { kind: 'open-bugs-below'; n: number }
   | { kind: 'budget-left'; minUsd?: number }
   | { kind: 'office-not-paused' }
@@ -97,6 +103,7 @@ export type OfficeGuardKind = OfficeGuard['kind'];
 export const OFFICE_GUARD_KINDS: readonly OfficeGuardKind[] = [
   'new-commits-since',
   'tasks-landed-since',
+  'briefs-since',
   'open-bugs-below',
   'budget-left',
   'office-not-paused',
@@ -648,6 +655,8 @@ export interface OfficeGuardFacts {
   newCommitsSinceLastShift?: number;
   /** tasks that landed (done/published) in the workspace since `lastRanShiftAt` */
   tasksLandedSinceLastShift?: number;
+  /** briefs OTHER roles of the office wrote since `lastRanShiftAt` */
+  briefsSinceLastShift?: number;
   openBugs?: number;
   /** what is left of today's budget (office and role cap, whichever is lower) */
   budgetLeftUsd?: number;
@@ -687,6 +696,8 @@ export function guardError(g: OfficeGuard): string | null {
       return Number.isInteger(g.n) && g.n >= 1 ? null : 'open-bugs-below needs a whole n ≥ 1';
     case 'budget-left':
       return g.minUsd === undefined || (Number.isFinite(g.minUsd) && g.minUsd >= 0) ? null : 'budget-left needs minUsd ≥ 0';
+    case 'briefs-since':
+      return g.orTasksLanded === undefined || typeof g.orTasksLanded === 'boolean' ? null : 'briefs-since needs orTasksLanded as a boolean';
     case 'quiet-hours':
       return HHMM_RE.test(g.from) && HHMM_RE.test(g.to) && g.from !== g.to ? null : 'quiet-hours needs from/to as distinct HH:MM';
     case 'cooldown':
@@ -708,6 +719,8 @@ export function describeGuard(g: OfficeGuard): string {
       return 'only after new code';
     case 'tasks-landed-since':
       return 'only after a task landed';
+    case 'briefs-since':
+      return g.orTasksLanded ? 'only after a new brief or a landed task' : 'only after a new brief';
     case 'open-bugs-below':
       return `only while fewer than ${g.n} bugs are open`;
     case 'budget-left':
@@ -734,6 +747,14 @@ function judge(g: OfficeGuard, f: OfficeGuardFacts): string | null {
       if (f.lastRanShiftAt === null) return null;
       if (f.tasksLandedSinceLastShift === undefined) return unknown('whether a task landed');
       return f.tasksLandedSinceLastShift > 0 ? null : 'no task landed since the last shift';
+    case 'briefs-since': {
+      if (f.lastRanShiftAt === null) return null;
+      if (f.briefsSinceLastShift === undefined) return unknown('whether a brief came in');
+      if (f.briefsSinceLastShift > 0) return null;
+      if (!g.orTasksLanded) return 'no new brief since the last shift';
+      if (f.tasksLandedSinceLastShift === undefined) return unknown('whether a task landed');
+      return f.tasksLandedSinceLastShift > 0 ? null : 'no new brief and no landed task since the last shift';
+    }
     case 'open-bugs-below':
       if (f.openBugs === undefined) return unknown('the open bug count');
       return f.openBugs < g.n ? null : `${plural(f.openBugs, 'open bug')} — runs only below ${g.n}`;
@@ -1409,8 +1430,38 @@ export interface OfficeNotesReviewedBody {
 // Briefings, proposals, wishes (docs/office.md § Data model, phase 3)
 // ---------------------------------------------------------------------------
 
-/** `standup` = a role's routine shift report; `brief` = a Director's briefing to the human. */
+/**
+ * `brief` = the report every ran shift of a role leaves (docs/office.md §
+ * Briefings); `standup` = the Director's stand-up over the other roles' briefs.
+ */
 export type OfficeBriefKind = 'standup' | 'brief';
+
+/** Whether a role's shifts are stand-ups (the Director preset): its brief is kind `standup` and its prompt carries the briefs since the last one. */
+export function isStandupRole(role: Pick<OfficeRole, 'preset'>): boolean {
+  return role.preset === 'director';
+}
+
+/** A brief's summary cap (the `brief` section's `summary`). */
+export const OFFICE_BRIEF_SUMMARY_MAX = 600;
+/** A brief's markdown cap. */
+export const OFFICE_BRIEF_MARKDOWN_MAX = 60_000;
+
+/** `GET /api/office-briefs/:id`: the row, the file's text as it stands, and its sha (the Mark reviewed body names it). */
+export interface OfficeBriefView {
+  brief: OfficeBrief;
+  workspaceId: string;
+  roleName: string | null;
+  roleKey: string | null;
+  /** null = the file is gone */
+  text: string | null;
+  sha256: string | null;
+}
+
+/** `POST /api/office-briefs/:id/reviewed` — the version the human read. */
+export interface OfficeBriefReviewedBody {
+  taintedAt: string;
+  sha256: string;
+}
 
 /** A markdown deliverable a shift wrote (`tm_office_briefs`); the text lives in the office folder at `path`. */
 export interface OfficeBrief {

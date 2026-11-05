@@ -174,6 +174,7 @@ describe('evalGuards', () => {
     lastShiftEndedAt: T('2026-11-04T23:10:00Z'),
     newCommitsSinceLastShift: 0,
     tasksLandedSinceLastShift: 0,
+    briefsSinceLastShift: 0,
     openBugs: 7,
     budgetLeftUsd: 1.5,
     officePaused: true,
@@ -183,6 +184,7 @@ describe('evalGuards', () => {
   const cases: [OfficeGuard, RegExp][] = [
     [{ kind: 'new-commits-since' }, /^no new code since the last shift$/],
     [{ kind: 'tasks-landed-since' }, /^no task landed since the last shift$/],
+    [{ kind: 'briefs-since', orTasksLanded: true }, /^no new brief and no landed task since the last shift$/],
     [{ kind: 'open-bugs-below', n: 5 }, /^7 open bugs — runs only below 5$/],
     [{ kind: 'budget-left', minUsd: 2 }, /^only \$1\.50 of today's budget left \(needs \$2\.00\)$/],
     [{ kind: 'office-not-paused' }, /^office paused: holiday$/],
@@ -209,6 +211,7 @@ describe('evalGuards', () => {
       now: T('2026-11-04T12:00:00Z'),
       newCommitsSinceLastShift: 3,
       tasksLandedSinceLastShift: 1,
+      briefsSinceLastShift: 1,
       openBugs: 2,
       budgetLeftUsd: 5,
       officePaused: false,
@@ -231,6 +234,14 @@ describe('evalGuards', () => {
     assert.ok(!v.pass && /cannot tell the open bug count/.test(v.reason));
     const m = evalGuards([{ kind: 'cooldown', minutes: -1 }], base);
     assert.ok(!m.pass && /misconfigured guard/.test(m.reason));
+  });
+  test('briefs-since: a brief passes; orTasksLanded also passes on a landed task; a missing fact fails closed', () => {
+    assert.deepEqual(evalGuards([{ kind: 'briefs-since' }], { ...base, briefsSinceLastShift: 2 }), { pass: true });
+    const only = evalGuards([{ kind: 'briefs-since' }], { ...base, tasksLandedSinceLastShift: 3 });
+    assert.ok(!only.pass && only.reason === 'no new brief since the last shift');
+    assert.deepEqual(evalGuards([{ kind: 'briefs-since', orTasksLanded: true }], { ...base, tasksLandedSinceLastShift: 3 }), { pass: true });
+    const unknown = evalGuards([{ kind: 'briefs-since' }], { now, timezone: 'UTC', lastRanShiftAt: now - 1000 });
+    assert.ok(!unknown.pass && /cannot tell whether a brief came in/.test(unknown.reason));
   });
   test('budget spent reads as spent', () => {
     const v = evalGuards([{ kind: 'budget-left' }], { ...base, budgetLeftUsd: 0 });

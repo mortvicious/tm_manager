@@ -171,6 +171,8 @@ export interface TelegramNotifyConfig {
   anomaly: boolean;
   /** one line per loop-task iteration that went on (docs/loops.md); off by default — the loop's end is the review ping */
   loop: boolean;
+  /** an office shift wrote a brief or stand-up — sent as one HTML document (docs/office.md § Briefings) */
+  briefing: boolean;
 }
 
 export const NOTIFY_CLASSES: (keyof TelegramNotifyConfig)[] = [
@@ -186,6 +188,7 @@ export const NOTIFY_CLASSES: (keyof TelegramNotifyConfig)[] = [
   'boot',
   'anomaly',
   'loop',
+  'briefing',
 ];
 
 const DEFAULT_CONFIG: BootConfig = {
@@ -216,6 +219,7 @@ const DEFAULT_CONFIG: BootConfig = {
       boot: true,
       anomaly: true,
       loop: false,
+      briefing: true,
     },
     digest: { ...DEFAULT_DIGEST },
     chat: { ...DEFAULT_TELEGRAM_CHAT },

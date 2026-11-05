@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
-import type { Office, OfficeRole } from '@tm/shared';
+import { officeDay, type Office, type OfficeRole } from '@tm/shared';
 import { AuxRunner, READ_ONLY_DISALLOWED } from '../claude/aux.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 import { SqliteStorage } from '../storage/sqlite.ts';
@@ -70,6 +70,9 @@ const isolation: ShiftIsolation = {
   },
   untrustedPath,
 };
+
+/** the office-local day a brief file is named after */
+const today = (o: Office) => officeDay(Date.now(), o.timezone);
 
 const result = (v: unknown, prose = 'Done.') => `${prose}\n\n\`\`\`json\n${JSON.stringify(v)}\n\`\`\``;
 
@@ -237,7 +240,8 @@ describe('notes and feedback', () => {
     await stop(sp1.runId, result({ notes: '# Notes\n\nnew notes, replacing the old\n' }));
     const out = await s1.done;
     assert.equal(out.status, 'ok');
-    assert.deepEqual(out.applied.map((a) => a.files), [[`roles/${r.key}.md`]]);
+    // no `brief` section returned: the server's fallback brief is the last applied entry
+    assert.deepEqual(out.applied.map((a) => a.files), [[`roles/${r.key}.md`], [`briefings/${today(o)}-${r.key}.md`]]);
     assert.equal(fs.readFileSync(path.join(o.folderPath, `roles/${r.key}.md`), 'utf8'), '# Notes\n\nnew notes, replacing the old\n');
     const fb = fs.readFileSync(path.join(o.folderPath, roleFeedbackRel(r.key)), 'utf8');
     assert.match(fb, /ACCEPTED by a human\. Thanks\./);
@@ -306,7 +310,13 @@ describe('taint', () => {
     const delivAt = untrustedPath(o, 'deliverables/seo/audit.md');
     assert.equal(fs.readFileSync(notesAt, 'utf8'), 'tainted notes\n');
     assert.equal(fs.readFileSync(delivAt, 'utf8'), '# Audit\n');
-    assert.deepEqual(out.applied.flatMap((a) => a.files), [path.relative(o.folderPath, notesAt), path.relative(o.folderPath, delivAt)]);
+    const briefAt = untrustedPath(o, `briefings/${today(o)}-${r.key}.md`);
+    assert.deepEqual(out.applied.flatMap((a) => a.files), [
+      path.relative(o.folderPath, notesAt),
+      path.relative(o.folderPath, delivAt),
+      path.relative(o.folderPath, briefAt),
+    ]);
+    assert.ok(fs.existsSync(briefAt), 'a tainted shift’s (fallback) brief lands in the untrusted storage');
     assert.match(fs.readFileSync(path.join(o.folderPath, `roles/${r.key}.md`), 'utf8'), /old notes/, 'trusted notes untouched');
     assert.ok(!fs.existsSync(path.join(o.folderPath, 'deliverables/seo/audit.md')));
     const after1 = await storage.getOfficeRole(r.id);
@@ -536,7 +546,8 @@ describe('tasks section (docs/office.md § Filing)', () => {
       assert.equal(t.taintedAt, null);
     }
     const ev = (await storage.listEvents({ kind: 'office.shift', limit: 200 })).find((e) => (e.data as any)?.shiftId === start.shiftId);
-    assert.deepEqual((ev?.data as any).sections, [{ section: 'tasks', files: [], taskIds: row.filedTaskIds }]);
+    assert.deepEqual((ev?.data as any).sections[0], { section: 'tasks', files: [], taskIds: row.filedTaskIds });
+    assert.equal((ev?.data as any).sections[1].section, 'brief');
   });
 
   test('a tainted (WebFetch) shift files drafts with tainted_at', async () => {

@@ -43,7 +43,7 @@ state a review verdict the same way.
 | `failed` / `blocked` / `published` | the transition, re-read at flush | failed `/?task=<id>&tab=history`; blocked/published `/?task=<id>` |
 | `started` | `queued` → `running` (**off by default**) | `/?task=<id>` |
 | `proposal` | a pending proposal (once per id). The kind also covers an office role's task proposals (`tm_office_proposals`, docs/office.md § Data model) | its task, or `/` |
-| `briefing` | an office role filed a standup or a Director briefing (`tm_office_briefs`, docs/office.md § Data model). The kind is listed (on by default) ahead of its notifier, which lands with the office's phase-3 briefings | — |
+| `briefing` | an office shift wrote a brief, or the Director wrote its stand-up (`office.brief` created, docs/office.md § Briefings) — once per brief, sent as it arrives, title `🗂 Stand-up · <role>` / `🗂 Brief · <role>`, body the summary (`⚠ untrusted · ` first when the brief is tainted), tag `brief-<id>` | `/office?brief=<id>` (switches to the brief's workspace and opens the viewer) |
 | `feature` | a plan is ready to approve (`proposed`), or the feature `paused` | `/features/<id>` |
 | `chat` | claude replied in a chat whose last message was typed in the **browser**. A phone-typed turn is already answered in Telegram | `/chat/<id>` |
 | `report` | a client report became `ready` or `failed` | `/reports` |
@@ -114,6 +114,11 @@ Review & checks. The tab obeys the panel's precedence: a value the build does
 not offer is ignored, and once the task's state bucket moves under the open
 panel the URL tab is dropped. Telegram links into the SPA nowhere, so it has no
 tab. Tested in `server/src/push-notifier.test.ts`.
+
+**`/office?brief=<id>`** (2026-11-05, the `briefing` kind, `briefUrl`) opens the
+brief viewer on `/office`: the page fetches the brief, switches to its workspace
+(`?ws=`) when the current one is another, and keeps `?brief=` while the viewer is
+open (closing it drops the parameter). Tested in `server/src/office/briefs.test.ts`.
 
 ## The service worker
 

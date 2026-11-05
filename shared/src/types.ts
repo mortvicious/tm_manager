@@ -2452,8 +2452,10 @@ export type AuditKind =
   | 'office.shift-deferred'
   /** a human pressed Wake now on a role */
   | 'office.wake'
-  /** a human marked a role's tainted notes reviewed (clears `notesTaintedAt`; docs/office.md § The /office page) */
+  /** a human marked a role's tainted notes, or a tainted brief, reviewed (clears `notesTaintedAt` / the brief's `taintedAt`; docs/office.md § The /office page, § Briefings) */
   | 'office.taint-cleared'
+  /** a shift's brief was written (docs/office.md § Briefings) */
+  | 'office.brief'
   | 'approval.requested'
   | 'approval.decided'
   | 'approval.finished'
@@ -3095,6 +3097,8 @@ export type ServerEvent =
   | { type: 'job.deleted'; jobId: string }
   /** an office row changed (docs/office.md § Gate and budget: the budget trip / midnight clear; § API: a human edit). `roles` = the office's full role list, sent after a role write. */
   | { type: 'office.updated'; office: Office; roles?: OfficeRole[]; states?: OfficeStates }
+  /** a shift wrote a brief (`created`) or a human marked a tainted one reviewed (`reviewed`) — docs/office.md § Briefings */
+  | { type: 'office.brief'; brief: OfficeBrief; change: 'created' | 'reviewed' }
   | { type: 'job-run.updated'; run: JobRun }
   | { type: 'jobs.toggle'; enabled: boolean }
   | { type: 'orchestrator.status'; status: OrchestratorStatus };
@@ -3666,6 +3670,6 @@ export * from './triage.ts';
 // Scheduled jobs: schedule parsing + the firing rule (docs/jobs.md)
 export * from './jobs.ts';
 import { jobRunNeedsHuman, type Job, type JobRun, type JobsHold } from './jobs.ts';
-import type { Office, OfficeRole, OfficeStates } from './office.ts';
+import type { Office, OfficeBrief, OfficeRole, OfficeStates } from './office.ts';
 // Virtual Office: types, cron, catch-up, guards, the hard gate, autonomy and taint (docs/office.md)
 export * from './office.ts';

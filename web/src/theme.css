@@ -13925,6 +13925,58 @@ button.explain-tap:active {
   overflow-wrap: anywhere;
 }
 
+/* briefings (docs/office.md § Briefings) */
+.office-brief-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.office-brief-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2) var(--tm-space-4);
+  border: none;
+  border-bottom: 1px solid var(--tm-border);
+  background: transparent;
+  color: var(--tm-text);
+  font: inherit;
+  font-size: var(--tm-text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.office-brief-row:hover,
+.office-brief-row.on {
+  background: var(--tm-bg-overlay);
+}
+
+.office-brief-summary {
+  flex: 1 1 16em;
+  min-width: 0;
+  color: var(--tm-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.chip.office-brief-kind {
+  color: var(--tm-accent);
+  border-color: currentColor;
+}
+
+.office-brief-view {
+  padding: var(--tm-space-3) var(--tm-space-4);
+  border-top: 1px solid var(--tm-border);
+}
+
+.office-brief-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  margin-bottom: var(--tm-space-2);
+}
+
 /* the shift log */
 .office-shift {
   padding: var(--tm-space-2) var(--tm-space-4);

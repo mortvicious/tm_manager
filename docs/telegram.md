@@ -68,7 +68,8 @@ The whole block, with the fields you actually have to set at the top:
     "notify": {
       "review": true, "attention": true, "failed": true, "blocked": true,
       "published": true, "proposal": true, "feature": true,
-      "usage": true, "queue": true, "boot": true, "anomaly": true, "loop": false
+      "usage": true, "queue": true, "boot": true, "anomaly": true, "loop": false,
+      "briefing": true
     },
     "digest": { "enabled": false, "hour": 9 },
     "chat": { "enabled": true, "allowWrite": false }
@@ -407,6 +408,7 @@ All three are bot state, not knobs: they are deliberately absent from the `PUT /
 | `feature.updated` | status became `proposed` | `feature` | 🧩 Feature title analyzed — phases/tasks, last plan-review verdict + findings, plan summary (**Approve & start**) |
 | `feature.updated` | status became `paused` | `feature` | ⏸ Feature title was **paused**: the error |
 | `task.updated` / `run.exited` | nothing `queued`, nothing `running`, and there HAD been work since the last drain | `queue` | 🏁 **Queue drained** (+ review count) |
+| `office.brief` | `change: 'created'` — an office shift wrote a brief or the Director's stand-up ([`office.md`](office.md) § Briefings); coalesced 5 s, once per brief | `briefing` | ONE HTML document (§ Reports' builder, `buildBriefReport`): the brief rendered from its markdown (escaped first; links keep their text only), the Russian lede — «Стендап офиса …» / «Бриф …», a ⚠ «Недоверенный ввод» line for a tainted brief, «Кратко:» + the summary — which is also the caption. A config written before the class existed gets it on (the defaults are merged on load) |
 | *(usage watcher, 60s poll of `usageSnapshot()`)* | a window's known `resetsAt` passed | `usage` | 🔄 the window reset (was N%) |
 | *(usage watcher)* | pct crossed 50 / 80 / 95 upward | `usage` | 📈 window crossed N% — now M% (+ resetsAt) |
 | *(bot lifecycle, not the bus)* | boot drain finished | `boot` | the "back online" message with the discarded-updates count |
@@ -853,6 +855,10 @@ The day is recorded **only after a successful send**, which is why the digest ca
 The block is **normalised in the bot's constructor** (`cfg.digest ??= DEFAULT_DIGEST`, in place, so the scheduler and `/digest` share one live object) and `digest.start()` is wrapped: `loadBootConfig()` always merges the defaults in, but a config built by hand has no `digest` key, and the scheduler reads `digest.hour` at start. This is the same rule the missing-token branch follows — the most optional subsystem in the module must not be able to take the poll loop down with it.
 
 Each digest writes a `telegram.bot` audit row with `event: 'digest'`.
+
+### Office briefs use this too
+
+An office brief or stand-up (`notify.briefing`, § Notifications) is sent as a document from the same builder — `buildBriefDocument` in `telegram/report.ts`, `REPORT_CSS`, zero external assets, the Russian summary as the caption — rather than a message, because a brief is markdown of any length and the caption limit would clip it.
 
 ### The feature-plan message uses this
 

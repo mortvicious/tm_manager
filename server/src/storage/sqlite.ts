@@ -76,6 +76,7 @@ import {
   officeBriefInsertParams,
   officeBriefListSql,
   officeMarkReviewedSql,
+  OFFICE_BRIEF_CLEAR_TAINT_SQL,
   officeProposalDecideSql,
   officeProposalFiledSql,
   officeProposalInsertParams,
@@ -2365,6 +2366,11 @@ export class SqliteStorage implements Storage {
     const r = this.db.prepare(q.sql).get(...(q.params as any[]));
     if (!r) return null;
     return table === 'brief' ? rowToOfficeBrief(r) : rowToOfficeProposal(r);
+  }
+
+  async clearBriefTaint(id: string, expectedTaintedAt: string, newPath: string): Promise<OfficeBrief | null> {
+    const r = this.db.prepare(OFFICE_BRIEF_CLEAR_TAINT_SQL).get(newPath, now(), id, expectedTaintedAt);
+    return r ? rowToOfficeBrief(r) : null;
   }
 
   async createWish(w: NewOfficeWish): Promise<OfficeWish> {

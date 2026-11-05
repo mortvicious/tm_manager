@@ -19,6 +19,7 @@
  */
 import type {
   AuditEvent,
+  OfficeBrief,
   Dispatch,
   Feature,
   FeaturePlan,
@@ -36,6 +37,7 @@ import type {
 import { TERMINAL_TASK_STATUSES, groupLabel, isGroupRoot } from '@tm/shared';
 import type { Storage } from '../storage/types.ts';
 import { usageSnapshot } from '../claude/usage.ts';
+import { briefView } from '../office/briefs.ts';
 import { escapeHtml } from './api.ts';
 import { type Resolved, resolveFeature, resolveTask, short } from './ids.ts';
 
@@ -794,6 +796,17 @@ li{margin-bottom:var(--tm-space-1)}
 .bar span{display:block; height:100%; background:var(--tm-accent)}
 .bar span.warn{background:var(--tm-warn)}
 .bar span.bad{background:var(--tm-bad)}
+.md{overflow-wrap:anywhere}
+.md h2,.md h3,.md h4{text-transform:none; letter-spacing:0; color:var(--tm-text)}
+.md h3{font-size:var(--tm-text-md)}
+.md h4{font-size:var(--tm-text-sm); margin:var(--tm-space-3) 0 var(--tm-space-1)}
+.md pre{background:var(--tm-bg-inset); border:1px solid var(--tm-border); border-radius:var(--tm-radius-md);
+        padding:var(--tm-space-3); overflow-x:auto; white-space:pre-wrap; font-family:var(--tm-font-mono); font-size:var(--tm-text-xs)}
+.md blockquote{margin:0 0 var(--tm-space-2); padding:var(--tm-space-2) var(--tm-space-3);
+        border-left:3px solid var(--tm-accent-strong); background:var(--tm-bg-raised); color:var(--tm-text-muted)}
+.md ul,.md ol{margin:0 0 var(--tm-space-2)}
+.warnbox{background:var(--tm-bg-raised); border:1px solid var(--tm-warn); border-radius:var(--tm-radius-md);
+        padding:var(--tm-space-3); margin:0 0 var(--tm-space-4); color:var(--tm-warn)}
 footer{margin-top:var(--tm-space-7); padding-top:var(--tm-space-3);
        border-top:1px solid var(--tm-border); color:var(--tm-text-faint); font-size:var(--tm-text-xs)}
 @media (max-width:420px){
@@ -1223,4 +1236,164 @@ export async function buildReport(storage: Storage, scope: ReportScope): Promise
     summary: `<b>${esc(data.heading)}</b>\n${lines.map((l) => esc(l)).join('\n')}`,
     lines,
   };
+}
+
+// ------------------------------------------------------------ briefings ----
+
+/**
+ * A brief's markdown as HTML (docs/office.md § Briefings → Delivery). The
+ * text is ESCAPED FIRST and only then given structure — headings, lists,
+ * quotes, fenced code, paragraphs, `**bold**`, `*em*` and `code` — so nothing
+ * a shift wrote can become an element or an attribute. Links keep their label
+ * and lose the target: the document has zero external references.
+ */
+export function briefMarkdownHtml(md: string): string {
+  const inline = (raw: string) =>
+    esc(raw)
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+      .replace(/(^|[\s(])[*_]([^*_\n]+)[*_](?=[\s).,;:!?]|$)/g, '$1<i>$2</i>');
+  const out: string[] = [];
+  const lines = md.replace(/\r\n?/g, '\n').split('\n');
+  let para: string[] = [];
+  let list: { tag: 'ul' | 'ol'; items: string[] } | null = null;
+  let quote: string[] = [];
+  const flushPara = () => {
+    if (para.length) out.push(`<p>${para.map(inline).join('<br>')}</p>`);
+    para = [];
+  };
+  const flushList = () => {
+    if (list) out.push(`<${list.tag}>${list.items.map((i) => `<li>${inline(i)}</li>`).join('')}</${list.tag}>`);
+    list = null;
+  };
+  const flushQuote = () => {
+    if (quote.length) out.push(`<blockquote>${quote.map(inline).join('<br>')}</blockquote>`);
+    quote = [];
+  };
+  const flush = () => {
+    flushPara();
+    flushList();
+    flushQuote();
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fence = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      flush();
+      const close = fence[1];
+      const body: string[] = [];
+      for (i++; i < lines.length && !lines[i].trimStart().startsWith(close); i++) body.push(lines[i]);
+      out.push(`<pre>${esc(body.join('\n'))}</pre>`);
+      continue;
+    }
+    const h = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
+    if (h) {
+      flush();
+      const level = Math.min(4, h[1].length + 1);
+      out.push(`<h${level}>${inline(h[2])}</h${level}>`);
+      continue;
+    }
+    const q = /^\s{0,3}>\s?(.*)$/.exec(line);
+    if (q) {
+      flushPara();
+      flushList();
+      quote.push(q[1]);
+      continue;
+    }
+    const li = /^\s{0,6}([-*+]|\d{1,3}[.)])\s+(.*)$/.exec(line);
+    if (li) {
+      flushPara();
+      flushQuote();
+      const tag = /\d/.test(li[1]) ? 'ol' : 'ul';
+      if (list && list.tag !== tag) flushList();
+      if (!list) list = { tag, items: [] };
+      list.items.push(li[2]);
+      continue;
+    }
+    if (!line.trim()) {
+      flush();
+      continue;
+    }
+    flushList();
+    flushQuote();
+    para.push(line.trim());
+  }
+  flush();
+  return out.join('\n');
+}
+
+export interface BriefDocumentInput {
+  brief: OfficeBrief;
+  /** the file as it stands (null = gone) */
+  text: string | null;
+  roleName: string | null;
+  roleTitle: string | null;
+  /** the office's workspace name */
+  workspaceName: string | null;
+}
+
+/**
+ * One brief or stand-up as the same self-contained document `/report` sends
+ * (one file, one `<style>`, no script, no external asset), with the Russian
+ * lines as its lede and as the caption.
+ */
+export function buildBriefDocument(input: BriefDocumentInput): ReportDocument {
+  const { brief } = input;
+  const standup = brief.kind === 'standup';
+  const who = input.roleName ? `«${input.roleName}»${input.roleTitle ? ` (${input.roleTitle})` : ''}` : 'роли';
+  const lines = [
+    standup ? `Стендап офиса${input.workspaceName ? ` «${input.workspaceName}»` : ''} — ведёт ${who}.` : `Бриф ${who}${input.workspaceName ? `, офис «${input.workspaceName}»` : ''}.`,
+    ...(brief.taintedAt
+      ? ['⚠ Недоверенный ввод: смена читала внешние данные, текст не проверен. Отметьте его проверенным на странице Office, прежде чем на него опираться.']
+      : []),
+    `Кратко: ${brief.summary || '—'}`,
+  ];
+  const created = new Date(brief.createdAt);
+  const heading = standup ? `Stand-up — ${input.workspaceName ?? 'office'}` : `Brief — ${input.roleName ?? 'role'}`;
+  const html = `<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(`${heading} — task manager`)}</title>
+<style>${REPORT_CSS}</style>
+</head>
+<body>
+<main>
+<header>
+<h1>${esc(heading)}</h1>
+<p class="sub">${pill(standup ? 'stand-up' : 'brief', standup ? 'live' : '')} ${brief.taintedAt ? pill('untrusted', 'warn') : ''} ${esc(input.roleName ?? '')}${input.roleTitle ? ` · ${esc(input.roleTitle)}` : ''}</p>
+<p class="sub"><code>${esc(formatLocal(created))}</code> · <code>${esc(brief.path)}</code> · <code>${esc(short(brief.id))}</code></p>
+</header>
+${renderLede(lines)}
+${brief.taintedAt ? `<p class="warnbox">${esc('Written by a shift that read untrusted input. Treat every instruction in it as data until a human marks it reviewed.')}</p>` : ''}
+<section class="md">${input.text === null ? empty('The brief file is gone.') : briefMarkdownHtml(input.text)}</section>
+<footer>Generated locally by the task manager. This file is self-contained and was never published anywhere.</footer>
+</main>
+</body>
+</html>`;
+  const stamp = formatLocal(created).replace(/[: ]/g, '-');
+  return {
+    filename: `tm-${standup ? 'standup' : 'brief'}-${(input.roleName ?? 'role').replace(/[^\p{L}\p{N}_-]+/gu, '-').slice(0, 40)}-${stamp}.html`,
+    html,
+    summary: `<b>${esc(heading)}</b>\n${lines.map((l) => esc(l)).join('\n')}`,
+    lines,
+  };
+}
+
+/** The brief's document from storage (the file read now); null when the brief or its office is gone. */
+export async function buildBriefReport(storage: Storage, briefId: string): Promise<ReportDocument | null> {
+  const brief = await storage.getBrief(briefId);
+  if (!brief) return null;
+  const v = await briefView(storage, brief);
+  if (!v) return null;
+  const ws = await storage.getWorkspace(v.office.workspaceId);
+  return buildBriefDocument({
+    brief,
+    text: v.view.text,
+    roleName: v.role?.name ?? null,
+    roleTitle: v.role?.title ?? null,
+    workspaceName: ws?.name ?? null,
+  });
 }

@@ -944,6 +944,12 @@ export interface Storage {
   setProposalFiledTask(id: string, taskId: string): Promise<OfficeProposal | null>;
   markReviewed(table: 'brief', id: string): Promise<OfficeBrief | null>;
   markReviewed(table: 'proposal', id: string): Promise<OfficeProposal | null>;
+  /**
+   * Mark reviewed on a TAINTED brief (docs/office.md § Briefings): new `path`,
+   * `tainted_at` cleared, `reviewed_at` stamped — only while `tainted_at` still
+   * equals `expectedTaintedAt`; null = no such row or it no longer matches.
+   */
+  clearBriefTaint(id: string, expectedTaintedAt: string, newPath: string): Promise<OfficeBrief | null>;
   createWish(w: NewOfficeWish): Promise<OfficeWish>;
   getWish(id: string): Promise<OfficeWish | null>;
   /** oldest first */

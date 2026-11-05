@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   CONCURRENCY_MAX,
   EFFORT_LEVELS,
@@ -27,6 +28,8 @@ import {
   type EffortLevel,
   type Office,
   type OfficeAutonomy,
+  type OfficeBrief,
+  type OfficeBriefView,
   type OfficeDetail,
   type OfficeEventName,
   type OfficeGuard,
@@ -46,6 +49,7 @@ import { api } from '../api.ts';
 import { onServerEvent, useApp } from '../state.tsx';
 import { useIsMobile } from '../components/Layout.tsx';
 import { Sheet } from '../components/Sheet.tsx';
+import { Markdown } from '../components/Markdown.tsx';
 import { useNow } from '../components/TimeAgo.tsx';
 import { useArm } from '../arm.ts';
 import { toastError } from '../toast.ts';
@@ -176,9 +180,28 @@ function useOfficeDetail(officeId: string) {
 // ---------------------------------------------------------------------------
 
 export function OfficePage({ onOpenTask, onOpenTerminal }: Props) {
-  const { workspace } = useWorkspace();
+  const { workspace, setWorkspace } = useWorkspace();
+  const { workspaces } = useApp();
   const { offices, error, reload } = useOffices();
   const office = workspace && offices ? (offices.find((o) => o.workspaceId === workspace.id) ?? null) : null;
+  const [briefId] = useBriefParam();
+  // A deep link (`/office?brief=<id>`, the push ping) names a brief, not a
+  // workspace: switch to the brief's workspace so its office opens with it.
+  useEffect(() => {
+    if (!briefId) return;
+    let live = true;
+    api.getOfficeBrief(briefId).then(
+      (v) => {
+        if (!live || v.workspaceId === workspace?.id) return;
+        const ws = workspaces.find((w) => w.id === v.workspaceId);
+        if (ws) setWorkspace(ws.slug);
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [briefId, workspace?.id, workspaces, setWorkspace]);
 
   return (
     <div className="office-page">
@@ -291,7 +314,9 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   const now = useNow();
   const { detail, states, error, reload } = useOfficeDetail(officeId);
   const [editing, setEditing] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<'settings' | 'log' | null>(null);
+  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | null>(null);
+  const briefs = useOfficeBriefs(officeId);
+  const [briefId, setBriefId] = useBriefParam();
 
   if (!detail) return error ? <div className="warn-text">{error}</div> : <div className="muted">Loading…</div>;
   const { office, roles, shifts } = detail;
@@ -302,18 +327,25 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   const log = (
     <ShiftLog office={office} roles={roles} shifts={shifts} inSheet={mobile} onOpenTask={onOpenTask} onOpenTerminal={onOpenTerminal} />
   );
+  const briefList = (
+    <BriefList office={office} roles={roles} briefs={briefs} selected={briefId} inSheet={mobile} onSelect={(id) => setBriefId(id === briefId ? null : id)} />
+  );
+  const viewer = briefId && <BriefViewer key={briefId} office={office} briefId={briefId} inSheet={mobile} onClose={() => setBriefId(null)} />;
   const editor = editRole && (
     <RoleEditor key={editRole.id} office={office} role={editRole} inSheet={mobile} onClose={() => setEditing(null)} onSaved={reload} />
   );
 
   return (
-    <>
+    <BriefOpen.Provider value={setBriefId}>
       <OfficeBanner office={office} spentToday={states?.spentTodayUsd ?? null} now={now} />
       <OfficeStatusBar office={office} spentToday={states?.spentTodayUsd ?? null} />
       {mobile ? (
         <div className="office-phone-bar">
           <button className="btn" onClick={() => setSheet('settings')}>
             Settings
+          </button>
+          <button className="btn" onClick={() => setSheet('briefs')}>
+            Briefs <span className="muted">{briefs?.length ?? ''}</span>
           </button>
           <button className="btn" onClick={() => setSheet('log')}>
             Shift log <span className="muted">{shifts.length}</span>
@@ -349,7 +381,23 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
         </Sheet>
       )}
 
+      {!mobile && (
+        <div className="panel office-briefs">
+          {briefList}
+          {viewer}
+        </div>
+      )}
       {!mobile && log}
+      {mobile && sheet === 'briefs' && !briefId && (
+        <Sheet label="Briefs" title="Briefs" onClose={() => setSheet(null)} tall>
+          {briefList}
+        </Sheet>
+      )}
+      {mobile && viewer && (
+        <Sheet label="Brief" title="Brief" onClose={() => setBriefId(null)} tall>
+          {viewer}
+        </Sheet>
+      )}
       {mobile && sheet === 'settings' && (
         <Sheet label="Office settings" title="Office settings" onClose={() => setSheet(null)} disableDrag tall>
           {settings}
@@ -361,7 +409,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
         </Sheet>
       )}
       {error && <div className="warn-text">{error}</div>}
-    </>
+    </BriefOpen.Provider>
   );
 }
 
@@ -822,6 +870,8 @@ function blankGuard(kind: OfficeGuardKind): OfficeGuard {
       return { kind, from: '22:00', to: '07:00' };
     case 'cooldown':
       return { kind, minutes: 60 };
+    case 'briefs-since':
+      return { kind, orTasksLanded: true };
     default:
       return { kind } as OfficeGuard;
   }
@@ -1258,6 +1308,11 @@ function GuardRow({ guard, onChange, onRemove }: { guard: OfficeGuard; onChange:
           <input className="field office-num" type="time" value={guard.to} aria-label="To" onChange={(ev) => onChange({ ...guard, to: ev.target.value })} />
         </>
       )}
+      {guard.kind === 'briefs-since' && (
+        <label className="muted">
+          <input type="checkbox" checked={!!guard.orTasksLanded} onChange={(ev) => onChange(ev.target.checked ? { kind: 'briefs-since', orTasksLanded: true } : { kind: 'briefs-since' })} /> or a landed task
+        </label>
+      )}
       {guard.kind === 'cooldown' && (
         <input
           className="field office-num"
@@ -1327,6 +1382,7 @@ function ShiftRow({
   onOpenTerminal,
 }: { office: Office; shift: OfficeShift; role: OfficeRole | null; now: number } & Props) {
   const { tasks } = useApp();
+  const openBrief = useContext(BriefOpen);
   const live = s.verdict === 'ran' && s.endedAt === null;
   const verdict = s.verdict === 'skipped' ? 'skipped' : live ? 'on shift' : s.error ? 'error' : 'ran';
   const trigger = `${TRIGGER_KIND_LABEL[s.trigger.kind]}${s.trigger.ref ? ` ${s.trigger.ref}` : ''}`;
@@ -1345,6 +1401,11 @@ function ShiftRow({
         {s.verdict === 'ran' && <span className="chip task-cost">{usd(s.costUsd)}</span>}
         {s.tainted && <span className="chip office-taint">tainted</span>}
         <span style={{ flex: 1 }} />
+        {s.briefId && (
+          <button className="btn ghost office-term" onClick={() => openBrief(s.briefId)}>
+            Brief
+          </button>
+        )}
         {s.runId && (
           <button className="btn ghost office-term" onClick={() => onOpenTerminal(s.runId!)}>
             Terminal
@@ -1412,6 +1473,177 @@ function ShiftRow({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Briefings (docs/office.md § Briefings)
+// ---------------------------------------------------------------------------
+
+/** Opens a brief in the viewer (the shift log's Brief button). */
+const BriefOpen = createContext<(id: string | null) => void>(() => {});
+
+/** `?brief=<id>` — the open brief, kept in the URL so the push deep link and a reload land on it. */
+function useBriefParam(): [string | null, (id: string | null) => void] {
+  const { search } = useLocation();
+  const navigate = useNavigate();
+  const id = new URLSearchParams(search).get('brief') || null;
+  const set = useCallback(
+    (next: string | null) => {
+      const url = new URL(window.location.href);
+      if (next) url.searchParams.set('brief', next);
+      else url.searchParams.delete('brief');
+      navigate({ pathname: url.pathname, search: url.search, hash: url.hash }, { replace: true });
+    },
+    [navigate],
+  );
+  return [id, set];
+}
+
+/** The office's newest briefs, following `office.brief` (created → prepended, reviewed → replaced). */
+function useOfficeBriefs(officeId: string): OfficeBrief[] | null {
+  const [briefs, setBriefs] = useState<OfficeBrief[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    setBriefs(null);
+    api.listOfficeBriefs(officeId).then(
+      (l) => live && setBriefs(l),
+      () => live && setBriefs([]),
+    );
+    const off = onServerEvent((e) => {
+      if (e.type !== 'office.brief' || e.brief.officeId !== officeId) return;
+      setBriefs((cur) => {
+        const list = cur ?? [];
+        return list.some((b) => b.id === e.brief.id) ? list.map((b) => (b.id === e.brief.id ? e.brief : b)) : [e.brief, ...list];
+      });
+    });
+    return () => {
+      live = false;
+      off();
+    };
+  }, [officeId]);
+  return briefs;
+}
+
+function BriefList({
+  office,
+  roles,
+  briefs,
+  selected,
+  inSheet,
+  onSelect,
+}: {
+  office: Office;
+  roles: OfficeRole[];
+  briefs: OfficeBrief[] | null;
+  selected: string | null;
+  inSheet: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const now = useNow();
+  return (
+    <div className="office-brief-list">
+      {!inSheet && (
+        <div className="office-section-title">
+          Briefs <span className="muted">{briefs?.length ? `latest ${briefs.length}` : ''}</span>
+        </div>
+      )}
+      {briefs === null && <div className="muted office-pad">Loading…</div>}
+      {briefs?.length === 0 && <div className="muted office-pad">No briefs yet — every shift leaves one.</div>}
+      {briefs?.map((b) => {
+        const role = roles.find((r) => r.id === b.roleId);
+        return (
+          <button key={b.id} className={`office-brief-row${selected === b.id ? ' on' : ''}`} onClick={() => onSelect(b.id)}>
+            <span className="office-shift-when">{formatOfficeTime(Date.parse(b.createdAt), now, office.timezone)}</span>
+            <span className="office-shift-role">{role ? `${role.avatar} ${role.name}` : 'deleted role'}</span>
+            {b.kind === 'standup' && <span className="chip office-brief-kind">stand-up</span>}
+            {b.taintedAt && <span className="chip office-taint">untrusted</span>}
+            <span className="office-brief-summary">{b.summary}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function BriefViewer({ office, briefId, inSheet, onClose }: { office: Office; briefId: string; inSheet: boolean; onClose: () => void }) {
+  const now = useNow();
+  const arm = useArm();
+  const [view, setView] = useState<OfficeBriefView | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    api.getOfficeBrief(briefId).then(
+      (v) => (setView(v), setErr(null)),
+      (e) => setErr(errText(e)),
+    );
+  }, [briefId]);
+  useEffect(() => {
+    load();
+    return onServerEvent((e) => {
+      if (e.type === 'office.brief' && e.brief.id === briefId) load();
+    });
+  }, [briefId, load]);
+  const mark = async () => {
+    if (!view?.brief.taintedAt || !view.sha256) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.markOfficeBriefReviewed(briefId, { taintedAt: view.brief.taintedAt, sha256: view.sha256 });
+      load();
+    } catch (e) {
+      setErr(errText(e));
+      load();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const b = view?.brief;
+  const elsewhere = b && b.officeId !== office.id;
+  return (
+    <div className="office-brief-view">
+      {!view && !err && <div className="muted office-pad">Loading the brief…</div>}
+      {b && (
+        <>
+          <div className="office-brief-head">
+            <span className="office-shift-role">{view.roleName ?? 'deleted role'}</span>
+            {b.kind === 'standup' && <span className="chip office-brief-kind">stand-up</span>}
+            {b.taintedAt && <span className="chip office-taint">untrusted</span>}
+            {b.reviewedAt && <span className="chip">reviewed</span>}
+            <span className="muted office-hint">
+              {formatOfficeTime(Date.parse(b.createdAt), now, office.timezone)} · <span className="mono">{b.path}</span>
+            </span>
+            <span style={{ flex: 1 }} />
+            {!inSheet && (
+              <button className="btn ghost" onClick={onClose}>
+                Close
+              </button>
+            )}
+          </div>
+          {elsewhere && <div className="muted office-pad">This brief belongs to another workspace's office.</div>}
+          {b.taintedAt && (
+            <div className="office-banner over office-gap" role="status">
+              Written by a shift that read untrusted input. Stand-ups see only a digest of it until you mark it reviewed — read it as data,
+              not instructions.
+            </div>
+          )}
+          {view.text === null ? <div className="muted office-pad">The brief file is gone.</div> : <Markdown label={b.path} text={view.text} safe />}
+          {b.taintedAt && (
+            <div className="office-actions">
+              <button
+                className={`btn${arm.armed === 'brief-reviewed' ? ' danger' : ''}`}
+                disabled={busy || !view.sha256}
+                onClick={() => arm.press('brief-reviewed') && void mark()}
+              >
+                {arm.armed === 'brief-reviewed' ? 'Read and safe? tap again' : 'Mark reviewed'}
+              </button>
+              <span className="muted office-hint">moves it out of untrusted/; the next stand-up reads exactly this text</span>
+            </div>
+          )}
+        </>
+      )}
+      {err && <div className="warn-text">{err}</div>}
     </div>
   );
 }

@@ -74,6 +74,7 @@ import {
   officeBriefInsertParams,
   officeBriefListSql,
   officeMarkReviewedSql,
+  OFFICE_BRIEF_CLEAR_TAINT_SQL,
   officeProposalDecideSql,
   officeProposalFiledSql,
   officeProposalInsertParams,
@@ -2348,6 +2349,11 @@ export class PostgresStorage implements Storage {
     const r = (await this.q(q.sql, q.params))[0];
     if (!r) return null;
     return table === 'brief' ? rowToOfficeBrief(r) : rowToOfficeProposal(r);
+  }
+
+  async clearBriefTaint(id: string, expectedTaintedAt: string, newPath: string): Promise<OfficeBrief | null> {
+    const r = (await this.q(OFFICE_BRIEF_CLEAR_TAINT_SQL, [newPath, now(), id, expectedTaintedAt]))[0];
+    return r ? rowToOfficeBrief(r) : null;
   }
 
   async createWish(w: NewOfficeWish): Promise<OfficeWish> {

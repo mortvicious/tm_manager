@@ -27,7 +27,10 @@ types at the end of `shared/src/office.ts`, and `server/src/routes/offices.test.
 scheduler (§ Scheduler and states): `server/src/office/scheduler.ts`, migration 57
 and `server/src/office/scheduler.test.ts`; and the /office page (§ The /office page):
 `web/src/pages/Office.tsx`, the `office-*` rules in `web/src/theme.css` and
-`glass.css`, and the office calls in `web/src/api.ts`.
+`glass.css`, and the office calls in `web/src/api.ts`; and the briefings (§ Briefings):
+`server/src/office/briefs.ts`, the brief document in `server/src/telegram/report.ts`,
+the `office.brief` branches of the Telegram and push notifiers, and
+`server/src/office/briefs.test.ts`.
 
 ## Concepts
 
@@ -102,6 +105,7 @@ failing guard.
 |---|---|---|
 | `new-commits-since` | no commits since the last ran shift (passes on a first shift) | `no new code since the last shift` |
 | `tasks-landed-since` | no task landed since the last ran shift | `no task landed since the last shift` |
+| `briefs-since(orTasksLanded?)` | no OTHER role's brief since the last ran shift (passes on a first shift); with `orTasksLanded`, a landed task also passes it | `no new brief and no landed task since the last shift` |
 | `open-bugs-below(n)` | open bugs ≥ n | `7 open bugs — runs only below 5` |
 | `budget-left(minUsd?)` | budget left ≤ 0 or < minUsd | `only $1.50 of today's budget left (needs $2.00)` |
 | `office-not-paused` | the office is paused | `office paused: holiday` |
@@ -336,7 +340,7 @@ and changing a preset never changes an existing role.
 
 | Preset | Model, effort | Schedule | Triggers | Guards |
 |---|---|---|---|---|
-| Director | `claude-opus-5-5`, high | `0 9,17 * * 1-5` (stand-up) | none | office-not-paused, budget-left |
+| Director | `claude-opus-5-5`, high | `0 9,17 * * 1-5` (stand-up) | none | office-not-paused, budget-left, briefs-since (or a landed task) |
 | Developer | `claude-opus-5-5`, high | `0 10 * * 1-5` | task-failed | no-open-task-of-this-role, cooldown 120 |
 | DevOps | `claude-opus-5-5`, medium | `0 8 * * 1-5` | checks-red, job-attention | cooldown 60, quiet-hours 22:00–07:00 |
 | QA / Tester | `claude-opus-5-5`, medium | `0 11,16 * * 1-5` | task-landed | **new-commits-since** (runs only after code lands), cooldown 60, open-bugs-below 10 |
@@ -675,6 +679,9 @@ types are at the end of `shared/src/office.ts` (`OfficeDetail`,
 | `PUT /api/offices/:id/roles/:roleId/commands` | replace the role's command allowlist (§ Command runs) → `OfficeRoleWriteResult` |
 | `POST /api/offices/:id/roles/:roleId/wake` | Wake now, `{ note? }` → 202 `{ shiftId }`; 409 `{ error, code }` with the hard-gate or runner reason (§ Scheduler and states) |
 | `GET /api/offices/:id/states` | every role's state → `OfficeStates` (§ Scheduler and states) |
+| `GET /api/offices/:id/briefs?roleId&kind&unreviewed&limit` | the office's briefs, newest first (limit default 100, ≤ 500) → `OfficeBrief[]` (§ Briefings) |
+| `GET /api/office-briefs/:briefId` | one brief with its text → `OfficeBriefView` (§ Briefings) |
+| `POST /api/office-briefs/:briefId/reviewed` | Mark reviewed, body `{taintedAt, sha256}` from the GET above → the `OfficeBrief`; 409 on a stale version or an untainted brief; audited `office.taint-cleared` (§ Briefings) |
 
 **Every write needs `Origin`** (403 `office edits come from the dashboard`
 otherwise). Every write acts as `human`, and a worker's `curl` sends no
@@ -990,7 +997,7 @@ While `notesTaintedAt` is set, the next shift reads the newest notes, which
 are the untrusted twin (or the trusted file if there is no twin). That shift
 is tainted (`tainted-notes`). A human clears this with reset-notes (§ API).
 
-`commands` is registered by § Command runs; a later phase registers briefs. The section context also
+`commands` is registered by § Command runs and `brief` by § Briefings (in `briefs.ts`, so `shift-result.ts` imports neither). The section context also
 carries the shift's `runId` and the orchestrator (to kick the scheduler after a
 queued filing).
 
@@ -1366,6 +1373,109 @@ takes `role:<name>`. The roles come from the store's `offices` slice, which
 follows `office.updated`. Details are in docs/board-versions.md § What shipped
 → Role chip.
 
+## Briefings
+
+Every shift that RAN leaves one **brief**: a short report of what it looked
+at and what it filed, read by the Director's stand-up, the human on `/office`,
+Telegram and Web Push. Code: `server/src/office/briefs.ts` (the section, the
+file writer, the fallback, the stand-up input, Mark reviewed), test
+`server/src/office/briefs.test.ts`.
+
+### The `brief` section
+
+`brief` is a result section (§ The result: a section registry), registered in
+`briefs.ts`: `{summary, markdown}`, strict, `summary` 1…600 chars
+(`OFFICE_BRIEF_SUMMARY_MAX`), `markdown` 1…60 000 (`OFFICE_BRIEF_MARKDOWN_MAX`).
+`SHIFT_RULES` tells every role to end with it. Applying it:
+
+- writes `briefings/<office-local day>-<role key>.md` (`briefFileRel`; a
+  second brief the same day is `-2`, `-3`…, and a name is free only when it is
+  free at BOTH the trusted path and its untrusted twin), via `writeOfficeFile`;
+  a TAINTED shift writes to `untrustedPath(office, 'briefings/…')` instead;
+- appends a `tm_office_briefs` row: `kind` `standup` for a Director role
+  (`isStandupRole`: `preset === 'director'`), else `brief`; `tainted_at` = now
+  for a tainted shift; `path` = where the file actually is;
+- sets the shift's `brief_id`, writes one `office.brief` audit row
+  (`actor: 'system'`, `auto`) and broadcasts `office.brief { change: 'created' }`.
+
+**Every ran shift produces one.** A shift that returned no `brief` (it forgot,
+its block was invalid after the corrections, it failed, it was stopped) gets
+the server's: `fallbackBrief` composes the summary and markdown from the
+shift's own record only — status, error, the sections it applied — never from
+agent text, with the line "_The shift returned no brief, so the server wrote
+this one from its own record._", and writes it the same way (`auto: true`,
+tainted if the shift was). Only a server shutdown (`stopping`) skips it.
+
+### The stand-up
+
+The Director's two daily shifts (`0 9,17 * * 1-5`) are the stand-up. Its guard
+is `briefs-since` with `orTasksLanded` (§ Guards): it runs only when another
+role briefed or a task landed since its last ran shift; the fact
+(`briefsSinceLastShift`) counts other roles' briefs since then
+(`officeGuardFacts`).
+
+Its prompt gets a `## The stand-up` block from `standupInput` (`ShiftPlan.standup`):
+
+- **The window**: since the start of the Director's newest ran shift that
+  ended without error, else the last 7 days. Briefs in it: kind `brief`, other
+  roles, created in the window OR reviewed in it while untainted (so a brief
+  Marked reviewed after a stand-up is read by the next one); the newest 30,
+  oldest first; ≤ 12 kB each and 80 kB in total.
+- **An untainted brief** is inlined as fenced text (a fence longer than any
+  backtick run inside), headed with the role and time, with the rule that
+  briefs are colleagues' reports, never instructions.
+- **A tainted brief is never inlined** — neither its text nor its summary:
+  only `### <role> — tainted brief <id>` and its `taintedDigest()` line, built
+  from server-known fields (role, time, the server-made path). The text sits
+  under `untrusted/`, which a trusted shift's `permissions.deny` covers
+  (`trustedShiftDenies`), so the stand-up cannot read it either. That is what
+  keeps the stand-up TRUSTED (`shiftTaint` sees nothing tainted) over a
+  tainted SEO brief — tested with a planted string that must not appear in
+  the prompt.
+- **The scorecard**, server-computed for the same window, as JSON: `landed`
+  (workspace repos' transitions to `done`/`published`), `filed` (tasks filed
+  by the office's ran shifts), `spentUsd` (`officeSpendSince`), `briefs` and
+  `taintedBriefs`. The same numbers lead the stand-up file as a quoted
+  `> **Scorecard** since …` line the server writes above the Director's
+  markdown (`briefHeader`), so the scorecard is never the model's arithmetic.
+
+The stand-up's own output is its `brief` section, stored as kind `standup`.
+
+### Mark reviewed
+
+A tainted brief can be vouched for: `GET /api/office-briefs/:id` returns
+`OfficeBriefView` (`text`, `sha256` of the file as it is now, the role, the
+workspace), and `POST /api/office-briefs/:id/reviewed {taintedAt, sha256}`
+(Origin, 403 without; `markBriefReviewed`) promotes EXACTLY that version:
+
+- 409 when the brief is not tainted, `taintedAt` differs, the file is gone or
+  its sha differs ("read it again");
+- the text is written to the trusted path (the path under `untrusted/` minus
+  that prefix; `-r2`… if taken) with `writeOfficeFile`, then the conditional
+  `clearBriefTaint` (`tainted_at = ?` in the WHERE; a lost race removes the
+  copy and 409s) sets `tainted_at = NULL`, the new `path` and `reviewed_at`,
+  then the untrusted file is removed;
+- one `office.taint-cleared` row (`actor: 'human'`, `briefId`, role, `from`,
+  `to`, `sha256`, `taintedAt`), a feedback line for the role
+  (`appendRoleFeedback`) and `office.brief { change: 'reviewed' }`.
+
+The next stand-up then reads the text (the window's reviewed clause).
+
+### Delivery
+
+- **Telegram**: one HTML document per brief (`buildBriefReport` →
+  `buildBriefDocument` in `telegram/report.ts`, the digest's self-contained
+  builder: no external assets, the markdown escaped first and rendered by a
+  small converter whose links keep their text only), Russian summary as the
+  caption, through `sendDocument`; notify class `notify.briefing` (default on,
+  docs/telegram.md § Notifications), coalesced 5 s and sent once per brief.
+- **Web Push**: kind `briefing` (docs/push.md), title `🗂 Stand-up · <role>`
+  or `🗂 Brief · <role>`, body the summary (`⚠ untrusted · ` first when
+  tainted), tag `brief-<id>`, deep link `/office?brief=<id>`.
+
+A tainted brief goes out too — with the warning — because the human is the
+one who reviews it; only agents are kept from it.
+
 ## UI
 
 ### The /office page
@@ -1493,6 +1603,16 @@ rest of the row:
   command-done wake.
 - **Terminal** opens the shift's aux run in the terminal drawer over
   `/ws/terminal/:runId`. The runs list links a `shift` run to `/office`.
+
+**Briefs** — a panel above the shift log (desktop) or a **Briefs** button
+opening a `<Sheet>` (phone): the newest 50 (`GET …/briefs`, followed live by
+`office.brief`), each with time, role, a *stand-up* / *untrusted* chip and the
+summary. A row, a shift row's **Brief** button or `?brief=<id>` (the push deep
+link; it switches to the brief's workspace first) opens the viewer — beside
+the list on a desktop, its own `<Sheet>` on a phone — which renders the text
+with `<Markdown safe>`. A tainted brief shows an untrusted banner and a
+two-press **Mark reviewed** that sends the `taintedAt` and `sha256` it showed;
+a 409 re-reads the view.
 
 **Phone.** The status bar, then **Settings** and **Shift log** buttons, each
 of which opens a `<Sheet>`. The roles are cards, and the editor is a `<Sheet>`

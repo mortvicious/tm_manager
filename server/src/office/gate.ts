@@ -118,7 +118,12 @@ export async function officeGuardFacts(
 
   const sinceIso = lastRanShiftAt !== null ? new Date(lastRanShiftAt).toISOString() : null;
   const needCommits = sinceIso && wants('new-commits-since');
-  const needLanded = sinceIso && wants('tasks-landed-since');
+  const briefsGuard = role.guards.find((g): g is Extract<OfficeGuard, { kind: 'briefs-since' }> => g.kind === 'briefs-since');
+  const needLanded = sinceIso && (wants('tasks-landed-since') || !!briefsGuard?.orTasksLanded || (opts.all && wants('briefs-since')));
+  if (sinceIso && wants('briefs-since')) {
+    const briefs = await storage.listBriefs({ officeId: office.id, since: sinceIso, limit: 2000 });
+    facts.briefsSinceLastShift = briefs.filter((b) => b.roleId !== role.id).length;
+  }
   const needBugs = wants('open-bugs-below');
   let repos: Repo[] | null = null;
   if (needCommits || needLanded || needBugs) {

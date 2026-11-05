@@ -41,6 +41,7 @@ import { broadcast } from '../events.ts';
 import { archiveRoleNotes, defaultOfficeFolder, resetRoleNotes, scaffoldOfficeFolder, validateOfficeFolder } from '../office/folder.ts';
 import { DEFAULT_OFFICE_THEME, OFFICE_THEMES, generateOfficeIdentities, generateRoleIdentity } from '../office/names.ts';
 import { allowlistCheck } from '../office/commands.ts';
+import { briefView, markBriefReviewed } from '../office/briefs.ts';
 import { untrustedPath } from '../office/isolation.ts';
 import { readOfficeText } from '../office/shift.ts';
 import { SHIFT_NOTES_MAX_CHARS, officeRel, roleNotesRel, writeOfficeFile } from '../office/shift-result.ts';
@@ -124,6 +125,15 @@ const notesReviewedBody = z
   .object({ notesTaintedAt: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/).nullable() })
   .strict();
 
+/** `POST /api/office-briefs/:id/reviewed`: the version the human read (docs/office.md § Briefings). */
+const briefReviewedBody = z.object({ taintedAt: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
+const briefListQuery = z.object({
+  roleId: z.string().min(1).optional(),
+  kind: z.enum(['brief', 'standup']).optional(),
+  unreviewed: z.enum(['1', 'true']).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+});
+
 const roleCommandsBody = z
   .object({
     commands: z
@@ -159,6 +169,9 @@ export function parseGuard(raw: unknown, i: number): { guard: OfficeGuard } | { 
       break;
     case 'cooldown':
       g = { kind: 'cooldown', minutes: r.minutes as number };
+      break;
+    case 'briefs-since':
+      g = r.orTasksLanded === undefined ? { kind: 'briefs-since' } : { kind: 'briefs-since', orTasksLanded: r.orTasksLanded as boolean };
       break;
     default:
       g = { kind } as OfficeGuard;
@@ -298,6 +311,39 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opt
       shifts: await storage.listShifts({ officeId: id, limit: OFFICE_DETAIL_SHIFTS }),
     };
     return detail;
+  });
+
+  // Briefings (docs/office.md § Briefings): the list is rows only (newest
+  // first); one brief's text comes from its file through GET /api/office-briefs/:id.
+  app.get('/api/offices/:id/briefs', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const q = briefListQuery.safeParse(req.query ?? {});
+    if (!q.success) return reply.code(400).send({ error: `briefs: ${q.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}` });
+    if (!(await storage.getOffice(id))) return reply.code(404).send({ error: 'office not found' });
+    return storage.listBriefs({ officeId: id, roleId: q.data.roleId, kind: q.data.kind, unreviewed: !!q.data.unreviewed, limit: q.data.limit ?? 100 });
+  });
+
+  app.get('/api/office-briefs/:briefId', async (req, reply) => {
+    const { briefId } = req.params as { briefId: string };
+    const brief = await storage.getBrief(briefId);
+    if (!brief) return reply.code(404).send({ error: 'brief not found' });
+    const v = await briefView(storage, brief);
+    if (!v) return reply.code(404).send({ error: 'office not found' });
+    return v.view;
+  });
+
+  // Mark reviewed on a TAINTED brief: the file leaves the untrusted storage,
+  // `tainted_at` clears, `office.taint-cleared` is audited — only for the
+  // version the human read (its `taintedAt` + the file's sha256, else 409).
+  app.post('/api/office-briefs/:briefId/reviewed', { preHandler: fromBrowser }, async (req, reply) => {
+    const parsed = briefReviewedBody.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: `reviewed: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}` });
+    }
+    const { briefId } = req.params as { briefId: string };
+    const r = await markBriefReviewed(storage, briefId, parsed.data, 'human');
+    if (!r.ok) return reply.code(r.status).send({ error: r.error });
+    return r.brief;
   });
 
   app.get('/api/offices/:id/states', async (req, reply) => {

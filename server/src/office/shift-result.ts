@@ -8,8 +8,8 @@
 // nothing returns `{}`.
 //
 // This module registers `notes`, `deliverables`, `tasks` (filing.ts) and
-// `commands` (commands.ts); later phases register theirs (briefs) with
-// `registerShiftSection`.
+// `commands` (commands.ts); `brief` registers itself in briefs.ts (imported by
+// shift.ts), and later phases register theirs with `registerShiftSection`.
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -39,6 +39,8 @@ export interface ShiftSectionCtx {
   runId?: string | null;
   /** kicked when a section filed queued work (`tasks`) */
   orchestrator?: OrchestratorApi;
+  /** server-written lines above the brief's markdown — the stand-up's scorecard (briefs.ts) */
+  briefHeader?: string | null;
 }
 
 export interface ShiftSectionApplied {
@@ -50,6 +52,8 @@ export interface ShiftSectionApplied {
   taskIds?: string[];
   /** command runs the section planned (`commands`); they run after the shift settles */
   commandIds?: string[];
+  /** the brief the section wrote (`brief`, briefs.ts) */
+  briefId?: string;
   /** parts of the section that failed while the rest applied (one bad file of several) */
   errors?: string[];
 }

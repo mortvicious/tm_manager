@@ -12,6 +12,7 @@ import {
   APPROVAL_LABELS,
   type Question,
   type JobRun,
+  type OfficeBrief,
   type Report,
   type CheckState,
   type ReviewState,
@@ -48,6 +49,9 @@ const unsettled = (s: ReviewState | null | undefined) => s === 'pending' || s ==
 export type PushTab = 'review' | 'history';
 export const taskUrl = (id: string, tab?: PushTab) =>
   `/?task=${encodeURIComponent(id)}${tab ? `&tab=${tab}` : ''}`;
+
+/** A brief's deep link: the /office page opens its viewer (docs/push.md § Opening a notification). */
+export const briefUrl = (id: string) => `/office?brief=${encodeURIComponent(id)}`;
 
 interface PendingTask {
   review?: boolean;
@@ -169,6 +173,9 @@ export class PushNotifier {
         break;
       case 'job-run.updated':
         await this.onJobRun(e.run);
+        break;
+      case 'office.brief':
+        if (e.change === 'created') await this.onBrief(e.brief);
         break;
       case 'chat.deleted':
         this.chatAsker.delete(e.chatId);
@@ -505,6 +512,27 @@ export class PushNotifier {
       body: clip(m.error ?? (m.text || '(empty reply)'), SUMMARY_CLIP),
       tag: `chat-${m.chatId}`,
       url: `/chat/${encodeURIComponent(m.chatId)}`,
+    });
+  }
+
+  /** briefs already pushed */
+  private readonly briefsPushed = new Set<string>();
+
+  /**
+   * A shift wrote a brief or stand-up (docs/office.md § Briefings → Delivery):
+   * kind `briefing`, deep link `/office?brief=<id>`. A tainted brief says so
+   * first — its summary is untrusted text.
+   */
+  private async onBrief(b: OfficeBrief): Promise<void> {
+    if (this.briefsPushed.has(b.id)) return;
+    this.briefsPushed.add(b.id);
+    const role = await this.deps.storage.getOfficeRole(b.roleId);
+    const head = b.kind === 'standup' ? '🗂 Stand-up' : '🗂 Brief';
+    void this.deps.push.deliver('briefing', {
+      title: `${head} · ${clip(role?.name ?? 'office role', 60)}`,
+      body: clip(`${b.taintedAt ? '⚠ untrusted · ' : ''}${b.summary || 'a new brief'}`, SUMMARY_CLIP),
+      tag: `brief-${b.id}`,
+      url: briefUrl(b.id),
     });
   }
 
