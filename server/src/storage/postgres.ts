@@ -104,6 +104,8 @@ import {
   OFFICE_SHIFT_GET_SQL,
   OFFICE_SHIFT_INSERT_SQL,
   OFFICE_SHIFTS_DELETE_SQL,
+  OFFICE_PROPOSAL_UNDO_ACCEPT_SQL,
+  OFFICE_PROPOSALS_PENDING_COUNT_SQL,
   officeInsertParams,
   officeOpenTasksSql,
   officePatchSql,
@@ -2330,10 +2332,21 @@ export class PostgresStorage implements Storage {
     to: 'accepted' | 'rejected',
     by: string,
     filedTaskId: string | null = null,
+    note: string | null = null,
   ): Promise<OfficeProposal | null> {
-    const q = officeProposalDecideSql(id, to, by, now(), filedTaskId);
+    const q = officeProposalDecideSql(id, to, by, now(), filedTaskId, note);
     const r = (await this.q(q.sql, q.params))[0];
     return r ? rowToOfficeProposal(r) : null;
+  }
+
+  async undoOfficeProposalAccept(id: string): Promise<OfficeProposal | null> {
+    const r = (await this.q(OFFICE_PROPOSAL_UNDO_ACCEPT_SQL, [id]))[0];
+    return r ? rowToOfficeProposal(r) : null;
+  }
+
+  async countPendingOfficeProposals(officeId: string): Promise<number> {
+    const r = (await this.q(OFFICE_PROPOSALS_PENDING_COUNT_SQL, [officeId]))[0];
+    return Number(r?.n ?? 0);
   }
 
   async setProposalFiledTask(id: string, taskId: string): Promise<OfficeProposal | null> {

@@ -617,7 +617,7 @@ tables, types `OfficeBrief` / `OfficeProposal` / `OfficeWish` at the end of
 | Table | Columns | Indexes |
 |---|---|---|
 | `tm_office_briefs` | `office_id`, `role_id`, `shift_id`, `kind` (`standup` \| `brief`), `path` (office-folder-relative markdown — the row is the index, the text is the file), `summary`, `tainted_at`, `reviewed_at`, `created_at` | `(office_id, created_at)`, `(shift_id)` |
-| `tm_office_proposals` | `office_id`, `role_id`, `shift_id`, `title`, `body`, `repo_id` (null = decided at accept time), `status` (`pending` \| `accepted` \| `rejected`, default `pending`), `tainted_at`, `reviewed_at`, `decided_at`, `decided_by`, `filed_task_id`, `created_at` | `(office_id, status, created_at)`, `(shift_id)` |
+| `tm_office_proposals` | `office_id`, `role_id`, `shift_id`, `title`, `body`, `repo_id` (null = decided at accept time), `status` (`pending` \| `accepted` \| `rejected`, default `pending`), `tainted_at`, `reviewed_at`, `decided_at`, `decided_by`, `filed_task_id`, `created_at`; migration 59 (§ Proposals) adds `workspace_id` (the office's at creation — the Inbox scope of a repo-less row), `run_id` (the shift's run), `origin` (`proposal` \| `task`), `category`, `effort`, `note` (a reject's reason) | `(office_id, status, created_at)`, `(shift_id)`, `(status, created_at)` (59) |
 | `tm_office_wishes` | `office_id`, `text`, `status` (`open` \| `planned` \| `done` \| `dropped`, default `open`), `created_at`, `updated_at` | `(office_id, status, created_at)` |
 
 `tm_features` gains `office_id` and `tainted_at` (nullable, index on
@@ -986,7 +986,9 @@ Every write goes through `writeOfficeFile`, which:
 |---|---|---|
 | `notes` | markdown, ≤ 24,000 chars, not empty | **replaces** `roles/<key>.md` whole |
 | `deliverables` | ≤ 10 of `{path, markdown}` (≤ 100,000 chars each); `path` is `deliverables/<name>.md`, up to three subfolders, plain segments with no leading dot, each path at most once | writes each file (an existing one is replaced); the path is re-checked at the write |
-| `tasks` | ≤ 30 of `{repoId, title, description, category?, effort?}` | files worker tasks, holds them (proposals) or drops them past a cap — § Filing |
+| `tasks` | ≤ 30 of `{repoId, title, description, category?, effort?}` | files worker tasks, turns them into proposals (proposals autonomy) or drops them past a cap — § Filing |
+| `commands` | ≤ 3 of `{commandId, why}` | runs allowlisted saved commands after the shift — § Command runs |
+| `proposals` | ≤ 3 of `{title, body, repoId?}` | stores improvement proposals a human accepts or rejects — § Proposals |
 
 A **tainted** shift's notes and deliverables go to
 `untrustedPath(office, <their own path>)` instead, for example
@@ -1068,7 +1070,7 @@ filing time (a human may lower the autonomy while the shift runs):
 
 | Case | Filed as | Note on the shift row |
 |---|---|---|
-| `proposals` autonomy | nothing — the requests are **held** on the shift row until the proposals card converts them | `proposals autonomy — nothing filed; held for the proposals card` |
+| `proposals` autonomy | nothing — the requests are **held** on the shift row and each becomes an office proposal (`filing.proposalIds`, § Proposals) | `proposals autonomy — nothing filed; held as proposals for a human decision` |
 | tainted shift | `draft`, `tainted_at` set | `tainted shift — created as draft for human review` |
 | global queue stopped (`orchestrator.enabled` off) | `draft` | `queue is stopped — created as draft` (the agents' own words) |
 | otherwise (`auto-run`, `autonomous`) | `queued` (the scheduler is kicked) | — |
@@ -1111,6 +1113,94 @@ records the status, the note, the `held` requests and the `dropped` ones. One
 drops. Held and dropped entries are the shift's own text: for a tainted shift
 they are untrusted, so a trusted reader gets them only through
 `taintedDigest`, which copies no titles.
+
+## Proposals
+
+`server/src/office/proposals.ts`, routes `server/src/routes/office-proposals.ts`,
+Telegram `server/src/telegram/office-proposals.ts`, tests
+`server/src/office/proposals.test.ts`; rows in migration 58's
+`tm_office_proposals`, widened by migration 59 (`workspace_id`, `run_id`,
+`origin`, `category`, `effort`, `note`). A proposal is an
+improvement a shift wants a HUMAN to weigh before anything runs — an Inbox
+decision with Telegram buttons and a Web Push.
+
+**Where they come from.**
+
+- The `proposals` result section: at most `SHIFT_PROPOSALS_MAX` (3) of
+  `{title, body, repoId?}` per shift (a 4th is a validation error, so the
+  standard correction is typed into the session). Any autonomy. `origin`
+  `proposal`.
+- The `tasks` section under **`proposals` autonomy** (§ Filing): nothing is
+  filed; every request the per-shift cap kept becomes a proposal (`origin`
+  `task`, its description as the body, its category and effort kept). The
+  shift row's `filing.proposalIds` lists them; `held` keeps the requests.
+
+`createShiftProposals` stores them, serialized per office: the office is
+re-read (a deleted office stores nothing), a repo id outside the workspace is
+cleared (the human picks one on accept; an exact repo NAME maps to its id; a
+one-repo workspace fills its repo in), a repeat in the same shift is dropped,
+and at most `OFFICE_PROPOSALS_PENDING_MAX` (30) may be pending per office —
+the rest are dropped. One `office.proposals` audit row per shift lists the
+created ids and the drops (a tainted shift's drops carry reasons only, never
+titles). Each row is broadcast as `office-proposal.updated`. **A tainted
+shift's proposals are tainted** (`tainted_at` set when the shift was tainted,
+decided before spawn); their title and body are untrusted text.
+
+**Deciding.** `POST /api/office-proposals/:id/accept` `{repoId?}` and
+`POST /api/office-proposals/:id/reject` `{note?}` act as `human` and need
+`Origin` (403 without: a worker's or a shift's curl has none). Telegram calls
+the same functions in-process as `telegram`. `GET /api/office-proposals?status=&officeId=`
+lists (newest first), `GET /api/office-proposals/:id` reads one.
+
+- **First decision wins.** `decideProposal` is the one status write,
+  conditional on `pending`; the loser gets 409 (`already accepted by human`).
+  Two accepts at once file ONE task.
+- **Accept** files the task through `task-actions.ts` `createTask` as source
+  `office` with `office_id`, `role_id`, `created_by_run` = the shift's run,
+  `spawn_depth` 1, the proposal's category/effort and **no `tainted_at`**:
+  accepting IS the human review, even for a tainted proposal (the SPA asks
+  first). It stays external, so it lands supervised. Status:
+  `proposalAcceptStatus(effectiveAutonomy(office, role), {queueStopped})` —
+  `queued` under `auto-run`/`autonomous`, `draft` under `proposals` or a
+  stopped queue. The office caps do not apply (a human chose it). The repo is
+  the human's pick, else the proposal's, else the workspace's only repo, and it
+  must be in the workspace NOW (else 400 `pick a repo`, nothing decided). The
+  conditional write comes first; a filing that throws puts the row back to
+  `pending` (only while it filed nothing) and answers 409. The description is
+  `Proposed by <role> — office shift <id8>, proposal <id8>; accepted by <actor>`
+  + the body + the standing caps.
+- **Reject** files nothing; the note (≤ 500 chars) is stored.
+- **Both** append one audit row `office.proposal-decided` and one line to the
+  role's FEEDBACK file through `appendRoleFeedback` — never to the role's own
+  notes, which its shift's `notes` section replaces whole, so a decision made
+  while the role's shift runs survives that shift (tested):
+  - `accepted: proposal <id8> “<title>” — filed as task <id8> (<status>) by <actor>`
+  - `rejected: proposal <id8> “<title>” by <actor> — reason: <note>`
+  - a rejected **tainted** proposal: `rejected: proposal <id8> (from a tainted
+    shift — title withheld) by <actor>` — referenced by id only, because the
+    feedback file is trusted prompt text and no human vouched for that title.
+
+  A feedback write that fails (folder gone) is logged and noted on the audit
+  row (`feedback: false`); the decision stands.
+
+**Where the human sees them.**
+
+- **Inbox** kind `office-proposal` (docs/inbox.md): after agent proposals,
+  before feature plans. Scoped by its repo; a repo-less one by its office's
+  workspace (`InboxInput.workspaceId`). The row shows a **TAINT banner** on a
+  tainted proposal; a repo-less one in a workspace of several repos is
+  accepted from per-repo buttons in its detail.
+- **Telegram**: a 💡 card per new pending proposal (coalesced, gated by
+  `notify.proposal`, re-read at flush), with `op:` buttons parsed before the
+  action codec (docs/telegram.md § Office proposals), and the 📥 board lists
+  it.
+- **Web Push**: the existing `proposal` kind, tag `office-proposal-<id>`,
+  opening `/inbox`.
+- **The /office page**: a role with pending proposals reads `waiting-for-you`
+  (§ Scheduler and states → States).
+
+The shift prompt states the role's autonomy: under `proposals` it says its
+`tasks` become proposals.
 
 ## Command runs
 
@@ -1319,8 +1409,10 @@ writes nothing (the budget is not settled):
   Hard-gate skips are not "guarded": the `paused` / `over-budget` / `off-duty`
   states already say why.
 
-Otherwise the state is `scheduled` with `next 09:00`. `waitingForYou` and
-`inHuddle` are 0/false until the phases that bring proposals cards and huddles.
+Otherwise the state is `scheduled` with `next 09:00`. `waitingForYou` counts
+the role's PENDING proposals (§ Proposals; a role's questions and approvals
+join it in a later phase). `inHuddle` is false until the phase that brings
+huddles.
 
 `GET /api/offices/:id/states` returns them (404 for an unknown office). They are
 broadcast in `office.updated` (`states`): by the scheduler after each tick, only

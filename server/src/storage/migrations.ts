@@ -1073,6 +1073,26 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS tm_features_office_idx ON tm_features (office_id)`,
     ],
   },
+  {
+    id: 59,
+    // Office proposals as Inbox decisions (docs/office.md § Proposals): the
+    // columns migration 58's `tm_office_proposals` needs once shifts write
+    // it — `workspace_id` (the office's workspace at creation, the Inbox
+    // scope of a repo-less row), `run_id` (the shift's aux run), `origin`
+    // (`proposal` = the `proposals` section, `task` = a `tasks` request under
+    // proposals autonomy), `category`/`effort` (carried onto the accepted
+    // task) and `note` (a reject's reason). The pending index serves the Inbox
+    // and the per-office pending cap. Web Push reuses the `proposal` kind.
+    statements: [
+      `ALTER TABLE tm_office_proposals ADD COLUMN workspace_id TEXT`,
+      `ALTER TABLE tm_office_proposals ADD COLUMN run_id TEXT`,
+      `ALTER TABLE tm_office_proposals ADD COLUMN origin TEXT`,
+      `ALTER TABLE tm_office_proposals ADD COLUMN category TEXT`,
+      `ALTER TABLE tm_office_proposals ADD COLUMN effort TEXT`,
+      `ALTER TABLE tm_office_proposals ADD COLUMN note TEXT`,
+      `CREATE INDEX IF NOT EXISTS tm_office_proposals_status_idx ON tm_office_proposals (status, created_at)`,
+    ],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */

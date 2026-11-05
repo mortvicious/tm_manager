@@ -26,6 +26,7 @@ import { escapeHtml, type Reply } from './api.ts';
 import { buildBriefReport, buildReport, type ReportDocument } from './report.ts';
 import type { InlineKeyboardMarkup } from './types.ts';
 import { jobRunMessage } from './jobs.ts';
+import { officeProposalMessage } from './office-proposals.ts';
 import { questionMessages, settledNotice } from './questions.ts';
 
 // The push half of the bot (docs/telegram.md § Notifications): subscribes to
@@ -343,6 +344,9 @@ export class TelegramNotifier {
       case 'proposal.created':
         this.onProposal(e.proposal);
         break;
+      case 'office-proposal.updated':
+        this.onOfficeProposal(e.proposal);
+        break;
       case 'feature.updated':
         this.onFeature(e.feature);
         break;
@@ -651,6 +655,29 @@ export class TelegramNotifier {
       const fresh = await this.deps.storage.getProposal(pr.id);
       if (!fresh || fresh.status !== 'pending' || !this.deps.notify.proposal) return;
       const msg = proposalMessage(fresh);
+      await this.deps.send(msg.html, msg.keyboard);
+    });
+  }
+
+  /**
+   * An office role's proposal (docs/office.md § Proposals): coalesced and
+   * gated by `notify.proposal` like an agent's, re-read at flush so one
+   * decided meanwhile is not sent. Each id is announced once.
+   */
+  private onOfficeProposal(p: { id: string; status: string }): void {
+    if (p.status !== 'pending') return;
+    const key = `office-proposal:${p.id}`;
+    if (this.pendingKeys.has(key)) return;
+    this.pendingKeys.add(key);
+    this.after(COALESCE_MS, async () => {
+      const { storage } = this.deps;
+      const fresh = await storage.getOfficeProposal(p.id);
+      if (!fresh || fresh.status !== 'pending' || !this.deps.notify.proposal) return;
+      const role = await storage.getOfficeRole(fresh.roleId);
+      const office = await storage.getOffice(fresh.officeId);
+      const ws = office ? await storage.getWorkspace(office.workspaceId) : null;
+      const repos = ws ? (await storage.listRepos()).filter((r) => ws.repoIds.includes(r.id)) : [];
+      const msg = officeProposalMessage(fresh, role, repos);
       await this.deps.send(msg.html, msg.keyboard);
     });
   }

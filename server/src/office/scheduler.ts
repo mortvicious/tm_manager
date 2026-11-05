@@ -101,6 +101,11 @@ export async function officeStates(storage: Storage, officeId: string, now = Dat
   const sinceIso = iso(officeDayStart(now, tz));
   const officeSpent = await storage.officeSpendSince(office.id, sinceIso);
   const live = await storage.listShifts({ officeId: office.id, verdict: 'ran', open: true });
+  // pending proposals per role (docs/office.md § Proposals) — what `waiting-for-you` counts so far
+  const waiting = new Map<string, number>();
+  for (const p of await storage.listOfficeProposals({ officeId: office.id, status: 'pending' })) {
+    waiting.set(p.roleId, (waiting.get(p.roleId) ?? 0) + 1);
+  }
   const states: OfficeRoleStateEntry[] = [];
   for (const role of roles) {
     const roleSpent = await storage.officeSpendSince(office.id, sinceIso, role.id);
@@ -114,8 +119,8 @@ export async function officeStates(storage: Storage, officeId: string, now = Dat
       onShift: !!onShift,
       shiftLabel: onShift ? `on shift since ${formatOfficeTime(Date.parse(onShift.startedAt), now, tz)} (${onShift.trigger.kind})` : null,
       inHuddle: false,
-      // questions / proposals / approvals of a role reach the human in a later phase
-      waitingForYou: 0,
+      // pending proposals; a role's questions / approvals reach the human in a later phase
+      waitingForYou: waiting.get(role.id) ?? 0,
       officeSpentTodayUsd: officeSpent,
       roleSpentTodayUsd: roleSpent,
       lastGuardSkip,

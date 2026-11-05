@@ -1,4 +1,6 @@
 import { parseApprovalData, type ApprovalButton } from './approvals.ts';
+import { parseOfficeProposalData, type OfficeProposalButton } from './office-proposals.ts';
+import { acceptProposal, rejectProposal } from '../office/proposals.ts';
 import type { ApprovalService } from '../approvals.ts';
 import { DEFAULT_DIGEST, saveTelegramDigest, saveTelegramNotify, type TelegramConfig } from '../config.ts';
 import type { Orchestrator } from '../orchestrator.ts';
@@ -831,6 +833,13 @@ export class TelegramBot {
       await this.handleApprovalPress(cb, approvalButton);
       return;
     }
+    // Then the office proposal buttons (docs/office.md § Proposals) — decided
+    // once (first decision wins), so a stale one is refused with the outcome.
+    const officeProposalButton = cb.data ? parseOfficeProposalData(cb.data) : null;
+    if (officeProposalButton) {
+      await this.handleOfficeProposalPress(cb, officeProposalButton);
+      return;
+    }
     // Then the job buttons (docs/jobs.md § Telegram) — a job can be deleted
     // from either surface, so a stale one is refused with the reason.
     const jobButton = cb.data ? parseJobData(cb.data) : null;
@@ -1155,6 +1164,49 @@ export class TelegramBot {
     }
     // Audited BEFORE the answer, like every other button.
     await this.audit('telegram.command', { command: `button:approval.${button.approve ? 'approve' : 'reject'}`, target: button.id, ok });
+    await this.answerCallback(cb.id, toast);
+    await this.send(this.cfg.allowedUserId, html);
+  }
+
+  private async handleOfficeProposalPress(cb: TelegramCallbackQuery, button: OfficeProposalButton): Promise<void> {
+    let toast: string;
+    let html: string;
+    let ok = false;
+    try {
+      const deps = { storage: this.storage, orchestrator: this.orchestrator };
+      let repoId: string | undefined;
+      if (button.accept && button.repo) {
+        // the 8-char prefix the card carried, resolved now against the office workspace's repos
+        const p = await this.storage.getOfficeProposal(button.id);
+        const office = p ? await this.storage.getOffice(p.officeId) : null;
+        const ws = office ? await this.storage.getWorkspace(office.workspaceId) : null;
+        const hits = (ws?.repoIds ?? []).filter((id) => id.startsWith(button.repo!));
+        repoId = hits.length === 1 ? hits[0] : undefined;
+        if (!repoId && p) {
+          await this.audit('telegram.command', { command: 'button:office-proposal.accept', target: button.id, ok: false });
+          await this.answerCallback(cb.id, 'Repo gone');
+          await this.send(this.cfg.allowedUserId, '⚠ that repo is no longer in the office workspace — accept from the dashboard');
+          return;
+        }
+      }
+      const r = button.accept ? await acceptProposal(deps, button.id, ACTOR, { repoId }) : await rejectProposal(deps, button.id, ACTOR);
+      ok = r.ok;
+      if (r.ok) {
+        toast = button.accept ? 'Accepted' : 'Rejected';
+        html = r.task
+          ? `✅ Proposal <code>${short(r.proposal.id)}</code> accepted — filed <b>${escapeHtml(r.task.title)}</b> <code>${short(r.task.id)}</code> (${r.task.status}).`
+          : `✖ Proposal <code>${short(r.proposal.id)}</code> rejected.`;
+      } else {
+        toast = r.code === 404 ? 'Gone' : r.code === 400 ? 'Pick a repo' : 'Already decided';
+        html = `⚠ ${escapeHtml(r.error)}`;
+      }
+    } catch (e) {
+      console.error('telegram: office proposal button failed:', errText(e));
+      toast = 'Failed';
+      html = `⚠ ${escapeHtml(errText(e))}`;
+    }
+    // Audited BEFORE the answer, like every other button.
+    await this.audit('telegram.command', { command: `button:office-proposal.${button.accept ? 'accept' : 'reject'}`, target: button.id, ok });
     await this.answerCallback(cb.id, toast);
     await this.send(this.cfg.allowedUserId, html);
   }

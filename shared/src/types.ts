@@ -2456,6 +2456,8 @@ export type AuditKind =
   | 'office.taint-cleared'
   /** a shift's brief was written (docs/office.md § Briefings) */
   | 'office.brief'
+  | 'office.proposals'
+  | 'office.proposal-decided'
   | 'approval.requested'
   | 'approval.decided'
   | 'approval.finished'
@@ -3099,6 +3101,7 @@ export type ServerEvent =
   | { type: 'office.updated'; office: Office; roles?: OfficeRole[]; states?: OfficeStates }
   /** a shift wrote a brief (`created`) or a human marked a tainted one reviewed (`reviewed`) — docs/office.md § Briefings */
   | { type: 'office.brief'; brief: OfficeBrief; change: 'created' | 'reviewed' }
+  | { type: 'office-proposal.updated'; proposal: OfficeProposal }
   | { type: 'job-run.updated'; run: JobRun }
   | { type: 'jobs.toggle'; enabled: boolean }
   | { type: 'orchestrator.status'; status: OrchestratorStatus };
@@ -3235,7 +3238,7 @@ export const PUSH_KINDS: { kind: PushKind; label: string; hint: string; default:
   { kind: 'blocked', label: 'Blocked', hint: 'a task is waiting on its subtasks', default: true },
   { kind: 'published', label: 'Published', hint: 'a task was committed and pushed', default: true },
   { kind: 'started', label: 'Started', hint: 'an agent picked a task up', default: false },
-  { kind: 'proposal', label: 'Proposals', hint: 'an agent proposed a split or follow-up, or an office role proposed a task', default: true },
+  { kind: 'proposal', label: 'Proposals', hint: 'an agent proposed a split or follow-up, or an office role proposed a task or an improvement', default: true },
   { kind: 'briefing', label: 'Office briefings', hint: 'an office role filed a standup or a briefing', default: true },
   { kind: 'feature', label: 'Features', hint: 'a feature plan is ready to approve, or a feature paused', default: true },
   { kind: 'chat', label: 'Chat replies', hint: 'claude answered in a chat', default: true },
@@ -3287,17 +3290,40 @@ export interface PushMessage {
 
 // ---- Inbox (docs/inbox.md) --------------------------------------------------
 
-export type InboxKind = 'question' | 'approval' | 'attention' | 'review' | 'failed' | 'blocked' | 'job' | 'proposal' | 'feature' | 'stale-draft';
+export type InboxKind =
+  | 'question'
+  | 'approval'
+  | 'attention'
+  | 'review'
+  | 'failed'
+  | 'blocked'
+  | 'job'
+  | 'proposal'
+  | 'office-proposal'
+  | 'feature'
+  | 'stale-draft';
 
 /**
  * The order the kinds are listed in — by how much one decision unblocks: a
  * question or a permission prompt holds a LIVE session (its slot and its
  * repo), an approval holds the agent waiting on it, a review holds a landing (and any later feature phase), a failure
- * holds a retry, a blocked split parent its tree; proposals and planned
- * features are new work nobody waits on yet; a stale agent draft is backlog
+ * holds a retry, a blocked split parent its tree; proposals (an agent's, then
+ * an office role's) and planned features are new work nobody waits on yet; a stale agent draft is backlog
  * hygiene — last, because nothing at all waits on it.
  */
-export const INBOX_KINDS: InboxKind[] = ['question', 'approval', 'attention', 'review', 'failed', 'blocked', 'job', 'proposal', 'feature', 'stale-draft'];
+export const INBOX_KINDS: InboxKind[] = [
+  'question',
+  'approval',
+  'attention',
+  'review',
+  'failed',
+  'blocked',
+  'job',
+  'proposal',
+  'office-proposal',
+  'feature',
+  'stale-draft',
+];
 
 /** A `failed` task older than this has been seen and left alone — it drops out of the inbox (the board still lists it). */
 export const INBOX_FAILED_DAYS = 7;
@@ -3344,6 +3370,8 @@ export type InboxItem =
   /** a scheduled job's run said `attention` or ended in `error`, not yet acknowledged (docs/jobs.md) */
   | (InboxBase & { kind: 'job'; job: Job; run: JobRun })
   | (InboxBase & { kind: 'proposal'; proposal: Proposal; task: Task | null })
+  /** an office role's improvement proposal (docs/office.md § Proposals); `role` null when the role is not in the input */
+  | (InboxBase & { kind: 'office-proposal'; proposal: OfficeProposal; role: OfficeRole | null })
   | (InboxBase & { kind: 'feature'; feature: Feature })
   | (InboxBase & {
       kind: 'stale-draft';
@@ -3366,6 +3394,10 @@ export interface InboxInput {
   proposals: Proposal[];
   /** `proposed` ones are used */
   features: Feature[];
+  /** office proposals; pending ones are used (optional) */
+  officeProposals?: OfficeProposal[];
+  /** office roles, to name who proposed (optional) */
+  officeRoles?: OfficeRole[];
   /** job runs; unacknowledged attention/error ones are items when their job is in `jobs` (optional) */
   jobRuns?: JobRun[];
   jobs?: Job[];
@@ -3378,6 +3410,11 @@ export interface InboxInput {
    * `unblocks` still counts every task. Absent/null = every repo.
    */
   repoIds?: ReadonlySet<string> | null;
+  /**
+   * The current workspace's id, with `repoIds`: a repo-less office proposal is
+   * then in scope only in its office's workspace. Absent = in every scope.
+   */
+  workspaceId?: string | null;
 }
 
 /** The repo an inbox item belongs to, or null (repo-less: in every scope). */
@@ -3386,6 +3423,7 @@ export function inboxItemRepoId(item: InboxItem): string | null {
   if (item.kind === 'approval') return item.approval.repoId ?? item.task?.repoId ?? null;
   if (item.kind === 'feature') return item.feature.repoId ?? null;
   if (item.kind === 'job') return item.job.repoId;
+  if (item.kind === 'office-proposal') return item.proposal.repoId;
   return item.task.repoId ?? null;
 }
 
@@ -3517,6 +3555,11 @@ export function buildInbox(input: InboxInput): InboxItem[] {
   for (const p of [...input.proposals].filter((p) => p.status === 'pending').sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
     out.push({ kind: 'proposal', key: `proposal:${p.id}`, proposal: p, task: p.taskId ? byId.get(p.taskId) ?? null : null, unblocks: 0 });
   }
+  // office proposals — oldest first; each is its own decision
+  const rolesById = new Map((input.officeRoles ?? []).map((r) => [r.id, r]));
+  for (const p of [...(input.officeProposals ?? [])].filter((p) => p.status === 'pending').sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+    out.push({ kind: 'office-proposal', key: `office-proposal:${p.id}`, proposal: p, role: rolesById.get(p.roleId) ?? null, unblocks: 0 });
+  }
   // planned features waiting for approval
   for (const f of [...input.features].filter((f) => f.status === 'proposed').sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
     out.push({ kind: 'feature', key: `feature:${f.id}`, feature: f, unblocks: 0 });
@@ -3531,7 +3574,13 @@ export function buildInbox(input: InboxInput): InboxItem[] {
     out.push({ kind: 'stale-draft', key: `stale-draft:${t.id}`, task: t, ageDays, total: stale.length, unblocks: 0 });
   }
   // the workspace scope: every weight above was counted over ALL tasks; stale drafts are already scoped (cap + total)
-  return scope ? out.filter((i) => inScope(inboxItemRepoId(i))) : out;
+  // a repo-less office proposal belongs to its office's workspace
+  const ws = input.workspaceId ?? null;
+  return scope
+    ? out.filter((i) =>
+        i.kind === 'office-proposal' && !i.proposal.repoId ? ws == null || i.proposal.workspaceId === ws : inScope(inboxItemRepoId(i)),
+      )
+    : out;
 }
 
 // ---- Bulk actions (docs/inbox.md § Bulk actions) ----------------------------
@@ -3670,6 +3719,6 @@ export * from './triage.ts';
 // Scheduled jobs: schedule parsing + the firing rule (docs/jobs.md)
 export * from './jobs.ts';
 import { jobRunNeedsHuman, type Job, type JobRun, type JobsHold } from './jobs.ts';
-import type { Office, OfficeBrief, OfficeRole, OfficeStates } from './office.ts';
+import type { Office, OfficeBrief, OfficeProposal, OfficeRole, OfficeStates } from './office.ts';
 // Virtual Office: types, cron, catch-up, guards, the hard gate, autonomy and taint (docs/office.md)
 export * from './office.ts';

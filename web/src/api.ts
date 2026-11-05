@@ -50,6 +50,9 @@ import type {
   Job,
   JobRun,
   JobScheduleInput,
+  OfficeProposal,
+  OfficeProposalAcceptBody,
+  OfficeProposalDecided,
 } from '@tm/shared';
 import type {
   OfficeCreateBody,
@@ -539,6 +542,12 @@ export const api = {
   getOfficeBrief: (briefId: string) => req<OfficeBriefView>('GET', `/api/office-briefs/${encodeURIComponent(briefId)}`),
   markOfficeBriefReviewed: (briefId: string, b: OfficeBriefReviewedBody) =>
     req<OfficeBrief>('POST', `/api/office-briefs/${encodeURIComponent(briefId)}/reviewed`, b),
+  listOfficeProposals: (status: OfficeProposal['status'] = 'pending') =>
+    req<OfficeProposal[]>('GET', `/api/office-proposals?status=${status}`),
+  acceptOfficeProposal: (id: string, b: OfficeProposalAcceptBody = {}) =>
+    req<OfficeProposalDecided>('POST', `/api/office-proposals/${id}/accept`, b),
+  rejectOfficeProposal: (id: string, note?: string) =>
+    req<OfficeProposalDecided>('POST', `/api/office-proposals/${id}/reject`, note ? { note } : {}),
   wakeOfficeRole: (id: string, roleId: string, note?: string) =>
     req<{ shiftId: string }>('POST', `/api/offices/${id}/roles/${roleId}/wake`, note ? { note } : {}),
 };

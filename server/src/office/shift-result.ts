@@ -7,9 +7,10 @@
 // being silently dropped. Every section is optional: a shift that found
 // nothing returns `{}`.
 //
-// This module registers `notes`, `deliverables`, `tasks` (filing.ts) and
-// `commands` (commands.ts); `brief` registers itself in briefs.ts (imported by
-// shift.ts), and later phases register theirs with `registerShiftSection`.
+// This module registers `notes`, `deliverables`, `tasks` (filing.ts),
+// `commands` (commands.ts) and `proposals` (proposals.ts); `brief` registers
+// itself in briefs.ts (imported by shift.ts), and later phases register theirs
+// with `registerShiftSection`.
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -19,6 +20,7 @@ import type { OrchestratorApi } from '../app-types.ts';
 import type { Storage } from '../storage/types.ts';
 import { SHIFT_TASKS_DESCRIBE, SHIFT_TASKS_JSON_SCHEMA, fileShiftTasks, shiftTasksSchema, type ShiftTaskInput } from './filing.ts';
 import { untrustedPath } from './isolation.ts';
+import { SHIFT_PROPOSALS_DESCRIBE, SHIFT_PROPOSALS_JSON_SCHEMA, createShiftProposals, shiftProposalsSchema, type ShiftProposalInput } from './proposals.ts';
 import { SHIFT_COMMANDS_DESCRIBE, SHIFT_COMMANDS_JSON_SCHEMA, recordShiftCommands, shiftCommandsSchema } from './commands.ts';
 
 export interface ShiftSectionCtx {
@@ -50,6 +52,8 @@ export interface ShiftSectionApplied {
   tainted: boolean;
   /** tasks the section filed (`tasks`) */
   taskIds?: string[];
+  /** proposals the section stored (`proposals`) */
+  proposalIds?: string[];
   /** command runs the section planned (`commands`); they run after the shift settles */
   commandIds?: string[];
   /** the brief the section wrote (`brief`, briefs.ts) */
@@ -318,5 +322,25 @@ registerShiftSection<{ commandId: string; why: string }[]>({
     // an id not on the role's allowlist is dropped and listed on the shift row, never an error
     const plan = await recordShiftCommands(ctx.storage, ctx.role, ctx.shiftId, value);
     return { section: 'commands', files: [], tainted: ctx.tainted, commandIds: plan.runs.map((r) => r.commandId) };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// proposals — improvements a human accepts or rejects (docs/office.md § Proposals)
+// ---------------------------------------------------------------------------
+
+registerShiftSection<ShiftProposalInput[]>({
+  key: 'proposals',
+  describe: SHIFT_PROPOSALS_DESCRIBE,
+  schema: shiftProposalsSchema,
+  jsonSchema: SHIFT_PROPOSALS_JSON_SCHEMA,
+  async apply(value, ctx) {
+    // a pending cap is not a failure: what it dropped is on the `office.proposals` audit row
+    const { created } = await createShiftProposals(
+      ctx.storage,
+      { office: ctx.office, role: ctx.role, shiftId: ctx.shiftId, tainted: ctx.tainted, runId: ctx.runId, origin: 'proposal' },
+      value.map((p) => ({ title: p.title, body: p.body, repoId: p.repoId ?? null })),
+    );
+    return { section: 'proposals', files: [], tainted: ctx.tainted, proposalIds: created.map((p) => p.id) };
   },
 });

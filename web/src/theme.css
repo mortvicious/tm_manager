@@ -9066,6 +9066,15 @@ button.explain-tap:active {
   color: var(--tm-status-attention);
 }
 
+/* an office role's proposal from a tainted shift (docs/office.md § Proposals) */
+.inbox-taint {
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-status-attention);
+  border-radius: var(--tm-radius-sm);
+  color: var(--tm-status-attention);
+  font-size: var(--tm-text-xs);
+}
+
 .inbox-kind.k-review {
   color: var(--tm-status-review);
 }

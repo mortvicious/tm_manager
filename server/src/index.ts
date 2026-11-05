@@ -58,6 +58,7 @@ import { registerProgressRoutes } from './routes/progress.ts';
 import { registerScheduleRoutes } from './routes/schedule.ts';
 import { registerTimelineRoutes } from './routes/timeline.ts';
 import { registerTaskRoutes } from './routes/tasks.ts';
+import { registerOfficeProposalRoutes } from './routes/office-proposals.ts';
 import { TelegramBot } from './telegram/bot.ts';
 import { describeStopCause, recordStopCause, signalCause, takeStopCause, type StopCause } from './stop-cause.ts';
 import { registerEventsWs } from './ws/events.ts';
@@ -484,6 +485,7 @@ registerAgentJobRoutes(app, storage, jobs);
 registerSpaceRoutes(app, storage, orchestrator);
 registerWorkspaceRoutes(app, storage);
 registerOfficeRoutes(app, storage);
+registerOfficeProposalRoutes(app, storage, () => orchestrator);
 // Web Push to the Home Screen PWA (docs/push.md). Like the bot it reaches OUT
 // (to the browser vendors' push services); the routes only manage devices.
 const push = new PushService(storage, cfg.push);

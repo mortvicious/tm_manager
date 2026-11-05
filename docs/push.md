@@ -42,7 +42,7 @@ state a review verdict the same way.
 | `done` | a task that reached `done` without a human: an on-green landing (`autoLandedAt`, `docs/design.md` § Landing tiers — "✅ Auto-landed · <title>", body "auto-landed: <reason>" + the reviewer's summary), or `running`/`waiting` → `done`. A human's Mark done is silent | auto-landed `/?task=<id>&tab=review`; otherwise `/?task=<id>` |
 | `failed` / `blocked` / `published` | the transition, re-read at flush | failed `/?task=<id>&tab=history`; blocked/published `/?task=<id>` |
 | `started` | `queued` → `running` (**off by default**) | `/?task=<id>` |
-| `proposal` | a pending proposal (once per id). The kind also covers an office role's task proposals (`tm_office_proposals`, docs/office.md § Data model) | its task, or `/` |
+| `proposal` | a pending agent proposal (once per id); also an office role's proposal (`tm_office_proposals`, docs/office.md § Proposals, tag `office-proposal-<id>`, "⚠ tainted" in the title when its shift was) | its task, or `/`; an office proposal `/inbox` |
 | `briefing` | an office shift wrote a brief, or the Director wrote its stand-up (`office.brief` created, docs/office.md § Briefings) — once per brief, sent as it arrives, title `🗂 Stand-up · <role>` / `🗂 Brief · <role>`, body the summary (`⚠ untrusted · ` first when the brief is tainted), tag `brief-<id>` | `/office?brief=<id>` (switches to the brief's workspace and opens the viewer) |
 | `feature` | a plan is ready to approve (`proposed`), or the feature `paused` | `/features/<id>` |
 | `chat` | claude replied in a chat whose last message was typed in the **browser**. A phone-typed turn is already answered in Telegram | `/chat/<id>` |

@@ -18,6 +18,7 @@ import type {
   Dispatch,
   Question,
   Approval,
+  OfficeProposal,
   Feature,
   HostStatus,
   OrchestratorStatus,
@@ -91,6 +92,8 @@ interface AppState {
   offices: Office[];
   /** every office's roles — what a task's `roleId` chip names (RoleChip) */
   officeRoles: OfficeRole[];
+  /** office proposals waiting on a decision — pending only (docs/office.md § Proposals) */
+  officeProposals: OfficeProposal[];
   sharedNotes: SharedNote[];
   /** saved per-repo command definitions (docs/commands.md) */
   commands: RepoCommand[];
@@ -193,6 +196,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
   const [offices, setOffices] = useState<Office[]>([]);
   const [officeRoles, setOfficeRoles] = useState<OfficeRole[]>([]);
+  const [officeProposals, setOfficeProposals] = useState<OfficeProposal[]>([]);
   // The board search's `role:` term reads the roles from here (boardSearch.ts
   // § registeredRoles — the legacy board that builds the search context is
   // frozen). Set during render, idempotent, so the board's own render sees it.
@@ -229,6 +233,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api.listDispatches().then(setDispatches).catch(() => {});
     api.listQuestions().then(setQuestions).catch(() => {});
     api.listApprovals().then(setApprovals).catch(() => {});
+    api.listOfficeProposals().then(setOfficeProposals).catch(() => {});
     api.listFeatures().then(setFeatures).catch(() => {});
     api.listChats().then(setChats).catch(() => {});
     api.listReports().then(setReports).catch(() => {});
@@ -534,6 +539,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
               return next.sort(byWorkspaceOrder);
             });
             break;
+          case 'office-proposal.updated': {
+            // the PENDING set, like approvals
+            const p = e.proposal;
+            setOfficeProposals((cur) => {
+              const rest = cur.filter((x) => x.id !== p.id);
+              return p.status === 'pending' ? [...rest, p] : rest;
+            });
+            break;
+          }
           case 'office.updated':
             setOffices((cur) => {
               const i = cur.findIndex((x) => x.id === e.office.id);
@@ -691,6 +705,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         workspacesLoaded,
         offices,
         officeRoles,
+        officeProposals,
         sharedNotes,
         commands,
         commandRuns,

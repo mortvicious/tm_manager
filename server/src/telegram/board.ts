@@ -1,5 +1,6 @@
 import { encodeApprovalButton } from './approvals.ts';
 import { encodeJobButton } from './jobs.ts';
+import { encodeOfficeProposalButton } from './office-proposals.ts';
 import {
   REVIEW_BUSY_STATES,
   publishGateReason,
@@ -16,6 +17,8 @@ import {
   type Feature,
   type Proposal,
   type Approval,
+  type OfficeProposal,
+  type OfficeRole,
   type Question,
   type Repo,
   type Run,
@@ -384,6 +387,9 @@ interface Snapshot {
   /** scheduled jobs + their open (attention/error, unacknowledged) runs — the Inbox `job` kind */
   jobs: Job[];
   jobRuns: JobRun[];
+  /** pending office proposals + the roles that made them — the Inbox `office-proposal` kind */
+  officeProposals: OfficeProposal[];
+  officeRoles: OfficeRole[];
   /** task ids with a pending question */
   asking: Set<string>;
   /** task ids whose live run is flagged needs-attention (Board.tsx's rule) */
@@ -405,7 +411,12 @@ async function load(deps: BoardDeps): Promise<Snapshot> {
     deps.storage.listFeatures({ status: 'proposed' }),
     deps.storage.getSettings(),
   ]);
-  const [jobs, jobRuns] = await Promise.all([deps.storage.listJobs(), deps.storage.listOpenJobRuns()]);
+  const [jobs, jobRuns, officeProposals, officeRoles] = await Promise.all([
+    deps.storage.listJobs(),
+    deps.storage.listOpenJobRuns(),
+    deps.storage.listOfficeProposals({ status: 'pending' }),
+    deps.storage.listOfficeRoles(),
+  ]);
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const liveByTask = new Map<string, Run>();
   for (const r of live) {
@@ -441,6 +452,8 @@ async function load(deps: BoardDeps): Promise<Snapshot> {
     features,
     jobs,
     jobRuns,
+    officeProposals,
+    officeRoles,
     asking: new Set(questions.map((q) => q.taskId)),
     attention,
     liveByTask,
@@ -554,6 +567,8 @@ function inboxItems(snap: Snapshot, state: BoardState, inRepo: (id: string | nul
     features: snap.features.filter((f) => inRepo(f.repoId)),
     jobs: snap.jobs.filter((j) => inRepo(j.repoId)),
     jobRuns: snap.jobRuns,
+    officeProposals: snap.officeProposals.filter((p) => inRepo(p.repoId)),
+    officeRoles: snap.officeRoles,
     staleDraftDays: snap.staleDraftDays,
   });
   const errorLine = (t: Task) => (max: number) => (t.error ? [`⚠ ${escapeHtml(clip(t.error, max + 40))}`] : []);
@@ -638,6 +653,22 @@ function inboxItems(snap: Snapshot, state: BoardState, inRepo: (id: string | nul
           actions: [
             ...(n ? [] : [act('✅ Accept', { kind: 'proposal.accept', id: p.id })]),
             act('✖ Reject', { kind: 'proposal.reject', id: p.id }),
+          ],
+        };
+      }
+      case 'office-proposal': {
+        // Decided from its own card (the 💡 message, which carries the repo picker); the board lists it.
+        const p = x.proposal;
+        const who = x.role ? `${escapeHtml(x.role.avatar)} ${escapeHtml(x.role.name)}` : 'office';
+        return {
+          open: null,
+          lines: (max) => [
+            `💡 <b>${escapeHtml(clip(p.title, max))}</b> <code>${short(p.id)}</code> · ${who}${p.taintedAt ? ' · ⚠️ TAINTED' : ''}`,
+          ],
+          actions: [
+            // a repo-less one (a workspace of several repos) is accepted from its card's repo picker
+            ...(p.repoId ? [{ text: '✅ Accept', callback_data: encodeOfficeProposalButton(p.id, true) }] : []),
+            { text: '✖ Reject', callback_data: encodeOfficeProposalButton(p.id, false) },
           ],
         };
       }

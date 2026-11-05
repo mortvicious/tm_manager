@@ -6,7 +6,8 @@
 //
 // What a filing becomes is `filingStatus(effectiveAutonomy, tainted,
 // {queueStopped: !orchestrator.enabled})`: proposals → nothing filed (the
-// requests are HELD on the shift row for the proposals card), tainted → draft,
+// requests are HELD on the shift row and each becomes an office proposal —
+// proposals.ts, docs/office.md § Proposals), tainted → draft,
 // stopped queue → draft with the agents' 'queue is stopped' note, else queued.
 // `agent.allowEnqueue` is deliberately NOT read: it governs worker filings
 // through /api/agent/tasks, and an office is governed by its own Origin-gated
@@ -42,6 +43,7 @@ import type { OrchestratorApi } from '../app-types.ts';
 import { withStandingCaps } from '../claude/feature-plan.ts';
 import type { Storage } from '../storage/types.ts';
 import { createTask } from '../task-actions.ts';
+import { createShiftProposals } from './proposals.ts';
 
 // ---------------------------------------------------------------------------
 // The section's shape
@@ -304,7 +306,24 @@ export async function fileShiftTasks(
         dropped.push({ ...r, reason: `could not be filed: ${(e as Error).message}` });
       }
     }
-    const filing: OfficeShiftFiling = { status: plan.status, note: plan.note, held: plan.held, dropped };
+    // proposals autonomy: every held request becomes a proposal a human decides (docs/office.md § Proposals)
+    let held = plan.held;
+    let proposalIds: string[] | undefined;
+    if (plan.status === 'proposal' && office && held.length) {
+      const made = await createShiftProposals(
+        storage,
+        { office, role, shiftId: ctx.shiftId, tainted: ctx.tainted, runId, origin: 'task' },
+        held.map((r) => ({ title: r.title, body: r.description, repoId: r.repoId, category: r.category, effort: r.effort })),
+      );
+      proposalIds = made.created.map((p) => p.id);
+      const lost = new Set(made.dropped.map((d) => d.title));
+      held = held.filter((r) => !lost.has(r.title));
+      for (const d of made.dropped) {
+        const r = plan.held.find((h) => h.title === d.title);
+        if (r) dropped.push({ ...r, reason: d.reason });
+      }
+    }
+    const filing: OfficeShiftFiling = { status: plan.status, note: plan.note, held, dropped, ...(proposalIds ? { proposalIds } : {}) };
     const ids = filed.map((t) => t.id);
     await storage.updateShift(ctx.shiftId, { filedTaskIds: [...(shift?.filedTaskIds ?? []), ...ids], filing });
     await storage.appendEvent({
@@ -319,7 +338,8 @@ export async function fileShiftTasks(
         note: plan.note,
         tainted: ctx.tainted,
         filed: ids,
-        held: plan.held.length,
+        held: held.length,
+        ...(proposalIds ? { proposals: proposalIds } : {}),
         dropped: dropped.map((d) => ({ repoId: d.repoId, title: d.title, reason: d.reason })),
       },
     });

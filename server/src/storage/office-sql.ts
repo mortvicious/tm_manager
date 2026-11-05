@@ -415,6 +415,7 @@ function shiftFiling(v: unknown): OfficeShiftFiling | null {
       note: typeof f.note === 'string' ? f.note : null,
       held: Array.isArray(f.held) ? f.held : [],
       dropped: Array.isArray(f.dropped) ? f.dropped : [],
+      ...(Array.isArray(f.proposalIds) ? { proposalIds: f.proposalIds.filter((x: unknown) => typeof x === 'string') } : {}),
     };
   } catch {
     return null;
@@ -501,6 +502,12 @@ export interface NewOfficeProposal {
   body: string;
   repoId?: string | null;
   taintedAt?: string | null;
+  /** migration 59 (docs/office.md § Proposals) */
+  workspaceId?: string | null;
+  runId?: string | null;
+  origin?: OfficeProposal['origin'];
+  category?: string | null;
+  effort?: EffortLevel | null;
 }
 
 export interface OfficeProposalFilter {
@@ -575,11 +582,26 @@ export function rowToOfficeBrief(r: any): OfficeBrief {
   };
 }
 
-export const OFFICE_PROPOSAL_INSERT_SQL = `INSERT INTO tm_office_proposals (id, office_id, role_id, shift_id, title, body, repo_id, status, tainted_at, reviewed_at, decided_at, decided_by, filed_task_id, created_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL, NULL, ?)`;
+export const OFFICE_PROPOSAL_INSERT_SQL = `INSERT INTO tm_office_proposals (id, office_id, role_id, shift_id, title, body, repo_id, status, tainted_at, reviewed_at, decided_at, decided_by, filed_task_id, created_at, workspace_id, run_id, origin, category, effort, note)
+  VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL)`;
 
 export function officeProposalInsertParams(id: string, p: NewOfficeProposal, at: string): unknown[] {
-  return [id, p.officeId, p.roleId, p.shiftId, p.title, p.body, p.repoId ?? null, p.taintedAt ?? null, at];
+  return [
+    id,
+    p.officeId,
+    p.roleId,
+    p.shiftId,
+    p.title,
+    p.body,
+    p.repoId ?? null,
+    p.taintedAt ?? null,
+    at,
+    p.workspaceId ?? null,
+    p.runId ?? null,
+    p.origin ?? null,
+    p.category ?? null,
+    p.effort ?? null,
+  ];
 }
 
 export const OFFICE_PROPOSAL_GET_SQL = `SELECT * FROM tm_office_proposals WHERE id = ?`;
@@ -611,12 +633,19 @@ export function officeProposalDecideSql(
   by: string,
   at: string,
   filedTaskId: string | null = null,
+  note: string | null = null,
 ): { sql: string; params: unknown[] } {
   return {
-    sql: `UPDATE tm_office_proposals SET status = ?, decided_at = ?, decided_by = ?, filed_task_id = ? WHERE id = ? AND status = 'pending' RETURNING *`,
-    params: [to, at, by, filedTaskId, id],
+    sql: `UPDATE tm_office_proposals SET status = ?, decided_at = ?, decided_by = ?, filed_task_id = ?, note = ? WHERE id = ? AND status = 'pending' RETURNING *`,
+    params: [to, at, by, filedTaskId, note, id],
   };
 }
+
+/** An accept whose task could not be filed goes back to pending — only while it filed nothing. */
+export const OFFICE_PROPOSAL_UNDO_ACCEPT_SQL = `UPDATE tm_office_proposals SET status = 'pending', decided_by = NULL, decided_at = NULL
+  WHERE id = ? AND status = 'accepted' AND filed_task_id IS NULL RETURNING *`;
+
+export const OFFICE_PROPOSALS_PENDING_COUNT_SQL = `SELECT COUNT(*) AS n FROM tm_office_proposals WHERE office_id = ? AND status = 'pending'`;
 
 /** The task an accept filed, written once: only on an `accepted` row with no task yet. */
 export function officeProposalFiledSql(id: string, taskId: string): { sql: string; params: unknown[] } {
@@ -642,6 +671,12 @@ export function rowToOfficeProposal(r: any): OfficeProposal {
     filedTaskId: r.filed_task_id ?? null,
     reviewedAt: r.reviewed_at ?? null,
     createdAt: r.created_at,
+    workspaceId: r.workspace_id ?? null,
+    runId: r.run_id ?? null,
+    origin: r.origin === 'task' || r.origin === 'proposal' ? r.origin : null,
+    category: r.category ?? null,
+    effort: (r.effort ?? null) as EffortLevel | null,
+    note: r.note ?? null,
   };
 }
 

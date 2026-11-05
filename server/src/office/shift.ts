@@ -32,6 +32,7 @@ import {
   type OfficeShiftCommands,
   type OfficeShiftTriggerKind,
   type Run,
+  effectiveAutonomy,
 } from '@tm/shared';
 import {
   READ_ONLY_DISALLOWED,
@@ -512,6 +513,9 @@ export class ShiftRunner {
       '',
       '- You are read-only: you cannot run commands or edit files. The server writes what your result returns.',
       '- Execution work (running code, tests, audits, fixes) leaves this shift as a filed worker task or a saved-command run — never done here.',
+      effectiveAutonomy(office, role) === 'proposals'
+        ? '- Autonomy `proposals`: nothing you return in `tasks` is filed — each request becomes a PROPOSAL a human accepts or rejects (the decision lands in your feedback file).'
+        : `- Autonomy \`${effectiveAutonomy(office, role)}\`: \`tasks\` are filed for you (queued, or drafts when tainted or the queue is stopped); \`proposals\` wait for a human decision.`,
       '- Your result is a set of sections; include only the ones you need:',
       shiftSectionGuide(),
       resultInstruction(shiftResultJsonSchema()),

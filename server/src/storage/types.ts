@@ -923,7 +923,11 @@ export interface Storage {
    * SQL in `office-sql.ts`). FK-less; `deleteOffice` removes them with the
    * office. A proposal's status moves ONLY through `decideProposal`, which is
    * conditional on `pending` — the second of two decisions gets null back
-   * (re-read; it lost). `setProposalFiledTask` records the accept's task once.
+   * (re-read; it lost) — a reject may carry the human's `note`.
+   * `setProposalFiledTask` records the accept's task once;
+   * `undoOfficeProposalAccept` puts an accept whose task could not be filed
+   * back to pending (only while `filed_task_id` is null — docs/office.md
+   * § Proposals).
    * `markReviewed` stamps `reviewed_at` once (a repeat keeps the first time);
    * null = no such row.
    */
@@ -940,7 +944,11 @@ export interface Storage {
     to: 'accepted' | 'rejected',
     by: string,
     filedTaskId?: string | null,
+    note?: string | null,
   ): Promise<OfficeProposal | null>;
+  undoOfficeProposalAccept(id: string): Promise<OfficeProposal | null>;
+  /** pending proposals of one office (the `OFFICE_PROPOSALS_PENDING_MAX` cap) */
+  countPendingOfficeProposals(officeId: string): Promise<number>;
   setProposalFiledTask(id: string, taskId: string): Promise<OfficeProposal | null>;
   markReviewed(table: 'brief', id: string): Promise<OfficeBrief | null>;
   markReviewed(table: 'proposal', id: string): Promise<OfficeProposal | null>;

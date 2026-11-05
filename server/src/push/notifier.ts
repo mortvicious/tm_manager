@@ -162,6 +162,9 @@ export class PushNotifier {
       case 'proposal.created':
         this.onProposal(e.proposal);
         break;
+      case 'office-proposal.updated':
+        this.onOfficeProposal(e.proposal);
+        break;
       case 'feature.updated':
         this.onFeature(e.feature);
         break;
@@ -458,6 +461,25 @@ export class PushNotifier {
         body: clip(`${what}${fresh.payload.rationale && fresh.payload.title ? `\n${fresh.payload.rationale}` : ''}`, SUMMARY_CLIP),
         tag: `proposal-${fresh.id}`,
         url: fresh.taskId ? taskUrl(fresh.taskId) : '/',
+      });
+    });
+  }
+
+  /** An office role's proposal (docs/office.md § Proposals): the `proposal` kind, coalesced, re-read at flush, once per id. */
+  private onOfficeProposal(p: { id: string; status: string }): void {
+    if (p.status !== 'pending') return;
+    const key = `office-proposal:${p.id}`;
+    if (this.pendingKeys.has(key)) return;
+    this.pendingKeys.add(key);
+    this.after(COALESCE_MS, async () => {
+      const fresh = await this.deps.storage.getOfficeProposal(p.id);
+      if (!fresh || fresh.status !== 'pending') return;
+      const role = await this.deps.storage.getOfficeRole(fresh.roleId);
+      await this.deps.push.deliver('proposal', {
+        title: `💡 ${role ? `${role.name} proposes` : 'Office proposal'}${fresh.taintedAt ? ' · ⚠ tainted' : ''}`,
+        body: clip(fresh.title, SUMMARY_CLIP),
+        tag: `office-proposal-${fresh.id}`,
+        url: '/inbox',
       });
     });
   }

@@ -961,7 +961,7 @@ export const OFFICE_MAX_OPEN_TASKS_MAX = 200;
 /** The note a stopped global queue puts on a filing — the same words an agent's filing gets. */
 export const OFFICE_QUEUE_STOPPED_NOTE = 'queue is stopped — created as draft';
 export const OFFICE_TAINTED_NOTE = 'tainted shift — created as draft for human review';
-export const OFFICE_PROPOSALS_NOTE = 'proposals autonomy — nothing filed; held for the proposals card';
+export const OFFICE_PROPOSALS_NOTE = 'proposals autonomy — nothing filed; held as proposals for a human decision';
 
 /** One task a shift asked for (the `tasks` result section). Agent text: a tainted shift's is untrusted. */
 export interface ShiftTaskRequest {
@@ -976,7 +976,7 @@ export interface ShiftTaskRequest {
  * What a shift's `tasks` section became, on the shift row. `filed` ids are
  * `OfficeShift.filedTaskIds`; this is the rest: the status they were filed
  * at, why not `queued`, the requests HELD under proposals autonomy (no task
- * exists until the proposals card converts one) and the ones DROPPED, each
+ * exists; each became an `OfficeProposal` a human accepts or rejects) and the ones DROPPED, each
  * with its reason (a cap, a repo outside the workspace).
  */
 export interface OfficeShiftFiling {
@@ -984,6 +984,8 @@ export interface OfficeShiftFiling {
   note: string | null;
   held: ShiftTaskRequest[];
   dropped: (ShiftTaskRequest & { reason: string })[];
+  /** the proposals the `held` requests became (docs/office.md § Proposals); absent before phase 3 */
+  proposalIds?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1427,7 +1429,8 @@ export interface OfficeNotesReviewedBody {
 }
 
 // ---------------------------------------------------------------------------
-// Briefings, proposals, wishes (docs/office.md § Data model, phase 3)
+// Briefings, proposals, wishes (docs/office.md § Data model, phase 3;
+// § Proposals)
 // ---------------------------------------------------------------------------
 
 /**
@@ -1481,31 +1484,76 @@ export interface OfficeBrief {
   createdAt: string;
 }
 
+/** Proposals one shift may return in its `proposals` section. */
+export const SHIFT_PROPOSALS_MAX = 3;
+/** Pending proposals an office may hold; a shift's past this are dropped (listed on its `office.proposals` row). */
+export const OFFICE_PROPOSALS_PENDING_MAX = 30;
+export const OFFICE_PROPOSAL_TITLE_MAX = 200;
+export const OFFICE_PROPOSAL_BODY_MAX = 20_000;
+export const OFFICE_PROPOSAL_NOTE_MAX = 500;
+
 export type OfficeProposalStatus = 'pending' | 'accepted' | 'rejected';
 
 /**
- * A task a shift wants filed, held for a human's decision (`tm_office_proposals`).
- * `repoId` null = the office decides at accept time (a cross-repo idea). Decided
- * only through the conditional `decideProposal` (pending → accepted|rejected).
+ * A task a shift wants filed, held for a human's decision (`tm_office_proposals`,
+ * an Inbox decision). `origin` `proposal` = the shift's `proposals` section;
+ * `task` = a `tasks` request converted under `proposals` autonomy. `repoId`
+ * null = the human picks one at accept time (a cross-repo idea). `title`/`body`
+ * are agent text: a tainted proposal's (`taintedAt`) are untrusted (the SPA
+ * shows the taint banner, a rejected one is named in the feedback file by id
+ * only). Decided only through the conditional `decideProposal` (pending →
+ * accepted|rejected); accepting files a task (`filedTaskId`) — a human review,
+ * so that task has no `tainted_at`.
  */
 export interface OfficeProposal {
   id: string;
   officeId: string;
+  /** the office's workspace when the proposal was made — the Inbox scope of a repo-less proposal (null on a row filed without it) */
+  workspaceId: string | null;
   roleId: string;
   shiftId: string;
+  /** the shift's aux run */
+  runId: string | null;
   title: string;
   body: string;
   repoId: string | null;
+  /** where it came from; null on a row filed without it */
+  origin: 'proposal' | 'task' | null;
+  category: string | null;
+  effort: EffortLevel | null;
   status: OfficeProposalStatus;
   taintedAt: string | null;
   decidedAt: string | null;
   /** the actor that decided (`human`, `telegram`) */
   decidedBy: string | null;
+  /** the human's reason on a reject (human text) */
+  note: string | null;
   /** the task an accept filed */
   filedTaskId: string | null;
   /** set by `markReviewed('proposal', id)` — a tainted proposal's text read by a human */
   reviewedAt: string | null;
   createdAt: string;
+}
+
+/** `POST /api/office-proposals/:id/accept` — `repoId` required when the proposal names none and the workspace has several repos. */
+export interface OfficeProposalAcceptBody {
+  repoId?: string;
+}
+
+/** What accept/reject answer: the decided row, and the task an accept filed. */
+export interface OfficeProposalDecided {
+  proposal: OfficeProposal;
+  task: Task | null;
+}
+
+/** `POST /api/office-proposals/:id/reject`. */
+export interface OfficeProposalRejectBody {
+  note?: string;
+}
+
+/** What an accept files the task at: `draft` under proposals autonomy or a stopped queue, else `queued`. */
+export function proposalAcceptStatus(autonomy: OfficeAutonomy, opts: { queueStopped: boolean }): 'draft' | 'queued' {
+  return filingStatus(autonomy, false, opts) === 'queued' ? 'queued' : 'draft';
 }
 
 export type OfficeWishStatus = 'open' | 'planned' | 'done' | 'dropped';

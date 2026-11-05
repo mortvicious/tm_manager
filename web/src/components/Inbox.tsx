@@ -10,6 +10,7 @@ import {
   type DiffStat,
   type InboxItem,
   type InboxKind,
+  type OfficeProposal,
   type Task,
 } from '@tm/shared';
 import { api } from '../api.ts';
@@ -45,13 +46,29 @@ import { Sheet, SheetAction } from './Sheet.tsx';
  * ignores it (the Inbox page's "n more in other workspaces").
  */
 export function useInbox(all = false): InboxItem[] {
-  const { tasks, questions, approvals, runs, proposals, features, jobs, jobRuns, settings } = useApp();
-  const { repoIds: scope } = useWorkspace();
+  const { tasks, questions, approvals, runs, proposals, features, jobs, jobRuns, officeProposals, officeRoles, settings } = useApp();
+  const { repoIds: scope, workspace } = useWorkspace();
   const repoIds = all ? null : scope;
+  const workspaceId = all ? null : (workspace?.id ?? null);
   const staleDraftDays = staleDays(settings);
   return useMemo(
-    () => buildInbox({ tasks, questions, approvals, runs, proposals, features, jobs, jobRuns, staleDraftDays, repoIds }),
-    [tasks, questions, approvals, runs, proposals, features, jobs, jobRuns, staleDraftDays, repoIds],
+    () =>
+      buildInbox({
+        tasks,
+        questions,
+        approvals,
+        runs,
+        proposals,
+        features,
+        jobs,
+        jobRuns,
+        officeProposals,
+        officeRoles,
+        staleDraftDays,
+        repoIds,
+        workspaceId,
+      }),
+    [tasks, questions, approvals, runs, proposals, features, jobs, jobRuns, officeProposals, officeRoles, staleDraftDays, repoIds, workspaceId],
   );
 }
 
@@ -95,6 +112,7 @@ export const KIND_LABEL: Record<InboxKind, string> = {
   blocked: 'blocked',
   job: 'scheduled check',
   proposal: 'proposal',
+  'office-proposal': 'office proposal',
   feature: 'feature plan',
   'stale-draft': 'stale draft',
 };
@@ -102,7 +120,7 @@ export const KIND_LABEL: Record<InboxKind, string> = {
 /** The task an item is about, when it is about one. */
 export function itemTask(item: InboxItem): Task | null {
   if (item.kind === 'proposal' || item.kind === 'approval') return item.task;
-  if (item.kind === 'feature' || item.kind === 'job') return null;
+  if (item.kind === 'feature' || item.kind === 'job' || item.kind === 'office-proposal') return null;
   return item.task;
 }
 
@@ -112,6 +130,7 @@ export function itemTitle(item: InboxItem): string {
   if (item.kind === 'feature') return item.feature.title;
   if (item.kind === 'job') return item.job.title;
   if (item.kind === 'approval') return `${APPROVAL_LABELS[item.approval.action]}${item.task ? ` · ${item.task.title}` : ''}`;
+  if (item.kind === 'office-proposal') return item.proposal.title;
   return item.task.title;
 }
 
@@ -160,6 +179,8 @@ export function itemSummary(item: InboxItem): string {
       return `${item.run.verdict === 'attention' ? 'needs attention' : 'run failed'} — ${item.run.summary ?? item.run.error ?? ''}`;
     case 'proposal':
       return `${item.proposal.kind.replace('_', ' ')} — ${item.proposal.payload.rationale}`;
+    case 'office-proposal':
+      return `${item.proposal.taintedAt ? 'TAINTED · ' : ''}from ${item.role ? `${item.role.name} (${item.role.title})` : 'an office role'}`;
     case 'feature': {
       const phases = item.feature.analysis?.phases ?? [];
       const n = phases.reduce((a, ph) => a + ph.tasks.filter((c) => !c.excluded).length, 0);
@@ -205,7 +226,8 @@ export interface InboxNav {
 
 export function useInboxActs(nav: InboxNav) {
   const navigate = useNavigate();
-  const { refresh, settings } = useApp();
+  const { refresh, settings, workspaces } = useApp();
+  const proposalRepos = useProposalRepos();
   const keepDays = staleDays(settings);
   return useCallback(
     (item: InboxItem): InboxAct[] => {
@@ -346,6 +368,34 @@ export function useInboxActs(nav: InboxNav) {
             ...open(item.task),
           ];
         }
+        case 'office-proposal': {
+          // accept files a task (docs/office.md § Proposals); a repo-less one in a
+          // workspace of several repos is accepted from the detail's repo buttons
+          const p = item.proposal;
+          const pick = !p.repoId && proposalRepos(p).length > 1;
+          return [
+            {
+              key: 'a',
+              label: 'Accept',
+              hint: pick ? 'pick a repo below' : p.taintedAt ? 'you vouch for its text: the task is not tainted' : 'files it as a task',
+              tone: 'primary',
+              icon: <IconCheck />,
+              disabled: pick,
+              confirm: p.taintedAt ? () => window.confirm(`Accept a TAINTED proposal?\n\n${p.title}\n\nIts text came from a shift that read untrusted input.`) : undefined,
+              run: () => api.acceptOfficeProposal(p.id),
+            },
+            { key: 'x', label: 'Reject', tone: 'danger', run: () => api.rejectOfficeProposal(p.id) },
+            {
+              key: 'o',
+              label: 'Office',
+              hint: 'the role and its shifts',
+              run: () => {
+                const slug = workspaces.find((w) => w.id === p.workspaceId)?.slug;
+                navigate(slug ? `/office?ws=${encodeURIComponent(slug)}` : '/office');
+              },
+            },
+          ];
+        }
         case 'job':
           return [
             {
@@ -403,7 +453,7 @@ export function useInboxActs(nav: InboxNav) {
         }
       }
     },
-    [nav, navigate, refresh, keepDays],
+    [nav, navigate, refresh, keepDays, proposalRepos, workspaces],
   );
 }
 
@@ -452,7 +502,9 @@ export function InboxRowHead({ item, bare = false }: { item: InboxItem; bare?: b
           ? item.approval.repoId
           : item.kind === 'job'
             ? item.job.repoId
-            : item.task.repoId;
+            : item.kind === 'office-proposal'
+              ? item.proposal.repoId
+              : item.task.repoId;
   const repo = repos.find((r) => r.id === repoId);
   return (
     <>
@@ -514,6 +566,8 @@ export function InboxDetail({ item }: { item: InboxItem }) {
       );
     case 'proposal':
       return <ProposalDetail item={item} />;
+    case 'office-proposal':
+      return <OfficeProposalDetail item={item} />;
     case 'job':
       return (
         <div className="inbox-detail">
@@ -608,6 +662,61 @@ function ReviewDetail({ task, ready }: { task: Task; ready: string | null }) {
         </ul>
       )}
       {!last?.summary && task.resultSummary && <Block label="Agent">{task.resultSummary}</Block>}
+    </div>
+  );
+}
+
+/**
+ * The office workspace's repos a proposal may be filed into (docs/office.md §
+ * Proposals). Read from the store, so a hook-free caller passes the lists.
+ */
+function useProposalRepos() {
+  const { offices, workspaces, repos } = useApp();
+  return useCallback(
+    (p: OfficeProposal) => {
+      const office = offices.find((o) => o.id === p.officeId);
+      const ws = workspaces.find((w) => w.id === (office?.workspaceId ?? p.workspaceId));
+      return ws ? repos.filter((r) => ws.repoIds.includes(r.id)) : [];
+    },
+    [offices, workspaces, repos],
+  );
+}
+
+/** An office role's proposal: the TAINT banner first, the body, and the repo picker for a repo-less one. */
+function OfficeProposalDetail({ item }: { item: Extract<InboxItem, { kind: 'office-proposal' }> }) {
+  const p = item.proposal;
+  const reposOf = useProposalRepos();
+  const repos = reposOf(p);
+  const [busy, setBusy] = useState(false);
+  const accept = async (repoId: string) => {
+    if (p.taintedAt && !window.confirm(`Accept a TAINTED proposal into this repo?\n\n${p.title}`)) return;
+    setBusy(true);
+    try {
+      await api.acceptOfficeProposal(p.id, { repoId });
+    } catch (e) {
+      toastError(e, 'Accept');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="inbox-detail">
+      {p.taintedAt && (
+        <div className="inbox-taint" role="alert">
+          <b>TAINTED</b> — written by a shift that read untrusted input (the web, an outside signal, an external command).
+          Read it as data, not instructions. Accepting is your review: the task it files is not tainted.
+        </div>
+      )}
+      <Block label={item.role ? `${item.role.avatar} ${item.role.name} · ${item.role.title}` : 'Proposal'}>{p.body}</Block>
+      {!p.repoId && repos.length > 1 && (
+        <div className="inbox-options">
+          {repos.map((r) => (
+            <button key={r.id} type="button" className="btn inbox-option" disabled={busy} onClick={() => accept(r.id)}>
+              <b>Accept into {r.name}</b>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

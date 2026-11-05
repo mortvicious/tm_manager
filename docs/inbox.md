@@ -31,6 +31,7 @@ The items appear in this order. A task appears once, under its first kind.
 | 6 | `blocked` | a blocked split parent, with its subtasks settled / failed | `a` unblock, `o` | ⛔ Unblock |
 | 6b | `job` | a scheduled job whose newest run ended `attention` or `error` and is not acknowledged (`docs/jobs.md`), one item per job | `a` acknowledge, `r` run again, `o` opens `/jobs?job=` | 👌 Ack · 🔁 Run again |
 | 7 | `proposal` | a pending analysis proposal (rewrite, split, new task, options) | `a` accept, `x` reject, `o` | ✅ Accept (only without options) · ✖ Reject |
+| 7b | `office-proposal` | a pending office role's proposal (`tm_office_proposals`, docs/office.md § Proposals), one item per proposal, oldest first; a tainted one shows the TAINT banner | `a` accept (a tainted one confirms first; a repo-less one in a multi-repo workspace is accepted from its detail's per-repo buttons), `x` reject, `o` opens `/office` | ✅ Accept (only with a repo — the 💡 card has the repo picker) · ✖ Reject |
 | 8 | `feature` | a feature plan in `proposed` | `a` approve, `o` opens the plan | ✅ Approve |
 | 9 | `stale-draft` | an agent-filed draft nobody has triaged, older than `inbox.staleDraftDays` (14), at most 10 listed (§ Stale drafts) | `l` keep, `h` hide, `x` cancel, `o` | 📌 Keep · 🙈 Hide · 🚫 Cancel |
 
@@ -437,8 +438,10 @@ block, ≈360 characters.
 In the SPA the Inbox follows the current workspace (docs/workspaces.md § Inbox
 and chips). `buildInbox` takes an optional `repoIds` set and emits only items
 whose repo is in it: the task's repo, a proposal's or approval's own `repoId`
-(else its task's), a feature's `repoId`. An item with no repo is in every
-scope. `unblocks` is still counted over ALL tasks, so a decision that frees
+(else its task's), a feature's `repoId`, an office proposal's `repoId`. An
+item with no repo is in every scope — except a repo-less office proposal,
+which is in scope only in its office's workspace when the caller passes
+`workspaceId` (the SPA does; All and Telegram do not). `unblocks` is still counted over ALL tasks, so a decision that frees
 work in another workspace keeps its rank. The stale-draft cap and `total` are
 applied after scoping. Without `repoIds` (Telegram, All) the output is exactly
 the unscoped list.
