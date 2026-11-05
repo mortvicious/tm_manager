@@ -32,6 +32,7 @@ import { broadcast as defaultBroadcast } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 import { officeZone } from './budget.ts';
 import { officeGate, type CommitCounter } from './gate.ts';
+import type { OfficeSignals } from './signals.ts';
 import type { ShiftStart, ShiftTriggerInput } from './shift.ts';
 import { checkOfficeDocs } from './docs.ts';
 
@@ -57,6 +58,8 @@ export interface OfficeSchedulerDeps {
   countCommits?: CommitCounter;
   broadcast?: (m: ServerEvent) => void;
   log?: (line: string) => void;
+  /** the signal poller (docs/office.md § Signals), stepped once per office per tick */
+  signals?: () => Pick<OfficeSignals, 'onTick'> | null;
 }
 
 export interface OfficeTickReport {
@@ -198,6 +201,10 @@ export class OfficeScheduler {
           console.warn(`office ${office.id}: doc check failed:`, (e as Error).message),
         );
         if (office.enabled) await this.wakeDue(office, now, report);
+        // outside signals: due wakes now, a poll every 10 min (detached — a slow `gh` never holds the tick)
+        await this.deps.signals?.()
+          ?.onTick(office, now)
+          .catch((e) => console.warn(`office ${office.id}: signals failed:`, (e as Error).message));
         await this.publishStates(office.id, now);
       } catch (e) {
         console.warn(`office ${office.id}: scheduler pass failed:`, (e as Error).message);

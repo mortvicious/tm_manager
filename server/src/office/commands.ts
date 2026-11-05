@@ -135,15 +135,22 @@ export function planShiftCommands(requested: readonly ShiftCommandRequest[], all
   return out;
 }
 
+/** Why a signal shift's command requests are dropped (decisions.md 2026-11-05, open decision 6). */
+export const SIGNAL_SHIFT_COMMANDS_REASON = 'a shift an outside signal started runs no saved command';
+
 /** The section's server work: record the plan on the shift row. The runs happen after the shift settles. */
 export async function recordShiftCommands(
   storage: Storage,
   role: Pick<OfficeRole, 'id' | 'commands'>,
   shiftId: string,
   requested: readonly ShiftCommandRequest[],
+  /** refuse every request with this reason (a signal shift — docs/office.md § Signals) */
+  refuseAll?: string,
 ): Promise<OfficeShiftCommands> {
   const current = (await storage.getOfficeRole(role.id))?.commands ?? [];
-  const plan = planShiftCommands(requested, current);
+  const plan = refuseAll
+    ? { requested: requested.map((r) => ({ ...r })), dropped: requested.map((r) => ({ ...r, reason: refuseAll })), runs: [], wake: null }
+    : planShiftCommands(requested, current);
   await storage.updateShift(shiftId, { commands: plan });
   return plan;
 }

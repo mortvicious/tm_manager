@@ -2487,6 +2487,8 @@ export type AuditKind =
   | 'office.command'
   /** the scheduler skipped a due wake (a guard, the hard gate, a runner refusal) — one row per role per reason per hour (docs/office.md § Scheduler and states) */
   | 'office.shift-skipped'
+  /** new outside signals stored by a poll (docs/office.md § Signals): ids + ≤ 120-char titles only */
+  | 'office.signals'
   /** a due wake waits for a free shift slot; coalesced like the skip */
   | 'office.shift-deferred'
   /** a human pressed Wake now on a role */

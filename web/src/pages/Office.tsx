@@ -16,6 +16,7 @@ import {
   OFFICE_ROLE_PRESETS,
   OFFICE_WAKE_NOTE_MAX,
   isFeatureAskTrigger,
+  OFFICE_POLLED_SIGNAL_SOURCES,
   isStandupRole,
   SHIFT_FORBIDDEN_TOOLS,
   SHIFT_TOOL_ALLOWLIST,
@@ -45,6 +46,7 @@ import {
   type OfficeShift,
   type OfficeStates,
   type OfficeTrigger,
+  type OfficeSignalSource,
   type RepoCommand,
   type Workspace,
 } from '@tm/shared';
@@ -1140,7 +1142,7 @@ function RoleEditor({
         </button>
       </EditorSection>
 
-      <EditorSection title="Triggers" hint="wakes besides the schedule; a signal is from outside, so its shift is tainted">
+      <EditorSection title="Triggers" hint="wakes besides the schedule; a signal (new Sentry or GitHub issues) is outside text: its shift is tainted, files drafts only, and gets no web tools or command runs">
         {triggers.map((t, i) => (
           <TriggerRow
             key={i}
@@ -1249,6 +1251,13 @@ function EditorSection({ title, hint, children }: { title: string; hint?: string
   );
 }
 
+/** What the role editor's signal source picker says per polled source (docs/office.md § Signals). */
+const OFFICE_SIGNAL_SOURCE_LABELS: Record<OfficeSignalSource, string> = {
+  sentry: 'Sentry — new unresolved issues',
+  github: 'GitHub — new open issues in the workspace repos',
+  metric: 'metric',
+};
+
 function TriggerRow({
   trigger,
   repoIds,
@@ -1270,7 +1279,7 @@ function TriggerRow({
         aria-label="Trigger kind"
         onChange={(e) => {
           const k = e.target.value as OfficeTrigger['kind'];
-          onChange(k === 'event' ? { kind: 'event', event: 'task-landed' } : k === 'signal' ? { kind: 'signal', source: '' } : { kind: 'command-done' });
+          onChange(k === 'event' ? { kind: 'event', event: 'task-landed' } : k === 'signal' ? { kind: 'signal', source: 'sentry' } : { kind: 'command-done' });
         }}
       >
         <option value="event">event</option>
@@ -1307,12 +1316,22 @@ function TriggerRow({
         </>
       )}
       {trigger.kind === 'signal' && (
-        <input
+        <select
           className="field"
           value={trigger.source}
-          placeholder="source (e.g. sentry)"
+          aria-label="Signal source"
+          title="New issues are polled every 10 min; their text is fenced as untrusted data, the shift is tainted, files drafts and runs nothing"
           onChange={(e) => onChange({ kind: 'signal', source: e.target.value })}
-        />
+        >
+          {!OFFICE_POLLED_SIGNAL_SOURCES.includes(trigger.source as OfficeSignalSource) && (
+            <option value={trigger.source}>{trigger.source || 'pick a source'}</option>
+          )}
+          {OFFICE_POLLED_SIGNAL_SOURCES.map((src) => (
+            <option key={src} value={src}>
+              {OFFICE_SIGNAL_SOURCE_LABELS[src]}
+            </option>
+          ))}
+        </select>
       )}
       <button className="btn ghost" onClick={onRemove} aria-label="Remove trigger">
         Remove

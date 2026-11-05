@@ -41,6 +41,7 @@ import { OfficeCommandRuns, initOfficeCommandRuns } from './office/commands.ts';
 import { officeRel, writeOfficeFile } from './office/shift-result.ts';
 import { OfficeScheduler, initOfficeScheduler } from './office/scheduler.ts';
 import { OfficeEventTriggers, initOfficeEventTriggers } from './office/event-triggers.ts';
+import { OfficeSignals, initOfficeSignals } from './office/signals.ts';
 import { registerJobRoutes } from './routes/jobs.ts';
 import { registerAgentJobRoutes } from './routes/agent-jobs.ts';
 import { registerCommandRoutes } from './routes/commands.ts';
@@ -166,7 +167,7 @@ initShifts(shiftRunner);
 orchestrator.setShifts(shiftRunner);
 // The office scheduler (docs/office.md § Scheduler and states): a one-minute
 // cron tick through the gate; started after the shift runner's boot recovery.
-const officeScheduler = new OfficeScheduler({ storage, shifts: () => shiftRunner });
+const officeScheduler: OfficeScheduler = new OfficeScheduler({ storage, shifts: () => shiftRunner, signals: (): OfficeSignals => officeSignalPoller });
 initOfficeScheduler(officeScheduler);
 // Event triggers (docs/office.md § Event triggers): in-process subscribers on
 // the event bus, debounced per role, through the same gate and skip audit.
@@ -176,6 +177,14 @@ const officeEventTriggers = new OfficeEventTriggers({
   audit: (...a) => officeScheduler.coalescedEvent(...a),
 });
 initOfficeEventTriggers(officeEventTriggers);
+// External signals (docs/office.md § Signals): Sentry and GitHub issues polled
+// on the scheduler's tick (10 min per office), fenced and tainting.
+const officeSignalPoller: OfficeSignals = new OfficeSignals({
+  storage,
+  shifts: () => shiftRunner,
+  audit: (...a) => officeScheduler.coalescedEvent(...a),
+});
+initOfficeSignals(officeSignalPoller);
 await orchestrator.recoverOnBoot({ lastStop });
 await storage.appendEvent({
   kind: 'server.started',
@@ -415,6 +424,7 @@ app.post('/api/server/restart', async (req, reply) => {
   // the same for a shift: its open row is boot recovery's; no new cron wake either
   officeScheduler.stop();
   officeEventTriggers.stop();
+  officeSignalPoller.stop();
   shiftRunner.stop();
   aux().stopAll();
   // Abort the in-flight long poll NOW so the socket is not still open when the
@@ -599,6 +609,7 @@ const stop = async (cause: Omit<StopCause, 'at' | 'pid'> | null) => {
   // the same for a shift: its open row is boot recovery's; no new cron wake either
   officeScheduler.stop();
   officeEventTriggers.stop();
+  officeSignalPoller.stop();
   shiftRunner.stop();
   aux().stopAll();
   // A resume gate (docs/token-budget.md § The fourth) sits between "task marked

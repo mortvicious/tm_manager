@@ -1,4 +1,4 @@
-import type { SentryTokenStatus, Task } from '@tm/shared';
+import type { AppSettings, SentryTokenStatus, Task } from '@tm/shared';
 import { readSentryAuthToken, saveSentryAuthToken } from './config.ts';
 import { broadcast } from './events.ts';
 import type { Storage } from './storage/types.ts';
@@ -30,7 +30,7 @@ export async function migrateSentryToken(
   return moved ? 'moved' : 'dropped';
 }
 
-interface SentryIssue {
+export interface SentryIssue {
   id: string;
   shortId: string;
   title: string;
@@ -40,7 +40,49 @@ interface SentryIssue {
   userCount: number;
   level: string;
   lastSeen: string;
+  /** when Sentry first saw the issue (an office signal's "new" test) */
+  firstSeen?: string;
   metadata?: { value?: string; type?: string };
+}
+
+/** The configured Sentry project (Config → Sentry), or null when org/project is unset. */
+export interface SentryProjectRef {
+  org: string;
+  project: string;
+  /** API base without the trailing slash (EU orgs: https://de.sentry.io) */
+  base: string;
+}
+
+export function sentryProject(s: Pick<AppSettings, 'sentry.org' | 'sentry.project' | 'sentry.apiBase'>): SentryProjectRef | null {
+  const org = (s['sentry.org'] || '').trim();
+  const project = (s['sentry.project'] || '').trim();
+  if (!org || !project) return null;
+  return { org, project, base: (s['sentry.apiBase'] || 'https://sentry.io').replace(/\/$/, '') };
+}
+
+/**
+ * The project's unresolved issues of the last 14 days (≤ 25). The token is
+ * sent ONLY as the `Authorization` header and never appears in an error.
+ * Shared by the human-pressed sync below and the office signal poller
+ * (`office/signals.ts`).
+ */
+export async function fetchUnresolvedSentryIssues(target: SentryProjectRef, token: string): Promise<SentryIssue[]> {
+  const { base, org, project } = target;
+  const url = `${base}/api/0/projects/${encodeURIComponent(org)}/${encodeURIComponent(project)}/issues/?query=is:unresolved&statsPeriod=14d&limit=25`;
+  const authHeaders = { Authorization: `Bearer ${token}` };
+  const res = await fetch(url, { headers: authHeaders });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    if (res.status === 403) {
+      throw new Error(
+        `Sentry API 403 — the token authenticates but lacks scope for issues. Create an auth token with ` +
+          `project:read and event:read (Sentry → Settings → Auth Tokens). A sourcemap-upload token (org:read only) will not work.`,
+      );
+    }
+    throw new Error(`Sentry API ${res.status}: ${body.slice(0, 200)}`);
+  }
+  const body = (await res.json()) as unknown;
+  return Array.isArray(body) ? (body as SentryIssue[]) : [];
 }
 
 export interface SyncResult {
@@ -56,28 +98,14 @@ export interface SyncResult {
  */
 export async function syncSentryIssues(storage: Storage): Promise<SyncResult> {
   const s = await storage.getSettings();
-  const org = s['sentry.org'];
-  const project = s['sentry.project'];
+  const target = sentryProject(s);
   const token = readSentryAuthToken();
-  if (!org || !project || !token) {
+  if (!target || !token) {
     throw new Error('configure the Sentry org, project and auth token first');
   }
-  const base = (s['sentry.apiBase'] || 'https://sentry.io').replace(/\/$/, '');
-  const url = `${base}/api/0/projects/${encodeURIComponent(org)}/${encodeURIComponent(project)}/issues/?query=is:unresolved&statsPeriod=14d&limit=25`;
-
+  const { base } = target;
   const authHeaders = { Authorization: `Bearer ${token}` };
-  const res = await fetch(url, { headers: authHeaders });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    if (res.status === 403) {
-      throw new Error(
-        `Sentry API 403 — the token authenticates but lacks scope for issues. Create an auth token with ` +
-          `project:read and event:read (Sentry → Settings → Auth Tokens). A sourcemap-upload token (org:read only) will not work.`,
-      );
-    }
-    throw new Error(`Sentry API ${res.status}: ${body.slice(0, 200)}`);
-  }
-  const issues = (await res.json()) as SentryIssue[];
+  const issues = await fetchUnresolvedSentryIssues(target, token);
 
   // Best-effort per-issue tags (environment, release, transaction, level, and
   // any custom tags your SDK sends). Degrades silently if the tags endpoint is

@@ -10,6 +10,8 @@ import {
   OFFICE_AUTONOMY_LEVELS,
   OFFICE_DETAIL_SHIFTS,
   OFFICE_EVENT_NAMES,
+  OFFICE_SIGNAL_SOURCES,
+  isOfficeSignalSource,
   OFFICE_GUARD_KINDS,
   OFFICE_HUMAN_PAUSE_REASON,
   OFFICE_ROLE_COMMANDS_MAX,
@@ -223,10 +225,12 @@ export function parseTrigger(raw: unknown, i: number): { trigger: OfficeTrigger 
     return { trigger: { kind: 'event', event: r.event as OfficeEventName, ...(r.repoId !== undefined ? { repoId: r.repoId as string | null } : {}) } };
   }
   if (r.kind === 'signal') {
-    if (typeof r.source !== 'string' || !r.source.trim() || r.source.length > 100) {
-      return { error: `${at}: a signal trigger needs a source name (1–100 characters)` };
+    // only a source the server polls or stores (docs/office.md § Signals): a typo would subscribe to nothing
+    const source = typeof r.source === 'string' ? r.source.trim() : '';
+    if (!isOfficeSignalSource(source)) {
+      return { error: `${at}: a signal trigger's source is one of ${OFFICE_SIGNAL_SOURCES.join(', ')}` };
     }
-    return { trigger: { kind: 'signal', source: r.source.trim() } };
+    return { trigger: { kind: 'signal', source } };
   }
   if (r.kind === 'command-done') return { trigger: { kind: 'command-done' } };
   return { error: `${at}: unknown trigger kind ${JSON.stringify(r.kind)} (event, signal or command-done)` };

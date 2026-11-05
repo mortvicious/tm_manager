@@ -21,7 +21,13 @@ import type { Storage } from '../storage/types.ts';
 import { SHIFT_TASKS_DESCRIBE, SHIFT_TASKS_JSON_SCHEMA, fileShiftTasks, shiftTasksSchema, type ShiftTaskInput } from './filing.ts';
 import { untrustedPath } from './isolation.ts';
 import { SHIFT_PROPOSALS_DESCRIBE, SHIFT_PROPOSALS_JSON_SCHEMA, createShiftProposals, shiftProposalsSchema, type ShiftProposalInput } from './proposals.ts';
-import { SHIFT_COMMANDS_DESCRIBE, SHIFT_COMMANDS_JSON_SCHEMA, recordShiftCommands, shiftCommandsSchema } from './commands.ts';
+import {
+  SHIFT_COMMANDS_DESCRIBE,
+  SHIFT_COMMANDS_JSON_SCHEMA,
+  SIGNAL_SHIFT_COMMANDS_REASON,
+  recordShiftCommands,
+  shiftCommandsSchema,
+} from './commands.ts';
 
 export interface ShiftSectionCtx {
   storage: Storage;
@@ -43,6 +49,12 @@ export interface ShiftSectionCtx {
   orchestrator?: OrchestratorApi;
   /** server-written lines above the brief's markdown — the stand-up's scorecard (briefs.ts) */
   briefHeader?: string | null;
+  /**
+   * The shift was started by an outside SIGNAL (docs/office.md § Signals):
+   * nothing outward — its `commands` section is recorded and every request
+   * dropped (`SIGNAL_SHIFT_COMMANDS_REASON`), never run.
+   */
+  signal?: boolean;
 }
 
 export interface ShiftSectionApplied {
@@ -332,7 +344,7 @@ registerShiftSection<{ commandId: string; why: string }[]>({
   jsonSchema: SHIFT_COMMANDS_JSON_SCHEMA,
   async apply(value, ctx) {
     // an id not on the role's allowlist is dropped and listed on the shift row, never an error
-    const plan = await recordShiftCommands(ctx.storage, ctx.role, ctx.shiftId, value);
+    const plan = await recordShiftCommands(ctx.storage, ctx.role, ctx.shiftId, value, ctx.signal ? SIGNAL_SHIFT_COMMANDS_REASON : undefined);
     return { section: 'commands', files: [], tainted: ctx.tainted, commandIds: plan.runs.map((r) => r.commandId) };
   },
 });
