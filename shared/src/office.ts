@@ -1650,3 +1650,85 @@ export interface OfficeWishPatchBody {
   text?: string;
   status?: OfficeWishStatus;
 }
+
+// ---------------------------------------------------------------------------
+// Comms and signals (docs/office.md § Data model, phase 4)
+// ---------------------------------------------------------------------------
+
+/** What an office message, huddle or signal is about — stored as two columns (`subject_kind`, `subject_id`). */
+export type OfficeSubjectKind = 'task' | 'feature' | 'shift' | 'signal' | 'proposal' | 'brief' | 'wish' | 'huddle' | 'message';
+export interface OfficeSubject {
+  kind: OfficeSubjectKind;
+  id: string;
+}
+
+export type OfficeMessageKind = 'request' | 'finding' | 'handoff' | 'note';
+
+/**
+ * A message between roles (`tm_office_messages`). `fromRoleId` null = the
+ * stakeholder (the human); `toRoleId` null = the office channel (every role).
+ * Routed once, through the conditional `routeMessage` (`routed_at IS NULL`).
+ */
+export interface OfficeMessage {
+  id: string;
+  officeId: string;
+  fromRoleId: string | null;
+  toRoleId: string | null;
+  kind: OfficeMessageKind;
+  subject: OfficeSubject | null;
+  body: string;
+  /** set when the writer was tainted — the text is untrusted until reviewed */
+  taintedAt: string | null;
+  /** `markReviewed('message', id)` */
+  reviewedAt: string | null;
+  /** when the server routed it (delivered to a shift, or filed as a task) */
+  routedAt: string | null;
+  /** the task the routing filed, if any */
+  routedTaskId: string | null;
+  createdAt: string;
+}
+
+export type OfficeHuddleStatus = 'open' | 'decided' | 'expired';
+
+/**
+ * A bounded multi-role exchange about one subject (`tm_office_huddles`).
+ * `turns` grows only through the conditional `stepHuddle` (open AND turns <
+ * maxTurns); it closes once, through `closeHuddle` (open → decided|expired).
+ */
+export interface OfficeHuddle {
+  id: string;
+  officeId: string;
+  subject: OfficeSubject;
+  roleIds: string[];
+  turns: number;
+  maxTurns: number;
+  status: OfficeHuddleStatus;
+  /** the outcome text — set when `decided` */
+  decision: string | null;
+  taintedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+}
+
+export type OfficeSignalSource = 'sentry' | 'github' | 'metric';
+export const OFFICE_SIGNAL_SOURCES: readonly OfficeSignalSource[] = ['sentry', 'github', 'metric'];
+
+/**
+ * An external event an office received (`tm_office_signals`). `(source,
+ * externalId)` is unique, so a re-delivered webhook or a re-polled issue is
+ * one row. ALWAYS untrusted text (`rawText`, `title` come from outside).
+ * Consumed once, by the conditional `consumeSignal`.
+ */
+export interface OfficeSignal {
+  id: string;
+  officeId: string;
+  source: OfficeSignalSource;
+  externalId: string;
+  title: string;
+  rawText: string;
+  url: string | null;
+  receivedAt: string;
+  /** the shift that took it; null = still waiting */
+  consumedShiftId: string | null;
+}

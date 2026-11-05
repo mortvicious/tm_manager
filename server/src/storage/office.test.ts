@@ -14,6 +14,8 @@ import { isUniqueViolation } from './workspace-sql.ts';
 import type { NewOfficeRole } from './office-sql.ts';
 import { planSchema, toStoredPlan } from '../claude/feature-plan.ts';
 
+const tick = () => new Promise((r) => setTimeout(r, 3));
+
 let tmp = '';
 let storage: SqliteStorage;
 let repoId = '';
@@ -381,5 +383,167 @@ describe('office briefs, proposals, wishes (migration 58)', () => {
     const plan = toStoredPlan(raw, (p, i) => `c${p}${i}`);
     assert.equal(plan.phases[0].tasks[0].repoId, 'repo-nest');
     assert.ok(!('repoId' in plan.phases[0].tasks[1]), 'a single-repo card carries no repoId');
+  });
+});
+
+describe('office messages, huddles, signals, office chats (migration 60)', () => {
+  test('fresh DB has the tables and the chat columns', () => {
+    const file = path.join(tmp, 'tm.db');
+    for (const c of ['from_role_id', 'to_role_id', 'kind', 'subject_kind', 'subject_id', 'body', 'tainted_at', 'reviewed_at', 'routed_at', 'routed_task_id'])
+      assert.ok(columns(file, 'tm_office_messages').includes(c), c);
+    for (const c of ['subject_kind', 'subject_id', 'role_ids', 'turns', 'max_turns', 'status', 'decision', 'tainted_at'])
+      assert.ok(columns(file, 'tm_office_huddles').includes(c), c);
+    for (const c of ['source', 'external_id', 'title', 'raw_text', 'url', 'received_at', 'consumed_shift_id'])
+      assert.ok(columns(file, 'tm_office_signals').includes(c), c);
+    for (const c of ['office_id', 'participants']) assert.ok(columns(file, 'tm_chats').includes(c), c);
+  });
+
+  test('an existing DB (migrated up to 59, with a chat) gains them on the next migrate', async () => {
+    const file = path.join(tmp, 'old59.db');
+    const db = new Database(file);
+    db.exec(`CREATE TABLE tm_migrations (id INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`);
+    for (const m of MIGRATIONS.filter((m) => m.id <= 59)) {
+      for (const st of m.statements) db.exec(st);
+      db.prepare(`INSERT INTO tm_migrations (id, applied_at) VALUES (?, ?)`).run(m.id, new Date().toISOString());
+    }
+    const at = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO tm_chats (id, repo_id, title, model, mode, status, turns, cost_usd, created_at, updated_at) VALUES ('c-old', 'r', 'old', 'm', 'read', 'idle', 0, 0, ?, ?)`,
+    ).run(at, at);
+    db.close();
+    assert.ok(!columns(file, 'tm_chats').includes('office_id'));
+    const s = new SqliteStorage(file);
+    await s.migrate();
+    const c = await s.getChat('c-old');
+    assert.equal(c?.officeId, null);
+    assert.deepEqual(c?.participants, []);
+    assert.deepEqual(await s.listOfficeMessages(), []);
+    assert.deepEqual(await s.listHuddles(), []);
+    assert.deepEqual(await s.listSignals(), []);
+    await s.close();
+  });
+
+  test('messages round-trip, filter channel/stakeholder, routeMessage lands once', async () => {
+    const o = await storage.createOffice({ workspaceId: 'ws-msg', folderPath: '/tmp/m', timezone: 'UTC' });
+    const fromHuman = await storage.appendOfficeMessage({
+      officeId: o.id,
+      fromRoleId: null,
+      toRoleId: 'role-qa',
+      kind: 'request',
+      subject: { kind: 'task', id: 't1' },
+      body: 'check the login page',
+    });
+    assert.equal(fromHuman.fromRoleId, null);
+    assert.deepEqual(fromHuman.subject, { kind: 'task', id: 't1' });
+    assert.equal(fromHuman.routedAt, null);
+    await tick(); // same-millisecond rows tie-break on a random id
+    const toChannel = await storage.appendOfficeMessage({
+      officeId: o.id,
+      fromRoleId: 'role-qa',
+      toRoleId: null,
+      kind: 'finding',
+      body: 'flaky test',
+      taintedAt: '2026-11-05T00:00:00.000Z',
+    });
+    assert.equal(toChannel.subject, null);
+    assert.equal(toChannel.taintedAt, '2026-11-05T00:00:00.000Z');
+    assert.deepEqual((await storage.listOfficeMessages({ officeId: o.id, toRoleId: null })).map((m) => m.id), [toChannel.id]);
+    assert.deepEqual((await storage.listOfficeMessages({ officeId: o.id, fromRoleId: null })).map((m) => m.id), [fromHuman.id]);
+    assert.deepEqual(
+      (await storage.listOfficeMessages({ subject: { kind: 'task', id: 't1' } })).map((m) => m.id),
+      [fromHuman.id],
+    );
+    assert.deepEqual((await storage.listOfficeMessages({ officeId: o.id })).map((m) => m.id), [fromHuman.id, toChannel.id]);
+
+    const routed = await storage.routeMessage(fromHuman.id, 'task-x');
+    assert.ok(routed?.routedAt);
+    assert.equal(routed?.routedTaskId, 'task-x');
+    assert.equal(await storage.routeMessage(fromHuman.id, 'task-y'), null, 'second route loses');
+    assert.equal((await storage.getOfficeMessage(fromHuman.id))?.routedTaskId, 'task-x');
+    assert.equal(await storage.routeMessage('nope'), null);
+    assert.deepEqual((await storage.listOfficeMessages({ officeId: o.id, unrouted: true })).map((m) => m.id), [toChannel.id]);
+
+    const rev = await storage.markReviewed('message', toChannel.id);
+    assert.ok(rev?.reviewedAt);
+    assert.equal(rev?.body, 'flaky test');
+  });
+
+  test('stepHuddle refuses past max_turns and once closed; closeHuddle lands once', async () => {
+    const o = await storage.createOffice({ workspaceId: 'ws-hud', folderPath: '/tmp/h', timezone: 'UTC' });
+    const h = await storage.createHuddle({
+      officeId: o.id,
+      subject: { kind: 'proposal', id: 'p1' },
+      roleIds: ['r1', 'r2'],
+      maxTurns: 2,
+    });
+    assert.equal(h.status, 'open');
+    assert.equal(h.turns, 0);
+    assert.deepEqual(h.roleIds, ['r1', 'r2']);
+    assert.equal((await storage.stepHuddle(h.id))?.turns, 1);
+    assert.equal((await storage.stepHuddle(h.id))?.turns, 2);
+    assert.equal(await storage.stepHuddle(h.id), null, 'turn 3 of max 2 is refused');
+    assert.equal((await storage.getHuddle(h.id))?.turns, 2);
+
+    const h2 = await storage.createHuddle({ officeId: o.id, subject: { kind: 'task', id: 't' }, roleIds: [], maxTurns: 5 });
+    const decided = await storage.closeHuddle(h2.id, 'decided', 'ship it');
+    assert.equal(decided?.status, 'decided');
+    assert.equal(decided?.decision, 'ship it');
+    assert.ok(decided?.closedAt);
+    assert.equal(await storage.closeHuddle(h2.id, 'expired'), null, 'closed once');
+    assert.equal(await storage.stepHuddle(h2.id), null, 'a closed huddle takes no turn');
+
+    const h0 = await storage.createHuddle({ officeId: o.id, subject: { kind: 'task', id: 't' }, roleIds: [], maxTurns: 0 });
+    assert.equal(h0.maxTurns, 1, 'max_turns clamped to at least 1');
+
+    assert.deepEqual((await storage.listHuddles({ officeId: o.id, status: 'open' })).map((x) => x.id).sort(), [h.id, h0.id].sort());
+    assert.deepEqual((await storage.listHuddles({ subject: { kind: 'proposal', id: 'p1' } })).map((x) => x.id), [h.id]);
+  });
+
+  test('a duplicate (source, external_id) signal is not inserted twice; consumeSignal lands once', async () => {
+    const o = await storage.createOffice({ workspaceId: 'ws-sig', folderPath: '/tmp/s', timezone: 'UTC' });
+    const a = await storage.appendSignal({ officeId: o.id, source: 'sentry', externalId: 'ISSUE-1', title: 'TypeError', rawText: 'stack' });
+    assert.equal(a.created, true);
+    const b = await storage.appendSignal({ officeId: o.id, source: 'sentry', externalId: 'ISSUE-1', title: 'again', rawText: 'x' });
+    assert.equal(b.created, false);
+    assert.equal(b.signal.id, a.signal.id);
+    assert.equal(b.signal.title, 'TypeError', 'the first row stands');
+    const other = await storage.appendSignal({ officeId: o.id, source: 'github', externalId: 'ISSUE-1', title: 'gh', rawText: '' });
+    assert.equal(other.created, true, 'unique per source');
+    assert.equal((await storage.listSignals({ officeId: o.id })).length, 2);
+    assert.equal((await storage.listSignals({ officeId: o.id, source: 'sentry' })).length, 1);
+
+    assert.equal((await storage.consumeSignal(a.signal.id, 'shift-1'))?.consumedShiftId, 'shift-1');
+    assert.equal(await storage.consumeSignal(a.signal.id, 'shift-2'), null);
+    assert.deepEqual((await storage.listSignals({ officeId: o.id, unconsumed: true })).map((s) => s.id), [other.signal.id]);
+  });
+
+  test('office chats carry office_id and participants; listChats narrows by office', async () => {
+    const c = await storage.createChat({
+      repoId,
+      title: 'office chat',
+      model: 'claude-opus-5-5',
+      effort: null,
+      mode: 'read',
+      officeId: 'office-c',
+      participants: ['r1', 'r2'],
+    });
+    assert.equal(c.officeId, 'office-c');
+    assert.deepEqual(c.participants, ['r1', 'r2']);
+    const plain = await storage.createChat({ repoId, title: 'plain', model: 'claude-opus-5-5', effort: null, mode: 'read' });
+    assert.equal(plain.officeId, null);
+    assert.deepEqual(plain.participants, []);
+    assert.deepEqual((await storage.listChats(undefined, 'office-c')).map((x) => x.id), [c.id]);
+    assert.ok((await storage.listChats(repoId)).some((x) => x.id === plain.id));
+  });
+
+  test('deleteOffice takes its messages, huddles and signals', async () => {
+    const o = await storage.createOffice({ workspaceId: 'ws-del60', folderPath: '/tmp/d60', timezone: 'UTC' });
+    await storage.appendOfficeMessage({ officeId: o.id, fromRoleId: null, toRoleId: null, kind: 'note', body: 'b' });
+    await storage.createHuddle({ officeId: o.id, subject: { kind: 'task', id: 't' }, roleIds: [], maxTurns: 1 });
+    await storage.appendSignal({ officeId: o.id, source: 'metric', externalId: 'm-del', title: 't', rawText: '' });
+    assert.ok(await storage.deleteOffice(o.id));
+    assert.equal((await storage.listOfficeMessages({ officeId: o.id })).length, 0);
+    assert.equal((await storage.listHuddles({ officeId: o.id })).length, 0);
+    assert.equal((await storage.listSignals({ officeId: o.id })).length, 0);
   });
 });

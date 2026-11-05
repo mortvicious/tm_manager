@@ -387,7 +387,14 @@ export function rowToChat(r: any): Chat {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     lastMessageAt: r.last_message_at ?? null,
+    officeId: r.office_id ?? null,
+    participants: chatParticipants(r.participants),
   };
+}
+
+function chatParticipants(raw: unknown): string[] {
+  const a = safeParse<unknown>(raw, []);
+  return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string') : [];
 }
 
 export function rowToChatMessage(r: any): ChatMessage {

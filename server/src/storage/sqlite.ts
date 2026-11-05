@@ -72,6 +72,35 @@ import {
   OFFICE_WISH_DELETE_SQL,
   OFFICE_WISH_GET_SQL,
   OFFICE_WISH_INSERT_SQL,
+  OFFICE_MESSAGE_GET_SQL,
+  OFFICE_MESSAGE_INSERT_SQL,
+  OFFICE_MESSAGES_DELETE_SQL,
+  OFFICE_HUDDLE_GET_SQL,
+  OFFICE_HUDDLE_INSERT_SQL,
+  OFFICE_HUDDLES_DELETE_SQL,
+  OFFICE_SIGNAL_BY_EXTERNAL_SQL,
+  OFFICE_SIGNAL_GET_SQL,
+  OFFICE_SIGNAL_INSERT_SQL,
+  OFFICE_SIGNALS_DELETE_SQL,
+  officeMessageInsertParams,
+  officeMessageListSql,
+  officeMessageRouteSql,
+  officeHuddleInsertParams,
+  officeHuddleListSql,
+  officeHuddleStepSql,
+  officeHuddleCloseSql,
+  officeSignalInsertParams,
+  officeSignalListSql,
+  officeSignalConsumeSql,
+  rowToOfficeMessage,
+  rowToOfficeHuddle,
+  rowToOfficeSignal,
+  type NewOfficeMessage,
+  type NewOfficeHuddle,
+  type NewOfficeSignal,
+  type OfficeMessageFilter,
+  type OfficeHuddleFilter,
+  type OfficeSignalFilter,
   OFFICE_WISHES_DELETE_SQL,
   officeBriefInsertParams,
   officeBriefListSql,
@@ -134,7 +163,17 @@ import {
   type OfficeShiftFilter,
   type OfficeShiftPatch,
 } from './office-sql.ts';
-import type { Office, OfficeBrief, OfficeProposal, OfficeRole, OfficeShift, OfficeWish } from '@tm/shared';
+import type {
+  Office,
+  OfficeBrief,
+  OfficeHuddle,
+  OfficeMessage,
+  OfficeProposal,
+  OfficeRole,
+  OfficeShift,
+  OfficeSignal,
+  OfficeWish,
+} from '@tm/shared';
 import { officeTrippedParam } from '@tm/shared';
 import {
   APPROVAL_DECIDE_SQL,
@@ -1566,9 +1605,18 @@ export class SqliteStorage implements Storage {
 
   // ---- chats (docs/chat.md) ----
 
-  async listChats(repoId?: string): Promise<Chat[]> {
-    const where = repoId ? `WHERE repo_id = ?` : '';
-    const params = repoId ? [repoId] : [];
+  async listChats(repoId?: string, officeId?: string): Promise<Chat[]> {
+    const conds: string[] = [];
+    const params: string[] = [];
+    if (repoId) {
+      conds.push(`repo_id = ?`);
+      params.push(repoId);
+    }
+    if (officeId) {
+      conds.push(`office_id = ?`);
+      params.push(officeId);
+    }
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     // A brand-new chat has no messages yet, so it must sort by created_at or
     // it would land at the bottom of the list the moment it is opened.
     const sql = `SELECT * FROM tm_chats ${where} ORDER BY COALESCE(last_message_at, created_at) DESC, id DESC`;
@@ -1585,10 +1633,10 @@ export class SqliteStorage implements Storage {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tm_chats (id, repo_id, title, model, effort, mode, status, turns, cost_usd, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, 0, ?, ?)`,
+        `INSERT INTO tm_chats (id, repo_id, title, model, effort, mode, status, turns, cost_usd, created_at, updated_at, office_id, participants)
+         VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, 0, ?, ?, ?, ?)`,
       )
-      .run(id, c.repoId, c.title, c.model, c.effort ?? null, c.mode, ts, ts);
+      .run(id, c.repoId, c.title, c.model, c.effort ?? null, c.mode, ts, ts, c.officeId ?? null, JSON.stringify(c.participants ?? []));
     return (await this.getChat(id))!;
   }
 
@@ -2252,6 +2300,9 @@ export class SqliteStorage implements Storage {
       this.db.prepare(OFFICE_BRIEFS_DELETE_SQL).run(id);
       this.db.prepare(OFFICE_PROPOSALS_DELETE_SQL).run(id);
       this.db.prepare(OFFICE_WISHES_DELETE_SQL).run(id);
+      this.db.prepare(OFFICE_MESSAGES_DELETE_SQL).run(id);
+      this.db.prepare(OFFICE_HUDDLES_DELETE_SQL).run(id);
+      this.db.prepare(OFFICE_SIGNALS_DELETE_SQL).run(id);
       this.db.prepare(OFFICE_ROLES_DELETE_SQL).run(id);
       return this.db.prepare(OFFICE_DELETE_SQL).run(id).changes > 0;
     });
@@ -2389,11 +2440,15 @@ export class SqliteStorage implements Storage {
 
   async markReviewed(table: 'brief', id: string): Promise<OfficeBrief | null>;
   async markReviewed(table: 'proposal', id: string): Promise<OfficeProposal | null>;
-  async markReviewed(table: OfficeReviewable, id: string): Promise<OfficeBrief | OfficeProposal | null> {
+  async markReviewed(table: 'message', id: string): Promise<OfficeMessage | null>;
+  async markReviewed(
+    table: OfficeReviewable,
+    id: string,
+  ): Promise<OfficeBrief | OfficeProposal | OfficeMessage | null> {
     const q = officeMarkReviewedSql(table, id, now());
     const r = this.db.prepare(q.sql).get(...(q.params as any[]));
     if (!r) return null;
-    return table === 'brief' ? rowToOfficeBrief(r) : rowToOfficeProposal(r);
+    return table === 'brief' ? rowToOfficeBrief(r) : table === 'message' ? rowToOfficeMessage(r) : rowToOfficeProposal(r);
   }
 
   async clearBriefTaint(id: string, expectedTaintedAt: string, newPath: string): Promise<OfficeBrief | null> {
@@ -2426,6 +2481,81 @@ export class SqliteStorage implements Storage {
 
   async deleteWish(id: string): Promise<boolean> {
     return this.db.prepare(OFFICE_WISH_DELETE_SQL).run(id).changes > 0;
+  }
+
+  // ---- office messages, huddles, signals (migration 60; SQL in office-sql.ts) ----
+
+  async appendOfficeMessage(m: NewOfficeMessage): Promise<OfficeMessage> {
+    const id = randomUUID();
+    this.db.prepare(OFFICE_MESSAGE_INSERT_SQL).run(...(officeMessageInsertParams(id, m, now()) as any[]));
+    return (await this.getOfficeMessage(id))!;
+  }
+
+  async getOfficeMessage(id: string): Promise<OfficeMessage | null> {
+    const r = this.db.prepare(OFFICE_MESSAGE_GET_SQL).get(id);
+    return r ? rowToOfficeMessage(r) : null;
+  }
+
+  async listOfficeMessages(f?: OfficeMessageFilter): Promise<OfficeMessage[]> {
+    const q = officeMessageListSql(f);
+    return (this.db.prepare(q.sql).all(...(q.params as any[])) as any[]).map(rowToOfficeMessage);
+  }
+
+  async routeMessage(id: string, taskId: string | null = null): Promise<OfficeMessage | null> {
+    const q = officeMessageRouteSql(id, taskId, now());
+    const r = this.db.prepare(q.sql).get(...(q.params as any[]));
+    return r ? rowToOfficeMessage(r) : null;
+  }
+
+  async createHuddle(h: NewOfficeHuddle): Promise<OfficeHuddle> {
+    const id = randomUUID();
+    this.db.prepare(OFFICE_HUDDLE_INSERT_SQL).run(...(officeHuddleInsertParams(id, h, now()) as any[]));
+    return (await this.getHuddle(id))!;
+  }
+
+  async getHuddle(id: string): Promise<OfficeHuddle | null> {
+    const r = this.db.prepare(OFFICE_HUDDLE_GET_SQL).get(id);
+    return r ? rowToOfficeHuddle(r) : null;
+  }
+
+  async listHuddles(f?: OfficeHuddleFilter): Promise<OfficeHuddle[]> {
+    const q = officeHuddleListSql(f);
+    return (this.db.prepare(q.sql).all(...(q.params as any[])) as any[]).map(rowToOfficeHuddle);
+  }
+
+  async stepHuddle(id: string): Promise<OfficeHuddle | null> {
+    const q = officeHuddleStepSql(id, now());
+    const r = this.db.prepare(q.sql).get(...(q.params as any[]));
+    return r ? rowToOfficeHuddle(r) : null;
+  }
+
+  async closeHuddle(id: string, to: 'decided' | 'expired', decision: string | null = null): Promise<OfficeHuddle | null> {
+    const q = officeHuddleCloseSql(id, to, decision, now());
+    const r = this.db.prepare(q.sql).get(...(q.params as any[]));
+    return r ? rowToOfficeHuddle(r) : null;
+  }
+
+  async appendSignal(s: NewOfficeSignal): Promise<{ signal: OfficeSignal; created: boolean }> {
+    const r = this.db.prepare(OFFICE_SIGNAL_INSERT_SQL).get(...(officeSignalInsertParams(randomUUID(), s, now()) as any[]));
+    if (r) return { signal: rowToOfficeSignal(r), created: true };
+    const existing = this.db.prepare(OFFICE_SIGNAL_BY_EXTERNAL_SQL).get(s.source, s.externalId);
+    return { signal: rowToOfficeSignal(existing), created: false };
+  }
+
+  async getSignal(id: string): Promise<OfficeSignal | null> {
+    const r = this.db.prepare(OFFICE_SIGNAL_GET_SQL).get(id);
+    return r ? rowToOfficeSignal(r) : null;
+  }
+
+  async listSignals(f?: OfficeSignalFilter): Promise<OfficeSignal[]> {
+    const q = officeSignalListSql(f);
+    return (this.db.prepare(q.sql).all(...(q.params as any[])) as any[]).map(rowToOfficeSignal);
+  }
+
+  async consumeSignal(id: string, shiftId: string): Promise<OfficeSignal | null> {
+    const q = officeSignalConsumeSql(id, shiftId);
+    const r = this.db.prepare(q.sql).get(...(q.params as any[]));
+    return r ? rowToOfficeSignal(r) : null;
   }
 
   // ---- Workspaces (docs/workspaces.md) ----

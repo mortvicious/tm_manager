@@ -4,7 +4,8 @@
  * other. Dialect-neutral with `?` placeholders (the pg driver rewrites them;
  * never put a `?` inside a string literal here). Tables are FK-less
  * (migration 53); the task columns `office_id`/`role_id`/`tainted_at` are
- * migration 54 and create-only. Briefs, proposals and wishes are migration 58.
+ * migration 54 and create-only. Briefs, proposals and wishes are migration 58;
+ * messages, huddles and signals migration 60.
  */
 import {
   OFFICE_MAX_OPEN_TASKS_DEFAULT,
@@ -28,6 +29,13 @@ import {
   type OfficeShiftFiling,
   type OfficeShiftTriggerKind,
   type OfficeTrigger,
+  type OfficeHuddle,
+  type OfficeHuddleStatus,
+  type OfficeMessage,
+  type OfficeMessageKind,
+  type OfficeSignal,
+  type OfficeSignalSource,
+  type OfficeSubject,
 } from '@tm/shared';
 
 // ---- shapes ----
@@ -533,10 +541,11 @@ export interface OfficeWishFilter {
 }
 
 /** What `markReviewed` may stamp; the table name comes from this map, never from the caller. */
-export type OfficeReviewable = 'brief' | 'proposal';
+export type OfficeReviewable = 'brief' | 'proposal' | 'message';
 const REVIEWABLE_TABLES: Record<OfficeReviewable, string> = {
   brief: 'tm_office_briefs',
   proposal: 'tm_office_proposals',
+  message: 'tm_office_messages',
 };
 
 export const OFFICE_BRIEF_INSERT_SQL = `INSERT INTO tm_office_briefs (id, office_id, role_id, shift_id, kind, path, summary, tainted_at, reviewed_at, created_at)
@@ -759,6 +768,265 @@ export function parseRepoIds(raw: unknown): string[] {
   } catch {
     return [];
   }
+}
+
+// ---- messages, huddles, signals (migration 60) ----
+
+export interface NewOfficeMessage {
+  officeId: string;
+  /** null = the stakeholder (the human) */
+  fromRoleId: string | null;
+  /** null = the channel */
+  toRoleId: string | null;
+  kind: OfficeMessageKind;
+  subject?: OfficeSubject | null;
+  body: string;
+  taintedAt?: string | null;
+}
+
+export interface OfficeMessageFilter {
+  officeId?: string;
+  /** a role id, or null = from the stakeholder */
+  fromRoleId?: string | null;
+  /** a role id, or null = the channel */
+  toRoleId?: string | null;
+  kind?: OfficeMessageKind;
+  subject?: OfficeSubject;
+  /** only rows with no `routed_at` */
+  unrouted?: boolean;
+  /** created at or after (ISO) */
+  since?: string;
+  /** default 200, capped at 2000 */
+  limit?: number;
+}
+
+export const OFFICE_MESSAGE_INSERT_SQL = `INSERT INTO tm_office_messages (id, office_id, from_role_id, to_role_id, kind, subject_kind, subject_id, body, tainted_at, reviewed_at, routed_at, routed_task_id, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)`;
+
+export function officeMessageInsertParams(id: string, m: NewOfficeMessage, at: string): unknown[] {
+  return [
+    id,
+    m.officeId,
+    m.fromRoleId ?? null,
+    m.toRoleId ?? null,
+    m.kind,
+    m.subject?.kind ?? null,
+    m.subject?.id ?? null,
+    m.body,
+    m.taintedAt ?? null,
+    at,
+  ];
+}
+
+export const OFFICE_MESSAGE_GET_SQL = `SELECT * FROM tm_office_messages WHERE id = ?`;
+export const OFFICE_MESSAGES_DELETE_SQL = `DELETE FROM tm_office_messages WHERE office_id = ?`;
+
+/** Oldest first — a conversation reads top-down; `since` + `limit` page forward. */
+export function officeMessageListSql(f: OfficeMessageFilter = {}): { sql: string; params: unknown[] } {
+  const { where, params, eq } = whereBuilder();
+  if (f.officeId) eq('office_id', f.officeId);
+  if (f.fromRoleId !== undefined) f.fromRoleId === null ? where.push(`from_role_id IS NULL`) : eq('from_role_id', f.fromRoleId);
+  if (f.toRoleId !== undefined) f.toRoleId === null ? where.push(`to_role_id IS NULL`) : eq('to_role_id', f.toRoleId);
+  if (f.kind) eq('kind', f.kind);
+  if (f.subject) {
+    eq('subject_kind', f.subject.kind);
+    eq('subject_id', f.subject.id);
+  }
+  if (f.unrouted) where.push(`routed_at IS NULL`);
+  if (f.since) {
+    where.push(`created_at >= ?`);
+    params.push(f.since);
+  }
+  return {
+    sql: `SELECT * FROM tm_office_messages ${whereSql(where)} ORDER BY created_at ASC, id ASC LIMIT ${listLimit(f.limit)}`,
+    params,
+  };
+}
+
+/**
+ * `routeMessage`'s conditional write: stamps `routed_at` (and the task the
+ * routing filed, if any) only while the message is still unrouted, so two
+ * routers racing (a shift's settle and the scheduler) route it once — the
+ * loser gets null back.
+ */
+export function officeMessageRouteSql(id: string, taskId: string | null, at: string): { sql: string; params: unknown[] } {
+  return {
+    sql: `UPDATE tm_office_messages SET routed_at = ?, routed_task_id = ? WHERE id = ? AND routed_at IS NULL RETURNING *`,
+    params: [at, taskId, id],
+  };
+}
+
+export function rowToOfficeMessage(r: any): OfficeMessage {
+  return {
+    id: r.id,
+    officeId: r.office_id,
+    fromRoleId: r.from_role_id ?? null,
+    toRoleId: r.to_role_id ?? null,
+    kind: r.kind,
+    subject: r.subject_kind && r.subject_id ? { kind: r.subject_kind, id: r.subject_id } : null,
+    body: r.body ?? '',
+    taintedAt: r.tainted_at ?? null,
+    reviewedAt: r.reviewed_at ?? null,
+    routedAt: r.routed_at ?? null,
+    routedTaskId: r.routed_task_id ?? null,
+    createdAt: r.created_at,
+  };
+}
+
+export interface NewOfficeHuddle {
+  officeId: string;
+  subject: OfficeSubject;
+  roleIds: string[];
+  /** at least 1 (clamped) */
+  maxTurns: number;
+  taintedAt?: string | null;
+}
+
+export interface OfficeHuddleFilter {
+  officeId?: string;
+  status?: OfficeHuddleStatus;
+  subject?: OfficeSubject;
+  /** default 200, capped at 2000 */
+  limit?: number;
+}
+
+export const OFFICE_HUDDLE_INSERT_SQL = `INSERT INTO tm_office_huddles (id, office_id, subject_kind, subject_id, role_ids, turns, max_turns, status, decision, tainted_at, created_at, updated_at, closed_at)
+  VALUES (?, ?, ?, ?, ?, 0, ?, 'open', NULL, ?, ?, ?, NULL)`;
+
+export function officeHuddleInsertParams(id: string, h: NewOfficeHuddle, at: string): unknown[] {
+  const max = Math.max(1, Math.floor(Number.isFinite(h.maxTurns) ? h.maxTurns : 1));
+  return [id, h.officeId, h.subject.kind, h.subject.id, JSON.stringify(h.roleIds ?? []), max, h.taintedAt ?? null, at, at];
+}
+
+export const OFFICE_HUDDLE_GET_SQL = `SELECT * FROM tm_office_huddles WHERE id = ?`;
+export const OFFICE_HUDDLES_DELETE_SQL = `DELETE FROM tm_office_huddles WHERE office_id = ?`;
+
+/** Newest first. */
+export function officeHuddleListSql(f: OfficeHuddleFilter = {}): { sql: string; params: unknown[] } {
+  const { where, params, eq } = whereBuilder();
+  if (f.officeId) eq('office_id', f.officeId);
+  if (f.status) eq('status', f.status);
+  if (f.subject) {
+    eq('subject_kind', f.subject.kind);
+    eq('subject_id', f.subject.id);
+  }
+  return {
+    sql: `SELECT * FROM tm_office_huddles ${whereSql(where)} ORDER BY created_at DESC, id DESC LIMIT ${listLimit(f.limit)}`,
+    params,
+  };
+}
+
+/**
+ * `stepHuddle`: takes the next turn — `turns + 1` — only while the huddle is
+ * `open` AND `turns < max_turns`, in ONE conditional write, so a huddle can
+ * never run past its cap however many roles race for the turn. Null back =
+ * refused (closed, spent, or no such row); the caller re-reads.
+ */
+export function officeHuddleStepSql(id: string, at: string): { sql: string; params: unknown[] } {
+  return {
+    sql: `UPDATE tm_office_huddles SET turns = turns + 1, updated_at = ? WHERE id = ? AND status = 'open' AND turns < max_turns RETURNING *`,
+    params: [at, id],
+  };
+}
+
+/** `closeHuddle`: `open → decided|expired`, once (null back = already closed or no such row). */
+export function officeHuddleCloseSql(
+  id: string,
+  to: Exclude<OfficeHuddleStatus, 'open'>,
+  decision: string | null,
+  at: string,
+): { sql: string; params: unknown[] } {
+  return {
+    sql: `UPDATE tm_office_huddles SET status = ?, decision = ?, closed_at = ?, updated_at = ? WHERE id = ? AND status = 'open' RETURNING *`,
+    params: [to, decision, at, at, id],
+  };
+}
+
+export function rowToOfficeHuddle(r: any): OfficeHuddle {
+  return {
+    id: r.id,
+    officeId: r.office_id,
+    subject: { kind: r.subject_kind, id: r.subject_id },
+    roleIds: stringList(r.role_ids),
+    turns: Number(r.turns ?? 0),
+    maxTurns: Number(r.max_turns ?? 0),
+    status: r.status,
+    decision: r.decision ?? null,
+    taintedAt: r.tainted_at ?? null,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    closedAt: r.closed_at ?? null,
+  };
+}
+
+export interface NewOfficeSignal {
+  officeId: string;
+  source: OfficeSignalSource;
+  externalId: string;
+  title: string;
+  rawText: string;
+  url?: string | null;
+  /** defaults to now */
+  receivedAt?: string;
+}
+
+export interface OfficeSignalFilter {
+  officeId?: string;
+  source?: OfficeSignalSource;
+  /** only rows no shift has consumed */
+  unconsumed?: boolean;
+  /** default 200, capped at 2000 */
+  limit?: number;
+}
+
+/**
+ * `appendSignal`'s insert: a duplicate `(source, external_id)` is a no-op
+ * (the unique index of migration 60), and RETURNING gives no row for it, so
+ * the driver can tell "new" from "already had it" without a racy pre-read.
+ */
+export const OFFICE_SIGNAL_INSERT_SQL = `INSERT INTO tm_office_signals (id, office_id, source, external_id, title, raw_text, url, received_at, consumed_shift_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL) ON CONFLICT (source, external_id) DO NOTHING RETURNING *`;
+
+export function officeSignalInsertParams(id: string, s: NewOfficeSignal, at: string): unknown[] {
+  return [id, s.officeId, s.source, s.externalId, s.title, s.rawText, s.url ?? null, s.receivedAt ?? at];
+}
+
+export const OFFICE_SIGNAL_GET_SQL = `SELECT * FROM tm_office_signals WHERE id = ?`;
+export const OFFICE_SIGNAL_BY_EXTERNAL_SQL = `SELECT * FROM tm_office_signals WHERE source = ? AND external_id = ?`;
+export const OFFICE_SIGNALS_DELETE_SQL = `DELETE FROM tm_office_signals WHERE office_id = ?`;
+
+/** Oldest first — signals are consumed in arrival order. */
+export function officeSignalListSql(f: OfficeSignalFilter = {}): { sql: string; params: unknown[] } {
+  const { where, params, eq } = whereBuilder();
+  if (f.officeId) eq('office_id', f.officeId);
+  if (f.source) eq('source', f.source);
+  if (f.unconsumed) where.push(`consumed_shift_id IS NULL`);
+  return {
+    sql: `SELECT * FROM tm_office_signals ${whereSql(where)} ORDER BY received_at ASC, id ASC LIMIT ${listLimit(f.limit)}`,
+    params,
+  };
+}
+
+/** `consumeSignal`: hands a signal to ONE shift — lands only while unconsumed (null back = taken). */
+export function officeSignalConsumeSql(id: string, shiftId: string): { sql: string; params: unknown[] } {
+  return {
+    sql: `UPDATE tm_office_signals SET consumed_shift_id = ? WHERE id = ? AND consumed_shift_id IS NULL RETURNING *`,
+    params: [shiftId, id],
+  };
+}
+
+export function rowToOfficeSignal(r: any): OfficeSignal {
+  return {
+    id: r.id,
+    officeId: r.office_id,
+    source: r.source,
+    externalId: r.external_id,
+    title: r.title ?? '',
+    rawText: r.raw_text ?? '',
+    url: r.url ?? null,
+    receivedAt: r.received_at,
+    consumedShiftId: r.consumed_shift_id ?? null,
+  };
 }
 
 // ---- roll-ups ----

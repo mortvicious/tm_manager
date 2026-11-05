@@ -166,7 +166,7 @@ Audit rows: `chat.created`, `chat.edited`, `chat.deleted` and one `chat.turn` pe
 
 Migration **19**, two tables, both drivers, dialect-neutral:
 
-- `tm_chats` — repo, title, model, effort, mode, `session_id`, `status`, `error`, `pid` (migration **20** — see § Crash recovery), `turns`, `cost_usd`, timestamps and `last_message_at` (the list's sort key; a brand-new chat falls back to `created_at` via `COALESCE`, or it would sink to the bottom the moment it was opened).
+- `tm_chats` — repo, title, model, effort, mode, `session_id`, `status`, `error`, `pid` (migration **20** — see § Crash recovery), `turns`, `cost_usd`, `office_id` + `participants` (migration **60** — an office group chat and its role ids, null/[] for an ordinary chat; docs/office.md § Data model), timestamps and `last_message_at` (the list's sort key; a brand-new chat falls back to `created_at` via `COALESCE`, or it would sink to the bottom the moment it was opened).
 - `tm_chat_messages` — chat, role, text, actor, error, cost, duration. Its `id` is the time-sortable `eventId()`, so `ORDER BY id` **is** send order and the browser can splice a live frame into a fetched transcript without a timestamp tiebreak.
 
 FK-less, like `tm_events` and `tm_dispatches`; `deleteChat` removes both in one transaction.

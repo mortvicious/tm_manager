@@ -1093,6 +1093,72 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS tm_office_proposals_status_idx ON tm_office_proposals (status, created_at)`,
     ],
   },
+  {
+    id: 60,
+    // Office comms and signals (docs/office.md § Data model, phase 4). FK-less
+    // like the rest of the office. A message's `from_role_id` NULL = the
+    // stakeholder, `to_role_id` NULL = the channel; it is routed once, by the
+    // conditional `routeMessage` (`routed_at IS NULL`). A huddle's `turns`
+    // grows only through the conditional `stepHuddle` (open AND turns <
+    // max_turns) and it closes once (`closeHuddle`, open → decided|expired).
+    // A signal is unique per `(source, external_id)`, so a re-delivered
+    // webhook is one row (`appendSignal` = INSERT … ON CONFLICT DO NOTHING),
+    // and consumed once (`consumeSignal`). `tm_chats.office_id`/`participants`
+    // make a chat an office group chat (participants = role ids, JSON).
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_office_messages (
+        id TEXT PRIMARY KEY,
+        office_id TEXT NOT NULL,
+        from_role_id TEXT,
+        to_role_id TEXT,
+        kind TEXT NOT NULL,
+        subject_kind TEXT,
+        subject_id TEXT,
+        body TEXT NOT NULL,
+        tainted_at TEXT,
+        reviewed_at TEXT,
+        routed_at TEXT,
+        routed_task_id TEXT,
+        created_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_office_messages_office_idx ON tm_office_messages (office_id, created_at)`,
+      `CREATE INDEX IF NOT EXISTS tm_office_messages_to_idx ON tm_office_messages (office_id, to_role_id, routed_at)`,
+      `CREATE INDEX IF NOT EXISTS tm_office_messages_subject_idx ON tm_office_messages (subject_kind, subject_id)`,
+      `CREATE TABLE IF NOT EXISTS tm_office_huddles (
+        id TEXT PRIMARY KEY,
+        office_id TEXT NOT NULL,
+        subject_kind TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        role_ids TEXT NOT NULL DEFAULT '[]',
+        turns INTEGER NOT NULL DEFAULT 0,
+        max_turns INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        decision TEXT,
+        tainted_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        closed_at TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_office_huddles_office_idx ON tm_office_huddles (office_id, status, created_at)`,
+      `CREATE INDEX IF NOT EXISTS tm_office_huddles_subject_idx ON tm_office_huddles (subject_kind, subject_id)`,
+      `CREATE TABLE IF NOT EXISTS tm_office_signals (
+        id TEXT PRIMARY KEY,
+        office_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        raw_text TEXT NOT NULL,
+        url TEXT,
+        received_at TEXT NOT NULL,
+        consumed_shift_id TEXT
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS tm_office_signals_external_idx ON tm_office_signals (source, external_id)`,
+      `CREATE INDEX IF NOT EXISTS tm_office_signals_office_idx ON tm_office_signals (office_id, consumed_shift_id, received_at)`,
+      `ALTER TABLE tm_chats ADD COLUMN office_id TEXT`,
+      `ALTER TABLE tm_chats ADD COLUMN participants TEXT`,
+      `CREATE INDEX IF NOT EXISTS tm_chats_office_idx ON tm_chats (office_id)`,
+    ],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */

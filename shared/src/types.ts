@@ -2638,6 +2638,10 @@ export interface Chat {
   updatedAt: string;
   /** last message in either direction — the list's sort key */
   lastMessageAt: string | null;
+  /** an office group chat (docs/office.md § Data model, migration 60); null = an ordinary chat */
+  officeId: string | null;
+  /** an office chat's role ids, in order; [] for an ordinary chat */
+  participants: string[];
 }
 
 export type ChatRole = 'user' | 'assistant';

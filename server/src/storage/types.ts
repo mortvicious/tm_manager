@@ -16,6 +16,12 @@ import type {
   OfficeRolePatch,
   OfficeShiftFilter,
   OfficeShiftPatch,
+  NewOfficeMessage,
+  NewOfficeHuddle,
+  NewOfficeSignal,
+  OfficeMessageFilter,
+  OfficeHuddleFilter,
+  OfficeSignalFilter,
 } from './office-sql.ts';
 import type { MoveAnchor } from './group.ts';
 import type { QueueMoveAnchor } from './queue-sql.ts';
@@ -32,6 +38,9 @@ import type {
   OfficeBrief,
   OfficeProposal,
   OfficeWish,
+  OfficeMessage,
+  OfficeHuddle,
+  OfficeSignal,
   PushDevice,
   PushKind,
 } from '@tm/shared';
@@ -282,6 +291,10 @@ export interface NewChat {
   model: string;
   effort: EffortLevel | null;
   mode: ChatMode;
+  /** an office group chat (migration 60) — create-only */
+  officeId?: string | null;
+  /** the office chat's role ids — create-only */
+  participants?: string[];
 }
 
 /** Everything a human may change about a chat after it exists. */
@@ -730,8 +743,8 @@ export interface Storage {
 
   // ---- chats (docs/chat.md) ----
 
-  /** Newest activity first. */
-  listChats(repoId?: string): Promise<Chat[]>;
+  /** Newest activity first. `officeId` narrows to one office's group chats. */
+  listChats(repoId?: string, officeId?: string): Promise<Chat[]>;
   getChat(id: string): Promise<Chat | null>;
   createChat(c: NewChat): Promise<Chat>;
   updateChat(id: string, patch: ChatPatch): Promise<Chat | null>;
@@ -954,6 +967,7 @@ export interface Storage {
   setProposalFiledTask(id: string, taskId: string): Promise<OfficeProposal | null>;
   markReviewed(table: 'brief', id: string): Promise<OfficeBrief | null>;
   markReviewed(table: 'proposal', id: string): Promise<OfficeProposal | null>;
+  markReviewed(table: 'message', id: string): Promise<OfficeMessage | null>;
   /**
    * Mark reviewed on a TAINTED brief (docs/office.md § Briefings): new `path`,
    * `tainted_at` cleared, `reviewed_at` stamped — only while `tainted_at` still
@@ -966,6 +980,34 @@ export interface Storage {
   listWishes(f?: OfficeWishFilter): Promise<OfficeWish[]>;
   updateWish(id: string, patch: OfficeWishPatch): Promise<OfficeWish | null>;
   deleteWish(id: string): Promise<boolean>;
+  /**
+   * Messages, huddles, signals (docs/office.md § Data model, migration 60; SQL
+   * in `office-sql.ts`). FK-less; `deleteOffice` removes them with the office.
+   * Each has ONE conditional composite that owns its state — null back means
+   * the write lost or was refused (re-read):
+   * - `routeMessage(id, taskId)` stamps `routed_at` (+ the filed task) once;
+   * - `stepHuddle(id)` is turn++ only while `open` AND `turns < max_turns`;
+   *   `closeHuddle` is `open → decided|expired`, once;
+   * - `consumeSignal(id, shiftId)` hands a signal to one shift, once.
+   * `appendSignal` is idempotent on `(source, externalId)`: a duplicate is not
+   * inserted, and the EXISTING row comes back with `created: false`.
+   */
+  appendOfficeMessage(m: NewOfficeMessage): Promise<OfficeMessage>;
+  getOfficeMessage(id: string): Promise<OfficeMessage | null>;
+  /** oldest first */
+  listOfficeMessages(f?: OfficeMessageFilter): Promise<OfficeMessage[]>;
+  routeMessage(id: string, taskId?: string | null): Promise<OfficeMessage | null>;
+  createHuddle(h: NewOfficeHuddle): Promise<OfficeHuddle>;
+  getHuddle(id: string): Promise<OfficeHuddle | null>;
+  /** newest first */
+  listHuddles(f?: OfficeHuddleFilter): Promise<OfficeHuddle[]>;
+  stepHuddle(id: string): Promise<OfficeHuddle | null>;
+  closeHuddle(id: string, to: 'decided' | 'expired', decision?: string | null): Promise<OfficeHuddle | null>;
+  appendSignal(s: NewOfficeSignal): Promise<{ signal: OfficeSignal; created: boolean }>;
+  getSignal(id: string): Promise<OfficeSignal | null>;
+  /** oldest first */
+  listSignals(f?: OfficeSignalFilter): Promise<OfficeSignal[]>;
+  consumeSignal(id: string, shiftId: string): Promise<OfficeSignal | null>;
 
   getSettings(): Promise<AppSettings>;
   /** Total `cost_usd` of every run (any mode) STARTED at or after this ISO time — the `budget.dayUsd` measure. */

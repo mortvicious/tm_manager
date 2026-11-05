@@ -70,6 +70,35 @@ import {
   OFFICE_WISH_DELETE_SQL,
   OFFICE_WISH_GET_SQL,
   OFFICE_WISH_INSERT_SQL,
+  OFFICE_MESSAGE_GET_SQL,
+  OFFICE_MESSAGE_INSERT_SQL,
+  OFFICE_MESSAGES_DELETE_SQL,
+  OFFICE_HUDDLE_GET_SQL,
+  OFFICE_HUDDLE_INSERT_SQL,
+  OFFICE_HUDDLES_DELETE_SQL,
+  OFFICE_SIGNAL_BY_EXTERNAL_SQL,
+  OFFICE_SIGNAL_GET_SQL,
+  OFFICE_SIGNAL_INSERT_SQL,
+  OFFICE_SIGNALS_DELETE_SQL,
+  officeMessageInsertParams,
+  officeMessageListSql,
+  officeMessageRouteSql,
+  officeHuddleInsertParams,
+  officeHuddleListSql,
+  officeHuddleStepSql,
+  officeHuddleCloseSql,
+  officeSignalInsertParams,
+  officeSignalListSql,
+  officeSignalConsumeSql,
+  rowToOfficeMessage,
+  rowToOfficeHuddle,
+  rowToOfficeSignal,
+  type NewOfficeMessage,
+  type NewOfficeHuddle,
+  type NewOfficeSignal,
+  type OfficeMessageFilter,
+  type OfficeHuddleFilter,
+  type OfficeSignalFilter,
   OFFICE_WISHES_DELETE_SQL,
   officeBriefInsertParams,
   officeBriefListSql,
@@ -132,7 +161,17 @@ import {
   type OfficeShiftFilter,
   type OfficeShiftPatch,
 } from './office-sql.ts';
-import type { Office, OfficeBrief, OfficeProposal, OfficeRole, OfficeShift, OfficeWish } from '@tm/shared';
+import type {
+  Office,
+  OfficeBrief,
+  OfficeHuddle,
+  OfficeMessage,
+  OfficeProposal,
+  OfficeRole,
+  OfficeShift,
+  OfficeSignal,
+  OfficeWish,
+} from '@tm/shared';
 import { officeTrippedParam } from '@tm/shared';
 import {
   APPROVAL_DECIDE_SQL,
@@ -1555,9 +1594,18 @@ export class PostgresStorage implements Storage {
   // Character-for-character the same SQL as the SQLite driver, `?` and all —
   // toPg() rewrites the placeholders. Keep the two in step.
 
-  async listChats(repoId?: string): Promise<Chat[]> {
-    const where = repoId ? `WHERE repo_id = ?` : '';
-    const params = repoId ? [repoId] : [];
+  async listChats(repoId?: string, officeId?: string): Promise<Chat[]> {
+    const conds: string[] = [];
+    const params: string[] = [];
+    if (repoId) {
+      conds.push(`repo_id = ?`);
+      params.push(repoId);
+    }
+    if (officeId) {
+      conds.push(`office_id = ?`);
+      params.push(officeId);
+    }
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const sql = `SELECT * FROM tm_chats ${where} ORDER BY COALESCE(last_message_at, created_at) DESC, id DESC`;
     return (await this.q(sql, params)).map(rowToChat);
   }
@@ -1571,9 +1619,9 @@ export class PostgresStorage implements Storage {
     const id = randomUUID();
     const ts = now();
     await this.q(
-      `INSERT INTO tm_chats (id, repo_id, title, model, effort, mode, status, turns, cost_usd, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, 0, ?, ?)`,
-      [id, c.repoId, c.title, c.model, c.effort ?? null, c.mode, ts, ts],
+      `INSERT INTO tm_chats (id, repo_id, title, model, effort, mode, status, turns, cost_usd, created_at, updated_at, office_id, participants)
+       VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, 0, ?, ?, ?, ?)`,
+      [id, c.repoId, c.title, c.model, c.effort ?? null, c.mode, ts, ts, c.officeId ?? null, JSON.stringify(c.participants ?? [])],
     );
     return (await this.getChat(id))!;
   }
@@ -2235,6 +2283,9 @@ export class PostgresStorage implements Storage {
       await c.query(toPg(OFFICE_BRIEFS_DELETE_SQL), [id]);
       await c.query(toPg(OFFICE_PROPOSALS_DELETE_SQL), [id]);
       await c.query(toPg(OFFICE_WISHES_DELETE_SQL), [id]);
+      await c.query(toPg(OFFICE_MESSAGES_DELETE_SQL), [id]);
+      await c.query(toPg(OFFICE_HUDDLES_DELETE_SQL), [id]);
+      await c.query(toPg(OFFICE_SIGNALS_DELETE_SQL), [id]);
       await c.query(toPg(OFFICE_ROLES_DELETE_SQL), [id]);
       const r = await c.query(toPg(`${OFFICE_DELETE_SQL} RETURNING id`), [id]);
       return (r.rowCount ?? 0) > 0;
@@ -2374,11 +2425,15 @@ export class PostgresStorage implements Storage {
 
   async markReviewed(table: 'brief', id: string): Promise<OfficeBrief | null>;
   async markReviewed(table: 'proposal', id: string): Promise<OfficeProposal | null>;
-  async markReviewed(table: OfficeReviewable, id: string): Promise<OfficeBrief | OfficeProposal | null> {
+  async markReviewed(table: 'message', id: string): Promise<OfficeMessage | null>;
+  async markReviewed(
+    table: OfficeReviewable,
+    id: string,
+  ): Promise<OfficeBrief | OfficeProposal | OfficeMessage | null> {
     const q = officeMarkReviewedSql(table, id, now());
     const r = (await this.q(q.sql, q.params))[0];
     if (!r) return null;
-    return table === 'brief' ? rowToOfficeBrief(r) : rowToOfficeProposal(r);
+    return table === 'brief' ? rowToOfficeBrief(r) : table === 'message' ? rowToOfficeMessage(r) : rowToOfficeProposal(r);
   }
 
   async clearBriefTaint(id: string, expectedTaintedAt: string, newPath: string): Promise<OfficeBrief | null> {
@@ -2411,6 +2466,81 @@ export class PostgresStorage implements Storage {
 
   async deleteWish(id: string): Promise<boolean> {
     return (await this.q(`${OFFICE_WISH_DELETE_SQL} RETURNING id`, [id])).length > 0;
+  }
+
+  // ---- office messages, huddles, signals (migration 60; SQL in office-sql.ts) ----
+
+  async appendOfficeMessage(m: NewOfficeMessage): Promise<OfficeMessage> {
+    const id = randomUUID();
+    await this.q(OFFICE_MESSAGE_INSERT_SQL, officeMessageInsertParams(id, m, now()));
+    return (await this.getOfficeMessage(id))!;
+  }
+
+  async getOfficeMessage(id: string): Promise<OfficeMessage | null> {
+    const r = (await this.q(OFFICE_MESSAGE_GET_SQL, [id]))[0];
+    return r ? rowToOfficeMessage(r) : null;
+  }
+
+  async listOfficeMessages(f?: OfficeMessageFilter): Promise<OfficeMessage[]> {
+    const q = officeMessageListSql(f);
+    return (await this.q(q.sql, q.params)).map(rowToOfficeMessage);
+  }
+
+  async routeMessage(id: string, taskId: string | null = null): Promise<OfficeMessage | null> {
+    const q = officeMessageRouteSql(id, taskId, now());
+    const r = (await this.q(q.sql, q.params))[0];
+    return r ? rowToOfficeMessage(r) : null;
+  }
+
+  async createHuddle(h: NewOfficeHuddle): Promise<OfficeHuddle> {
+    const id = randomUUID();
+    await this.q(OFFICE_HUDDLE_INSERT_SQL, officeHuddleInsertParams(id, h, now()));
+    return (await this.getHuddle(id))!;
+  }
+
+  async getHuddle(id: string): Promise<OfficeHuddle | null> {
+    const r = (await this.q(OFFICE_HUDDLE_GET_SQL, [id]))[0];
+    return r ? rowToOfficeHuddle(r) : null;
+  }
+
+  async listHuddles(f?: OfficeHuddleFilter): Promise<OfficeHuddle[]> {
+    const q = officeHuddleListSql(f);
+    return (await this.q(q.sql, q.params)).map(rowToOfficeHuddle);
+  }
+
+  async stepHuddle(id: string): Promise<OfficeHuddle | null> {
+    const q = officeHuddleStepSql(id, now());
+    const r = (await this.q(q.sql, q.params))[0];
+    return r ? rowToOfficeHuddle(r) : null;
+  }
+
+  async closeHuddle(id: string, to: 'decided' | 'expired', decision: string | null = null): Promise<OfficeHuddle | null> {
+    const q = officeHuddleCloseSql(id, to, decision, now());
+    const r = (await this.q(q.sql, q.params))[0];
+    return r ? rowToOfficeHuddle(r) : null;
+  }
+
+  async appendSignal(s: NewOfficeSignal): Promise<{ signal: OfficeSignal; created: boolean }> {
+    const r = (await this.q(OFFICE_SIGNAL_INSERT_SQL, officeSignalInsertParams(randomUUID(), s, now())))[0];
+    if (r) return { signal: rowToOfficeSignal(r), created: true };
+    const existing = (await this.q(OFFICE_SIGNAL_BY_EXTERNAL_SQL, [s.source, s.externalId]))[0];
+    return { signal: rowToOfficeSignal(existing), created: false };
+  }
+
+  async getSignal(id: string): Promise<OfficeSignal | null> {
+    const r = (await this.q(OFFICE_SIGNAL_GET_SQL, [id]))[0];
+    return r ? rowToOfficeSignal(r) : null;
+  }
+
+  async listSignals(f?: OfficeSignalFilter): Promise<OfficeSignal[]> {
+    const q = officeSignalListSql(f);
+    return (await this.q(q.sql, q.params)).map(rowToOfficeSignal);
+  }
+
+  async consumeSignal(id: string, shiftId: string): Promise<OfficeSignal | null> {
+    const q = officeSignalConsumeSql(id, shiftId);
+    const r = (await this.q(q.sql, q.params))[0];
+    return r ? rowToOfficeSignal(r) : null;
   }
 
   // ---- Workspaces (docs/workspaces.md) ----

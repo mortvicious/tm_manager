@@ -17,7 +17,7 @@ Code so far: `shared/src/office.ts` (types and pure logic, no I/O, exported from
 `@tm/shared`), `server/src/office/presets.ts`, `names.ts` and `folder.ts`, the
 shared folder rule in `server/src/folder-guard.ts`, and the tests
 `server/src/office/office-pure.test.ts` and `office-scaffold.test.ts`, plus the
-data layer (§ Data model): migrations 53–54 and 58, `server/src/storage/office-sql.ts`,
+data layer (§ Data model): migrations 53–54, 58 and 60, `server/src/storage/office-sql.ts`,
 the Storage methods in both drivers, and `server/src/storage/office.test.ts`;
 and the gate and day budget (§ Gate and budget): `server/src/office/gate.ts`,
 `server/src/office/budget.ts`, the office branch of `budgetAllows`, and
@@ -534,7 +534,7 @@ follow-up task 21ee2d45.
 ## Data model
 
 Migrations 53 and 54 (and 57, § Scheduler and states: `tm_office_roles.armed_at`,
-`tm_office_shifts.skip_code`; and 58, the phase-3 tables below). The SQL is shared by both drivers in
+`tm_office_shifts.skip_code`; 58, the phase-3 tables below; and 60, the phase-4 comms tables below). The SQL is shared by both drivers in
 `server/src/storage/office-sql.ts` (dialect-neutral, `?` placeholders, like
 `workspace-sql.ts`). Storage test: `server/src/storage/office.test.ts`.
 
@@ -664,6 +664,59 @@ Storage methods (both drivers, SQL in `office-sql.ts`):
   same transaction.
 
 Push kinds for them are in `PUSH_KINDS` (`briefing`, `proposal` — docs/push.md).
+
+**Messages, huddles, signals, office chats (migration 60, phase 4)**. Three
+more FK-less tables, types `OfficeMessage` / `OfficeHuddle` / `OfficeSignal`
+(+ `OfficeSubject`, `OfficeMessageKind`, `OfficeHuddleStatus`,
+`OfficeSignalSource`) at the end of `shared/src/office.ts`. A *subject*
+(`{kind, id}` — a task, feature, shift, signal, proposal, brief, wish, huddle
+or message) is stored as two columns, `subject_kind` + `subject_id`, so it can
+be indexed:
+
+| Table | Columns | Indexes |
+|---|---|---|
+| `tm_office_messages` | `office_id`, `from_role_id` (NULL = the stakeholder, i.e. the human), `to_role_id` (NULL = the office channel), `kind` (`request` \| `finding` \| `handoff` \| `note`), `subject_kind`/`subject_id` (both NULL = no subject), `body`, `tainted_at`, `reviewed_at`, `routed_at`, `routed_task_id`, `created_at` | `(office_id, created_at)`, `(office_id, to_role_id, routed_at)`, `(subject_kind, subject_id)` |
+| `tm_office_huddles` | `office_id`, `subject_kind`/`subject_id` (required), `role_ids` (JSON), `turns` (0), `max_turns` (≥ 1, clamped on insert), `status` (`open` \| `decided` \| `expired`, default `open`), `decision`, `tainted_at`, `created_at`, `updated_at`, `closed_at` | `(office_id, status, created_at)`, `(subject_kind, subject_id)` |
+| `tm_office_signals` | `office_id`, `source` (`sentry` \| `github` \| `metric`), `external_id`, `title`, `raw_text`, `url`, `received_at`, `consumed_shift_id` | **unique** `(source, external_id)`, `(office_id, consumed_shift_id, received_at)` |
+
+`tm_chats` gains `office_id` and `participants` (JSON role ids) —
+`Chat.officeId` (null = an ordinary chat) and `Chat.participants` ([] for an
+ordinary chat), create-only through `NewChat`; `listChats(repoId?, officeId?)`
+narrows by office. `repo_id` stays NOT NULL: an office chat still names a repo
+until the group-chat phase decides its cwd.
+
+A signal's `(source, external_id)` is unique ACROSS offices, as specified: the
+same Sentry issue or GitHub event is one row, whichever office polled it first.
+Its `title`/`raw_text` come from outside and are always untrusted text.
+
+Storage methods (both drivers, SQL in `office-sql.ts`). Each table has ONE
+conditional composite that owns its state; null back means the write lost a
+race or was refused, and the caller re-reads:
+
+- Messages: `appendOfficeMessage`, `getOfficeMessage`,
+  `listOfficeMessages(filter)` — `officeId`, `fromRoleId` / `toRoleId` (a role
+  id, or `null` for the stakeholder / the channel), `kind`, `subject`,
+  `unrouted`, `since`, `limit` (default 200, at most 2000); oldest first.
+  **`routeMessage(id, taskId?)`** stamps `routed_at` (and the task the routing
+  filed) only while `routed_at IS NULL`, so a message is routed once.
+  `markReviewed('message', id)` stamps `reviewed_at` like briefs and proposals.
+- Huddles: `createHuddle` (always `open`, `turns` 0), `getHuddle`,
+  `listHuddles(filter)` (`officeId`, `status`, `subject`, `limit`; newest
+  first). **`stepHuddle(id)`** is `turns = turns + 1` in one write that lands
+  only while `status = 'open' AND turns < max_turns` — a huddle can never take
+  a turn past its cap however many roles race for it (test). **`closeHuddle(id,
+  'decided' | 'expired', decision?)`** is `open → decided|expired`, once, and
+  stamps `closed_at`.
+- Signals: **`appendSignal(s)`** is `INSERT … ON CONFLICT (source,
+  external_id) DO NOTHING RETURNING *`, so a duplicate is never inserted twice
+  (test) and needs no racy pre-read; it returns `{ signal, created }`, the
+  EXISTING row with `created: false` for a duplicate. `getSignal`,
+  `listSignals(filter)` (`officeId`, `source`, `unconsumed`, `limit`; oldest
+  first — consumed in arrival order). **`consumeSignal(id, shiftId)`** hands a
+  signal to one shift, landing only while `consumed_shift_id IS NULL`.
+- `deleteOffice` also deletes the office's messages, huddles and signals in
+  the same transaction (office chats stay — they are chats, deleted by the
+  chat service).
 
 ## API
 
