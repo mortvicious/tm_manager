@@ -85,6 +85,18 @@ export interface AuxSpec<T> {
   /** permission denials, unchanged from the `-p` era — interactivity must not widen them */
   disallowedTools: string[];
   /**
+   * Extra directories the session may read (`--add-dir=<dir>` each, the `=`
+   * form because the flag is variadic) — a shift reads its workspace's repos
+   * from the office folder (docs/office.md § Shifts at run time).
+   */
+  addDirs?: string[];
+  /**
+   * Permission rules merged into the injected `--settings` as
+   * `permissions.deny` — a TRUSTED shift's read denies over `untrusted/`
+   * (docs/office.md § Shifts at run time). Never widens anything: deny rules only.
+   */
+  permissionsDeny?: string[];
+  /**
    * `dontAsk` = deny anything that would prompt (every read-only role);
    * `bypass` = `--dangerously-skip-permissions` (chat write mode, human jobs);
    * `auto` = the CLI's classifier-gated mode (an agent-filed job while workers run `auto`).
@@ -274,6 +286,10 @@ export class AuxRunner {
       const onAbort = () => this.stop(run.id, 'aborted');
       spec.signal.addEventListener('abort', onAbort, { once: true });
       live.offAbort = () => spec.signal?.removeEventListener('abort', onAbort);
+      // An abort while the spawn was being recorded (the awaits above) fired
+      // before this listener existed; without this the session would run on
+      // to its own deadline (a Pause all right after a shift or job started).
+      if (spec.signal.aborted) onAbort();
     }
     return { runId: run.id, done: done as Promise<AuxOutcome<T>> };
   }
@@ -599,6 +615,7 @@ export function buildAuxArgs(spec: AuxSpec<unknown>): string[] {
     },
   };
   if (spec.lean) settings.disableBundledSkills = true;
+  if (spec.permissionsDeny?.length) settings.permissions = { deny: [...spec.permissionsDeny] };
 
   const args: string[] = [];
   if (spec.resumeSessionId) args.push('--resume', spec.resumeSessionId);
@@ -611,6 +628,7 @@ export function buildAuxArgs(spec: AuxSpec<unknown>): string[] {
   // two argv elements the parser would keep consuming.
   if (spec.tools) args.push(`--tools=${spec.tools.join(',')}`);
   if (spec.disallowedTools.length) args.push(`--disallowedTools=${spec.disallowedTools.join(',')}`);
+  for (const dir of spec.addDirs ?? []) args.push(`--add-dir=${dir}`);
   if (spec.lean) args.push('--no-chrome');
   // `--` ends the options: a chat message that starts with `-` is a prompt.
   args.push('--', spec.prompt);

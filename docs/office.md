@@ -22,7 +22,8 @@ the Storage methods in both drivers, and `server/src/storage/office.test.ts`;
 and the gate and day budget (§ Gate and budget): `server/src/office/gate.ts`,
 `server/src/office/budget.ts`, the office branch of `budgetAllows`, and
 `server/src/office/gate.test.ts`; and the REST API (§ API): `server/src/routes/offices.ts`, its
-types at the end of `shared/src/office.ts`, and `server/src/routes/offices.test.ts`.
+types at the end of `shared/src/office.ts`, and `server/src/routes/offices.test.ts`; and the shift runner (§ Shifts at run time): `server/src/office/shift.ts`,
+`shift-result.ts`, `feedback.ts` and `server/src/office/shift.test.ts`.
 
 ## Concepts
 
@@ -450,8 +451,11 @@ has to live outside it.
   folder up front, so only a folder renamed behind the server's back reaches
   the throw.
 
-Tainted notes stay where they are (`roles/<key>.md`); the rule is what keeps
-them out. The rules bind the read-family tools only (measured below). A shift
+The shift runner (§ Shifts at run time) writes a tainted shift's notes and
+deliverables to their `untrustedPath` twin, so they sit under the storage
+rule. Notes a tainted shift touched any other way stay where they are; a
+trusted shift is spawned with a rule for each such `roles/<key>.md` (every
+other role with `notesTaintedAt` set), and that rule is what keeps them out. The rules bind the read-family tools only (measured below). A shift
 has no Bash (`SHIFT_TOOL_ALLOWLIST`), and that is what makes them enough. A
 worker session has Bash, so a deny rule could not protect a worker. See
 **Known exposure** below.
@@ -737,7 +741,233 @@ and renamed over the old one, so a symlink there is replaced, never followed.
 
 ## Shifts at run time
 
-_To be filled by the phase that runs shifts (aux kind, prompt, sweep, filing)._
+`server/src/office/shift.ts` (the runner), `shift-result.ts` (the result
+registry), `feedback.ts` (the feedback file). Test: `server/src/office/shift.test.ts`,
+which drives a real `AuxRunner` over a fake `SessionManager`, so it checks the
+real argv and hook handling without spawning claude.
+
+The runner spawns a shift and records it. It does not decide when a role
+wakes: the gate (§ Gate and budget) and the scheduler do that.
+`ShiftRunner.start(office, role, trigger)` resolves once the shift row exists,
+or with a refusal (`{ok: false, code, reason}`). Its `done` promise resolves
+after the session has ended and its result has been applied.
+
+### The terminal
+
+A shift is an interactive aux terminal (`claude/aux.ts`, docs/design.md § PTY
+sessions) with these settings:
+
+- **Run row.** Kind `shift`, with `subject_id` = the shift id, `label` = the
+  role's name, `repo_id` NULL, and `task_id` NULL like every aux row. It is
+  attachable from the runs list.
+- **Folder access.** `cwd` is the office folder, and every workspace repo that
+  exists on disk is passed as `--add-dir=<repo>`. These are new `AuxSpec`
+  fields: `addDirs`, and `permissionsDeny`, which is merged into the injected
+  `--settings` as `permissions.deny`.
+- **Tools.** `--tools=` is the role's own `tools`, which are always a subset of
+  `SHIFT_TOOL_ALLOWLIST` (§ Tools).
+- **Denials.** `--disallowedTools=Edit,Write,NotebookEdit,Bash` is
+  `READ_ONLY_DISALLOWED` verbatim, under `--permission-mode dontAsk`.
+- **Lean.** `lean` is on (no chrome, no bundled skills).
+- **Deadline.** 30 min (`SHIFT_TIMEOUT_MS`).
+- **Model.** The role's model and effort, through `withModelFallback`.
+
+A shift never executes or edits. Execution work leaves it as a filed worker
+task or a saved-command run (later phases register those result sections).
+
+**Refusals.** The runner refuses to spawn in these cases, whatever the caller
+says:
+
+| Code | When |
+|---|---|
+| `tools` | the role's STORED tools fail `shiftToolsRefusal`. A role row edited around the API's write check still never reaches a spawn. No shift row is written. |
+| `paused` | Pause all is on, or the server is shutting down |
+| `folder` | the office folder is missing, or it fails `validateOfficeFolder` against the current repos (re-checked every spawn, like a shared space), or the isolation resolvers throw (§ Taint, before spawn) |
+| `office-busy` | a shift of this office is live (`SHIFT_MAX_PER_OFFICE` = 1) |
+| `busy` | 2 shifts are live across all offices (`SHIFT_MAX_TOTAL`) |
+| `role` | the role belongs to another office, or the office or role row no longer exists |
+
+The concurrency slot is taken synchronously, before the first await, so two
+starts in the same tick cannot both pass. After taking it, `start` re-reads the office and
+role rows. The STORED rows decide the tools, the taint and the resume, never
+the caller's copy: a role object held across an earlier shift would carry a
+stale session taint. A shift is never a worker slot and
+never holds a repo.
+
+**Stopping.** These paths stop a shift like any other aux kind:
+
+- **/killall, the runs list's Kill, and a forced restart.** These go through
+  `aux()`. The row ends with `stopped`.
+- **The restart guard.** `aux().liveLabels()` covers shifts. `shift` is in
+  `PAUSE_HELD_AUX_KINDS`, because the runner starts no shift while paused,
+  so a drain may wait on one.
+- **Pause all.** `Orchestrator.pauseAll` calls `ShiftRunner.suspendAll()`, and
+  the row ends with `suspended by Pause all`.
+- **Shutdown.** `stop()` leaves the open rows alone, and `recoverOnBoot()`
+  closes every `ran` row with no `ended_at` (`interrupted by restart`). An
+  open row counts as a live shift for the gate, so a crash must not hold the
+  office's slot forever.
+
+An abort that lands while the spawn is still being recorded is no longer lost.
+`AuxRunner.start` re-checks the signal after attaching its listener; before
+this, such a session ran on to its own deadline. Jobs have the same window.
+
+### Taint, before spawn
+
+The taint is decided before the session exists, with `shiftTaint`. Its inputs:
+
+- the trigger (`signal` taints);
+- the **granted** tools, because use is unknown before the run (fails closed):
+  a role with WebFetch or WebSearch is always tainted, with `web-tool:WebFetch`;
+- the role's notes (tainted while `notesTaintedAt` is set);
+- the resumed session (tainted while `sessionTainted` is set).
+
+The shift row stores `tainted` and `taintSources` (`taintLabel` strings,
+`kind:ref`) from the start.
+
+**Isolation** (§ Isolation). A **trusted** shift's spawn carries
+`trustedShiftDenies(office, taintedPaths)` as `--settings` `permissions.deny`.
+That is the untrusted storage on both its lexical and real path, plus the
+`roles/<key>.md` of every OTHER role with `notesTaintedAt` set, so the shift
+fails closed. A tainted shift gets no denies, because its context is already
+tainted. A tainted shift's files go to `untrustedPath(office, <own path>)`.
+
+The runner never builds an untrusted path itself. Both resolvers come from
+`isolation.ts` (`SHIFT_ISOLATION`, injectable only so a test can watch the
+calls). They are computed before the shift row is written. A folder that no
+rule can match exactly makes them throw, and that is a `folder` refusal: no
+row is written and nothing is spawned.
+
+### Resume
+
+`--resume role.sessionId` is passed only when both of these hold:
+
+- `mayResume(role, shiftTainted)` holds. So there is a session, and a trusted
+  shift never resumes a tainted one.
+- The role's newest shift run in that session ended under
+  `agent.resumeContextCap`, read from that run's `stats.contextTokens`.
+
+A cap of 0 or less means no cap, like the worker resume gate. An unknown size
+(no such run, or no stats) is not treated as small, so the shift starts fresh.
+The reason a session was not resumed is on the `office.shift` audit row
+(`freshReason`).
+
+After the run:
+
+- The session id the run reports becomes the role's `sessionId`, with
+  `sessionTainted` = this shift's taint. A fresh trusted shift therefore
+  replaces a tainted session with a trusted one.
+- A tainted shift that resumes a TRUSTED session marks the session tainted
+  **before** it spawns. A crash mid-shift must not leave injected text in a
+  session the row still calls trusted.
+- A resumed shift that failed without reporting any session drops the id, so
+  the next shift starts fresh instead of failing on the same `--resume`
+  forever.
+
+### The prompt
+
+In order:
+
+1. The role's identity and the trigger. An outside signal is named as
+   untrusted data.
+2. The role's prompt.
+3. The office folder and the workspace repos.
+4. `vision.md` and `priorities.md` inline, up to 16 KB each.
+5. The role's notes inline.
+6. The role's **feedback file** (trusted, the last 50 entries).
+7. The office's last 10 shifts, as a fenced ```` ```json ```` block of DATA:
+   server-known fields only (role, times, trigger kind, verdict, skip reason,
+   cost, filed task ids and statuses, files written). A tainted shift appears
+   as its `taintedDigest` line.
+8. The section guide.
+9. `resultInstruction(schema)`.
+
+A resumed session gets the whole prompt again: it is a new shift, and notes
+and feedback may have changed since the last one.
+
+### The result: a section registry
+
+`shift-result.ts`. Each section is a key of the result object, registered with
+`registerShiftSection`. A section has four parts:
+
+- a zod `schema`;
+- its JSON-schema twin, which the prompt shows;
+- a one-line `describe`;
+- `apply(value, ctx)`.
+
+The whole result is a strict object with every section optional, so `{}` is
+"nothing to record". An unknown key, a schema miss or a missing block makes
+`acceptJson` fail, and the standard correction is typed into the same session,
+at most twice (`AuxRunner`'s `maxRetries`). After that the shift fails with
+`invalid result: …`.
+
+Sections are applied in registration order. A section that throws is
+recorded, and the others still run.
+
+Every write goes through `writeOfficeFile`, which:
+
+- creates the parents;
+- checks that each parent resolves inside the folder;
+- writes a temp file and renames it over the target, so a symlink is
+  replaced, never followed;
+- refuses the server-owned files: `roles/*.feedback.md`, `README.md`, and the
+  untrusted storage's own README.
+
+| Section | Value | What the server does |
+|---|---|---|
+| `notes` | markdown, ≤ 24,000 chars, not empty | **replaces** `roles/<key>.md` whole |
+| `deliverables` | ≤ 10 of `{path, markdown}` (≤ 100,000 chars each); `path` is `deliverables/<name>.md`, up to three subfolders, plain segments with no leading dot, each path at most once | writes each file (an existing one is replaced); the path is re-checked at the write |
+
+A **tainted** shift's notes and deliverables go to
+`untrustedPath(office, <their own path>)` instead, for example
+`untrusted/roles/<key>.md` and `untrusted/deliverables/…`, and its notes set
+the role's `notesTaintedAt`. The trusted `roles/<key>.md` is left as it was.
+
+While `notesTaintedAt` is set, the next shift reads the newest notes, which
+are the untrusted twin (or the trusted file if there is no twin). That shift
+is tainted (`tainted-notes`). A human clears this with reset-notes (§ API).
+
+Later phases register `tasks` (filing), command runs and briefs.
+
+### Notes vs feedback
+
+Two files per role, with two owners. This split is what keeps an update from
+being lost:
+
+- **`roles/<key>.md` is the ROLE's.** Only its own shift's `notes` section
+  writes it (and reset-notes), and that write replaces the whole file.
+- **`roles/<key>.feedback.md` is the SERVER's.** It holds proposal decisions,
+  ratings and taint clears. It is written only by
+  `appendRoleFeedback(office, role, line)`, which:
+  - serializes the writes per file in-process;
+  - opens with `O_APPEND | O_CREAT | O_NOFOLLOW` and never rewrites, so a
+    planted symlink fails the write;
+  - folds each entry into one line, `- <ISO time> — <text>`, capped at 2,000
+    characters;
+  - writes a header when it creates the file.
+
+No shift section can target the feedback file. A line appended while a shift
+runs survives that shift's notes replacement, and it appears in the next
+shift's prompt (`readRoleFeedback`, last 50 entries).
+
+A role re-created under an old key does not get the old notes
+(`archiveRoleNotes`). The feedback file stays where it is, because it is
+server-written and trusted.
+
+### What is recorded
+
+**The shift row** gets `verdict: 'ran'`, the trigger, `runId` (the last
+attempt's, set as soon as the PTY is spawned), `costUsd` (every attempt,
+including a model fallback), `tainted`, `taintSources`, `endedAt` and
+`error`. `error` is null on success, the aux error otherwise, `stopped`, or
+`suspended by Pause all`. It is `result partly applied — …` when a section
+failed.
+
+**The audit row** is `office.shift`: status, code, error, cost, taint,
+`resumed`, `freshReason`, the sections with the files they wrote, and
+`files`. The history block reads the files back from it.
+
+**The broadcast** is `office.updated` with the roles.
 
 ## UI
 

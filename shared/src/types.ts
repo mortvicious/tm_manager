@@ -1426,7 +1426,9 @@ export type RunKind =
   | 'chat'
   | 'commit'
   /** a scheduled job's run (docs/jobs.md): subject = the job id */
-  | 'job';
+  | 'job'
+  /** a Virtual Office role's shift (docs/office.md § Shifts at run time): subject = the shift id */
+  | 'shift';
 export const AUX_RUN_KINDS: readonly Exclude<RunKind, 'worker'>[] = [
   'review',
   'plan',
@@ -1437,6 +1439,7 @@ export const AUX_RUN_KINDS: readonly Exclude<RunKind, 'worker'>[] = [
   'chat',
   'commit',
   'job',
+  'shift',
 ];
 export type RunStatus = 'running' | 'exited' | 'killed';
 
@@ -2425,6 +2428,8 @@ export type AuditKind =
   | 'office.resumed'
   /** a human created / edited an office or one of its roles (docs/office.md § API) */
   | 'office.changed'
+  /** a role's shift finished: outcome, sections applied, taint (docs/office.md § Shifts at run time) */
+  | 'office.shift'
   | 'approval.requested'
   | 'approval.decided'
   | 'approval.finished'

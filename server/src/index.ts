@@ -36,6 +36,7 @@ import { registerOfficeRoutes } from './routes/offices.ts';
 import { registerReportRoutes } from './routes/reports.ts';
 import { recoverReportsOnBoot } from './reports/service.ts';
 import { JobService } from './jobs.ts';
+import { ShiftRunner, initShifts } from './office/shift.ts';
 import { registerJobRoutes } from './routes/jobs.ts';
 import { registerAgentJobRoutes } from './routes/agent-jobs.ts';
 import { registerCommandRoutes } from './routes/commands.ts';
@@ -138,6 +139,11 @@ const jobs = new JobService({
   budget: (settings) => orchestrator.budgetAllows(null, 'job', settings),
 });
 orchestrator.setJobs(jobs);
+// Virtual Office shifts (docs/office.md § Shifts at run time): aux terminals
+// (kind `shift`), never a worker slot; Pause all suspends them.
+const shiftRunner = new ShiftRunner({ storage, isPaused: (settings) => orchestrator.isPaused(settings) });
+initShifts(shiftRunner);
+orchestrator.setShifts(shiftRunner);
 await orchestrator.recoverOnBoot({ lastStop });
 await storage.appendEvent({
   kind: 'server.started',
@@ -170,6 +176,9 @@ if (strandedReports) console.log(`reports: failed ${strandedReports} report(s) s
 const strandedJobs = await jobs.recoverOnBoot();
 if (strandedJobs) console.log(`jobs: re-armed ${strandedJobs} job(s) interrupted by the last restart`);
 jobs.start();
+// a shift row a crash left open would hold its office's slot for the gate
+const strandedShifts = await shiftRunner.recoverOnBoot();
+if (strandedShifts) console.log(`office: closed ${strandedShifts} shift(s) interrupted by the last restart`);
 
 // Live "what is it doing right now" line per running agent, tailed off the
 // session transcripts. Started after boot recovery so orphaned runs from the
@@ -309,8 +318,9 @@ const restartGuard = async () => {
     landing,
   };
 };
-// a job run finishes under the pause and nothing fires behind it (docs/jobs.md)
-const PAUSE_HELD_AUX_KINDS = new Set<string>(['review', 'compact', 'job']);
+// a job run finishes under the pause and nothing fires behind it (docs/jobs.md);
+// so does an office shift — the runner starts none while paused (docs/office.md § Shifts at run time)
+const PAUSE_HELD_AUX_KINDS = new Set<string>(['review', 'compact', 'job', 'shift']);
 app.get('/api/server/restart-check', async () => restartGuard());
 
 // The front door's remote gate (server/src/remote.ts, docs/remote-access.md)
@@ -366,6 +376,8 @@ app.post('/api/server/restart', async (req, reply) => {
   shellRunner.stopAll();
   // before the aux stop: a job run ended by the restart is boot recovery's to re-arm, not a human's kill
   jobs.stop();
+  // the same for a shift: its open row is boot recovery's
+  shiftRunner.stop();
   aux().stopAll();
   // Abort the in-flight long poll NOW so the socket is not still open when the
   // teardown below runs; that teardown awaits the same (idempotent) stop, so
@@ -544,6 +556,8 @@ const stop = async (cause: Omit<StopCause, 'at' | 'pid'> | null) => {
   shellRunner.stopAll();
   // before the aux stop: a job run ended by the restart is boot recovery's to re-arm, not a human's kill
   jobs.stop();
+  // the same for a shift: its open row is boot recovery's
+  shiftRunner.stop();
   aux().stopAll();
   // A resume gate (docs/token-budget.md § The fourth) sits between "task marked
   // running" and "run row created", so a task inside one has nothing in

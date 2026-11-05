@@ -1,4 +1,5 @@
 import type { JobService } from './jobs.ts';
+import type { ShiftRunner } from './office/shift.ts';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -408,6 +409,8 @@ export class Orchestrator implements OrchestratorApi {
   private commandRunner: CommandRunner | null = null;
   /** scheduled jobs (docs/jobs.md): swept at the top of every scheduling pass, suspended by Pause all */
   private jobs: JobService | null = null;
+  /** Virtual Office shifts (docs/office.md § Shifts at run time): suspended by Pause all */
+  private shifts: ShiftRunner | null = null;
   /**
    * Tasks whose adversarial review round is in flight RIGHT NOW — the
    * single-flight lock behind `reviewCompletedRun`. What other surfaces read
@@ -866,6 +869,10 @@ export class Orchestrator implements OrchestratorApi {
    * `budget.taskUsd`. Human clicks (Proceed, Run now, Retry, Follow-up,
    * Apply fixes, Publish) never call it.
    */
+  setShifts(shifts: ShiftRunner): void {
+    this.shifts = shifts;
+  }
+
   setJobs(jobs: JobService): void {
     this.jobs = jobs;
     jobs.onStatus(() => this.broadcastStatusSoon());
@@ -2041,6 +2048,8 @@ export class Orchestrator implements OrchestratorApi {
     if (!suspend) return { suspended: [], already };
     // a live job run is suspended too: its job is due again after Continue (docs/jobs.md)
     this.jobs?.suspendAll();
+    // a live office shift too: its row ends 'suspended by Pause all' (docs/office.md § Shifts at run time)
+    this.shifts?.suspendAll();
     const suspended = new Set<string>();
     await this.suspendSweep(actor, suspended);
     const deadline = Date.now() + 15_000;

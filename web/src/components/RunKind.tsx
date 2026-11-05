@@ -16,6 +16,7 @@ const KIND_TITLE: Record<RunKind, string> = {
   chat: 'one chat turn',
   commit: 'writing a commit message (no tools)',
   job: 'a scheduled check (observes only; Bash, no edits)',
+  shift: 'a Virtual Office role’s shift (read-only; files work, never edits)',
 };
 
 export function KindBadge({ kind }: { kind: RunKind }) {
@@ -38,6 +39,7 @@ export function runLink(r: Run): { taskId: string } | { path: string } | null {
   if (r.kind === 'chat') return { path: `/chat/${r.subjectId}` };
   if (r.kind === 'report') return { path: '/reports' };
   if (r.kind === 'job') return { path: `/jobs?job=${r.subjectId}` };
+  // a shift's office page is the UI phase's (docs/office.md § UI); no link yet
   return null;
 }
 

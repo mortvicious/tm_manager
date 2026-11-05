@@ -10050,7 +10050,8 @@ button.explain-tap:active {
 .chip.run-kind.k-plan,
 .chip.run-kind.k-analysis,
 .chip.run-kind.k-report,
-.chip.run-kind.k-commit {
+.chip.run-kind.k-commit,
+.chip.run-kind.k-shift {
   color: var(--tm-accent);
 }
 
