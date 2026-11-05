@@ -179,3 +179,58 @@ export function scaffoldOfficeFolder(
   }
   return res;
 }
+
+/**
+ * Reset one role's notes file to its fresh skeleton (docs/office.md § API →
+ * reset-notes): the role's standing instructions and an empty Notes section.
+ * Written to a temp file and renamed over the old one, so a symlink at
+ * `roles/<key>.md` is replaced, never followed; `roles/` itself must resolve
+ * inside the folder. Returns the path relative to the folder.
+ */
+export function resetRoleNotes(office: Pick<Office, 'folderPath'>, role: ScaffoldRole): string {
+  if (!OFFICE_ROLE_KEY_RE.test(role.key)) throw new Error(`office folder: bad role key "${role.key}"`);
+  if (!path.isAbsolute(office.folderPath)) throw new Error('office folder: path must be absolute');
+  const root = path.resolve(office.folderPath);
+  const dir = path.join(root, 'roles');
+  fs.mkdirSync(dir, { recursive: true });
+  if (!isInside(realPathDeep(dir), realPathDeep(root))) throw new Error('office folder: roles/ points outside the folder');
+  const rel = `roles/${role.key}.md`;
+  const tmp = path.join(dir, `.${role.key}.md.${process.pid}.${Date.now()}.tmp`);
+  fs.writeFileSync(tmp, roleFile(role), { flag: 'wx' });
+  try {
+    fs.renameSync(tmp, path.join(root, rel));
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
+  return rel;
+}
+
+/** Where `archiveRoleNotes` moves notes it finds already present (agents never read `untrusted/` unreviewed). */
+export const ARCHIVED_NOTES_DIR = 'untrusted/archived-notes';
+
+/**
+ * Move a `roles/<key>.md` that already exists out of the role's way, into
+ * `untrusted/archived-notes/<key>-<stamp>.md` (docs/office.md § API → Notes
+ * of a new role). Called before a role is created, and for every role when an
+ * office takes a folder, so text left by a deleted role — possibly written by
+ * a tainted shift — or by anyone else never becomes a new role's TRUSTED
+ * notes. A symlink is moved as the link itself, never followed. Returns the
+ * archive path relative to the folder, or null when nothing was there.
+ */
+export function archiveRoleNotes(office: Pick<Office, 'folderPath'>, key: string): string | null {
+  if (!OFFICE_ROLE_KEY_RE.test(key)) throw new Error(`office folder: bad role key "${key}"`);
+  if (!path.isAbsolute(office.folderPath)) throw new Error('office folder: path must be absolute');
+  const root = path.resolve(office.folderPath);
+  const src = path.join(root, 'roles', `${key}.md`);
+  if (!fs.lstatSync(src, { throwIfNoEntry: false })) return null;
+  if (!isInside(realPathDeep(path.join(root, 'roles')), realPathDeep(root))) throw new Error('office folder: roles/ points outside the folder');
+  const dir = path.join(root, ARCHIVED_NOTES_DIR);
+  fs.mkdirSync(dir, { recursive: true });
+  if (!isInside(realPathDeep(dir), realPathDeep(root))) throw new Error(`office folder: ${ARCHIVED_NOTES_DIR}/ points outside the folder`);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  let rel = `${ARCHIVED_NOTES_DIR}/${key}-${stamp}.md`;
+  for (let i = 2; fs.lstatSync(path.join(root, rel), { throwIfNoEntry: false }); i++) rel = `${ARCHIVED_NOTES_DIR}/${key}-${stamp}-${i}.md`;
+  fs.renameSync(src, path.join(root, rel));
+  return rel;
+}

@@ -200,8 +200,18 @@ export const SHIFT_READ_TOOLS: readonly string[] = ['Read', 'Glob', 'Grep', 'Age
 export const SHIFT_WEB_TOOLS: readonly string[] = ['WebFetch', 'WebSearch'];
 export const SHIFT_TOOL_ALLOWLIST: readonly string[] = [...SHIFT_READ_TOOLS, ...SHIFT_WEB_TOOLS];
 
+/** Tools a role may never list: they execute or edit, which a shift never does. */
+export const SHIFT_FORBIDDEN_TOOLS: readonly string[] = ['Bash', 'Edit', 'Write', 'NotebookEdit'];
+
+/** The readable refusal for a role listing a `SHIFT_FORBIDDEN_TOOLS` tool (docs/office.md § API). */
+export function shiftForbiddenToolsMessage(tools: readonly string[]): string {
+  return `${tools.join(', ')} cannot be given to a role: shifts never execute or edit. Work that needs a command run or a file changed is filed as a worker task, or run as a saved command a human allowlisted for this office.`;
+}
+
 /** Why a role's tool list is refused, or null. */
 export function shiftToolsRefusal(tools: readonly string[]): string | null {
+  const forbidden = [...new Set(tools.filter((t) => SHIFT_FORBIDDEN_TOOLS.includes(t)))];
+  if (forbidden.length) return shiftForbiddenToolsMessage(forbidden);
   const bad = tools.filter((t) => !SHIFT_TOOL_ALLOWLIST.includes(t));
   if (bad.length) return `not a shift tool: ${bad.join(', ')} (allowed: ${SHIFT_TOOL_ALLOWLIST.join(', ')})`;
   return null;
@@ -1087,4 +1097,86 @@ export function roleState(role: OfficeRole, f: OfficeRoleStateFacts): OfficeRole
     return { state: 'off-duty', detail: `on call: wakes on ${on}` };
   }
   return { state: 'off-duty', detail: 'no schedule' };
+}
+
+// ---------------------------------------------------------------------------
+// REST API (/api/offices — docs/office.md § API)
+// ---------------------------------------------------------------------------
+
+/** `GET /api/offices/:id` */
+export interface OfficeDetail {
+  office: Office;
+  roles: OfficeRole[];
+  /** newest first, at most `OFFICE_DETAIL_SHIFTS` */
+  shifts: OfficeShift[];
+}
+export const OFFICE_DETAIL_SHIFTS = 50;
+
+/** `POST /api/offices` */
+export interface OfficeCreateBody {
+  workspaceId: string;
+  /** default: `<shared space folder>/office` when every repo of the workspace is in one space; else required */
+  folderPath?: string;
+  /** an `OFFICE_THEMES` id (server); default `pixel-office` */
+  theme?: string;
+  /** an IANA zone; default the server's */
+  timezone?: string;
+}
+
+/** `POST /api/offices` → 201 */
+export interface OfficeCreateResult extends Omit<OfficeDetail, 'shifts'> {
+  /** what the folder scaffold created / left alone (relative paths) */
+  scaffold: { created: string[]; kept: string[]; archived: string[] };
+  // `archived`: role notes already in the folder, moved to `untrusted/archived-notes/` (never inherited as trusted)
+}
+
+/** `PATCH /api/offices/:id` — every field optional. `enabled: true` needs `dayBudgetUsd > 0`. */
+export interface OfficePatchBody {
+  folderPath?: string;
+  autonomy?: OfficeAutonomy;
+  dayBudgetUsd?: number;
+  maxSlots?: number;
+  maxTasksPerShift?: number;
+  maxOpenTasks?: number;
+  theme?: string;
+  timezone?: string;
+  enabled?: boolean;
+  /** true pauses (reason `OFFICE_HUMAN_PAUSE_REASON`), false resumes */
+  paused?: boolean;
+}
+export const OFFICE_HUMAN_PAUSE_REASON = 'paused by a human';
+
+/** The editable role fields, as the API takes them. */
+export interface OfficeRoleFields {
+  name: string;
+  avatar: string;
+  title: string;
+  prompt: string;
+  model: string;
+  effort: EffortLevel | null;
+  tools: string[];
+  autonomy: OfficeAutonomy | null;
+  capUsd: number | null;
+  schedules: string[];
+  triggers: OfficeTrigger[];
+  guards: OfficeGuard[];
+  enabled: boolean;
+}
+
+/**
+ * `POST /api/offices/:id/roles`: a `preset` fills every field it has; any
+ * field given overrides it. Without a preset, `key`, `title`, `prompt` are
+ * required. `name`/`avatar` default to the generated identity.
+ */
+export type OfficeRoleCreateBody = Partial<OfficeRoleFields> & { key?: string; preset?: OfficeRolePreset | null };
+
+/** `PATCH /api/offices/:id/roles/:roleId` — `key` (and so the notes path) is create-only. */
+export type OfficeRolePatchBody = Partial<OfficeRoleFields>;
+
+/** Every role write's answer. `taintingTools` = the role's web tools: a shift using one is tainted. */
+export interface OfficeRoleWriteResult {
+  role: OfficeRole;
+  taintingTools: string[];
+  /** set when `taintingTools` is not empty */
+  warning?: string;
 }

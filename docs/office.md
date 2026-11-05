@@ -21,7 +21,8 @@ data layer (§ Data model): migrations 53–54, `server/src/storage/office-sql.t
 the Storage methods in both drivers, and `server/src/storage/office.test.ts`;
 and the gate and day budget (§ Gate and budget): `server/src/office/gate.ts`,
 `server/src/office/budget.ts`, the office branch of `budgetAllows`, and
-`server/src/office/gate.test.ts`.
+`server/src/office/gate.test.ts`; and the REST API (§ API): `server/src/routes/offices.ts`, its
+types at the end of `shared/src/office.ts`, and `server/src/routes/offices.test.ts`.
 
 ## Concepts
 
@@ -502,7 +503,145 @@ both drivers):
 
 ## API
 
-_To be filled by the API phase._
+`server/src/routes/offices.ts`, registered in `index.ts`. Request and response
+types are at the end of `shared/src/office.ts` (`OfficeDetail`,
+`OfficeCreateBody`/`Result`, `OfficePatchBody`, `OfficeRoleCreateBody`,
+`OfficeRolePatchBody`, `OfficeRoleWriteResult`). Test:
+`server/src/routes/offices.test.ts` (Fastify inject over a temp SQLite DB).
+
+| Route | What it does |
+|---|---|
+| `GET /api/offices` | every office (`Office[]`) |
+| `GET /api/offices/:id` | `{ office, roles, shifts }`: roles oldest first, the newest `OFFICE_DETAIL_SHIFTS` (50) shifts |
+| `POST /api/offices` | create from the presets (below) → 201 `{ office, roles, scaffold }` |
+| `PATCH /api/offices/:id` | edit the office → the `Office` |
+| `POST /api/offices/:id/roles` | add a role → 201 `OfficeRoleWriteResult` |
+| `PATCH /api/offices/:id/roles/:roleId` | edit a role → `OfficeRoleWriteResult` |
+| `DELETE /api/offices/:id/roles/:roleId` | remove a role → `{ ok: true }` |
+| `POST /api/offices/:id/roles/:roleId/reset-notes` | reset the role's notes file → `OfficeRoleWriteResult` |
+
+**Every write needs `Origin`** (403 `office edits come from the dashboard`
+otherwise). Every write acts as `human`, and a worker's `curl` sends no
+`Origin` — the shared-spaces and workspaces rule. Raising autonomy is one of
+those writes, so it is Origin-gated like everything else here, and the audit
+row records it (`autonomy: { from, to, raised }`). Every successful write
+appends one `office.changed` row (`actor: 'human'`, `data.action` =
+`created | edited | role-created | role-edited | role-deleted |
+role-notes-reset`, with the office, workspace and role ids and the fields
+touched) and broadcasts `office.updated`. After a role write that event also
+carries `roles`, the office's full role list. Nothing in these rows is
+secret, so nothing is stripped.
+
+**Create** (`{ workspaceId, folderPath?, theme?, timezone? }`):
+
+- The workspace must exist (400). A second office for a workspace is 409:
+  checked first, and the unique index catches a race.
+- `timezone` defaults to the server's zone and must be a valid IANA name
+  (`isValidTimeZone`, 400). `theme` is one of `OFFICE_THEMES` (default
+  `pixel-office`).
+- Folder: a given `folderPath` passes `validateOfficeFolder` (outside every
+  repo, § Office folder; 400 with the reason). Without one, the default is
+  `defaultOfficeFolder`, i.e. `<space folder>/office` when every repo of the
+  workspace is in one shared space. With no such space it is 400 and the
+  human must pick a folder. A folder another office already uses is 409,
+  because two offices must not share notes.
+- The office row is written **disabled** (`enabled: false`, day budget 0,
+  autonomy `proposals`). Then the five presets become roles in
+  `OFFICE_ROLE_PRESETS` order (`roleFromPreset`), with names and avatars
+  from `generateOfficeIdentities` in the office's theme, and notes at
+  `roles/<key>.md`. Then the folder is scaffolded. It is all or nothing: if a
+  role insert or the scaffold throws, the office is deleted again (with its
+  roles) and the answer is 400.
+
+**PATCH office** (`OfficePatchBody`, strict: an unknown field is 400):
+
+- Fields: `folderPath`, `autonomy`, `dayBudgetUsd` (0…100000), `maxSlots`
+  (1…`CONCURRENCY_MAX`), `maxTasksPerShift` (1…20), `maxOpenTasks` (1…200),
+  `theme`, `timezone`, `enabled`, `paused`.
+- **An enabled office needs `dayBudgetUsd > 0`.** Enabling without one, in
+  the same body or already stored, is 409 `set a day budget above $0
+  (dayBudgetUsd) before enabling the office`. Zeroing the budget of an
+  enabled office is 409 too.
+- A new `folderPath` is validated, must not be another office's, and is
+  scaffolded (with the current roles) BEFORE the row moves. The old folder
+  is left as it is.
+- `paused: true | false` goes through the conditional `pauseOffice`
+  (reason `OFFICE_HUMAN_PAUSE_REASON`, "paused by a human"). If the state
+  moved in between, for example a budget trip, the answer is 409 and the
+  caller reloads. The budget sweep lifts only its own pause
+  (§ The office day budget), never this one. A human Resume over a budget
+  pause clears the pause, but `budget_tripped_on` still keeps the gate and
+  the claim gate shut for the rest of that local day.
+- `workspaceId` is create-only. The pause columns are only reachable
+  through `paused`.
+
+**Roles.** Shapes are zod (strict). The content rules are checked by
+`checkRoleFields` and come back as one readable sentence (400):
+
+- `schedules[]`: each one must parse (`cronError`). The message is
+  `schedule "61 * * * *": minute: 61 is outside 0-59`. Duplicates are
+  dropped.
+- `guards[]`: a known `kind` (`OFFICE_GUARD_KINDS`) and `guardError` clean.
+  For example `guards[0]: cooldown needs minutes > 0` or
+  `guards[0]: unknown guard kind "moon-phase" (one of: …)`. Each guard is
+  rebuilt from its known fields only, so stray keys never reach the row.
+- `triggers[]`: `{ kind: 'event', event ∈ OFFICE_EVENT_NAMES, repoId? }` or
+  `{ kind: 'signal', source }`. Anything else is refused with its index.
+- `model` must be one of `MODEL_OPTIONS`. `effort` is one of `EFFORT_LEVELS`
+  or null. `autonomy` is one of the levels or null (= the office's).
+  `capUsd` is ≥ 0 or null.
+- `tools` must be a subset of `SHIFT_TOOL_ALLOWLIST` (`shiftToolsRefusal`).
+  **Bash, Edit, Write and NotebookEdit** (`SHIFT_FORBIDDEN_TOOLS`) get their
+  own message (`shiftForbiddenToolsMessage`): *"Bash cannot be given to a
+  role: shifts never execute or edit. Work that needs a command run or a
+  file changed is filed as a worker task, or run as a saved command a human
+  allowlisted for this office."* Any other unknown tool gets the allowlist.
+- **WebFetch / WebSearch are allowed but flagged.** Every role write answers
+  `{ role, taintingTools, warning? }`. `taintingTools` lists the role's web
+  tools, and `warning` says that a shift using one is tainted (§ The taint
+  model). A role-edited audit row lists `addedTools`.
+
+Create (`POST …/roles`) takes `{ preset?, key?, …fields }`:
+
+- A `preset` fills every field it has, and a given field overrides it.
+  Without a preset, `key`, `title` and `prompt` are required.
+- `key` defaults to the preset's. It must match `OFFICE_ROLE_KEY_RE` (400)
+  and be unique in the office (409), so a second QA needs a key such as
+  `qa-mobile`.
+- `name`/`avatar` default to `generateRoleIdentity` for (office, key,
+  theme), stepping the salt past a name another role already wears.
+- `notesPath` is `roles/<key>.md`. The folder is re-scaffolded, which writes
+  the new role file and refreshes the README's role list.
+
+PATCH (`…/roles/:roleId`) takes any of the fields; `key`, and so the notes
+path, is create-only. Renaming to another role's name is 409. DELETE removes
+the row and refreshes the README. The role's notes file and its shifts stay,
+because they are history. A role id from another office is 404.
+
+**Notes of a new role.** A role's notes are trusted input to its shifts, so a
+role never inherits a notes file it did not write. Before a role is created,
+and for every role when an office takes a folder (create, or PATCH
+`folderPath` to a new one), `archiveRoleNotes` (`folder.ts`) moves any
+`roles/<key>.md` that is already there into
+`untrusted/archived-notes/<key>-<timestamp>.md`. A symlink is moved as the
+link itself. Then the scaffold writes a fresh skeleton. This covers three
+cases: a deleted role's file (DELETE keeps it as history, and it may have
+been written by a tainted shift), a folder reused from an earlier office, and
+notes someone left in the default `<space>/office`. `untrusted/` is the
+folder agents never read unreviewed (§ Office folder), so the old text stays
+available to a human and never reaches a shift as trusted notes. The moves
+are listed in `scaffold.archived` on create and as `archivedNotes` on the
+`office.changed` row. Other files (vision, priorities, roadmap) are the
+humans' and stay where they are. If the move fails on a role create, the
+role row is removed again and the answer is 400.
+
+**reset-notes** rewrites `roles/<key>.md` to its fresh skeleton (the role's
+standing instructions plus an empty Notes section; `resetRoleNotes` in
+`folder.ts`) and clears `notesTaintedAt`. The file is written to a temp file
+and renamed over the old one, so a symlink there is replaced, never followed.
+`roles/` itself must resolve inside the folder. The audit row records
+`wasTainted`. This is how a human clears notes a tainted shift wrote, since
+§ The taint model keeps tainted notes out of trusted shifts.
 
 ## Shifts at run time
 
