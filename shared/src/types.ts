@@ -722,6 +722,8 @@ export interface CommandRun {
   /** true when it ran as a check's BASELINE — once on the current tree before
    *  the check is saved (docs/checks.md § Baseline); owned by no task */
   checkBaseline?: boolean;
+  /** set when an office shift asked for this run (docs/office.md § Command runs): the shift's id */
+  officeShiftId?: string;
   /** true for an agent's ONE-SHOT run (POST /api/agent/commands/run): an
    *  unsaved command line, so `commandId` is null from the start */
   oneShot?: boolean;
@@ -2432,6 +2434,8 @@ export type AuditKind =
   | 'office.filing'
   /** a role's shift finished: outcome, sections applied, taint (docs/office.md § Shifts at run time) */
   | 'office.shift'
+  /** a saved command a shift asked for ran, or was skipped with the reason (docs/office.md § Command runs) */
+  | 'office.command'
   | 'approval.requested'
   | 'approval.decided'
   | 'approval.finished'

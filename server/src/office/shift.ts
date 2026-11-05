@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  commandOutputTaint,
   mayResume,
   shiftTaint,
   shiftToolsRefusal,
@@ -26,6 +27,8 @@ import {
   type Office,
   type OfficeRole,
   type OfficeShift,
+  type OfficeShiftCommandRun,
+  type OfficeShiftCommands,
   type OfficeShiftTriggerKind,
   type Run,
 } from '@tm/shared';
@@ -43,6 +46,7 @@ import { broadcast } from '../events.ts';
 import { isInside, realPathDeep } from '../folder-guard.ts';
 import type { OrchestratorApi } from '../app-types.ts';
 import type { Storage } from '../storage/types.ts';
+import { allowlistCheck, commandRunsBlock, type OfficeCommandRuns } from './commands.ts';
 import { readRoleFeedback, roleFeedbackRel } from './feedback.ts';
 import { validateOfficeFolder } from './folder.ts';
 import { trustedShiftDenies, untrustedPath } from './isolation.ts';
@@ -107,6 +111,12 @@ export interface ShiftOutcome {
   costUsd: number;
   applied: ShiftApplyOutcome['applied'];
   sectionErrors: ShiftApplyOutcome['errors'];
+  /**
+   * The saved commands the `commands` section planned, running AFTER the
+   * shift settled (docs/office.md § Command runs); resolves with the shift
+   * row's record once they finished. Absent when none were planned.
+   */
+  commandRuns?: Promise<OfficeShiftCommands | null>;
 }
 
 export type ShiftStart =
@@ -123,6 +133,8 @@ export interface ShiftRunnerDeps {
   now?: () => Date;
   /** kicked when a shift filed queued tasks (docs/office.md § Filing) */
   orchestrator?: OrchestratorApi;
+  /** runs what a shift's `commands` section planned, after it settled (docs/office.md § Command runs) */
+  commandRuns?: Pick<OfficeCommandRuns, 'runShift'>;
 }
 
 interface LiveShift {
@@ -149,6 +161,12 @@ export interface ShiftPlan {
    * tainted shift, which is past keeping anything out.
    */
   denies: string[] | null;
+  /**
+   * The command runs of the role's previous shift (docs/office.md § Command
+   * runs): the prompt's fenced data block, and an external run's output is a
+   * `command-output` taint source of THIS shift.
+   */
+  prevCommands: { shiftId: string; runs: OfficeShiftCommandRun[] } | null;
 }
 
 export class ShiftRunner {
@@ -313,10 +331,15 @@ export class ShiftRunner {
       } else notesText = readOfficeText(office, trusted, NOTES_READ_MAX_BYTES) ?? '';
     } else notesText = readOfficeText(office, trusted, NOTES_READ_MAX_BYTES) ?? '';
 
+    // The previous shift's command runs are this shift's to read; an
+    // external one's output taints it (a local one's never does).
+    const [prev] = await this.deps.storage.listShifts({ roleId: role.id, verdict: 'ran', limit: 1 });
+    const prevCommands = prev?.commands?.runs.length ? { shiftId: prev.id, runs: prev.commands.runs } : null;
     const base = {
       trigger: { kind: trigger.kind, ref: trigger.ref ?? null },
       // use is unknown before the run: the GRANTED tools (fails closed)
       tools: role.tools,
+      commandOutputs: prevCommands ? commandOutputTaint(prevCommands.runs) : [],
       notes: { path: notesRel, tainted: notesTainted },
     };
     const pre = shiftTaint(base);
@@ -351,6 +374,7 @@ export class ShiftRunner {
     }
     return {
       denies,
+      prevCommands,
       tainted: final.tainted,
       taintSources: final.sources.map(taintLabel),
       resumeSessionId,
@@ -396,6 +420,7 @@ export class ShiftRunner {
     const vision = readOfficeText(office, 'vision.md', OFFICE_DOC_MAX_BYTES);
     const priorities = readOfficeText(office, 'priorities.md', OFFICE_DOC_MAX_BYTES);
     const history = await this.history(office);
+    const allowed = await this.allowedCommands(office, role);
     const why =
       trigger.kind === 'cron'
         ? `your schedule (\`${trigger.ref ?? 'cron'}\`)`
@@ -446,6 +471,22 @@ export class ShiftRunner {
       JSON.stringify(history, null, 1),
       '```',
       '',
+      ...(plan.prevCommands ? commandRunsBlock(plan.prevCommands.shiftId, plan.prevCommands.runs) : []),
+      '## Saved commands you may request',
+      '',
+      ...(allowed.length
+        ? [
+            'A human allowlisted these for your role. Ask for a run in the `commands` section by its id; the server runs it after this shift ends.',
+            '',
+            ...allowed.map(
+              (c) => `- \`${c.id}\` — ${c.name} (${c.repo}): \`${c.command.replace(/`/g, "'")}\`${c.external ? ' · reads the outside world: its output taints your next shift' : ''}`,
+            ),
+          ]
+        : [
+            'None — no saved command is allowlisted for your role, so you can run nothing. If a saved command would help, ' +
+              'say in your notes or brief which one the human should allowlist (Office → role → commands) and why.',
+          ]),
+      '',
       '## How a shift works',
       '',
       '- You are read-only: you cannot run commands or edit files. The server writes what your result returns.',
@@ -455,6 +496,20 @@ export class ShiftRunner {
       resultInstruction(shiftResultJsonSchema()),
     ];
     return lines.filter((l, i) => !(l === '' && lines[i - 1] === '')).join('\n');
+  }
+
+  /** The role's allowlist as the prompt lists it — entries that may still run (the run re-checks). */
+  private async allowedCommands(
+    office: Office,
+    role: OfficeRole,
+  ): Promise<{ id: string; name: string; repo: string; command: string; external: boolean }[]> {
+    const out: { id: string; name: string; repo: string; command: string; external: boolean }[] = [];
+    for (const entry of role.commands) {
+      const c = await allowlistCheck(this.deps.storage, office, entry.commandId);
+      if ('error' in c) continue;
+      out.push({ id: c.command.id, name: c.command.name, repo: c.repo.name, command: c.command.command, external: entry.external });
+    }
+    return out;
   }
 
   /** Server-known facts only; a tainted shift is its `taintedDigest` line. */
@@ -669,6 +724,7 @@ export class ShiftRunner {
             section: a.section,
             files: a.files,
             ...(a.taskIds ? { taskIds: a.taskIds } : {}),
+            ...(a.commandIds ? { commandIds: a.commandIds } : {}),
             ...(a.errors ? { errors: a.errors } : {}),
           })),
           files,
@@ -678,6 +734,11 @@ export class ShiftRunner {
       if (fresh) broadcast({ type: 'office.updated', office: fresh, roles: await storage.listOfficeRoles(office.id) });
     } catch {
       // the outcome still reaches the caller; boot recovery closes a row left open
+    }
+    // Saved commands run only now, once the shift has settled and its row is
+    // closed — never while the session is alive (docs/office.md § Command runs).
+    if (this.deps.commandRuns && outcome.applied.some((a) => a.section === 'commands' && a.commandIds?.length)) {
+      outcome.commandRuns = this.deps.commandRuns.runShift(shift.id, office.id);
     }
     return outcome;
   }

@@ -95,7 +95,8 @@ const PRESETS: readonly OfficePresetDef[] = [
       `You are the office's DevOps engineer. You read CI and deploy configuration, the repos' saved checks and their recent results, dependency manifests, and the findings of scheduled jobs: red checks, flaky checks, slow builds, outdated or vulnerable dependencies, drift between environments.`,
       `- Worker tasks for each fix, with the evidence (which check, which job finding, which file).
 - Notes in your roles/ file: the state of the pipeline as of this shift.`,
-      `Audits (dependency audit, image scan, config lint) run as SAVED COMMANDS a human allowlisted for this office — request the run and read its result; never run them yourself and never propose a new command line as something to execute. Fixes are worker tasks tagged with your role key.`,
+      `Audits (dependency audit, image scan, config lint) run as SAVED COMMANDS a human allowlisted for this office — request the run and read its result; never run them yourself and never propose a new command line as something to execute. Fixes are worker tasks tagged with your role key.
+Your allowlist starts EMPTY. Until a human fills it, say in your notes which saved commands to allow — a dependency audit (\`npm audit --omit=dev\`), the repo's lint/typecheck/test scripts, a config validator — each a one-shot saved command of a workspace repo, and whether it reads the outside world (mark those external).`,
     ),
     model: OFFICE_DEFAULT_MODEL,
     effort: 'medium',
@@ -134,7 +135,8 @@ const PRESETS: readonly OfficePresetDef[] = [
       `You are the office's SEO specialist. You read the workspace's pages, templates, metadata, structured data, sitemaps, robots rules and content against the roadmap and the audience in vision.md: missing titles or descriptions, broken canonical or hreflang setup, thin or duplicated content, slow or unindexable pages.`,
       `- Worker tasks for each fix, grouped per page template where possible, with the file and the expected result.
 - Notes in your roles/ file: what you checked and the open findings.`,
-      `You have no web tools by default — reading live pages would taint the shift. Crawls, Lighthouse runs and other audits run as SAVED COMMANDS a human allowlisted for this office; request the run and read its result. Fixes are worker tasks tagged with your role key.`,
+      `You have no web tools by default — reading live pages would taint the shift. Crawls, Lighthouse runs and other audits run as SAVED COMMANDS a human allowlisted for this office; request the run and read its result. Fixes are worker tasks tagged with your role key.
+Your allowlist starts EMPTY. Until a human fills it, say in your notes which saved commands to allow — a Lighthouse run against a page URL, a sitemap or broken-link crawl, a metadata lint script — each a one-shot saved command of a workspace repo; anything that fetches a public URL must be marked external (its output taints your next shift).`,
     ),
     model: OFFICE_DEFAULT_MODEL,
     effort: 'low',
@@ -179,6 +181,8 @@ export function roleFromPreset(id: OfficeRolePreset): OfficeRoleDraft {
     schedules: [...p.schedules],
     triggers: p.triggers.map((t) => ({ ...t })),
     guards: p.guards.map((g) => ({ ...g })),
+    // a human allowlists commands (docs/office.md § Command runs); presets ship with none
+    commands: [],
     notesTaintedAt: null,
     sessionId: null,
     sessionTainted: false,

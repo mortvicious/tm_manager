@@ -217,6 +217,7 @@ export class CommandRunner {
       ownerTaskId,
       checkTaskId: check && 'taskId' in check ? check.taskId : null,
       ...(check && 'baseline' in check ? { checkBaseline: true } : {}),
+      ...(check && 'officeShiftId' in check ? { officeShiftId: check.officeShiftId } : {}),
       ...(oneShot ? { oneShot: true } : {}),
     };
     this.runs.set(id, run);
@@ -237,6 +238,7 @@ export class CommandRunner {
         ownerTaskId,
         ...(check && 'taskId' in check ? { checkTaskId: check.taskId } : {}),
         ...(check && 'baseline' in check ? { checkBaseline: true } : {}),
+        ...(check && 'officeShiftId' in check ? { officeShiftId: check.officeShiftId } : {}),
         ...(oneShot ? { oneShot: true } : { commandId: command.id }),
       },
     });
@@ -256,7 +258,9 @@ export class CommandRunner {
    * `abort` is polled while waiting: the task left the state the check was for.
    * `target` is the task whose change it judges (that task owns the run), or a
    * BASELINE — one run on the current tree before the check is saved
-   * (docs/checks.md § Baseline), owned by no task and started by `actor`.
+   * (docs/checks.md § Baseline), owned by no task and started by `actor` —
+   * or an OFFICE SHIFT's allowlisted command (docs/office.md § Command runs),
+   * which brings its own timeout and tail size in `opts`.
    */
   async runCheck(
     command: RepoCommand,
@@ -264,8 +268,9 @@ export class CommandRunner {
     target: CheckFor,
     abort?: () => boolean | Promise<boolean>,
     actor = 'system',
+    opts: { timeoutMs?: number; tailLines?: number; tailChars?: number } = {},
   ): Promise<CheckRun> {
-    const timeoutMs = (command.timeoutSec ?? CHECK_DEFAULT_TIMEOUT_SEC) * 1000;
+    const timeoutMs = opts.timeoutMs ?? (command.timeoutSec ?? CHECK_DEFAULT_TIMEOUT_SEC) * 1000;
     const t0 = Date.now();
     const busy = this.runningCheckIn(command, repo);
     if (busy && !(await this.waitForExit(busy.id, timeoutMs))) {
@@ -295,7 +300,11 @@ export class CommandRunner {
       this.stop(run.id);
       await this.waitForExit(run.id, 6000);
     }
-    const tail = lastLines(this.tail(run.id, 256 * 1024) ?? '', CHECK_TAIL_LINES, CHECK_TAIL_CHARS);
+    const tail = lastLines(
+      this.tail(run.id, 256 * 1024) ?? '',
+      opts.tailLines ?? CHECK_TAIL_LINES,
+      opts.tailChars ?? CHECK_TAIL_CHARS,
+    );
     const durationMs = Date.now() - started;
     if (aborted) return { runId: run.id, exit: null, durationMs, tail, error: 'aborted' };
     if (!exited) {
@@ -361,8 +370,11 @@ export class CommandRunner {
   }
 }
 
-/** What a check run is for: a task's change, or a baseline before saving. */
-export type CheckFor = { taskId: string } | { baseline: true };
+/**
+ * What a check run is for: a task's change, a baseline before saving, or an
+ * office shift's allowlisted command (owned by no task; CI=1 like a check).
+ */
+export type CheckFor = { taskId: string } | { baseline: true } | { officeShiftId: string };
 
 /** How much of a check's output the worker and the reviewer get. */
 export const CHECK_TAIL_LINES = 80;

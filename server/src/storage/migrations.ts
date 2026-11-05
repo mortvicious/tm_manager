@@ -987,6 +987,18 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
     // names both columns, so the column DEFAULTs of migration 53 are never read.
     statements: [`ALTER TABLE tm_office_shifts ADD COLUMN filing TEXT`],
   },
+  {
+    id: 56,
+    // Shift command runs (docs/office.md § Command runs): a role's allowlist
+    // of saved commands (JSON `OfficeRoleCommand[]`, written only by the
+    // Origin-gated `PUT …/commands` route) and what a shift's `commands`
+    // section became — requests, dropped ids, each run's exit code and tail,
+    // the command-done wake (JSON `OfficeShiftCommands`; NULL = none asked for).
+    statements: [
+      `ALTER TABLE tm_office_roles ADD COLUMN command_ids TEXT NOT NULL DEFAULT '[]'`,
+      `ALTER TABLE tm_office_shifts ADD COLUMN commands TEXT`,
+    ],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */

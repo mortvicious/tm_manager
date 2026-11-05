@@ -251,6 +251,17 @@ the last 25, nothing is left. Its audit row is `command.run {action: 'started',
 oneShot: true}`. The launcher shows it in `running` as `one-shot by
 agent:<run8>`.
 
+## Office command runs
+
+A Virtual Office role may have saved commands on its allowlist, set by a human
+only (`docs/office.md` § Command runs). The server runs the ones a shift asked
+for through `CommandRunner.runCheck` with the target `{ officeShiftId }`. They
+run in this same pool and are attachable. They get `CI=1` like a check, a fixed
+10 min deadline and a 200-line tail. They are owned by no task, and the actor
+is `office:<role key>`. The run carries `CommandRun.officeShiftId`, and its
+`command.run` audit rows carry it too. An agent-owned, check, archived or
+`service` definition can never be allowlisted.
+
 ## Restart is refused while agents are working
 
 A restart kills every agent, and **two kinds of agent exist**:

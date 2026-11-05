@@ -9,6 +9,7 @@ import {
   OFFICE_EVENT_NAMES,
   OFFICE_GUARD_KINDS,
   OFFICE_HUMAN_PAUSE_REASON,
+  OFFICE_ROLE_COMMANDS_MAX,
   OFFICE_ROLE_KEY_MAX,
   OFFICE_ROLE_KEY_RE,
   OFFICE_ROLE_PRESETS,
@@ -33,6 +34,7 @@ import {
 import { broadcast } from '../events.ts';
 import { archiveRoleNotes, defaultOfficeFolder, resetRoleNotes, scaffoldOfficeFolder, validateOfficeFolder } from '../office/folder.ts';
 import { DEFAULT_OFFICE_THEME, OFFICE_THEMES, generateOfficeIdentities, generateRoleIdentity } from '../office/names.ts';
+import { allowlistCheck } from '../office/commands.ts';
 import { roleFromPreset } from '../office/presets.ts';
 import type { NewOfficeRole, OfficePatch, OfficeRolePatch } from '../storage/office-sql.ts';
 import type { Storage } from '../storage/types.ts';
@@ -105,6 +107,15 @@ const roleCreateBody = roleFieldsPartial
 const rolePatchBody = roleFieldsPartial.strict();
 type RoleInput = z.infer<typeof roleFieldsPartial>;
 
+/** `PUT …/roles/:roleId/commands`: the whole allowlist (docs/office.md § Command runs). */
+const roleCommandsBody = z
+  .object({
+    commands: z
+      .array(z.object({ commandId: z.string().trim().min(1).max(200), external: z.boolean() }).strict())
+      .max(OFFICE_ROLE_COMMANDS_MAX),
+  })
+  .strict();
+
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** A guard rebuilt from known fields only, or why it is malformed. */
@@ -161,7 +172,8 @@ export function parseTrigger(raw: unknown, i: number): { trigger: OfficeTrigger 
     }
     return { trigger: { kind: 'signal', source: r.source.trim() } };
   }
-  return { error: `${at}: unknown trigger kind ${JSON.stringify(r.kind)} (event or signal)` };
+  if (r.kind === 'command-done') return { trigger: { kind: 'command-done' } };
+  return { error: `${at}: unknown trigger kind ${JSON.stringify(r.kind)} (event, signal or command-done)` };
 }
 
 /**
@@ -545,6 +557,45 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage) {
       fields: Object.keys(body),
       ...(addedTools.length ? { addedTools } : {}),
       ...(f.autonomy !== undefined && f.autonomy !== cur.autonomy ? { autonomy: { from: cur.autonomy, to: f.autonomy, raised } } : {}),
+    });
+    await announce(office, true);
+    return roleResult(role);
+  });
+
+  // The role's command allowlist (docs/office.md § Command runs): the ONLY
+  // way a shift's request can make anything execute. Origin-gated like every
+  // write here — an agent's curl has no Origin, so no agent can set it — and
+  // a role PATCH cannot carry it (`rolePatchBody` is strict).
+  app.put('/api/offices/:id/roles/:roleId/commands', { preHandler: fromBrowser }, async (req, reply) => {
+    const parsed = roleCommandsBody.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: `commands: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}` });
+    }
+    const found = await loadRole(req, reply);
+    if (!found) return reply;
+    const { office, role: cur } = found;
+    const seen = new Set<string>();
+    const named: { commandId: string; name: string; external: boolean }[] = [];
+    for (const [i, c] of parsed.data.commands.entries()) {
+      if (seen.has(c.commandId)) return reply.code(400).send({ error: `commands[${i}]: listed twice` });
+      seen.add(c.commandId);
+      const check = await allowlistCheck(storage, office, c.commandId);
+      if ('error' in check) return reply.code(400).send({ error: `commands[${i}]: ${check.error}` });
+      named.push({ commandId: c.commandId, name: check.command.name, external: c.external });
+    }
+    const commands = parsed.data.commands.map((c) => ({ commandId: c.commandId, external: c.external }));
+    const role = await storage.updateOfficeRole(cur.id, { commands });
+    if (!role) return reply.code(404).send({ error: 'role not found in this office' });
+    const before = new Set(cur.commands.map((c) => c.commandId));
+    await audit({
+      action: 'role-commands',
+      officeId: office.id,
+      workspaceId: office.workspaceId,
+      roleId: role.id,
+      key: role.key,
+      commands: named,
+      added: named.filter((c) => !before.has(c.commandId)).map((c) => c.commandId),
+      removed: cur.commands.filter((c) => !seen.has(c.commandId)).map((c) => c.commandId),
     });
     await announce(office, true);
     return roleResult(role);

@@ -72,7 +72,16 @@ export const OFFICE_EVENT_NAMES: readonly OfficeEventName[] = [
  */
 export type OfficeTrigger =
   | { kind: 'event'; event: OfficeEventName; repoId?: string | null }
-  | { kind: 'signal'; source: string };
+  | { kind: 'signal'; source: string }
+  /**
+   * Opt-in (docs/office.md § Command runs): wake this role ONCE after the
+   * saved commands one of its shifts asked for have run, through the gate and
+   * guards. A shift this trigger started never chains another.
+   */
+  | { kind: 'command-done' };
+
+/** The `trigger.ref` of a shift a `command-done` trigger started (its kind is `event`). */
+export const OFFICE_COMMAND_DONE_REF = 'command-done';
 
 /** Pre-run guards (docs/office.md § Guards): a failing guard SKIPS a due shift with a readable reason. */
 export type OfficeGuard =
@@ -120,6 +129,13 @@ export interface OfficeRole {
   schedules: string[];
   triggers: OfficeTrigger[];
   guards: OfficeGuard[];
+  /**
+   * The saved commands a shift of this role may ask the server to run
+   * (docs/office.md § Command runs) — set by a human only
+   * (`PUT /api/offices/:id/roles/:roleId/commands`, Origin), never by a role
+   * edit or an agent. Empty = the role can run nothing.
+   */
+  commands: OfficeRoleCommand[];
   /** the role's own notes file in the office folder */
   notesPath: string;
   /** set when a tainted shift wrote the notes; cleared only by a human */
@@ -156,6 +172,8 @@ export interface OfficeShift {
   filedTaskIds: string[];
   /** what the `tasks` section became (docs/office.md § Filing); null = the shift asked for no tasks */
   filing: OfficeShiftFiling | null;
+  /** what the `commands` section became (docs/office.md § Command runs); null = the shift asked for none */
+  commands: OfficeShiftCommands | null;
   startedAt: string;
   endedAt: string | null;
   error: string | null;
@@ -940,6 +958,91 @@ export interface OfficeShiftFiling {
 }
 
 // ---------------------------------------------------------------------------
+// Command runs (docs/office.md § Command runs, decisions.md 2026-11-05)
+// ---------------------------------------------------------------------------
+
+/**
+ * One entry of a role's command allowlist. `external` = the command reads the
+ * outside world (Lighthouse against a public URL, a crawl): its output is
+ * taint source `command-output` and its report goes to `untrustedPath`. A
+ * local command's output is trusted, like the check output a worker's fix
+ * message already carries.
+ */
+export interface OfficeRoleCommand {
+  commandId: string;
+  external: boolean;
+}
+
+/** Allowlist entries per role. */
+export const OFFICE_ROLE_COMMANDS_MAX = 20;
+/** Command runs one shift may ask for (the `commands` section). */
+export const SHIFT_COMMANDS_MAX = 3;
+/** A command run's own deadline. */
+export const OFFICE_COMMAND_TIMEOUT_MS = 10 * 60_000;
+/** Output lines kept per run (ANSI stripped), on the shift row and in the report. */
+export const OFFICE_COMMAND_TAIL_LINES = 200;
+/** …and at most this many characters of them. */
+export const OFFICE_COMMAND_TAIL_CHARS = 30_000;
+
+/** One run the shift asked for (the `commands` section). `why` is agent text: a tainted shift's is untrusted. */
+export interface ShiftCommandRequest {
+  commandId: string;
+  why: string;
+}
+
+export type OfficeCommandRunStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped';
+
+/**
+ * A command run as the server recorded it. `done` = the process exited
+ * (`exitCode` is its code, 0 or not); `error` = no verdict (timeout, could
+ * not start, stopped) with `reason`; `skipped` = never started (`reason`: the
+ * hard gate's line, or the allowlist / definition re-check at run time).
+ */
+export interface OfficeShiftCommandRun {
+  commandId: string;
+  /** snapshotted at run time ('' while pending) */
+  name: string;
+  repoId: string | null;
+  external: boolean;
+  status: OfficeCommandRunStatus;
+  exitCode: number | null;
+  /** the last `OFFICE_COMMAND_TAIL_LINES` lines, ANSI stripped */
+  tail: string;
+  reason: string | null;
+  /** folder-relative report path (`deliverables/runs/…`, or its untrusted twin) */
+  reportPath: string | null;
+  /** the CommandRunner run (attachable while it lives) */
+  runId: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number | null;
+}
+
+/** What a shift's `commands` section became, on the shift row. */
+export interface OfficeShiftCommands {
+  requested: ShiftCommandRequest[];
+  /** requests never run: not on the role's allowlist, or a repeat */
+  dropped: (ShiftCommandRequest & { reason: string })[];
+  runs: OfficeShiftCommandRun[];
+  /** the `command-done` wake after the runs: the shift it started, or why it did not */
+  wake: { shiftId: string | null; skipReason: string | null } | null;
+}
+
+/** A run whose output exists: a process ran (exited, timed out or was stopped). */
+export function commandRunHasOutput(r: Pick<OfficeShiftCommandRun, 'status' | 'runId'>): boolean {
+  return (r.status === 'done' || r.status === 'error') && r.runId !== null;
+}
+
+/**
+ * The `command-output` taint refs the NEXT shift of the role inherits from
+ * these runs: every external run that produced output (a skipped one read
+ * nothing). Local output never taints.
+ */
+export function commandOutputTaint(runs: readonly OfficeShiftCommandRun[]): string[] {
+  return [...new Set(runs.filter((r) => r.external && commandRunHasOutput(r)).map((r) => r.name || r.commandId))];
+}
+
+// ---------------------------------------------------------------------------
 // Taint
 // ---------------------------------------------------------------------------
 
@@ -1133,7 +1236,9 @@ export function roleState(role: OfficeRole, f: OfficeRoleStateFacts): OfficeRole
   }
   if (nextLine) return { state: 'scheduled', detail: nextLine };
   if (role.triggers.length) {
-    const on = role.triggers.map((t) => (t.kind === 'event' ? t.event : `signal ${t.source}`)).join(', ');
+    const on = role.triggers
+      .map((t) => (t.kind === 'event' ? t.event : t.kind === 'signal' ? `signal ${t.source}` : 'its command runs finishing'))
+      .join(', ');
     return { state: 'off-duty', detail: `on call: wakes on ${on}` };
   }
   return { state: 'off-duty', detail: 'no schedule' };
@@ -1210,7 +1315,12 @@ export interface OfficeRoleFields {
  */
 export type OfficeRoleCreateBody = Partial<OfficeRoleFields> & { key?: string; preset?: OfficeRolePreset | null };
 
-/** `PATCH /api/offices/:id/roles/:roleId` — `key` (and so the notes path) is create-only. */
+/** `PUT /api/offices/:id/roles/:roleId/commands` — the whole allowlist, replaced. */
+export interface OfficeRoleCommandsBody {
+  commands: OfficeRoleCommand[];
+}
+
+/** `PATCH /api/offices/:id/roles/:roleId` — `key` (and so the notes path) is create-only; `commands` has its own route. */
 export type OfficeRolePatchBody = Partial<OfficeRoleFields>;
 
 /** Every role write's answer. `taintingTools` = the role's web tools: a shift using one is tainted. */

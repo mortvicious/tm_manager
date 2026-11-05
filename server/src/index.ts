@@ -37,6 +37,8 @@ import { registerReportRoutes } from './routes/reports.ts';
 import { recoverReportsOnBoot } from './reports/service.ts';
 import { JobService } from './jobs.ts';
 import { ShiftRunner, initShifts } from './office/shift.ts';
+import { OfficeCommandRuns, initOfficeCommandRuns } from './office/commands.ts';
+import { officeRel, writeOfficeFile } from './office/shift-result.ts';
 import { registerJobRoutes } from './routes/jobs.ts';
 import { registerAgentJobRoutes } from './routes/agent-jobs.ts';
 import { registerCommandRoutes } from './routes/commands.ts';
@@ -141,7 +143,22 @@ const jobs = new JobService({
 orchestrator.setJobs(jobs);
 // Virtual Office shifts (docs/office.md § Shifts at run time): aux terminals
 // (kind `shift`), never a worker slot; Pause all suspends them.
-const shiftRunner = new ShiftRunner({ storage, orchestrator, isPaused: (settings) => orchestrator.isPaused(settings) });
+// Their saved-command runs (docs/office.md § Command runs) go through the
+// COMMANDS pool after a shift settles; the command-done wake starts a shift.
+const officeCommands: OfficeCommandRuns = new OfficeCommandRuns({
+  storage,
+  runner: () => commandRunner,
+  startShift: (o, r, t) => shiftRunner.start(o, r, t),
+  writeFile: writeOfficeFile,
+  rel: officeRel,
+});
+initOfficeCommandRuns(officeCommands);
+const shiftRunner: ShiftRunner = new ShiftRunner({
+  storage,
+  orchestrator,
+  isPaused: (settings) => orchestrator.isPaused(settings),
+  commandRuns: officeCommands,
+});
 initShifts(shiftRunner);
 orchestrator.setShifts(shiftRunner);
 await orchestrator.recoverOnBoot({ lastStop });
@@ -179,6 +196,8 @@ jobs.start();
 // a shift row a crash left open would hold its office's slot for the gate
 const strandedShifts = await shiftRunner.recoverOnBoot();
 if (strandedShifts) console.log(`office: closed ${strandedShifts} shift(s) interrupted by the last restart`);
+const strandedCommands = await officeCommands.recoverOnBoot();
+if (strandedCommands) console.log(`office: closed the command runs of ${strandedCommands} shift(s) interrupted by the last restart`);
 
 // Live "what is it doing right now" line per running agent, tailed off the
 // session transcripts. Started after boot recovery so orphaned runs from the
@@ -372,6 +391,8 @@ app.post('/api/server/restart', async (req, reply) => {
   // Dev servers are children of this process: kill them deliberately instead
   // of orphaning them onto the port the restarted server's repos will want.
   // Aux sessions only ever exist here on the force path — same reasoning.
+  // An office's queued command runs start nothing more (boot recovery closes them).
+  officeCommands.stop();
   commandRunner.stopAll();
   shellRunner.stopAll();
   // before the aux stop: a job run ended by the restart is boot recovery's to re-arm, not a human's kill
@@ -552,6 +573,7 @@ const stop = async (cause: Omit<StopCause, 'at' | 'pid'> | null) => {
   // Dev servers and watchers die with us either way; signalling them first is
   // what makes them release their ports before the next boot. Aux sessions
   // are ended explicitly — they would keep spending tokens for nobody.
+  officeCommands.stop();
   commandRunner.stopAll();
   shellRunner.stopAll();
   // before the aux stop: a job run ended by the restart is boot recovery's to re-arm, not a human's kill

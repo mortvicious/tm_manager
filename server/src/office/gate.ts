@@ -166,25 +166,11 @@ export async function officeGuardFacts(
 }
 
 /**
- * May this role's shift start now? Settles the office's budget trip first
- * (so a crossing pauses the office before anything is judged), then the hard
- * gate — whose reason always wins over any guard's, since guards are not even
- * evaluated (nor their facts gathered) once it refuses — then the guards,
- * except for a human `request`, which a guard (a money-saving rule for
- * automatic wakes) never skips. Never writes `orchestrator.paused`.
+ * The hard gate's facts for one role, after settling the office's budget
+ * trip (so a crossing pauses the office before anything is judged).
  */
-export async function officeGate(
-  storage: Storage,
-  office: Office,
-  role: OfficeRole,
-  trigger: OfficeGateTrigger,
-  opts: OfficeGateOptions = {},
-): Promise<OfficeGateResult> {
-  const now = opts.now ?? Date.now();
-  if (role.officeId !== office.id) {
-    return { ok: false, skip: true, reason: 'role is not in this office', code: 'role-mismatch', hard: null, facts: null };
-  }
-  const settings = opts.settings ?? (await storage.getSettings());
+async function officeHardFacts(storage: Storage, office: Office, role: OfficeRole, now: number, given?: AppSettings) {
+  const settings = given ?? (await storage.getSettings());
   const budget = await settleOfficeBudget(storage, office, now);
   const o = budget.office;
   const roleSpentUsd = role.capUsd !== null ? await storage.officeSpendSince(o.id, budget.sinceIso, role.id) : null;
@@ -204,6 +190,50 @@ export async function officeGate(
     activeShifts: live.length,
     maxSlots: o.maxSlots,
   };
+  return { hard, budget, roleSpentUsd };
+}
+
+/**
+ * May a saved command a shift of this role asked for run now
+ * (docs/office.md § Command runs)? The HARD gate only — off, paused, Pause
+ * all, the office day budget, the role cap — with the shift-slot test left
+ * out: a command run is not a shift and takes no shift slot (its own limit
+ * is one command run per office). Guards are money-saving rules for wakes,
+ * not for a run the role already asked for. Null = it may run.
+ */
+export async function officeCommandGate(
+  storage: Storage,
+  office: Office,
+  role: OfficeRole,
+  opts: { now?: number; settings?: AppSettings } = {},
+): Promise<{ code: OfficeGateCode | 'role-mismatch'; reason: string; hard: OfficeGateFacts | null } | null> {
+  if (role.officeId !== office.id) return { code: 'role-mismatch', reason: 'role is not in this office', hard: null };
+  const { hard } = await officeHardFacts(storage, office, role, opts.now ?? Date.now(), opts.settings);
+  const refusal = officeHardGate({ ...hard, activeShifts: 0 });
+  return refusal ? { ...refusal, hard } : null;
+}
+
+/**
+ * May this role's shift start now? Settles the office's budget trip first
+ * (so a crossing pauses the office before anything is judged), then the hard
+ * gate — whose reason always wins over any guard's, since guards are not even
+ * evaluated (nor their facts gathered) once it refuses — then the guards,
+ * except for a human `request`, which a guard (a money-saving rule for
+ * automatic wakes) never skips. Never writes `orchestrator.paused`.
+ */
+export async function officeGate(
+  storage: Storage,
+  office: Office,
+  role: OfficeRole,
+  trigger: OfficeGateTrigger,
+  opts: OfficeGateOptions = {},
+): Promise<OfficeGateResult> {
+  const now = opts.now ?? Date.now();
+  if (role.officeId !== office.id) {
+    return { ok: false, skip: true, reason: 'role is not in this office', code: 'role-mismatch', hard: null, facts: null };
+  }
+  const { hard, budget, roleSpentUsd } = await officeHardFacts(storage, office, role, now, opts.settings);
+  const o = budget.office;
   const refusal = officeHardGate(hard);
   if (refusal) return { ok: false, skip: true, reason: refusal.reason, code: refusal.code, hard, facts: null };
   if (trigger.kind === 'request') return { ok: true, hard, facts: null };

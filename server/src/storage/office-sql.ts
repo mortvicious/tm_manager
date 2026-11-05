@@ -15,8 +15,10 @@ import {
   type OfficeAutonomy,
   type OfficeGuard,
   type OfficeRole,
+  type OfficeRoleCommand,
   type OfficeRolePreset,
   type OfficeShift,
+  type OfficeShiftCommands,
   type OfficeShiftFiling,
   type OfficeShiftTriggerKind,
   type OfficeTrigger,
@@ -103,7 +105,7 @@ export interface NewOfficeShift {
 export type OfficeShiftPatch = Partial<
   Pick<
     OfficeShift,
-    'verdict' | 'skipReason' | 'runId' | 'costUsd' | 'tainted' | 'taintSources' | 'briefId' | 'filedTaskIds' | 'filing' | 'endedAt' | 'error'
+    'verdict' | 'skipReason' | 'runId' | 'costUsd' | 'tainted' | 'taintSources' | 'briefId' | 'filedTaskIds' | 'filing' | 'commands' | 'endedAt' | 'error'
   >
 >;
 
@@ -271,6 +273,7 @@ const ROLE_PATCH_COLUMNS: Record<keyof OfficeRolePatch, [string, (v: any) => unk
   schedules: ['schedules', json],
   triggers: ['triggers', json],
   guards: ['guards', json],
+  commands: ['command_ids', json],
   notesPath: ['notes_path', (v) => v],
   notesTaintedAt: ['notes_tainted_at', (v) => v],
   sessionId: ['session_id', (v) => v],
@@ -300,6 +303,7 @@ export function rowToOfficeRole(r: any): OfficeRole {
     schedules: stringList(r.schedules),
     triggers: objectList<OfficeTrigger>(r.triggers),
     guards: objectList<OfficeGuard>(r.guards),
+    commands: roleCommands(r.command_ids),
     notesPath: r.notes_path,
     notesTaintedAt: r.notes_tainted_at ?? null,
     sessionId: r.session_id ?? null,
@@ -344,6 +348,7 @@ const SHIFT_PATCH_COLUMNS: Record<keyof OfficeShiftPatch, [string, (v: any) => u
   briefId: ['brief_id', (v) => v],
   filedTaskIds: ['filed_task_ids', json],
   filing: ['filing', (v) => (v == null ? null : JSON.stringify(v))],
+  commands: ['commands', (v) => (v == null ? null : JSON.stringify(v))],
   endedAt: ['ended_at', (v) => v],
   error: ['error', (v) => v],
 };
@@ -400,6 +405,30 @@ function shiftFiling(v: unknown): OfficeShiftFiling | null {
   }
 }
 
+/** The role's allowlist column; malformed entries are dropped (an id is never invented). */
+function roleCommands(v: unknown): OfficeRoleCommand[] {
+  return objectList<OfficeRoleCommand>(v)
+    .filter((c) => c && typeof c.commandId === 'string' && c.commandId)
+    .map((c) => ({ commandId: c.commandId, external: c.external === true }));
+}
+
+/** The `commands` JSON column; anything unreadable is null. */
+function shiftCommands(v: unknown): OfficeShiftCommands | null {
+  if (v == null || v === '') return null;
+  try {
+    const c = typeof v === 'string' ? JSON.parse(v) : v;
+    if (!c || typeof c !== 'object') return null;
+    return {
+      requested: Array.isArray(c.requested) ? c.requested : [],
+      dropped: Array.isArray(c.dropped) ? c.dropped : [],
+      runs: Array.isArray(c.runs) ? c.runs : [],
+      wake: c.wake && typeof c.wake === 'object' ? c.wake : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function rowToOfficeShift(r: any): OfficeShift {
   return {
     id: r.id,
@@ -415,6 +444,7 @@ export function rowToOfficeShift(r: any): OfficeShift {
     briefId: r.brief_id ?? null,
     filedTaskIds: stringList(r.filed_task_ids),
     filing: shiftFiling(r.filing),
+    commands: shiftCommands(r.commands),
     startedAt: r.started_at,
     endedAt: r.ended_at ?? null,
     error: r.error ?? null,

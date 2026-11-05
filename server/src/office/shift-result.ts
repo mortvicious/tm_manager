@@ -7,8 +7,9 @@
 // being silently dropped. Every section is optional: a shift that found
 // nothing returns `{}`.
 //
-// This module registers `notes`, `deliverables` and `tasks` (filing.ts);
-// later phases register theirs (command runs, briefs) with `registerShiftSection`.
+// This module registers `notes`, `deliverables`, `tasks` (filing.ts) and
+// `commands` (commands.ts); later phases register theirs (briefs) with
+// `registerShiftSection`.
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -18,6 +19,7 @@ import type { OrchestratorApi } from '../app-types.ts';
 import type { Storage } from '../storage/types.ts';
 import { SHIFT_TASKS_DESCRIBE, SHIFT_TASKS_JSON_SCHEMA, fileShiftTasks, shiftTasksSchema, type ShiftTaskInput } from './filing.ts';
 import { untrustedPath } from './isolation.ts';
+import { SHIFT_COMMANDS_DESCRIBE, SHIFT_COMMANDS_JSON_SCHEMA, recordShiftCommands, shiftCommandsSchema } from './commands.ts';
 
 export interface ShiftSectionCtx {
   storage: Storage;
@@ -46,6 +48,8 @@ export interface ShiftSectionApplied {
   tainted: boolean;
   /** tasks the section filed (`tasks`) */
   taskIds?: string[];
+  /** command runs the section planned (`commands`); they run after the shift settles */
+  commandIds?: string[];
   /** parts of the section that failed while the rest applied (one bad file of several) */
   errors?: string[];
 }
@@ -294,5 +298,21 @@ registerShiftSection<ShiftTaskInput[]>({
     );
     // held and dropped requests are on the shift row (`filing`), not section errors: a cap is not a failure
     return { section: 'tasks', files: [], tainted: ctx.tainted, taskIds: filed.map((t) => t.id) };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// commands — saved commands the server runs after the shift (docs/office.md § Command runs)
+// ---------------------------------------------------------------------------
+
+registerShiftSection<{ commandId: string; why: string }[]>({
+  key: 'commands',
+  describe: SHIFT_COMMANDS_DESCRIBE,
+  schema: shiftCommandsSchema,
+  jsonSchema: SHIFT_COMMANDS_JSON_SCHEMA,
+  async apply(value, ctx) {
+    // an id not on the role's allowlist is dropped and listed on the shift row, never an error
+    const plan = await recordShiftCommands(ctx.storage, ctx.role, ctx.shiftId, value);
+    return { section: 'commands', files: [], tainted: ctx.tainted, commandIds: plan.runs.map((r) => r.commandId) };
   },
 });

@@ -32,7 +32,7 @@ types at the end of `shared/src/office.ts`, and `server/src/routes/offices.test.
 | `Office` | One per workspace. Has a knowledge folder (`folderPath`, outside every repo), an autonomy level, a day budget (`dayBudgetUsd`, per office-local day; 0 means nothing runs), shift concurrency (`maxSlots`), filing caps (`maxTasksPerShift`, `maxOpenTasks`), a pause (`pausedAt`/`pausedReason`), `budgetTrippedOn` (the local day the budget tripped), a `theme` and a `timezone` (IANA). Schedules, quiet hours and the budget day are all read in that zone. |
 | `OfficeRole` | A standing role. Has a kebab `key` (`OFFICE_ROLE_KEY_RE`), a name, avatar and title, its human-written `prompt`, model and effort, and `tools` (always a subset of `SHIFT_TOOL_ALLOWLIST`). It can override autonomy (`autonomy`) and set a per-day cap (`capUsd`). It wakes on `schedules` (5-field cron) and `triggers`, and pre-run `guards` can skip a wake. `notesPath` is its notes file and `notesTaintedAt` marks notes written by a tainted shift. `sessionId` is the session it resumes, and `sessionTainted` marks that session as tainted. |
 | `OfficeShift` | One wake: its `trigger` (`cron`/`event`/`signal`/`request`, a `ref`, and `at` = the slot or event time), a `verdict` of `ran` or `skipped` with a readable `skipReason`, the aux run, cost, the taint and its sources (`kind:ref` strings), the brief, the tasks filed, and the times and error. |
-| Trigger | `{kind:'event', event}` is something this server did (`OFFICE_EVENT_NAMES`: task-landed, task-failed, review-flagged, checks-red, job-attention), so it is trusted. `{kind:'signal', source}` comes from outside (a webhook, an alert), so it is untrusted. |
+| Trigger | `{kind:'event', event}` is something this server did (`OFFICE_EVENT_NAMES`: task-landed, task-failed, review-flagged, checks-red, job-attention), so it is trusted. `{kind:'signal', source}` comes from outside (a webhook, an alert), so it is untrusted. `{kind:'command-done'}` (opt-in) wakes the role once after the saved commands one of its shifts asked for have run (§ Command runs). |
 | Presets | `OFFICE_ROLE_PRESETS` are the ids of the built-in role templates (director, developer, devops, qa, seo). Their content is in `server/src/office/presets.ts` (§ Presets). |
 
 ### Tools
@@ -282,7 +282,7 @@ these `TaintSourceKind`s:
 |---|---|
 | `signal` | an outside signal started the shift |
 | `web-tool` | WebFetch or WebSearch was used. Pass the **granted** tools when use is unknown, so the check fails closed. |
-| `command-output` | the shift read a saved command's output |
+| `command-output` | the shift read the output of an allowlisted command marked `external` (§ Command runs). A local command's output never taints. |
 | `tainted-notes` | the role's notes were written by a tainted shift |
 | `tainted-artifact` | it read an office artifact a tainted shift wrote |
 | `tainted-session` | it resumes a session a tainted shift ran in |
@@ -351,9 +351,13 @@ leaves the shift**, followed by the common `SHIFT_RULES` block:
   cases) and any test writing are filed as worker tasks tagged with the role
   key. A shift cannot run code.
 - **DevOps and SEO**: audits (dependency audit, crawl, Lighthouse) run as
-  **saved commands a human allowlisted** for the office (the shift command-runs
-  phase). The shift requests a run and reads its result. It never runs the
-  audit itself or invents a command line. Fixes are worker tasks.
+  **saved commands a human allowlisted** for the role (§ Command runs). The
+  shift requests a run and its next shift reads the result. It never runs the
+  audit itself or invents a command line. Fixes are worker tasks. Both presets
+  ship with an **empty** allowlist, and their prompts say what to ask the human
+  to allow (DevOps: a dependency audit, lint/typecheck/test scripts, a config
+  validator; SEO: a Lighthouse run, a sitemap or link crawl, a metadata lint,
+  with anything that fetches a public URL marked external).
 - **Director and Developer**: implementation is a worker task tagged with the
   role that owns it.
 
@@ -531,8 +535,8 @@ it is history. Money is `DOUBLE PRECISION` (pg `REAL` is float4). Flags are
 | Table | Columns (beyond the `Office` / `OfficeRole` / `OfficeShift` fields) | Indexes |
 |---|---|---|
 | `tm_offices` | `workspace_id`, `folder_path`, `autonomy` (default `proposals`), `day_budget_usd` (0), `max_slots` (1), `max_tasks_per_shift` (8), `max_open_tasks` (12) — the insert's defaults, migration 55 (§ Filing), `paused_at`, `paused_reason`, `budget_tripped_on`, `theme`, `timezone`, `enabled` (0), `created_at`, `updated_at` | **unique** `(workspace_id)`: one office per workspace |
-| `tm_office_roles` | `office_id`, `preset`, `role_key` (the role's `key`), name/avatar/title/prompt/model/effort, `tools`/`schedules`/`triggers`/`guards` (JSON), `autonomy`, `cap_usd`, `notes_path`, `notes_tainted_at`, `session_id`, `session_tainted` (0), `enabled` (1), `created_at`, `updated_at` | **unique** `(office_id, role_key)` |
-| `tm_office_shifts` | `office_id`, `role_id`, `trigger_kind`/`trigger_ref`/`trigger_at` (the `trigger` object), `verdict`, `skip_reason`, `run_id`, `cost_usd`, `tainted`, `taint_sources` (JSON), `brief_id`, `filed_task_ids` (JSON), `filing` (JSON `OfficeShiftFiling`, migration 55 — § Filing), `started_at`, `ended_at`, `error` | `(office_id, started_at)`, `(role_id, started_at)`, `(run_id)` |
+| `tm_office_roles` | `office_id`, `preset`, `role_key` (the role's `key`), name/avatar/title/prompt/model/effort, `tools`/`schedules`/`triggers`/`guards` (JSON), `command_ids` (JSON `OfficeRoleCommand[]`, migration 56 — § Command runs), `autonomy`, `cap_usd`, `notes_path`, `notes_tainted_at`, `session_id`, `session_tainted` (0), `enabled` (1), `created_at`, `updated_at` | **unique** `(office_id, role_key)` |
+| `tm_office_shifts` | `office_id`, `role_id`, `trigger_kind`/`trigger_ref`/`trigger_at` (the `trigger` object), `verdict`, `skip_reason`, `run_id`, `cost_usd`, `tainted`, `taint_sources` (JSON), `brief_id`, `filed_task_ids` (JSON), `filing` (JSON `OfficeShiftFiling`, migration 55 — § Filing), `commands` (JSON `OfficeShiftCommands`, migration 56 — § Command runs), `started_at`, `ended_at`, `error` | `(office_id, started_at)`, `(role_id, started_at)`, `(run_id)` |
 
 **Task columns (migration 54)**. `tm_tasks.office_id`, `role_id` and
 `tainted_at` are all nullable, with an index on `office_id`. On the `Task`
@@ -615,6 +619,7 @@ types are at the end of `shared/src/office.ts` (`OfficeDetail`,
 | `PATCH /api/offices/:id/roles/:roleId` | edit a role → `OfficeRoleWriteResult` |
 | `DELETE /api/offices/:id/roles/:roleId` | remove a role → `{ ok: true }` |
 | `POST /api/offices/:id/roles/:roleId/reset-notes` | reset the role's notes file → `OfficeRoleWriteResult` |
+| `PUT /api/offices/:id/roles/:roleId/commands` | replace the role's command allowlist (§ Command runs) → `OfficeRoleWriteResult` |
 
 **Every write needs `Origin`** (403 `office edits come from the dashboard`
 otherwise). Every write acts as `human`, and a worker's `curl` sends no
@@ -773,8 +778,8 @@ sessions) with these settings:
 - **Model.** The role's model and effort, through `withModelFallback`.
 
 A shift never executes or edits. Execution work leaves it as a filed worker
-task (the `tasks` section, § Filing) or a saved-command run (a later phase
-registers that result section).
+task (the `tasks` section, § Filing) or a run of an allowlisted saved command
+(the `commands` section, § Command runs).
 
 **Refusals.** The runner refuses to spawn in these cases, whatever the caller
 says:
@@ -930,7 +935,7 @@ While `notesTaintedAt` is set, the next shift reads the newest notes, which
 are the untrusted twin (or the trusted file if there is no twin). That shift
 is tainted (`tainted-notes`). A human clears this with reset-notes (§ API).
 
-Later phases register command runs and briefs. The section context also
+`commands` is registered by § Command runs; a later phase registers briefs. The section context also
 carries the shift's `runId` and the orchestrator (to kick the scheduler after a
 queued filing).
 
@@ -1044,6 +1049,123 @@ records the status, the note, the `held` requests and the `dropped` ones. One
 drops. Held and dropped entries are the shift's own text: for a tainted shift
 they are untrusted, so a trusted reader gets them only through
 `taintedDigest`, which copies no titles.
+
+## Command runs
+
+A shift never executes anything. The **only** thing that runs on an office's
+behalf is a **saved repo command a human put on the role's allowlist**
+(decisions.md 2026-11-05). This is the path for DevOps checks (a dependency
+audit, a config lint) and SEO audits (Lighthouse, a crawl). Anything that needs
+an edit or an ad-hoc shell is filed as a worker task (§ Filing). Code:
+`server/src/office/commands.ts`; tests: `server/src/office/commands.test.ts`.
+
+**The allowlist** is `OfficeRole.commands` — `[{commandId, external}]`, column
+`tm_office_roles.command_ids` (migration 56), at most
+`OFFICE_ROLE_COMMANDS_MAX` (20). Only `PUT /api/offices/:id/roles/:roleId/commands`
+(`{commands: [...]}`, the whole list replaced) writes it. It needs `Origin`
+(403 otherwise, so an agent's `curl` cannot set it) and leaves an
+`office.changed` row with `action: 'role-commands'`, the named entries and the
+added/removed ids. A role `PATCH` cannot carry `commands` (strict body → 400),
+and no shift section writes it. Each entry must pass `allowlistCheck`, otherwise
+the route answers 400 naming the entry:
+
+- the command exists (a saved `tm_commands` row, not a one-shot),
+- it is **not a check** (checks belong to the verify loop),
+- it is **not archived**,
+- it is **human-owned** (`owner_task_id` null; an agent-saved definition is refused),
+- it is **one-shot** (`kind: 'task'`; a `service` never exits and would only ever time out),
+- its repo is in the office's **workspace**.
+
+An id listed twice is refused too. `external: true` says the command reads the
+outside world (Lighthouse against a public URL). Its output is untrusted.
+
+**The `commands` section.** A shift asks for runs in its result:
+`commands: [{commandId, why}]`, at most `SHIFT_COMMANDS_MAX` (3). The prompt
+lists the role's runnable allowlist under *Saved commands you may request*:
+id, name, repo and command line, with a note on external ones. With an empty
+allowlist it says so and tells the role to name in its notes what the human
+should allow. The section's `apply` re-reads the role row and splits the
+requests with `planShiftCommands` against the **current** allowlist. An id not
+on it is **dropped** (`reason: "not on the role's allowlist"`), and so is a
+repeat. Neither is ever run. Everything lands on the shift row
+(`tm_office_shifts.commands`, JSON `OfficeShiftCommands`: `requested`,
+`dropped`, `runs`, `wake`).
+
+**The runs** start only after the shift has **settled**: its row is closed and
+the session is gone. `ShiftRunner.settle` hands the shift to
+`OfficeCommandRuns.runShift`, and `ShiftOutcome.commandRuns` is the promise of
+the finished record. Each office's runs form one promise chain, so there is
+**at most one command run per office at a time**. A shift's runs go one after
+another. Before each run the service:
+
+1. re-reads the office and the role. A role or office that is gone, an entry
+   since removed from the allowlist, or a definition that no longer passes
+   `allowlistCheck` (made a check, archived, deleted, moved) is **skipped**
+   with the reason. `external` is read from the current entry.
+2. asks `officeCommandGate`: the hard gate (`officeHardGate`) over the same
+   facts as `officeGate`, settling the budget trip first, but **without the
+   shift-slot test**, because a command run takes no shift slot. **Pause all**,
+   an **office pause** (a human's or the budget trip's), the **office day budget**,
+   the **role cap**, and an office or role that is off all skip the run. Guards
+   are not consulted: they are money-saving rules for wakes, and a run costs no
+   tokens.
+
+A skip is `status: 'skipped'` with the reason on the row, plus an
+`office.command` audit row (`action: 'skipped'`, `reason`, `code`). Nothing is
+spawned.
+
+A run that passes goes through `CommandRunner.runCheck` with target
+`{ officeShiftId }`: the **COMMANDS pool**, argv only (`parseCommandLine` +
+`resolveBin`, never a shell), `CI=1`, a **10 min** deadline
+(`OFFICE_COMMAND_TIMEOUT_MS`), actor `office:<role key>`, **zero tokens** (no
+claude is spawned). It is an ordinary attachable run (`CommandRun.officeShiftId`).
+If a human's run of the same definition is live, the run waits for it, within
+the same deadline. The row gets `exitCode` and `status: 'done'` when the
+process exited, or `status: 'error'` with the reason when there was no verdict
+(timed out, stopped). It also gets the **last 200 lines, ANSI stripped**
+(`OFFICE_COMMAND_TAIL_LINES`, ≤ 30k characters), the duration and the
+CommandRunner run id. One `office.command` audit row (`action: 'ran'`) records
+it. Pause all does not kill a run already started (the commands pool is not a
+worker); the next run of the chain is skipped by the gate.
+
+**The report**: `deliverables/runs/<office-local date>-<role key>-<command slug>.md`
+(`commandReportRel`; a second run on the same day replaces it). It holds the
+repo, the command line, the times, the result and the output tail in a fence
+the output cannot close (`fenceFor`). It never contains the shift's own `why`,
+because a tainted shift's words must not reach a trusted file. A **local**
+command's report is written at that path: its output is trusted, the same
+trust check output already gets in `checkFixMessage`. An **external** one's
+goes to `untrustedPath` of that path (`untrusted/deliverables/runs/…`), which
+a trusted shift's `permissions.deny` keeps out.
+
+**The next shift.** `ShiftRunner.plan` reads the role's previous `ran` shift.
+Its runs go into the prompt as a fenced data block (*Command runs from your
+last shift*: per run, the name, the outcome, the report path and the tail in a
+fence it cannot close, marked as data and never instructions). `why` is left
+out here too. Every **external** run that produced output (`done` or `error`
+with a process) adds taint source `command-output:<command name>`
+(`commandOutputTaint` → `shiftTaint`), so that shift files drafts only, writes
+to the untrusted twin, and may not resume a trusted session. A local run never
+taints. Only the next shift gets the block. A run still pending when that shift
+starts is listed as not run yet, and the shift after it does not see it.
+
+**The `command-done` trigger** (`{kind: 'command-done'}` in `triggers`,
+opt-in, no preset has it) wakes the same role **once** after its runs finish,
+and only when at least one run actually ran. It goes through `officeGate` with
+the trigger `event`/`command-done`, so the hard gate **and the guards** apply.
+A role with a `cooldown` guard will see that wake skipped, because its last
+shift ended minutes earlier. A refusal (gate, guard, or `ShiftRunner.start`
+refusing, for example another shift of the office being live) is written as a
+`skipped` shift row with the reason and an `office.shift` audit row. The
+record's `wake` holds the started shift's id or the skip reason. A shift
+started by this trigger **never chains another** wake, so a role that asks for
+commands every shift cannot loop.
+
+**Restart.** Shutdown stops the chain (`OfficeCommandRuns.stop`, before
+`commandRunner.stopAll`). Boot (`recoverOnBoot`) closes what was left:
+`pending` becomes `skipped` and `running` becomes `error`, both with
+`interrupted by restart`. A run is never re-run at boot, because the moment
+it was asked for has passed.
 
 ## UI
 

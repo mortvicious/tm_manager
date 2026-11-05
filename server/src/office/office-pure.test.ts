@@ -376,6 +376,7 @@ describe('roleState', () => {
     schedules: ['0 9 * * *'],
     triggers: [],
     guards: [],
+    commands: [],
     notesPath: 'roles/qa.md',
     notesTaintedAt: null,
     sessionId: null,
