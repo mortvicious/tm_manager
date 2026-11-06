@@ -1,4 +1,5 @@
 import type { Chat, Feature, Repo, Task, Workspace } from '@tm/shared';
+import type { TaskAction } from './taskActions.ts';
 import { MIN_TASK_ID_PREFIX, normalizeTaskId } from './taskId.ts';
 
 /**
@@ -7,8 +8,11 @@ import { MIN_TASK_ID_PREFIX, normalizeTaskId } from './taskId.ts';
  * overlay (components/Palette.tsx) feeds it the app state and the effects.
  */
 
-/** what a palette line is about; `action` is for later context/global actions */
-export type PaletteSection = 'action' | 'task' | 'page' | 'workspace' | 'repo' | 'feature' | 'chat';
+/**
+ * What a palette line is about. `context` = one task's actions (the open
+ * panel's, or the task Tab/→ drilled into); `action` = the global commands.
+ */
+export type PaletteSection = 'context' | 'action' | 'task' | 'page' | 'workspace' | 'repo' | 'feature' | 'chat';
 
 export interface PaletteEntry {
   /** stable across renders and sessions: the MRU key (`task:<id>`, `page:/board`) */
@@ -27,10 +31,28 @@ export interface PaletteEntry {
   pinned?: boolean;
   /** a task found by its id: listed even outside the workspace, and first */
   idHit?: boolean;
-  run(): void;
+  /** offered but refused for now: listed, muted, the subtitle says why; ↵ does nothing */
+  disabled?: boolean;
+  /**
+   * Two-press arm (src/arm.ts): the first ↵ swaps the title for this question,
+   * a second ↵ on the same line within 4 s runs it. `armKey` is the arm's key —
+   * a task action's is the panel's own scheme, `<taskId>:<actionId>`.
+   */
+  confirm?: string;
+  armKey?: string;
+  /** a step into a sub-list or an input (Follow-up…, New task…): the palette stays open */
+  keepOpen?: boolean;
+  /** the page this action opens: its plain page line is dropped while a query lists both */
+  page?: string;
+  /**
+   * What the pick does. A promise is awaited: `false` (a refusal, already
+   * toasted) keeps the palette open on the line; anything else closes it.
+   */
+  run(): void | Promise<boolean | void>;
 }
 
 export const SECTION_LABEL: Record<PaletteSection, string> = {
+  context: 'This task',
   action: 'Actions',
   task: 'Tasks',
   page: 'Pages',
@@ -41,11 +63,12 @@ export const SECTION_LABEL: Record<PaletteSection, string> = {
 };
 
 /** sections in a tie, and the empty query's order */
-const SECTION_ORDER: PaletteSection[] = ['action', 'task', 'page', 'workspace', 'repo', 'feature', 'chat'];
+const SECTION_ORDER: PaletteSection[] = ['context', 'action', 'task', 'page', 'workspace', 'repo', 'feature', 'chat'];
 
 /** lines per section with a query; tasks get more, they are what is looked for */
 const SECTION_CAP: Record<PaletteSection, number> = {
-  action: 5,
+  context: 20,
+  action: 6,
   task: 8,
   page: 14,
   workspace: 6,
@@ -141,13 +164,13 @@ export interface RankedSection {
 }
 
 /**
- * The palette's list. An empty query: the pinned entries, then the recent
- * tasks (MRU first, then `updatedAt` desc — the caller hands tasks in that
- * order), then every page. A query: the entries that match, per section
- * ordered by tier, then MRU position, then the caller's order (`updatedAt`
- * desc for tasks), and sections by their best tier, then their best score,
- * then SECTION_ORDER. A task
- * found by its id (`idHit`) leads everything.
+ * The palette's list. An empty query: the open task's actions (`context`),
+ * the pinned entries, then the recent tasks (MRU first, then `updatedAt` desc
+ * — the caller hands tasks in that order), then every page. A query: the
+ * entries that match, per section ordered by tier, then MRU position, then the
+ * caller's order (`updatedAt` desc for tasks), and sections by their best
+ * tier, then their best score, then SECTION_ORDER. A task found by its id
+ * (`idHit`) leads everything; the open task's matching actions come next.
  */
 export function rankEntries(entries: readonly PaletteEntry[], query: string, recent: readonly string[]): RankedSection[] {
   const mru = new Map(recent.map((id, i) => [id, i]));
@@ -156,13 +179,15 @@ export function rankEntries(entries: readonly PaletteEntry[], query: string, rec
   const q = query.trim();
 
   if (!q) {
-    const pinned = entries.filter((e) => e.pinned);
+    const context = entries.filter((e) => e.section === 'context');
+    const pinned = entries.filter((e) => e.pinned && e.section !== 'context');
     const tasks = stable(
       entries.filter((e) => e.section === 'task' && !e.idHit),
       (a, b) => mruPos(a) - mruPos(b),
     ).slice(0, EMPTY_RECENT_TASKS);
     const pages = entries.filter((e) => e.section === 'page');
     const out: RankedSection[] = [];
+    if (context.length) out.push({ section: 'context', entries: context });
     if (pinned.length) out.push({ section: 'action', entries: pinned });
     if (tasks.length) out.push({ section: 'task', entries: tasks });
     if (pages.length) out.push({ section: 'page', entries: pages });
@@ -188,14 +213,20 @@ export function rankEntries(entries: readonly PaletteEntry[], query: string, rec
   }
   const sections: { section: PaletteSection; best: number; top: number; list: typeof scored }[] = [];
   for (const [section, list] of by) {
-    list.sort((a, b) => a.t - b.t || mruPos(a.e) - mruPos(b.e) || a.i - b.i);
+    // one task's actions keep the builder's order (the panel's); only the tier moves them
+    list.sort((a, b) => a.t - b.t || (section === 'context' ? 0 : mruPos(a.e) - mruPos(b.e)) || a.i - b.i);
     const top = Math.max(...list.map((x) => x.s));
     sections.push({ section, best: list[0].t, top, list: list.slice(0, SECTION_CAP[section]) });
   }
   // a title that IS the query (the workspace "Neko") beats tasks whose repo merely contains it
+  // an id hit, then the open task's actions, lead whatever they score
+  const lead = (x: (typeof sections)[number]) => (x.best < 0 ? 0 : x.section === 'context' ? 1 : 2);
   sections.sort(
     (a, b) =>
-      a.best - b.best || b.top - a.top || SECTION_ORDER.indexOf(a.section) - SECTION_ORDER.indexOf(b.section),
+      lead(a) - lead(b) ||
+      a.best - b.best ||
+      b.top - a.top ||
+      SECTION_ORDER.indexOf(a.section) - SECTION_ORDER.indexOf(b.section),
   );
   return sections.map((s) => ({ section: s.section, entries: s.list.map((x) => x.e) }));
 }
@@ -251,7 +282,7 @@ export interface PalettePage {
  */
 export const EXTRA_PAGES: PalettePage[] = [
   { to: '/inbox/deck', label: 'Review deck', keywords: ['inbox', 'reviews', 'deck'] },
-  { to: '/inbox/drafts', label: 'Agent drafts', keywords: ['inbox', 'triage', 'drafts', 'stale'] },
+  { to: '/inbox/drafts', label: 'Draft triage', keywords: ['inbox', 'agent', 'drafts', 'stale'] },
 ];
 
 export interface PaletteSources {
@@ -268,6 +299,13 @@ export interface PaletteSources {
   query: string;
   /** on /board: the "Search the board…" entry */
   onBoard: boolean;
+  /**
+   * Built by the caller and listed as they are: the global commands
+   * (`globalActionEntries`) and the open panel's task actions
+   * (`taskActionEntries`). An action with a `page` drops that page's plain
+   * line while a query is typed, so "inbox" is not listed twice.
+   */
+  actions?: readonly PaletteEntry[];
 }
 
 export interface PaletteEffects {
@@ -302,6 +340,12 @@ export function buildEntries(src: PaletteSources, fx: PaletteEffects): PaletteEn
     });
   }
 
+  const actions = src.actions ?? [];
+  out.push(...actions);
+  // with a query the "Open Inbox" action stands in for the Inbox page line;
+  // an empty query lists the pages and leaves the open-actions to a search
+  const covered = new Set(src.query.trim() ? actions.flatMap((a) => (a.page ? [a.page] : [])) : []);
+
   const hits = idHits(src.tasks, src.query);
   const hitIds = new Set(hits.map((t) => t.id));
   const taskEntry = (t: Task, idHit: boolean): PaletteEntry => ({
@@ -322,7 +366,7 @@ export function buildEntries(src: PaletteSources, fx: PaletteEffects): PaletteEn
 
   const seen = new Set<string>();
   for (const p of [...src.pages, ...EXTRA_PAGES]) {
-    if (seen.has(p.to) || !src.hasRoute(p.to)) continue;
+    if (seen.has(p.to) || covered.has(p.to) || !src.hasRoute(p.to)) continue;
     seen.add(p.to);
     out.push({
       id: `page:${p.to}`,
@@ -395,6 +439,178 @@ export function buildEntries(src: PaletteSources, fx: PaletteEffects): PaletteEn
   }
 
   return out;
+}
+
+// ── actions ─────────────────────────────────────────────────────────────────
+
+/**
+ * The task panel's actions the palette offers (docs/palette.md § Task
+ * actions), by `buildTaskActions` id: run-now (Retry now), queue, enqueue
+ * (Retry), complete, publish, mark-published, review-now, the three cancels,
+ * hide/unhide and the terminal. The rest (undo, release, delete, analyze…)
+ * stay on the panel.
+ */
+export const PALETTE_TASK_ACTION_IDS: readonly string[] = [
+  'run-now',
+  'queue',
+  'enqueue',
+  'complete',
+  'publish',
+  'mark-published',
+  'review-now',
+  'cancel',
+  'dequeue',
+  'unqueue',
+  'hide',
+  'unhide',
+  'terminal',
+];
+
+export interface TaskActionEffects {
+  /** press one builder action (the palette awaits it, then closes unless refused) */
+  run(a: TaskAction): Promise<boolean | void>;
+  /** "Follow-up…": the palette's message step; null = not offered */
+  followUp: (() => void) | null;
+  /** the follow-up line's subtitle (what ↵ will do with the message) */
+  followUpHint?: string;
+  /** the arm question's ending in place of the builder's "click/tap again" (a desktop's ↵) */
+  again?: string;
+}
+
+/**
+ * One task's palette actions, in the builder's (the panel's) order, filtered
+ * to PALETTE_TASK_ACTION_IDS, with Follow-up… before the terminal. Labels,
+ * disabled reasons (`title`) and arm questions (`confirm`) are the builder's,
+ * so the palette and the panel cannot drift.
+ */
+export function taskActionEntries(task: Task, actions: readonly TaskAction[], fx: TaskActionEffects): PaletteEntry[] {
+  const out: PaletteEntry[] = [];
+  const followUp = (): PaletteEntry | null =>
+    fx.followUp && {
+      id: `taskaction:${task.id}:follow-up`,
+      section: 'context',
+      title: 'Follow-up…',
+      subtitle: fx.followUpHint ?? 'a new instruction to its session',
+      keywords: ['follow', 'message', 'instruct', 'resume', 'proceed', 'continue'],
+      keepOpen: true,
+      run: fx.followUp,
+    };
+  for (const a of actions) {
+    if (!PALETTE_TASK_ACTION_IDS.includes(a.id)) continue;
+    if (a.id === 'terminal') {
+      const f = followUp();
+      if (f) out.push(f);
+    }
+    out.push({
+      id: `taskaction:${task.id}:${a.id}`,
+      section: 'context',
+      title: a.label,
+      subtitle: a.title,
+      keywords: a.short ? [a.short] : undefined,
+      disabled: a.disabled,
+      confirm: a.confirm && fx.again ? a.confirm.replace(/\b(click|tap) again$/, fx.again) : a.confirm,
+      armKey: a.confirm ? `${task.id}:${a.id}` : undefined,
+      run: () => fx.run(a),
+    });
+  }
+  if (!actions.some((a) => a.id === 'terminal')) {
+    const f = followUp();
+    if (f) out.push(f);
+  }
+  return out;
+}
+
+export interface GlobalActionSources {
+  /** `OrchestratorStatus.paused` / `.pausedTasks` */
+  paused: boolean;
+  pausedTasks: number;
+  /** the arm question's "tap" vs "click" */
+  mobile: boolean;
+  /** the current workspace's name (null = All repos) */
+  workspaceName: string | null;
+  hasRoute(path: string): boolean;
+}
+
+export interface GlobalActionEffects {
+  newTask(): void;
+  /** Pause all / Continue: resolves false on a refusal (toasted) */
+  pauseOrContinue(): Promise<boolean>;
+  switchWorkspace(): void;
+  go(path: string): void;
+}
+
+/** the "Open …" commands and the page each opens */
+export const OPEN_ACTIONS: readonly { page: string; title: string; keywords: string[] }[] = [
+  { page: '/inbox', title: 'Open Inbox', keywords: ['inbox', 'decisions', 'waiting'] },
+  { page: '/inbox/deck', title: 'Open Review deck', keywords: ['deck', 'reviews', 'inbox'] },
+  { page: '/inbox/drafts', title: 'Open Draft triage', keywords: ['triage', 'drafts', 'agent', 'stale'] },
+  { page: '/timeline', title: 'Open Timeline', keywords: ['timeline', 'schedule', 'history'] },
+];
+
+/**
+ * The global commands (docs/palette.md § Global actions). New task… and
+ * Pause all / Continue are pinned (listed on an empty query); the rest are
+ * found by typing. Pause/Continue arm like the header's PauseButton.
+ */
+export function globalActionEntries(src: GlobalActionSources, fx: GlobalActionEffects): PaletteEntry[] {
+  const again = src.mobile ? 'tap again' : 'press ↵ again';
+  const verb = src.paused ? 'continue' : 'pause';
+  const out: PaletteEntry[] = [
+    {
+      id: 'action:new-task',
+      section: 'action',
+      title: 'New task…',
+      subtitle: src.workspaceName ? `a draft in ${src.workspaceName}` : 'a draft',
+      keywords: ['create', 'add', 'draft', 'task'],
+      pinned: true,
+      keepOpen: true,
+      run: fx.newTask,
+    },
+    {
+      id: 'action:pause',
+      section: 'action',
+      title: src.paused ? `Continue${src.pausedTasks ? ` (${src.pausedTasks})` : ''}` : 'Pause all',
+      subtitle: src.paused
+        ? 'resume the suspended turns in their own sessions, then the queues'
+        : 'suspend every live agent turn and start nothing until Continue',
+      keywords: ['pause', 'continue', 'resume', 'stop', 'hold'],
+      pinned: true,
+      confirm: `${src.paused ? 'Continue' : 'Pause all'}? ${again}`,
+      armKey: `global:${verb}`,
+      run: fx.pauseOrContinue,
+    },
+    {
+      id: 'action:workspace',
+      section: 'action',
+      title: 'Switch workspace…',
+      subtitle: src.workspaceName ? `now ${src.workspaceName}` : 'now All repos',
+      keywords: ['workspace', 'scope', 'switch'],
+      keepOpen: true,
+      run: fx.switchWorkspace,
+    },
+  ];
+  for (const o of OPEN_ACTIONS) {
+    if (!src.hasRoute(o.page)) continue;
+    out.push({
+      id: `action:open:${o.page}`,
+      section: 'action',
+      title: o.title,
+      subtitle: o.page,
+      keywords: ['open', 'go', ...o.keywords],
+      page: o.page,
+      run: () => fx.go(o.page),
+    });
+  }
+  return out;
+}
+
+/**
+ * A sub-list's lines (a task's actions, the workspaces, the repos to file
+ * into): every line in the builder's order on an empty query, else ranked.
+ */
+export function rankSubList(entries: readonly PaletteEntry[], query: string): RankedSection[] {
+  if (!query.trim()) return entries.length ? [{ section: entries[0].section, entries: [...entries] }] : [];
+  return rankEntries(entries, query, []);
 }
 
 /**

@@ -37,7 +37,9 @@ export interface TaskAction {
    * question, a second press within 4 s runs `onClick`. For what kills a run.
    */
   confirm?: string;
-  onClick: () => void;
+  /** a server call hands back its promise (resolves once answered — a refusal
+   *  is toasted, never thrown), so the ⌘K palette can stay open on a refusal */
+  onClick: () => void | Promise<unknown>;
   /** the task action it runs — while one is in flight (src/pending.ts) the
    *  pressed button says so ("Publishing…") and the others wait */
   act?: TaskActionId;
@@ -215,7 +217,7 @@ export function buildTaskActions(task: Task, ctx: TaskActionContext): TaskAction
       cls: task.status === 'review' && publishIsPrimary(task) ? 'primary' : undefined,
       title: `${caution && task.status === 'review' ? `${caution} — asks first. ` : ''}${markPublishedLabel(task)}`,
       onClick: () => {
-        if (task.status !== 'review' || confirmMarkPublished(task)) void action('mark-published');
+        if (task.status !== 'review' || confirmMarkPublished(task)) return action('mark-published');
       },
     });
   }
@@ -236,7 +238,7 @@ export function buildTaskActions(task: Task, ctx: TaskActionContext): TaskAction
               : 'Commit and push this work (no agent session left to reopen, so the server does it directly)'
           }`,
       onClick: () => {
-        if (confirmPublish(task)) void action('publish');
+        if (confirmPublish(task)) return action('publish');
       },
     });
   }
@@ -259,7 +261,7 @@ export function buildTaskActions(task: Task, ctx: TaskActionContext): TaskAction
       // ms, and a full list read in flight across that write lands after
       // the WS row and pins a stale `pending`. The `task.updated`
       // broadcasts carry both steps in order.
-      onClick: () => void track('review', () => api.reviewNow(task.id), false),
+      onClick: () => track('review', () => api.reviewNow(task.id), false),
     });
   }
   if (['review', 'done', 'failed'].includes(task.status)) {

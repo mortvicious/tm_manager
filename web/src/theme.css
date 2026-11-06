@@ -2901,6 +2901,65 @@ button.badge.badge-link:hover {
   font-size: var(--tm-text-xs);
 }
 
+/* palette actions (docs/palette.md § Task actions): a refused line is muted
+   and says why in its subtitle; an armed one asks in the failed colour */
+.pal-opt.pal-off {
+  cursor: default;
+  color: var(--tm-text-faint);
+}
+
+.pal-opt.pal-armed:not([aria-selected='true']) .pal-opt-label {
+  color: var(--tm-status-failed);
+}
+
+.pal-opt.pal-armed[aria-selected='true'] {
+  background: var(--tm-status-failed);
+  color: var(--tm-bg);
+}
+
+.pal-opt[aria-busy='true'] {
+  cursor: progress;
+}
+
+/* the step's back button (in the search icon's place) and a task line's
+   "its actions" button */
+.pal-back,
+.pal-drill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 var(--tm-space-1);
+  border: 0;
+  border-radius: var(--tm-radius-sm);
+  background: transparent;
+  color: var(--tm-text-muted);
+  font: inherit;
+  font-size: var(--tm-text-md);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pal-back:hover,
+.pal-drill:hover {
+  background: var(--tm-bg-overlay);
+  color: var(--tm-text);
+}
+
+.bs-opt[aria-selected='true'] .pal-drill {
+  color: inherit;
+}
+
+@media (pointer: coarse) {
+  .pal-drill,
+  .pal-back {
+    min-width: var(--tm-tap-dense);
+    min-height: var(--tm-tap-dense);
+  }
+}
+
 /* the phone header's search button, beside the connection dot */
 .pal-btn {
   min-width: var(--tm-tap-dense);

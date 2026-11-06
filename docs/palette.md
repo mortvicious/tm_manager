@@ -1,10 +1,11 @@
 # The ⌘K palette
 
 A global "go to" box: from any page, jump to a task, a page, a repo, a
-workspace, a feature or a chat without reaching for the sidebar. Phase 1 of the
-feature *Review deck, global ⌘K palette, agent-draft triage* ships only
-navigation. Actions (the task panel's `buildTaskActions` list, global commands)
-come later and use the same entry model (§ Entries).
+workspace, a feature or a chat without reaching for the sidebar, run a task's
+actions, and run the global commands. Phase 1 of the feature *Review deck,
+global ⌘K palette, agent-draft triage* shipped the navigation; phase 2 added
+the task actions (§ Task actions), the global commands (§ Global actions) and
+the quick create (§ Quick create), all on the same entry model (§ Entries).
 
 - `web/src/palette.ts` is pure: the entry model, the fuzzy scorer, the ranking,
   the entry builder and the MRU.
@@ -57,10 +58,12 @@ come later and use the same entry model (§ Entries).
 | Key | What it does |
 | --- | --- |
 | ⌘K / Ctrl K | Opens the palette, or closes it if open |
-| type | Filters as you type; the best line is selected |
+| type | Filters as you type; the best line is selected (in a text step it is the text) |
 | ↑ / ↓ | Moves the selection, wrapping at both ends |
-| ↵ | Opens the selected line and closes the palette |
-| Esc | Closes the palette |
+| ↵ | Runs the selected line; a line with a confirm arms on the first ↵ and runs on the second |
+| Tab / → | On a task line: that task's actions (→ only with the caret at the end of the field) |
+| Esc | In a step: back to where it came from. In the list: closes the palette |
+| ← / Backspace | On an empty field in a step: back |
 
 A click or tap on a line opens it too. Each line's `onMouseDown` is
 `preventDefault`-ed, so the field keeps focus, and on a phone the keyboard
@@ -79,14 +82,32 @@ interface PaletteEntry {
   task?: Task;           // a task line's row, for its StatusBadge
   pinned?: boolean;      // listed first on an empty query
   idHit?: boolean;       // a task named by its id
-  run(): void;
+  disabled?: boolean;    // listed, muted, ↵ does nothing; the subtitle says why
+  confirm?: string;      // two-press arm: the question the title turns into
+  armKey?: string;       // the arm's key (a task action's: `<taskId>:<actionId>`)
+  keepOpen?: boolean;    // a step into a sub-list or an input: the palette stays open
+  page?: string;         // the page an "Open …" action opens (dedupes the page line)
+  run(): void | Promise<boolean | void>; // a promise is awaited; `false` = refused, stay open
 }
 ```
 
+Sections are `context` (one task's actions, labelled *This task · <title> ·
+<id8>*) · `action` (global commands) · `task` · `page` · `workspace` · `repo` ·
+`feature` · `chat`.
+
 `buildEntries(sources, effects)` turns the app state into entries. The effects
 are injected (`openTask`, `go`, `setWorkspace`, `searchBoard`), so the builder
-and the ranking stay pure. A later action is one more entry in the `action`
-section with its own `run`.
+and the ranking stay pure. Actions come in through `sources.actions`, built by
+`taskActionEntries` and `globalActionEntries` (both pure, in `palette.ts`).
+
+**Picking a line** (`pick` in `Palette.tsx`): a disabled line does nothing; a
+line with `confirm` arms first (`useArm`, src/arm.ts — 4 s, one armed line at a
+time, typing disarms); a `keepOpen` line runs and the palette stays; anything
+else runs and, if `run` returned a promise, the palette waits for it — the
+line shows `…` meanwhile — and closes unless it resolved `false`. So **a
+refusal keeps the palette open on the line**, with the reason in the shared
+toast (`toastError`). Only navigation lines and global commands go into the
+MRU, never a task action.
 
 ## Sources
 
@@ -113,7 +134,7 @@ workspace, and a repo-less item is in every scope.
   Back closes the panel as it does after a board click.
 - **Pages.** The sidebar's `NAV` list (exported from `Layout.tsx`) plus
   `EXTRA_PAGES`, the pages the sidebar does not list: `/inbox/deck` (Review
-  deck) and `/inbox/drafts` (Agent drafts). A page is offered only while the
+  deck) and `/inbox/drafts` (Draft triage). A page is offered only while the
   router knows its path. `App.tsx` builds its `<Routes>` once and hands the same
   element to the palette, which reads it with `createRoutesFromChildren` +
   `matchRoutes`, so a page that has not shipped yet is skipped rather than
@@ -131,6 +152,106 @@ workspace, and a repo-less item is in every scope.
 - **Features.** Each feature, subtitled with its repo and status; picking one
   opens `/features/:id`.
 - **Chats.** Each chat, subtitled with its repo; picking one opens `/chat/:id`.
+
+## Steps
+
+The palette is a small stack of steps (`Mode` in `Palette.tsx`). The list
+above is `search`; every other step was pushed from it and pops back on Esc,
+on ← / Backspace with an empty field, or on the **‹** button that replaces the
+search icon (the phone's way back). A pushed step keeps the query and selection
+of the one below, so going back restores them.
+
+| Step | Pushed by | The field is | The lines are |
+| --- | --- | --- | --- |
+| `actions` | Tab / → / the **›** button on a task line | a filter | that task's actions (§ Task actions) |
+| `follow-up` | **Follow-up…** | the message | one *Send follow-up* / *Resume its session* line |
+| `new-title` | **New task…** | the title | one *Next: pick a repo* line |
+| `new-repo` | ↵ on a title | a filter | the repos to file into (§ Quick create) |
+| `workspaces` | **Switch workspace…** | a filter | *All repos* and every workspace |
+
+The heading of a step's list (and the phone sheet's title) names it. The
+desktop footer's key hints follow the step (↵ *run* / *send* / *next*, Esc
+*back* / *close*).
+
+## Task actions
+
+- **Where they come from**: `buildTaskActions(task, ctx)` in
+  `web/src/taskActions.ts`, the ONE offer rule the task panel draws. The
+  palette keeps only `PALETTE_TASK_ACTION_IDS` — `run-now` (Retry now),
+  `queue` (Add to queue), `enqueue` (Retry), `complete` (Mark done),
+  `publish` / `mark-published`, `review-now`, `cancel` / `dequeue` / `unqueue`,
+  `hide` / `unhide`, `terminal` — in the builder's order, and adds
+  **Follow-up…** before *Open terminal*. Undo start, Release, Stop agent,
+  Apply review fixes, Unblock, Analyze and Delete stay on the panel.
+- **Same words, same rules**: the label, the disabled state (with the
+  builder's `title` as the subtitle — that is the reason a refused line gives),
+  the arm question (`confirm`, its "click again" read as "press ↵ again" on a
+  desktop) and the arm key (`<taskId>:<actionId>`, the panel's scheme) are the
+  builder's. **Publish** and **Mark published** keep their window confirm
+  (`confirmPublish` / `confirmMarkPublished`) inside the builder's `onClick`;
+  answering no keeps the palette open on the line.
+- **The context the palette passes**: the task's worker runs from the store,
+  `orch.shellWaits`, the resumable session (`GET /api/tasks/:id/resumable`,
+  re-read when the task's runs change — wording only), and an
+  `onOpenTerminal` that goes to App's (below). Analyze and Delete are no-ops,
+  since they are not offered.
+- **Knowing the answer**: the builder's `onClick` returns its promise (the
+  panel ignores it), and the palette's `toastError` in the ctx flags a refusal,
+  since `runTaskAction` toasts rather than throws. Success → the usual
+  "done" toast and the palette closes.
+- **When they lead**: with a task panel open (`?task=` in the URL) the open
+  task's actions are the `context` section, first on an empty query and, with
+  a query, first after an id hit. On any task line — searched, recent, or an
+  id hit — **Tab**, **→** (caret at the end) or the **›** button opens the
+  `actions` step for that task instead.
+- **Open terminal** calls App's `onOpenTerminal(runId, taskId)`, which follows
+  the panel's own rule: an open panel closes first unless the drawer is docked
+  beside it, and comes back when the terminal closes.
+- **Follow-up…** is offered when the panel offers its follow-up box (the task
+  is not a draft, or it has a run). Its step sends through the panel's routes:
+  `api.followUp(id, message)`, or `api.proceed(id, message?)` for a failed task
+  the usage limit stopped (`limitStopped` from `components/Inbox.tsx`: `wakeAt`
+  set, or an error naming the limit) — there the message is optional and the
+  line reads *Resume its session*. A refusal keeps the step and the text.
+
+## Global actions
+
+`globalActionEntries` — the `action` section:
+
+- **New task…** (pinned) — § Quick create.
+- **Pause all** / **Continue (n)** (pinned) — the header `PauseButton`'s calls
+  (`api.orchestratorAction('pause' | 'continue')`, then `setOrch(await
+  api.orchestrator())`) and its two-press arm (key `global:pause` /
+  `global:continue`).
+- **Switch workspace…** — the `workspaces` step; a pick is
+  `useWorkspace().setWorkspace`, as the workspace lines in the search list.
+- **Open Inbox**, **Open Review deck**, **Open Draft triage**, **Open
+  Timeline** — each only while the router knows the path, through `wsHref`.
+  With a query the matching page line is dropped (`page`), so "inbox" is not
+  listed twice; an empty query lists the pages and leaves these to a search.
+- On `/board` (the original version) **Search the board…** stays the first
+  pinned line.
+
+All mutations are same-origin `fetch`es from the SPA, so the routes that
+require `Origin` (pause/continue, publish, mark-published…) accept them.
+
+## Quick create
+
+**New task…** files a draft in the current workspace in two steps:
+
+1. **Title** — the field is the title; ↵ goes on (an empty title cannot).
+2. **Repo** — the in-scope repos, the default first and marked *default*. The
+   default is the New task form's memory: localStorage `tm.newTask.repo.<workspaceId>`
+   (`tm.newTask.repo` in All), the key `pages/Board.tsx` writes — read here
+   by its own copy of the key, Board.tsx is not edited — when that repo is
+   still known and in scope, else the workspace's first known repo. In All a
+   **No repo** line comes last (the form allows a repo-less draft); inside a
+   workspace every line is one of its repos.
+
+↵ on a repo runs `api.createTask({ title, repoId })` (a draft, the server's
+default), writes the pick back to the same key like the form does, and opens
+the new task's panel (`?task=`, keeping `?ws=`). A refusal keeps the repo step
+open with the toast.
 
 ## Ranking
 
@@ -161,7 +282,11 @@ workspace, and a repo-less item is in every scope.
   merely contains it), then in the fixed order
   action · task · page · workspace · repo · feature · chat. An id hit leads
   everything.
-- **Caps**: 8 tasks, 14 pages, 6 workspaces, 5 of everything else.
+- **Caps**: 8 tasks, 14 pages, 6 workspaces, 6 actions, 20 lines of one
+  task's actions, 5 of everything else.
+- **One task's actions** keep the builder's (the panel's) order within a tier;
+  the MRU does not reorder them. A step's list (`rankSubList`) shows every line
+  in the builder's order on an empty field and ranks them with a query.
 
 ### The MRU
 
@@ -217,3 +342,29 @@ through **Search the board…**.
   - the Inbox's j/k do nothing while the palette is open;
   - at phone width in the iframe harness: the header button opens the sheet,
     and so does the More sheet's tile.
+
+### Phase 2 (actions)
+
+- `npm run typecheck` and `npm run build` are clean.
+- Played in headless Chromium (playwright-core) over this worktree's build at
+  1400×900 and as an iPhone (393×852). API GETs came from the live front door;
+  EVERY non-GET was intercepted, recorded and answered with a fake, so nothing
+  touched the live server. Tasks were real rows with patched statuses:
+  - a review panel with a flagged verdict: ⌘K lists *This task · …* first;
+    ↵ on **Publish anyway** shows the window confirm, declining keeps the
+    palette open with no request, accepting POSTs `/publish` and closes;
+  - a running panel: ↵ on **Cancel** turns it into *Cancel? press ↵ again*
+    with no request, the second ↵ POSTs `/cancel`;
+  - no panel: a draft's id8, **Tab** → its actions; **Run now** answered 409
+    keeps the palette open with the toast, the second try POSTs and closes;
+    **→** drills the same way, Esc goes back to the search with the query kept;
+  - **Follow-up…** on a limit-stopped failed task POSTs `/proceed` with the
+    message; on a review task POSTs `/follow-up`;
+  - **Pause all** → second ↵ → `/api/orchestrator/pause`, the header reads
+    *Continue (2)*; **Continue (2)** → second ↵ → `/continue`, the header
+    reads *Pause all*;
+  - **New task…** under `?ws=neko`: the repo step's first line is a neko repo
+    marked default; ↵ POSTs `/api/tasks` with that repo and the URL becomes
+    `?ws=neko&task=<new id>`; **Switch workspace…** → *All repos* drops `?ws=`;
+  - phone: the sheet's **›** on a task line opens its actions (title = the
+    task), **‹** goes back with the query kept.

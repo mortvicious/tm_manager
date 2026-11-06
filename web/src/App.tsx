@@ -108,8 +108,17 @@ export function App() {
       )}
       {/* an agent's question pops up on whatever page is open (docs/questions.md) */}
       <QuestionModal />
-      {/* ⌘K: jump to a task, page, repo, workspace, feature or chat (docs/palette.md) */}
-      <Palette routes={routes} onOpenTask={setOpenTask} />
+      {/* ⌘K: jump anywhere, run a task's actions, the global commands (docs/palette.md) */}
+      <Palette
+        routes={routes}
+        onOpenTask={setOpenTask}
+        onOpenTerminal={(runId, taskId) => {
+          // the panel's own rule: its overlay sits above the drawer, so it
+          // closes (unless docked) and comes back when the terminal closes
+          if (openTask && !docked) setOpenTask(null);
+          openTerm(runId, openTask ? { kind: 'task', id: openTask } : undefined);
+        }}
+      />
       {/* service worker + notification taps + ?task=<id> deep links (docs/push.md) */}
       <PushBridge />
       {/* the one place a refused action is reported (docs/mobile.md § Action errors) */}
