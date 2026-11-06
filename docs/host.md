@@ -183,7 +183,9 @@ API read, and its controls ([menubar.md § Controls](menubar.md#controls)) are
 the web buttons' own requests — `/host/start|stop|restart` (the 409 restart
 check shown verbatim, then an explicit Force), `/host/rebuild-restart {drain:
 true}` + `/cancel`, `/api/orchestrator/pause|continue` — with the front door's
-own loopback Origin. No route or guard was added or widened for it.
+own loopback Origin. No route or guard was added or widened for it. Its
+notifications ([menubar.md § Notifications](menubar.md#notifications)) read
+`api.lastExit.cause/expected` (§ Restart causes) and the `rebuild` job.
 
 TM Bar can also host the SPA itself, in a native WebKit window ([menubar.md §
 The window](menubar.md#the-window)). It is an ordinary loopback page on this
@@ -375,6 +377,18 @@ recovery swept anything (the Dashboard's anomaly line ends `— previous stop:
 | `signal` | any other SIGTERM/SIGINT: Ctrl-C, `kill`, launchd, logout |
 | `crash` | an uncaught exception (`uncaughtExceptionMonitor`: observed, Node's exit unchanged), with the message |
 | `unknown` | no record at boot: SIGKILL, power loss, a machine reboot, or the front door's crash respawn after a hard death |
+
+**The front door reads it too, at the exit.** When its child exits, `host.ts`
+PEEKS the record (`peekStopCause(spawnTime)` — read, never removed, so the next
+boot still takes it; only a record written since this child was spawned
+counts, anything older is an earlier process's) and puts it on
+`GET /host/status` `api.lastExit` (`HostApiExit`): `cause` (the kind above,
+`unknown` with no record), `action`, `detail`, and `expected` — true when the
+front door itself was stopping it (`desired: 'down'`: `/host/stop|restart`,
+Rebuild & restart) or the kind is `route`/`supervisor`/`watch`; false for
+`crash`, `signal` and `unknown`. TM Bar's "API stopped unexpectedly"
+notification keys on `expected: false` ([menubar.md § Notifications](menubar.md#notifications)).
+A front door started before this field existed (`host.stale`) sends none.
 
 Verified end to end in an isolated copy of `server/` on other ports (front
 door + a stub API using the same calls): a first boot reads `unknown`, a

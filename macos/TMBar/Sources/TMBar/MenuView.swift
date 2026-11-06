@@ -7,6 +7,7 @@ struct MenuView: View {
     let store: Store
     /// the two-press control that is armed (Uninstall, Force …); disarms after 4 s
     @State private var armed: String?
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -381,6 +382,12 @@ struct MenuView: View {
             .fixedSize()
             .help("Open pages in TM Bar's own window (system WebKit) or in the browser")
             Spacer()
+            Button {
+                NSApp.activate()
+                openSettings()
+            } label: { Image(systemName: "bell") }
+                .help("Notifications…")
+                .keyboardShortcut(",")
             Button("Quit") { NSApplication.shared.terminate(nil) }
                 .keyboardShortcut("q")
         }

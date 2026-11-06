@@ -77,13 +77,16 @@ final class Store {
     @ObservationIgnored private var asleep = false
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored let client: Client
+    /// notifications (Notifier.swift, docs/menubar.md § Notifications)
+    let notifier: Notifier
     /// `TM_BAR_ALWAYS_OPEN=1`: poll as if the menu were open (verification only — docs/menubar.md § Verifying)
     @ObservationIgnored private let alwaysOpen = ProcessInfo.processInfo.environment["TM_BAR_ALWAYS_OPEN"] == "1"
     @ObservationIgnored private let log = Logger(subsystem: "com.taskmanager.bar", category: "poll")
     @ObservationIgnored private var lastLogged = ""
 
-    init(client: Client = Client(base: Config.baseURL())) {
+    init(client: Client = Client(base: Config.baseURL()), notifier: Notifier? = nil) {
         self.client = client
+        self.notifier = notifier ?? Notifier()
         let nc = NSWorkspace.shared.notificationCenter
         observers.append(nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.sleep() }
@@ -92,8 +95,13 @@ final class Store {
             MainActor.assumeIsolated { self?.wake() }
         })
         refreshLogin()
+        self.notifier.setPageBase { [weak self] in self?.pageBase ?? Config.baseURL() }
+        self.notifier.setOpener { [weak self] url in
+            if let self { self.openPage(url) } else { Browser.open(url) }
+        }
         restart()
         verificationHooks()
+        Task { await self.notifier.askIfNeeded() }
     }
 
     /// Verification only (docs/menubar.md § Verifying): `TM_BAR_LOGIN=on|off`
@@ -106,6 +114,13 @@ final class Store {
         }
         if let raw = env["TM_BAR_SERVICE_ACTION"], let cmd = ServiceCommand(rawValue: raw) {
             Task { await runService(cmd) }
+        }
+        // `TM_BAR_NOTIFY_TEST=1`: ask for permission and post one test notification
+        if env["TM_BAR_NOTIFY_TEST"] == "1" {
+            Task {
+                await notifier.askIfNeeded()
+                notifier.test()
+            }
         }
     }
 
@@ -155,6 +170,10 @@ final class Store {
     func poll() async {
         defer { logChange() }
         let open = menuOpen || alwaysOpen
+        // the notifications read the summary with the menu closed too, when
+        // an Inbox kind or the swap line is on (docs/menubar.md § Notifications)
+        let wantSummary = open || notifier.settings.needsSummary
+        var fresh: MenubarSummary?
         if open {
             let info = await Service.info()
             if Task.isCancelled { return }
@@ -170,18 +189,21 @@ final class Store {
             set(\.hostError, Self.describe(error))
             set(\.orch, nil)
             lastPoll = Date()
+            notify(nil, wanted: wantSummary)
             return
         }
         guard host?.api.up == true else {
             set(\.orch, nil)
             lastPoll = Date()
+            notify(nil, wanted: wantSummary)
             return
         }
-        if open {
+        if wantSummary {
             do {
                 let s = try await client.get("/api/menubar", as: MenubarSummary.self)
                 set(\.summary, s)
                 set(\.summaryError, nil)
+                fresh = s
             } catch _ where Task.isCancelled {
                 return
             } catch ClientError.missingRoute {
@@ -191,7 +213,7 @@ final class Store {
             }
         }
         // the icon's read: the summary carries it when the menu is open
-        if open, summaryError == nil, let s = summary {
+        if wantSummary, summaryError == nil, let s = summary {
             set(\.orch, OrchestratorLite(
                 enabled: s.queue.enabled, paused: s.queue.paused, pausedTasks: s.queue.pausedTasks, running: s.queue.running,
                 concurrency: s.queue.concurrency,
@@ -204,6 +226,21 @@ final class Store {
             if Task.isCancelled { return }
         }
         lastPoll = Date()
+        notify(fresh, wanted: wantSummary)
+    }
+
+    /// Hand one finished poll to the notifications. Only what was read THIS
+    /// poll counts: no host → no host reading, API down → no memory reading.
+    private func notify(_ fresh: MenubarSummary?, wanted: Bool) {
+        let mem = host?.api.up == true ? orch?.memory : nil
+        notifier.observe(NotifyReading(
+            host: host,
+            fuseTripped: mem?.tripped,
+            fuseReason: mem?.reason ?? mem?.hold,
+            swapPct: fresh?.memory?.swapPct ?? mem?.sample?.swapPct,
+            summary: fresh,
+            inboxWanted: wanted
+        ))
     }
 
     /// One unified-log line per CHANGE of what the menu shows

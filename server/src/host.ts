@@ -26,13 +26,13 @@ import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
-import type { HostStatus, RebuildJob, RebuildWaitingFor } from '@tm/shared';
+import type { HostApiExit, HostStatus, RebuildJob, RebuildWaitingFor } from '@tm/shared';
 import { loadBootConfig, serverRoot } from './config.ts';
 import { isAllowedHost, isAllowedOriginHost, lanAddresses, setLanEnabled } from './net.ts';
 import { logToFiles, redirectConsole, RotatingLog } from './host-log.ts';
 import { buildSpa, hostFingerprint, readBuildId, swapDist, typecheck, webDist } from './rebuild.ts';
 import { checkRemote, looksProxied, mintHostToken, stripTailscaleHeaders } from './remote.ts';
-import { clearStopIntent, writeStopIntent, type StopCause } from './stop-cause.ts';
+import { clearStopIntent, peekStopCause, stopCauseExpected, writeStopIntent, type StopCause } from './stop-cause.ts';
 
 const cfg = loadBootConfig();
 setLanEnabled(cfg.lan.enabled);
@@ -85,7 +85,7 @@ interface ApiState {
   up: boolean;
   bootedAt: string | null;
   restarts: number;
-  lastExit: { code: number | null; signal: string | null; at: string } | null;
+  lastExit: HostApiExit | null;
   lastError: string | null;
 }
 
@@ -213,7 +213,19 @@ function spawnApi(): void {
     api.child = null;
     api.up = false;
     api.bootedAt = null;
-    api.lastExit = { code, signal, at: new Date().toISOString() };
+    // Why it went (docs/menubar.md § Notifications): the record the exiting
+    // API wrote, if one is newer than this spawn. A stop the front door asked
+    // for (desired 'down') is expected whatever the record says.
+    const cause = peekStopCause(startedAt);
+    api.lastExit = {
+      code,
+      signal,
+      at: new Date().toISOString(),
+      cause: cause.kind,
+      action: cause.action ?? null,
+      detail: cause.detail ?? null,
+      expected: api.desired !== 'up' || stopCauseExpected(cause.kind),
+    };
     if (api.desired !== 'up') {
       console.log(`[host] API stopped (${signal ?? code})`);
       return;

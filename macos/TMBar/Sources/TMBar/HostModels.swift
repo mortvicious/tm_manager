@@ -10,6 +10,13 @@ struct HostStatus: Decodable, Equatable, Sendable {
             let code: Int?
             let signal: String?
             let at: String
+            /// the stop-cause record's kind (`HostApiExit`): route, supervisor,
+            /// watch, signal, crash, unknown — absent on an older front door
+            let cause: String?
+            let action: String?
+            let detail: String?
+            /// a stop somebody asked for; false = what § Notifications reports
+            let expected: Bool?
         }
         let up: Bool
         let managed: Bool

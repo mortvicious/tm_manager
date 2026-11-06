@@ -27,6 +27,25 @@ export interface MenubarTask {
   asking: boolean;
 }
 
+/** One Inbox decision, as small as a notification needs. */
+export interface MenubarInboxItem {
+  /** `buildInbox`'s stable key, `<kind>:<id>` — one notification per key */
+  key: string;
+  kind: Exclude<InboxItem['kind'], 'stale-draft'>;
+  /** the task it is about, when there is one (the click opens `/?task=<id>`) */
+  taskId: string | null;
+  title: string;
+  repoName: string | null;
+  /** review only: checks green/none and the review clean/none (`landingReason`) */
+  ready: boolean;
+}
+
+/** The Inbox kinds the summary lists as `items` — the ones TM Bar notifies
+ *  about. ALL of them, never a window: a capped list let a new review fall
+ *  below the cut (never notified) and an old one rise into it (notified days
+ *  late) — review round 1. */
+export const MENUBAR_NOTIFY_KINDS: readonly MenubarInboxItem['kind'][] = ['question', 'attention', 'review'];
+
 export interface MenubarSummary {
   at: string;
   queue: {
@@ -53,6 +72,11 @@ export interface MenubarSummary {
     needsYou: number;
     /** any question or needs-attention item — the chip's urgent tint */
     urgent: boolean;
+    /** EVERY question, needs-attention and review item (`MENUBAR_NOTIFY_KINDS`,
+     *  uncapped) in THE Inbox order — what TM Bar's notifications key their
+     *  episodes on (docs/menubar.md § Notifications). Absent on an API older
+     *  than them. */
+    items?: MenubarInboxItem[];
   };
   /** the memory fuse (docs/memory.md) + this Mac's free/swap reading (the
    *  fuse's own sample when armed, else a 15 s cached `sampleSystemMemory`);
@@ -98,6 +122,46 @@ export function menubarInboxCounts(items: InboxItem[]): MenubarSummary['inbox'] 
   };
 }
 
+/** A decision's subject line: the task's title, else what the item itself names. */
+function inboxItemTitle(i: InboxItem): string {
+  switch (i.kind) {
+    case 'approval':
+      return i.approval.summary;
+    case 'proposal':
+      return i.task?.title ?? 'New task proposal';
+    case 'office-proposal':
+      return i.proposal.title;
+    case 'feature':
+      return i.feature.title;
+    case 'job':
+      return i.job.title;
+    default:
+      return i.task.title;
+  }
+}
+
+/** The notifiable decisions (`MENUBAR_NOTIFY_KINDS`, all of them) as notification rows. */
+export function menubarInboxItems(items: InboxItem[], repoName: (id: string | null | undefined) => string | null): MenubarInboxItem[] {
+  const out: MenubarInboxItem[] = [];
+  for (const i of items) {
+    if (i.kind === 'stale-draft' || !MENUBAR_NOTIFY_KINDS.includes(i.kind)) continue;
+    const task = 'task' in i ? i.task : null;
+    const repoId =
+      task?.repoId ??
+      (i.kind === 'approval' ? i.approval.repoId : i.kind === 'proposal' ? i.proposal.repoId : null) ??
+      (i.kind === 'office-proposal' ? i.proposal.repoId : i.kind === 'feature' ? i.feature.repoId : i.kind === 'job' ? i.job.repoId : null);
+    out.push({
+      key: i.key,
+      kind: i.kind,
+      taskId: task?.id ?? null,
+      title: inboxItemTitle(i),
+      repoName: repoName(repoId),
+      ready: i.kind === 'review' && !!i.ready,
+    });
+  }
+  return out;
+}
+
 export function buildMenubarSummary(input: MenubarInput): MenubarSummary {
   const now = input.now ?? Date.now();
   const { status } = input;
@@ -140,7 +204,10 @@ export function buildMenubarSummary(input: MenubarInput): MenubarSummary {
       aux: status.aux,
     },
     tasks,
-    inbox: menubarInboxCounts(items),
+    inbox: {
+      ...menubarInboxCounts(items),
+      items: menubarInboxItems(items, (id) => (id ? (repoName.get(id) ?? null) : null)),
+    },
     memory: mem
       ? {
           freePct: sample?.freePct ?? null,

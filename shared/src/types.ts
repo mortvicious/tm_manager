@@ -3312,6 +3312,31 @@ export type ServerEvent =
   | { type: 'jobs.toggle'; enabled: boolean }
   | { type: 'orchestrator.status'; status: OrchestratorStatus };
 
+/** Why the API stopped, as its stop-cause record says (server/src/stop-cause.ts `StopCauseKind`). */
+export type HostExitCause = 'route' | 'supervisor' | 'watch' | 'signal' | 'crash' | 'unknown';
+
+/**
+ * The API child's last exit as the front door saw it. `cause`/`expected` are
+ * read from the stop-cause record the exiting API wrote (docs/host.md §
+ * Restart causes) — absent on a front door older than TM Bar's notifications
+ * (docs/menubar.md § Notifications).
+ */
+export interface HostApiExit {
+  code: number | null;
+  signal: string | null;
+  at: string;
+  /** `unknown` = no record newer than this child's start: SIGKILL, OOM, a hard crash */
+  cause?: HostExitCause;
+  /** route / supervisor: what was asked for (`restart`, `stop`, `rebuild-restart`, …) */
+  action?: string | null;
+  /** a crash's message, cut short */
+  detail?: string | null;
+  /** a stop somebody asked for: the front door's own stop/restart (desired was
+   *  `down`), the restart route, a `tsx watch` reload. false = crash, an
+   *  unannounced signal, or no record at all — what TM Bar notifies about. */
+  expected?: boolean;
+}
+
 /**
  * What the front door (docs/host.md) reports about the API it is proxying.
  * The front door is a SEPARATE process from the API: it serves the page and
@@ -3330,7 +3355,7 @@ export interface HostStatus {
     /** how many times the supervisor has brought it back since ITS boot */
     restarts: number;
     desired: 'up' | 'down';
-    lastExit: { code: number | null; signal: string | null; at: string } | null;
+    lastExit: HostApiExit | null;
     lastError: string | null;
   };
   host: {

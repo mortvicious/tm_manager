@@ -22,10 +22,21 @@ struct MenubarSummary: Decodable, Equatable, Sendable {
         let asking: Bool
     }
     struct Inbox: Decodable, Equatable, Sendable {
+        /// `MenubarInboxItem`: one decision, keyed for the notifications
+        struct Item: Decodable, Equatable, Sendable {
+            let key: String
+            let kind: String
+            let taskId: String?
+            let title: String
+            let repoName: String?
+            let ready: Bool
+        }
         let total: Int
         let questions: Int
         let needsYou: Int
         let urgent: Bool
+        /// absent on an API older than the notifications
+        let items: [Item]?
     }
     struct Memory: Decodable, Equatable, Sendable {
         let freePct: Double?

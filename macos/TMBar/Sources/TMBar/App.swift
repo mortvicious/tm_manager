@@ -12,6 +12,12 @@ struct TMBarApp: App {
             BarLabel(store: store)
         }
         .menuBarExtraStyle(.window)
+
+        // Preferences: the notifications (docs/menubar.md § Notifications). A
+        // Settings scene, not a Window: it never opens by itself at launch.
+        Settings {
+            NotificationsView(store: store)
+        }
     }
 }
 

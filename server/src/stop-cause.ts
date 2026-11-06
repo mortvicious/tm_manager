@@ -151,6 +151,27 @@ export function takeStopCause(): StopCause {
   return { kind: 'unknown', at: new Date().toISOString() };
 }
 
+/**
+ * Front door, at its child's exit: the record that child left, WITHOUT
+ * removing it (the next boot still takes it for `server.started`). Only a
+ * record written since `sinceMs` (the child's spawn) counts — anything older
+ * belongs to an earlier process — so no record is `unknown`.
+ */
+export function peekStopCause(sinceMs: number): StopCause {
+  try {
+    const cause = JSON.parse(fs.readFileSync(causeFile, 'utf8')) as StopCause;
+    if (cause && typeof cause.kind === 'string' && Date.parse(cause.at) >= sinceMs) return cause;
+  } catch {
+    /* none, or unreadable → unknown */
+  }
+  return { kind: 'unknown', at: new Date().toISOString() };
+}
+
+/** A stop somebody asked for (restart route, the front door, a watch reload) — not news. */
+export function stopCauseExpected(kind: StopCauseKind): boolean {
+  return kind === 'route' || kind === 'supervisor' || kind === 'watch';
+}
+
 /** One line for logs and the SPA: "restart route (forced)", "SIGTERM (tsx watch)", … */
 export function describeStopCause(c: StopCause): string {
   switch (c.kind) {

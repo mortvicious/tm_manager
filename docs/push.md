@@ -6,6 +6,9 @@ questions, agents stuck on a prompt, review verdicts, failures and the rest of w
 the Telegram bot announces, even with the app closed. The bot keeps working
 unchanged. Push is a second, independent surface, and each device chooses what it
 hears.
+On the Mac itself, TM Bar's notifications can take over the desktop: its
+Preferences pick ONE desktop channel and can PATCH a browser device's
+overlapping kinds off ([menubar.md § Notifications](menubar.md#notifications)).
 
 ## Turning it on (iPhone)
 

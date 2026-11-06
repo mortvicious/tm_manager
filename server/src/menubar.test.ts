@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import Fastify from 'fastify';
-import { buildInbox, menubarInboxCounts, type MenubarSummary, type OrchestratorStatus } from '@tm/shared';
+import { buildInbox, menubarInboxCounts, menubarInboxItems, type MenubarSummary, type OrchestratorStatus } from '@tm/shared';
 import { registerMenubarRoutes } from './routes/menubar.ts';
 import { loadInboxSources } from './inbox-input.ts';
 import { SqliteStorage } from './storage/sqlite.ts';
@@ -82,8 +82,13 @@ describe('GET /api/menubar', () => {
     assert.equal(body.tasks[1].startedAt, null);
 
     const src = await loadInboxSources(storage);
+    const { items, ...counts } = body.inbox;
     const expected = menubarInboxCounts(buildInbox({ ...src, runs: src.live }));
-    assert.deepEqual(body.inbox, expected);
+    assert.deepEqual(counts, expected);
+    // the notification rows: THE inbox order, the task and repo named
+    assert.deepEqual(items, [
+      { key: `question:${a.id}`, kind: 'question', taskId: a.id, title: 'asks', repoName: 'nest', ready: false },
+    ]);
     assert.equal(body.inbox.questions, 1);
     assert.equal(body.inbox.urgent, true);
 
@@ -106,6 +111,29 @@ describe('GET /api/menubar', () => {
     assert.equal(b.memory?.freePct, 55);
     assert.equal(samples, 1);
     current = status;
+  });
+
+  test('notification rows: every question/attention/review, nothing else, readiness carried', () => {
+    const task = (id: string) => ({ id, title: `t-${id}`, repoId: 'r1' });
+    // more of each than any window: a review far down the Inbox order is still listed
+    const failed = Array.from({ length: 40 }, (_, n) => ({ kind: 'failed', key: `failed:${n}`, task: task(`f${n}`) }));
+    const reviews = Array.from({ length: 40 }, (_, n) => ({ kind: 'review', key: `review:${n}`, task: task(`r${n}`), ready: null }));
+    const rows = menubarInboxItems(
+      [
+        { kind: 'stale-draft', key: 'stale-draft:x', task: task('x') },
+        { kind: 'question', key: 'question:q', task: task('q') },
+        { kind: 'approval', key: 'approval:p', task: null, approval: { summary: 'push main', repoId: 'r1' } },
+        { kind: 'attention', key: 'attention:a', task: task('a') },
+        { kind: 'review', key: 'review:r', task: task('r'), ready: 'checks green, review clean' },
+        ...reviews,
+        ...failed,
+      ] as never,
+      (id) => (id === 'r1' ? 'nest' : null),
+    );
+    assert.equal(rows.length, 3 + 40);
+    assert.deepEqual(rows.map((r) => r.kind).filter((k, n, a) => a.indexOf(k) === n), ['question', 'attention', 'review']);
+    assert.deepEqual(rows[2], { key: 'review:r', kind: 'review', taskId: 'r', title: 't-r', repoName: 'nest', ready: true });
+    assert.equal(rows.at(-1)?.key, 'review:39');
   });
 
   test('stale drafts are not counted', () => {

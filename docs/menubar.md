@@ -3,8 +3,11 @@
 A small native macOS menu-bar app that reads the task manager at a glance: is
 the server up, what is running, what waits on you, is memory tight. It also
 holds the server controls: Start / Stop / Restart the API, Rebuild & restart,
-Pause all / Continue (§ Controls), and the dashboard itself in a native
-WebKit window, so Brave can be quit (§ The window). It sits ON
+Pause all / Continue (§ Controls), the dashboard itself in a native
+WebKit window, so Brave can be quit (§ The window), and posts macOS
+notifications when the API stops unexpectedly, memory gets tight, a rebuild
+ends, or (opt-in) the Inbox gets a question, a needs-attention or a review
+(§ Notifications). It sits ON
 TOP of the Node front door (`server/src/host.ts`, [host.md](host.md)) and talks
 to nothing else. It is not a second server: no Swift proxy, no Swift remote
 gate; `tailscale serve` → the remote listener (5177) and the iPhone path are
@@ -48,6 +51,7 @@ when `host.port` is not the default).
 | poll | requests | when |
 |---|---|---|
 | closed menu | `GET /host/status` + `GET /api/orchestrator` | every 5 s |
+| closed menu, an Inbox notification or the swap line on | `GET /host/status` + `GET /api/menubar` (it carries the icon's read too) | every 5 s |
 | open menu | `GET /host/status` + `GET /api/menubar` | at once on open, then every 2 s |
 | Mac asleep | nothing | `NSWorkspace.willSleep` cancels the loop, `didWake` restarts it |
 
@@ -75,7 +79,11 @@ the inbox sources do not already expose.
   longest-running first.
 - `inbox` — `total` (what the SPA's Inbox chip shows: every `buildInbox` item but
   stale drafts), `questions`, `needsYou` (= total − questions), `urgent` (a
-  question or needs-attention item). It runs THE shared `buildInbox` over the
+  question or needs-attention item), and `items` — EVERY question,
+  needs-attention and review item, uncapped (`MENUBAR_NOTIFY_KINDS`), in THE
+  Inbox order (`MenubarInboxItem`: `key` = `buildInbox`'s `<kind>:<id>`,
+  `kind`, `taskId`, `title`, `repoName`, `ready` for a review that one keystroke
+  lands), what § Notifications keys its episodes on. It runs THE shared `buildInbox` over the
   same rows Telegram's board reads (`server/src/inbox-input.ts`
   `loadInboxSources`, extracted from `telegram/board.ts` so the two cannot
   drift), unscoped — every workspace.
@@ -124,7 +132,7 @@ API is up:
   (running but not answering yet / stopped / installed but not loaded / not
   installed); the service actions and the logs (§ Service).
 - **Open TM Bar at login** (§ Open at login).
-- **Open task manager** (⌘O), **Open in: Window | Browser**, **Quit** (⌘Q).
+- **Open task manager** (⌘O), **Open in: Window | Browser**, the bell → Preferences (⌘,, § Notifications), **Quit** (⌘Q).
 
 Pages (Open task manager, a task row, Inbox) open in TM Bar's own window by
 default (§ The window). With **Browser** picked they open in the installed Brave
@@ -366,6 +374,83 @@ error on register): a LaunchAgent that opens the bundle,
 `launchctl bootstrap gui/$(id -u) <plist>`. No `KeepAlive`, because Quit must
 stay quit.
 
+## Notifications
+
+macOS notifications through `UserNotifications` (`Poster.swift`), decided by
+the pure `NotifyEngine` (`Episodes.swift`) over each finished poll. Bell
+button in the menu footer (⌘,) → the **Preferences** window
+(`NotificationsView.swift`, a SwiftUI `Settings` scene).
+
+| kind | fires when | click opens | default |
+|---|---|---|---|
+| API stopped unexpectedly | `api.lastExit` changes with `expected: false` — the front door read the API's stop-cause record at the exit (docs/host.md § Restart causes): `crash`, an unannounced `signal`, or `unknown` (no record: SIGKILL, OOM, hard crash). Never a Stop/Restart/Rebuild somebody asked for, the restart route, or a `tsx watch` reload. An older front door without the field: unexpected = `desired: 'up'`, no rebuild in flight, and a signal or a non-zero code (the restart route exits 0) | `/dashboard` | on |
+| Rebuild & restart finished / failed | `rebuild.state` `done` / `failed` with a `finishedAt`, keyed on the job's `startedAt`; `reason: 'cancelled'` never (the human cancelled it). Also a job started from the web page | `/` | on |
+| Memory fuse tripped | `memory.tripped` (the fuse's own reason in the body) | `/dashboard` | on |
+| Swap above the alert line | swap % ≥ the line (Preferences, default 80 %, 0 = off), fuse armed or not; the episode closes 5 points below the line | `/dashboard` | on |
+| Questions | a `question:<task>` Inbox item appears | `/?task=<id>` | off |
+| Needs attention | an `attention:<task>` item appears | `/?task=<id>` | off |
+| Ready for review | a `review:<task>` item appears (title "Ready to land" when `ready`) | `/?task=<id>&tab=review` | off |
+
+**One per episode** — the Telegram/push rule. Every source is stepped on
+every poll whatever the toggles say, and only posting is filtered, so turning
+a kind on never replays what is already true:
+
+- The first reading after launch is a baseline: TM Bar starting never replays.
+- A missing reading (front door or API down, a failing route) is not a
+  reading. Nothing is forgotten, so the API coming back in the same state posts
+  nothing.
+- Crash: the episode opens at the first unexpected exit and closes once the
+  API has been up 60 s straight. A crash loop with the supervisor's backoff is
+  ONE notification.
+- Inbox: one per key while it stays listed. A question answered and asked
+  again is a new key appearance, so a new notification. An Inbox source that
+  is turned off (no summary read) starts over with a baseline. The list is
+  never a window: every question, attention and review item is in it, however
+  many reviews wait on supervised repos. A capped list made a new review below
+  the cut never notify and an old one notify days late when it rose into the
+  cut (review round 1).
+- The episode key is also the notification's identifier, so a re-post replaces
+  rather than stacks.
+
+Sound only for the crash, questions and needs attention. A banner shows even
+while the menu is open (`willPresent` → banner + list).
+
+**Desktop channel** (Preferences, `notify.channel`): one source of desktop
+notifications on this Mac, never both.
+
+- **TM Bar** (default): it posts every kind that is on. The Preferences window
+  lists the Web Push devices (`GET /api/push`) with the kinds each also sends:
+  `question`, `attention`, `review`, and `anomaly` for the memory fuse.
+  **Turn these off** PATCHes that device's kinds minus the overlap
+  (`PATCH /api/push/devices/:id`, the web page's own request with the loopback
+  Origin; every other kind stays — Anomalies also carries cost/long-run alerts,
+  said in the button's help). The server cannot tell which device is this Mac,
+  so the human picks by the label the browser set.
+- **Web Push**: the kinds Web Push covers are greyed out ("Web Push sends
+  this") and TM Bar keeps only what it cannot send: the API stopping (the API
+  is the push sender), Rebuild & restart (a front door job), the swap line (no
+  push rule).
+
+**Permission.** Asked once at launch when any kind is on (all but the Inbox
+kinds are on by default), and again when a kind is switched on while still
+undecided. A denial is shown in Preferences with a **System Settings…**
+button. Verified with the ad-hoc signature (§ Verifying). `swift run`'s bare
+binary has no bundle, and `UNUserNotificationCenter` traps there, so the
+poster only exists inside `TM Bar.app` (`Poster.available`). The tests use a
+sink instead.
+
+**Clicks** open the alert's path under the page base (Vite in dev) where every
+link in the menu opens: the **Open in** choice — TM Bar's window (§ The window)
+or the browser.
+
+**Cost.** With an Inbox kind or the swap line on, the closed-menu poll reads
+`/api/menubar` instead of `/api/orchestrator`. That is the same 5 s pace, and
+the route answers in under 1 ms. Nothing else is added: no WebSocket, no
+second timer.
+
+Preferences are `UserDefaults` (`com.taskmanager.bar`): `notify.<kind>` (Bool),
+`notify.channel` (`tmBar`|`webPush`), `notify.swapLine` (0–100).
+
 ## Look
 
 Native chrome: system font, SF Symbols, system colours (green running, orange
@@ -444,6 +529,24 @@ under 1 ms on a copy of the live DB (≈1,000 tasks). On the server side, a
   the restart check is blocked (→ the Force offer, never confirmed) and Cancel
   drain only while no drain runs. 2026-11-06: refusal shown verbatim
   ("4 agent session(s) still working — stop them first, or retry with force.").
+- Notifications: `swift test` — `Tests/TMBarTests/NotifyTests.swift` runs the
+  engine (crash episode + crash loop + asked-for stops, the older-front-door
+  fallback, rebuild done/failed/cancelled, fuse + swap hysteresis, Inbox once
+  per key + baseline + reset, channel filtering without replay) and the store
+  (closed menu reads the summary only when a kind needs it; a new question
+  posts once with `/?task=<id>`). `--env TM_BAR_NOTIFY_TEST=1` asks for
+  permission and posts one test notification at launch (also Preferences →
+  **Send a test**); `log stream --predicate 'subsystem == "com.taskmanager.bar"
+  AND category == "notify"'` shows every `post` / `open` / authorization line.
+  2026-11-06, the ad-hoc-signed bundle on macOS 26: `usernoted` accepted
+  `com.taskmanager.bar` and showed the permission prompt. After Allow, the test
+  notification was delivered to `[.alert .lockScreen .notificationCenter]`.
+  Its `sourceIneligibleForIndexing` error line concerns Spotlight only. So no
+  Developer ID is needed. The ask is single-flight: two requests in flight at
+  once got the second an immediate "Notifications are not allowed for this
+  application" while the prompt was still up. The click path's URL mapping is
+  unit-tested (`NotifyClickTests`); the click itself (a real banner opening
+  Brave) was not pressed by the agent.
 - `--env TM_BAR_LOGIN=on|off` registers or unregisters the login item at
   launch. `--env TM_BAR_SERVICE_ACTION=install|start|restart|uninstall` runs
   that service command once at launch, through the same `Store.runService` as
@@ -516,6 +619,8 @@ page's selection was not copied. Check it at the Mac: select text, press
 | `Sources/TMBar/Store.swift` | the poller, sleep/wake, `BarState` |
 | `Sources/TMBar/MenuView.swift` | the menu window |
 | `Sources/TMBar/Controls.swift`, `ControlsView.swift` | the server controls (§ Controls) |
+| `Sources/TMBar/Episodes.swift` | the notification rules: `NotifyKind`, `NotifySettings`, the pure `NotifyEngine` (§ Notifications) |
+| `Sources/TMBar/Notifier.swift`, `Poster.swift`, `NotificationsView.swift` | preferences + engine state, `UserNotifications` posting/clicks, the Preferences window |
 | `Tests/TMBarTests/` | `swift test`: controls against a stubbed front door; opt-in live refusals |
 | `Sources/TMBar/Client.swift` | URLSessions (ephemeral, no proxy; reads 3 s, writes 90 s), loopback Origin on every write |
 | `Sources/TMBar/Config.swift` | front door URL resolution |

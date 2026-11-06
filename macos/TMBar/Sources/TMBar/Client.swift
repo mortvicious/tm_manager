@@ -78,8 +78,17 @@ struct Client: Sendable {
     /// (`net.ts`'s allowlist is not widened). Any status is a reply; only a
     /// transport failure throws.
     func post(_ path: String, _ body: [String: Any] = [:]) async throws -> Reply {
+        try await write("POST", path, body)
+    }
+
+    /// PATCH, same Origin and rules as `post` (Preferences: a Web Push device's kinds).
+    func patch(_ path: String, _ body: [String: Any]) async throws -> Reply {
+        try await write("PATCH", path, body)
+    }
+
+    private func write(_ method: String, _ path: String, _ body: [String: Any]) async throws -> Reply {
         var req = URLRequest(url: base.appending(path: path))
-        req.httpMethod = "POST"
+        req.httpMethod = method
         req.setValue(origin, forHTTPHeaderField: "Origin")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
