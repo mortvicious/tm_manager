@@ -177,6 +177,15 @@
   --tm-diff-del-bg: rgba(244, 100, 95, 0.1);
   --tm-diff-hunk-fg: var(--tm-blue-5);
   --tm-diff-hunk-bg: rgba(96, 165, 250, 0.08);
+  /* the Pixel office skin's palette (docs/office.md § Pixel office): iso faces shade toward --tm-office-shade */
+  --tm-office-floor: var(--tm-gray-8);
+  --tm-office-wall: var(--tm-gray-6);
+  --tm-office-wood: #9a6b47;
+  --tm-office-metal: var(--tm-gray-5);
+  --tm-office-skin: #f1c7a1;
+  --tm-office-leaf: var(--tm-green-6);
+  --tm-office-paper: var(--tm-gray-0);
+  --tm-office-shade: #000000;
 }
 
 /* ---- semantic: light ---- */
@@ -231,6 +240,15 @@
   --tm-diff-del-bg: rgba(185, 28, 28, 0.07);
   --tm-diff-hunk-fg: var(--tm-blue-7);
   --tm-diff-hunk-bg: rgba(29, 78, 216, 0.06);
+  /* the Pixel office skin's palette (docs/office.md § Pixel office): iso faces shade toward --tm-office-shade */
+  --tm-office-floor: var(--tm-gray-2);
+  --tm-office-wall: var(--tm-gray-3);
+  --tm-office-wood: #b88458;
+  --tm-office-metal: var(--tm-gray-4);
+  --tm-office-skin: #e9b48c;
+  --tm-office-leaf: var(--tm-green-7);
+  --tm-office-paper: #ffffff;
+  --tm-office-shade: var(--tm-gray-8);
 }
 
 /* ---- design: Glass (docs/glass.md) ----
@@ -352,6 +370,15 @@
   --tm-diff-del-bg: rgba(255, 69, 58, 0.12);
   --tm-diff-hunk-fg: #64d2ff;
   --tm-diff-hunk-bg: rgba(100, 210, 255, 0.09);
+  /* the Pixel office skin's palette (docs/office.md § Pixel office): iso faces shade toward --tm-office-shade */
+  --tm-office-floor: #2c2c2e;
+  --tm-office-wall: #48484a;
+  --tm-office-wood: #a2845e;
+  --tm-office-metal: #636366;
+  --tm-office-skin: #f1c7a1;
+  --tm-office-leaf: #30d158;
+  --tm-office-paper: #f2f2f7;
+  --tm-office-shade: #000000;
 }
 
 [data-design='glass'][data-theme='light'] {
@@ -423,6 +450,15 @@
   --tm-diff-del-bg: rgba(255, 59, 48, 0.1);
   --tm-diff-hunk-fg: #0040dd;
   --tm-diff-hunk-bg: rgba(0, 122, 255, 0.08);
+  /* the Pixel office skin's palette (docs/office.md § Pixel office): iso faces shade toward --tm-office-shade */
+  --tm-office-floor: #e5e5ea;
+  --tm-office-wall: #d1d1d6;
+  --tm-office-wood: #ac8e68;
+  --tm-office-metal: #8e8e93;
+  --tm-office-skin: #e9b48c;
+  --tm-office-leaf: #248a3d;
+  --tm-office-paper: #ffffff;
+  --tm-office-shade: #1c1c1e;
 }
 
 /* A phone in Glass: iOS's scale (15pt subheadline base, 17pt headline, 34pt
@@ -14885,8 +14921,7 @@ button.explain-tap:active {
 
 /* ---- Office view (docs/office.md § The view) ------------------------------
  * `ov-*` is the theme-agnostic frame (switch, stage, side card, history feed);
- * `po-*` is the Pixel office skin. Positions come from the pure layout in tile
- * units: `--po-u` is one tile's px, `--x/--y/--w/--h` a rect or point in tiles.
+ * `po-*` is the Pixel office skin (its own header below).
  * Every infinite animation below is stepped and listed in § Calm. */
 .ov-switch {
   display: flex;
@@ -15079,119 +15114,162 @@ button.explain-tap:active {
 }
 
 /* Pixel office skin */
+/* Pixel office skin (web/src/pages/office/skins/PixelOffice.tsx): an
+ * isometric SVG floor. `--po-a` is half a tile's width in px (the projection's
+ * `a`), `--po-px` one sprite pixel; avatars and packets are HTML over the SVG,
+ * placed by `--x/--y` in px. Every surface is a `--tm-office-*` palette token
+ * or a `--tm-*` hue; an iso box's faces shade its `--base` toward
+ * `--tm-office-shade`. Every infinite animation is stepped and in § Calm. */
 .po-wrap {
   width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 .po-floor {
   position: relative;
   margin: 0 auto;
-  border-radius: var(--tm-radius-sm);
-  background: var(--tm-bg-inset);
   font-family: var(--tm-font-mono);
-  image-rendering: pixelated;
 }
-.po-room,
-.po-desk,
-.po-lobby {
-  position: absolute;
-  left: calc(var(--po-u) * var(--x));
-  top: calc(var(--po-u) * var(--y));
-  width: calc(var(--po-u) * var(--w));
-  height: calc(var(--po-u) * var(--h));
-}
-.po-room,
-.po-lobby {
-  /* a tiled floor inside a hard pixel wall */
-  background-color: var(--tm-bg-raised);
-  background-image:
-    linear-gradient(color-mix(in srgb, var(--tm-border) 45%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--tm-border) 45%, transparent) 1px, transparent 1px);
-  background-size: var(--po-u) var(--po-u);
-  box-shadow:
-    0 0 0 3px var(--tm-border-strong),
-    3px 3px 0 3px var(--tm-bg-inset);
-}
-.po-lobby {
-  background-color: var(--tm-bg-overlay);
-}
-.po-room-name,
-.po-lobby-name {
-  position: absolute;
-  left: calc(var(--po-u) * 0.5);
-  top: calc(var(--po-u) * 0.4);
-  padding: 1px var(--tm-space-2);
-  background: var(--tm-bg-inset);
-  border: 2px solid var(--tm-border-strong);
-  color: var(--tm-text-muted);
-  font-size: var(--tm-text-xs);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-.po-lobby-name {
-  left: 50%;
-  transform: translateX(-50%);
-}
-.po-desk {
-  background: var(--tm-bg-overlay);
-  border: 2px solid var(--tm-border-strong);
-  box-shadow: 0 3px 0 var(--tm-border);
-}
-.po-monitor {
-  position: absolute;
-  left: 50%;
-  top: 15%;
-  width: calc(var(--po-u) * 1.2);
-  height: 55%;
-  transform: translateX(-50%);
-  background: var(--tm-bg-inset);
-  border: 2px solid var(--tm-border-strong);
-}
-.po-desk.lit .po-monitor {
-  background: var(--tm-accent);
-  box-shadow: 0 0 calc(var(--po-u) * 0.4) var(--tm-accent);
-}
-.po-prop,
-.po-table {
-  position: absolute;
-  left: calc(var(--po-u) * var(--x));
-  top: calc(var(--po-u) * var(--y));
-  transform: translate(-50%, -50%);
-  font-size: calc(var(--po-u) * 0.9);
-  line-height: 1;
-}
-.po-prop-label {
-  position: absolute;
-  left: 50%;
-  top: 100%;
-  transform: translateX(-50%);
-  color: var(--tm-text-muted);
-  font-size: var(--tm-text-xs);
-  white-space: nowrap;
-}
-.po-table {
-  width: calc(var(--po-u) * 2.2);
-  height: calc(var(--po-u) * 1.4);
-  border-radius: var(--tm-radius-md);
-  background: var(--tm-bg-overlay);
-  border: 3px solid var(--tm-status-running);
-  box-shadow: 0 3px 0 var(--tm-border-strong);
-}
-.po-edges {
+.po-svg {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
+  display: block;
   overflow: visible;
+  shape-rendering: crispEdges;
+}
+.po-box .ft {
+  fill: var(--base);
+}
+.po-box .fl {
+  fill: color-mix(in srgb, var(--base) 78%, var(--tm-office-shade));
+}
+.po-box .fr {
+  fill: color-mix(in srgb, var(--base) 60%, var(--tm-office-shade));
+}
+.po-wood,
+.po-table {
+  --base: var(--tm-office-wood);
+}
+.po-metal {
+  --base: var(--tm-office-metal);
+}
+.po-key {
+  --base: var(--tm-office-wall);
+}
+.po-chair {
+  --base: color-mix(in srgb, var(--tm-office-metal) 70%, var(--tm-office-shade));
+}
+.po-pot {
+  --base: var(--tm-orange-7);
+}
+.po-led {
+  --base: var(--tm-status-review);
+}
+.po-slab {
+  fill: color-mix(in srgb, var(--tm-office-wall) 45%, var(--tm-office-shade));
+}
+.po-tiles {
+  fill: var(--tm-office-floor);
+}
+.po-lobby-block .po-tiles {
+  fill: color-mix(in srgb, var(--tm-office-floor) 82%, var(--tm-office-wood));
+}
+.po-grid line {
+  stroke: color-mix(in srgb, var(--tm-office-floor) 78%, var(--tm-office-shade));
+  stroke-width: 1px;
+}
+/* each department's back wall carries a wash of its own hue */
+.po-room-leadership {
+  --dept: var(--tm-group-1);
+}
+.po-room-engineering {
+  --dept: var(--tm-group-2);
+}
+.po-room-operations {
+  --dept: var(--tm-group-6);
+}
+.po-room-growth {
+  --dept: var(--tm-group-5);
+}
+.po-room-commons {
+  --dept: var(--tm-group-3);
+}
+.po-wall-back {
+  fill: color-mix(in srgb, var(--tm-office-wall) 82%, var(--dept, var(--tm-office-wall)));
+}
+.po-wall-side {
+  fill: color-mix(in srgb, color-mix(in srgb, var(--tm-office-wall) 82%, var(--dept, var(--tm-office-wall))) 72%, var(--tm-office-shade));
+}
+.po-wall-cap {
+  fill: none;
+  stroke: color-mix(in srgb, var(--tm-office-wall) 55%, var(--tm-text));
+  stroke-width: 2px;
+}
+.po-wall-label {
+  fill: var(--tm-text-muted);
+  font-family: var(--tm-font-mono);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.po-screen {
+  fill: color-mix(in srgb, var(--tm-office-metal) 35%, var(--tm-office-shade));
+}
+.po-desk.lit .po-screen {
+  fill: var(--tm-accent);
+  filter: drop-shadow(0 0 3px var(--tm-accent));
+}
+.po-leaf {
+  fill: var(--tm-office-leaf);
+}
+.po-leaf.dark {
+  fill: color-mix(in srgb, var(--tm-office-leaf) 68%, var(--tm-office-shade));
+}
+.po-huddle-ring {
+  fill: color-mix(in srgb, var(--tm-status-running) 14%, transparent);
+  stroke: var(--tm-status-running);
+  stroke-width: 2px;
+  stroke-dasharray: 4 3;
+}
+.po-rug {
+  fill: color-mix(in srgb, var(--tm-accent) 22%, var(--tm-office-floor));
+}
+.po-door {
+  fill: color-mix(in srgb, var(--tm-office-wood) 80%, var(--tm-office-shade));
+  stroke: color-mix(in srgb, var(--tm-office-wood) 50%, var(--tm-office-shade));
+  stroke-width: 2px;
+}
+.po-knob {
+  fill: var(--tm-status-review);
+}
+.po-cork {
+  fill: color-mix(in srgb, var(--tm-office-wood) 65%, var(--tm-office-paper));
+  stroke: color-mix(in srgb, var(--tm-office-wood) 55%, var(--tm-office-shade));
+  stroke-width: 2px;
+}
+.po-note.n1 {
+  fill: var(--tm-office-paper);
+}
+.po-note.n2 {
+  fill: color-mix(in srgb, var(--tm-status-review) 55%, var(--tm-office-paper));
+}
+.po-note.n3 {
+  fill: color-mix(in srgb, var(--tm-accent) 45%, var(--tm-office-paper));
+}
+.po-place-label {
+  fill: var(--tm-text-muted);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  text-anchor: middle;
 }
 .po-edge {
+  fill: none;
   stroke: var(--tm-accent);
   stroke-width: 2px;
   stroke-dasharray: 6 4;
-  vector-effect: non-scaling-stroke;
-  opacity: 0.75;
+  opacity: 0.7;
+  shape-rendering: auto;
 }
 .po-edge.k-route {
   stroke: var(--tm-status-review);
@@ -15208,43 +15286,61 @@ button.explain-tap:active {
   opacity: 1;
 }
 .po-floor.has-hl .po-edge:not(.hl) {
-  opacity: 0.2;
+  opacity: 0.15;
 }
-.po-envelope {
+/* the paper packet: flies its edge's arc (offset-path), waits halfway at rest */
+.po-packet {
   position: absolute;
   left: 0;
   top: 0;
-  z-index: 2;
-  font-size: calc(var(--po-u) * 0.7);
-  line-height: 1;
-  color: var(--tm-accent);
+  z-index: 100000;
+  width: max(9px, calc(var(--po-a) * 0.95));
+  height: max(6px, calc(var(--po-a) * 0.65));
+  background: var(--tm-office-paper);
+  border: max(1px, calc(var(--po-px) / 2)) solid var(--tm-accent);
+  box-shadow: 0 var(--po-px) 0 color-mix(in srgb, var(--tm-office-shade) 45%, transparent);
   pointer-events: none;
-  /* at rest (calm) the envelope waits halfway along its edge */
-  transform: translate(calc(var(--po-u) * var(--x)), calc(var(--po-u) * var(--y))) translate(-50%, -50%);
-  animation: po-fly 3.2s steps(12, jump-none) infinite;
+  offset-rotate: 0deg;
+  offset-distance: 50%;
+  animation: po-fly 3.2s steps(16, jump-none) infinite;
 }
-.po-envelope.k-route {
+/* the envelope's flap */
+.po-packet::after {
+  content: '';
+  position: absolute;
+  left: 18%;
+  right: 18%;
+  top: 25%;
+  border-top: max(1px, calc(var(--po-px) / 2)) solid currentColor;
+  color: inherit;
+}
+.po-packet {
+  color: var(--tm-accent);
+}
+.po-packet.k-route {
+  border-color: var(--tm-status-review);
   color: var(--tm-status-review);
 }
-.po-floor.has-hl .po-envelope:not(.hl) {
-  opacity: 0.25;
+.po-packet.tainted {
+  border-color: var(--tm-status-attention);
+  color: var(--tm-status-attention);
+}
+.po-floor.has-hl .po-packet:not(.hl) {
+  opacity: 0.2;
 }
 @keyframes po-fly {
   from {
-    transform: translate(calc(var(--po-u) * var(--x1)), calc(var(--po-u) * var(--y1))) translate(-50%, -50%);
+    offset-distance: 0%;
   }
   to {
-    transform: translate(calc(var(--po-u) * var(--x2)), calc(var(--po-u) * var(--y2))) translate(-50%, -50%);
+    offset-distance: 100%;
   }
 }
 .po-avatar {
   position: absolute;
   left: 0;
   top: 0;
-  z-index: 3;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  display: block;
   padding: 0;
   border: 0;
   background: none;
@@ -15252,111 +15348,212 @@ button.explain-tap:active {
   font: inherit;
   cursor: pointer;
   /* anchored at its feet: the point is where it stands */
-  transform: translate(calc(var(--po-u) * var(--x)), calc(var(--po-u) * var(--y))) translate(-50%, -80%);
+  transform: translate(var(--x), var(--y)) translate(-50%, -100%);
+}
+.po-floor.walk .po-avatar {
   transition: transform 2.4s steps(12, jump-end);
+}
+/* a finger-sized hit area round a small sprite */
+.po-avatar::before {
+  content: '';
+  position: absolute;
+  inset: -6px -10px -4px;
 }
 .po-avatar:focus-visible {
   outline: none;
 }
-.po-avatar:focus-visible .po-sprite,
-.po-avatar.selected .po-sprite {
-  outline: 2px solid var(--tm-accent);
-  outline-offset: 2px;
+.po-sprite {
+  position: relative;
+  display: block;
+  width: calc(var(--po-px) * 10);
+  height: calc(var(--po-px) * 16);
+}
+.po-sprite .hair {
+  fill: color-mix(in srgb, var(--c) 30%, var(--tm-office-shade));
+}
+.po-sprite .skin {
+  fill: var(--tm-office-skin);
+}
+.po-sprite .eye,
+.po-sprite .shoe {
+  fill: var(--tm-office-shade);
+}
+.po-sprite .body {
+  fill: var(--c);
+}
+.po-sprite .body-hi {
+  fill: color-mix(in srgb, var(--c) 70%, var(--tm-office-paper));
+}
+.po-sprite .arm {
+  fill: color-mix(in srgb, var(--c) 75%, var(--tm-office-shade));
+}
+.po-sprite .legs {
+  fill: color-mix(in srgb, var(--tm-office-metal) 50%, var(--tm-office-shade));
+}
+.po-sprite .cup {
+  fill: var(--tm-office-paper);
+}
+.po-shadow {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--po-a) * -0.3);
+  width: calc(var(--po-a) * 1.5);
+  height: calc(var(--po-a) * 0.7);
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--tm-office-shade) 35%, transparent);
+}
+.po-avatar.selected .po-shadow,
+.po-avatar:focus-visible .po-shadow {
+  background: color-mix(in srgb, var(--tm-accent) 30%, transparent);
+  box-shadow: 0 0 0 2px var(--tm-accent);
+}
+.po-avatar.hl .po-shadow {
+  box-shadow: 0 0 0 3px var(--tm-accent-subtle);
 }
 .po-floor.has-hl .po-avatar:not(.hl) {
   opacity: 0.35;
 }
-.po-avatar.hl .po-sprite {
-  box-shadow: 0 0 0 3px var(--tm-accent-subtle);
+.po-avatar.act-typing .arm {
+  animation: po-type 0.5s steps(2, jump-none) infinite;
 }
-.po-sprite {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-.po-head {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: calc(var(--po-u) * 1.3);
-  height: calc(var(--po-u) * 1.3);
-  background: var(--tm-bg-overlay);
-  border: 2px solid var(--c);
-  font-size: calc(var(--po-u) * 0.85);
-  line-height: 1;
-}
-.po-body {
-  width: calc(var(--po-u) * 1);
-  height: calc(var(--po-u) * 0.7);
-  background: var(--c);
-  border: 2px solid var(--tm-border-strong);
-  border-top: 0;
-}
-.po-name {
-  margin-top: 2px;
-  padding: 0 var(--tm-space-1);
-  background: var(--tm-bg-inset);
-  color: var(--tm-text);
-  font-size: var(--tm-text-xs);
-  line-height: 1.3;
-  white-space: nowrap;
-}
-.po-avatar.pose-dozing,
-.po-avatar.pose-blocked {
-  filter: saturate(0.4);
-}
-.po-avatar.pose-dozing .po-head {
-  opacity: 0.7;
-}
-.po-avatar.pose-working .po-body {
-  animation: po-type 0.6s steps(2, jump-none) infinite;
+.po-avatar.act-typing .arm.ar {
+  animation-delay: 0.25s;
 }
 @keyframes po-type {
   to {
-    transform: translateY(2px);
+    transform: translateY(1px);
   }
+}
+.po-avatar.act-greyed .po-sprite {
+  filter: grayscale(1);
+  opacity: 0.7;
+}
+.po-avatar.act-dozing .po-sprite {
+  filter: saturate(0.4);
+  opacity: 0.55;
+}
+.po-avatar.act-greyed .po-plate,
+.po-avatar.act-dozing .po-plate {
+  color: var(--tm-text-faint);
+}
+.po-plate {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 3px);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  max-width: max(var(--plate), 72px);
+  padding: 0 var(--tm-space-1);
+  transform: translateX(-50%);
+  background: color-mix(in srgb, var(--tm-office-shade) 55%, transparent);
+  border: 1px solid var(--tm-border-strong);
+  color: var(--tm-text);
+  font-size: var(--tm-text-xs);
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.po-plate-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* the state pip: every OfficeRoleState its own hue */
+.po-pip {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--pip, var(--tm-text-faint));
+}
+.po-pip.st-on-shift {
+  --pip: var(--tm-status-running);
+}
+.po-pip.st-in-huddle {
+  --pip: var(--tm-status-done);
+}
+.po-pip.st-waiting-for-you {
+  --pip: var(--tm-status-attention);
+}
+.po-pip.st-guarded {
+  --pip: var(--tm-status-review);
+}
+.po-pip.st-scheduled {
+  --pip: var(--tm-status-queued);
+}
+.po-pip.st-over-budget {
+  --pip: var(--tm-status-failed);
+}
+.po-pip.st-paused {
+  --pip: transparent;
+  box-shadow: inset 0 0 0 2px var(--tm-status-failed);
+}
+.po-pip.st-off-duty {
+  --pip: transparent;
+  box-shadow: inset 0 0 0 1px var(--tm-text-faint);
 }
 .po-bubble {
   position: absolute;
-  bottom: 100%;
+  bottom: calc(100% + 2px);
   left: 50%;
   display: flex;
   align-items: center;
   gap: 2px;
-  margin-bottom: 2px;
   padding: 1px var(--tm-space-1);
   transform: translateX(-50%);
-  background: var(--tm-bg-inset);
+  background: var(--tm-bg-raised);
   border: 2px solid var(--tm-border-strong);
   color: var(--tm-text);
   font-size: var(--tm-text-xs);
   font-weight: 700;
   line-height: 1.2;
   white-space: nowrap;
+  pointer-events: none;
+}
+.po-avatar.act-typing .po-bubble,
+.po-avatar.act-asleep .po-bubble,
+.po-avatar.act-dozing .po-bubble {
+  bottom: calc(100% - var(--po-px) * 2);
+}
+.po-bubble.b-typing i {
+  width: 3px;
+  height: 3px;
+  background: var(--tm-accent);
+  animation: po-blink 0.9s steps(2, jump-none) infinite;
+}
+.po-bubble.b-typing i:nth-child(2) {
+  animation-delay: 0.3s;
+}
+.po-bubble.b-typing i:nth-child(3) {
+  animation-delay: 0.6s;
 }
 .po-bubble.b-waiting {
   border-color: var(--tm-status-attention);
   color: var(--tm-status-attention);
   animation: po-hop 1s steps(2, jump-none) infinite;
 }
-.po-bubble.b-blocked {
-  border-color: var(--tm-status-failed);
-  color: var(--tm-status-failed);
+.po-bubble.b-guarded {
+  border-color: var(--tm-status-review);
+  color: var(--tm-status-review);
+}
+.po-bubble-why {
+  max-width: calc(var(--po-a) * 11);
+  margin-left: var(--tm-space-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--tm-text-muted);
+  font-weight: 500;
 }
 .po-bubble.b-dozing {
   color: var(--tm-text-faint);
 }
-.po-typing i {
-  width: 3px;
-  height: 3px;
-  background: var(--tm-accent);
-  animation: po-blink 0.9s steps(2, jump-none) infinite;
+.po-bubble.b-blocked {
+  border-color: var(--tm-status-failed);
+  color: var(--tm-status-failed);
 }
-.po-typing i:nth-child(2) {
-  animation-delay: 0.3s;
-}
-.po-typing i:nth-child(3) {
-  animation-delay: 0.6s;
+.po-bubble.b-huddle,
+.po-bubble.b-chat {
+  border-color: var(--tm-status-running);
 }
 @keyframes po-hop {
   to {
@@ -15369,8 +15566,14 @@ button.explain-tap:active {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .po-avatar {
+  .po-floor.walk .po-avatar {
     transition: none;
+  }
+  .po-packet,
+  .po-avatar .arm,
+  .po-bubble,
+  .po-bubble i {
+    animation: none;
   }
 }
 
@@ -15402,10 +15605,10 @@ html[data-calm]
     .rm-edge-dispatch.pending,
     .sl-card-live .live-dot,
     .mt-pulse,
-    .po-envelope,
-    .po-avatar.pose-working .po-body,
+    .po-packet,
+    .po-avatar.act-typing .arm,
     .po-bubble.b-waiting,
-    .po-typing i
+    .po-bubble.b-typing i
   ) {
   animation: none;
 }

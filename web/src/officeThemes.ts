@@ -35,10 +35,10 @@ export interface OfficeSkin {
 /**
  * THE list, in menu order; the first entry is the default. A skin task adds
  * its entry here, e.g.
- * `{ id: 'starship-bridge', label: 'Starship bridge', component: lazy(() => import('./pages/office/StarshipBridge.tsx')) }`.
+ * `{ id: 'starship-bridge', label: 'Starship bridge', component: lazy(() => import('./pages/office/skins/StarshipBridge.tsx')) }`.
  */
 export const OFFICE_THEMES: readonly OfficeSkin[] = [
-  { id: 'pixel-office', label: 'Pixel office', component: lazy(() => import('./pages/office/PixelOffice.tsx')) },
+  { id: 'pixel-office', label: 'Pixel office', component: lazy(() => import('./pages/office/skins/PixelOffice.tsx')) },
 ];
 
 export const DEFAULT_OFFICE_SKIN: OfficeSkin = OFFICE_THEMES[0];

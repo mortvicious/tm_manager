@@ -3978,6 +3978,7 @@ export * from './office.ts';
 export * from './office-chat.ts';
 // The office view: one pure layout every skin draws (docs/office.md § The view)
 export * from './office-view.ts';
+export * from './office-iso.ts';
 // The office planner: wizard, blueprint, blueprint diff (docs/office.md § Office planner)
 export * from './office-planner.ts';
 import type { OfficePlannerProposal } from './office-planner.ts';

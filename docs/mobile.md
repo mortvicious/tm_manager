@@ -1021,9 +1021,10 @@ The /office page's **Office** view (docs/office.md § The view) on a phone:
 - The **Office | List** switch sits under the phone bar. The choice is per
   device (`tm.officeView`), and the place is the default.
 - The floor is laid out with **one column**, so the rooms (Director's office,
-  Engineering, …, then the lobby) stack vertically. The floor scales to the
-  width (one tile = width ÷ 16, between 12 and 34 px), with no horizontal
-  scroll.
+  Engineering, …, then the lobby) stack vertically. The Pixel office draws each
+  as its own isometric block (`stack` mode, docs/office.md § Pixel office),
+  scaled to the width (half a tile = width ÷ the widest block, 8–18 px), with
+  no horizontal scroll.
 - The **history feed** follows the floor, in the page's own scroller (no
   nested scroller).
 - **Tapping an avatar** opens its card in a `<Sheet>`: role, state, today's

@@ -1538,3 +1538,18 @@
     box-shadow: inset 0 1px 0 var(--tm-glass-specular);
   }
 }
+
+/* Pixel office skin (docs/office.md § Pixel office): its speech bubbles and
+   name plates are the skin's own small material — in Glass they are lit glass
+   capsules over the floor instead of Classic's hard pixel boxes. No blur: up to
+   a dozen of them move with their avatars, and the thick fill reads alone. */
+[data-design='glass'] :is(.po-bubble, .po-plate) {
+  border-width: 1px;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-glass-thick);
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
+}
+/* a bubble that means something keeps its hue on the rim */
+[data-design='glass'] :is(.po-plate, .po-bubble:not(.b-waiting, .b-guarded, .b-blocked, .b-huddle, .b-chat)) {
+  border-color: var(--tm-glass-rim);
+}

@@ -2979,8 +2979,8 @@ than one skin is listed; its first option, *Office default*, clears the device
 pick. A skin gets `OfficeSkinProps` (`layout`, `mobile`, `selectedRoleId`,
 `highlight`, `onAvatar`) and draws only the floor.
 
-Adding a skin is a component in `web/src/pages/office/` plus one registry
-entry. Its rules use a prefix of its own and go in theme.css's § Calm list for
+Adding a skin is a component in `web/src/pages/office/skins/` plus one
+registry entry. Its rules use a prefix of its own and go in theme.css's § Calm list for
 any infinite animation.
 
 ### The seam and the frame
@@ -3029,50 +3029,124 @@ frame:
 
 ### Pixel office
 
-`web/src/pages/office/PixelOffice.tsx`, the default skin. It is a top-down
-floor drawn on tiled rooms behind hard pixel walls. Desks have monitors that
-light while their owner works. There is a plant and a coffee corner per room,
-a huddle table, and the lobby's 🚪 *You* and 📌 *Channel*.
+`web/src/pages/office/skins/PixelOffice.tsx`, the default skin (first in
+`OFFICE_THEMES`). It is an **isometric** pixel-art floor drawn with SVG and CSS
+only, with no image assets, from `layoutOffice`.
 
-Avatars are pixel sprites: the role's emoji as the head, a body in its group
-colour and a name plate. Bubbles act out the pose:
+**Projection.** `shared/src/office-iso.ts` `officeIsoProjection(layout,
+width)` turns a tile point plus a height into screen px on a 2:1 isometric
+floor (+x runs right-down, +y left-down, height up). Its half-tile `a` is the
+largest whole px that fits the frame (8–22 px, 18 on a phone). It has two modes,
+both picked from the layout:
 
-- typing dots: working
-- `!` (hopping): waiting for you
-- `z`: dozing
-- `⏸`: paused, `$`: over budget
-- 💬: huddling or chatting
+- `floor`: two or three rooms a row are drawn as one floor on a slab, so the
+  gaps between rooms read as corridors.
+- `stack`: the engine's one-column stack fallback (a phone, or a frame below
+  560 px). Each room, then the lobby, becomes its own isometric block, stacked
+  top to bottom and centred. A point is projected through the block that holds
+  it. One tall column projected as a single floor would be a long diagonal
+  ribbon instead.
 
-Hand-offs are dashed lines (message = accent, forward = review, huddle =
-running, tainted = attention) with a ✉ flying along each message/forward.
-Movement is a stepped `transform` transition, so it reads as pixel walking.
+`officeEdgeEnds` gives a hand-off's ends now: a role end follows that avatar's
+current ambient spot, a door/board end stays put. Both are pure and pinned by
+`server/src/office-iso.test.ts`, which covers the modes, the 2:1 axes, every
+point inside the drawn area at desktop and phone widths, non-overlapping
+stacked blocks, edge ends following the avatars, and the acting below.
 
-Ambient life advances one tick every 8 s on the shared clock, and **only while
-the page is not calm**. A calm page (unfocused, hidden, 60 s without input, or
-reduced motion) sees a still office and re-renders nothing. Every infinite
-animation (`po-envelope`, the working body, the waiting bubble, the typing
-dots) is stepped and listed in theme.css § Calm; at rest an envelope waits
-halfway along its edge.
+**The floor.** Each room has a tiled floor and two back walls. The wall is
+washed with its department's hue (leadership `--tm-group-1`, engineering 2,
+operations 6, growth 5, commons 3) and has the room's name painted on it.
+Desks are iso boxes with:
 
-The skin uses tokens only (`ov-*`/`po-*` rules before § Calm). It needs no
-Glass rule of its own: rooms, desks and cards read the remapped tokens.
+- a monitor whose screen glows `--tm-accent` while its owner works
+- a keyboard
+- a mug in the role's colour
+- a chair at the seat
+
+Each room also has a coffee counter with a machine, a potted plant in the back
+corner, and, per open huddle, a table on a dashed `--tm-status-running` ring.
+The lobby has the door (*You*) with a rug, and a cork notice board (*Channel*)
+with pinned notes. Paint order is by depth within each room, and rooms are
+drawn back to front.
+
+**Avatars** are 10×16 pixel sprites (inline SVG, whole-px pixels: `max(2,
+round(2.6a/16))`). The body is in the role's `--tm-group-<n>` and the hair is a
+shade of it. A name plate below carries the role's emoji, its name and a
+**state pip**. Every `OfficeRoleState` reads distinctly
+(`officePixelAct(avatar)` in shared):
+
+| state | act |
+| --- | --- |
+| on-shift | seated, seen from behind at the lit monitor; arms type, a typing-dots bubble |
+| guarded | asleep at the desk: head down, seated. It does NOT wander. A bubble shows `z` and the guard's skip reason (`officeSkipReason(detail)`, clipped to 34 characters; the full line is in the title) |
+| off-duty (role or office off) | dozing at the desk, dimmed, `z` |
+| off-duty (on call, enabled) / scheduled | idle: ambient life (desk, coffee with a cup in hand, a stroll, a 💬 chat). The pip tells them apart (hollow faint vs queued grey) |
+| waiting-for-you | standing with the right hand raised, a hopping `!` bubble (`--tm-status-attention`) |
+| in-huddle | standing at the huddle table inside its ring, 💬 |
+| paused | greyed (`grayscale`), ⏸ bubble in `--tm-status-failed`, a hollow red pip |
+| over-budget | greyed, `$` bubble, a solid red pip |
+
+Clicking or tapping an avatar calls `onAvatar` and opens the role card (the
+frame's side card, or a `<Sheet>` on a phone). The hit area is padded past the
+sprite, the selected avatar's shadow becomes an accent ring, and a feed
+selection dims everything it does not name.
+
+**Hand-offs.** Each edge is a dashed arc from one end to the other, at chest
+height for an avatar and wall height for the door or board. Colours: message
+`--tm-accent`, forward `--tm-status-review`, huddle `--tm-status-running`,
+tainted `--tm-status-attention`. Every message or forward edge also carries a
+**paper packet**, an envelope that flies the same arc (CSS `offset-path`,
+`steps(16)`, 3.2 s, a per-edge phase). Because the ends follow the avatars'
+current spots, a packet always runs between the right two avatars, even when
+one is at the coffee machine. At rest the packet waits halfway along its arc.
+
+**Motion.** Ambient life advances one tick every 8 s on the shared clock, and
+only while the page is not calm. Avatars walk between ambient spots with a
+stepped `transform` transition. A change of scale (the first measure, a resize,
+the stack switch) re-places them at once instead of walking: the `walk` class
+is dropped for two frames. The infinite animations are:
+
+- `.po-packet`
+- the typing arms
+- the waiting bubble
+- the typing dots
+
+They are stepped and listed in theme.css § Calm, which stops them whenever the
+page is calm (unfocused, hidden, 60 s idle, or Reduce Motion).
+`prefers-reduced-motion: reduce` also turns them and the walk transition off
+directly in the skin's CSS.
+
+**Tokens.** Every colour is a `--tm-*` token. The skin's own palette is
+`--tm-office-floor|wall|wood|metal|skin|leaf|paper|shade`, defined for
+dark/light × Classic/Glass in theme.css and docs/tm-design-tokens.html (a
+*pixel office* swatch row). An iso box's side faces are its `--base` mixed
+toward `--tm-office-shade` (78 % / 60 %). The rules are `po-*` before § Calm.
+
+**Glass** reads the remapped tokens. Its one rule of its own (glass.css) turns
+the bubbles and name plates into lit glass capsules: `--tm-glass-thick`, a rim
+and a specular line. There is no blur, since a dozen of them move. A bubble
+that means something (waiting, guarded, blocked, huddle) keeps its hue on the
+rim.
 
 **Phone** (docs/mobile.md § Office view): the rooms stack vertically (one
 column), and the feed follows the floor. Tapping an avatar opens its card in a
 `<Sheet>`. Leaving the card for the brief viewer, the editor or the terminal
 closes it first, so sheets never stack.
 
-Checked headless with Playwright (Chromium) on a scratch build. Live GETs were
-replayed, the office routes were overlaid with synthetic states, messages, a
-huddle and a live shift, and writes were aborted. The runs covered desktop and
-phone in Classic and Glass. Each confirmed:
+The engine's frame was checked headless with Playwright (Chromium) on a scratch
+build, in the engine task: live GETs replayed with synthetic office routes,
+desktop and phone, Classic and Glass. That run confirmed the feed order, live
+`/ws/events` updates, and the card/`<Sheet>` on an avatar tap.
 
-- `.app.mobile` on the phone, with no horizontal overflow
-- rooms stacked in one column on the phone
-- poses: working, huddling ×2, idle, waiting
-- 4 edges
-- the feed order
-- a message and an `office.paused` row pushed over a mocked `/ws/events`
-  showed up in the feed (and as a new edge) without a reload
-- an avatar tap opens the card on desktop and a `<Sheet>` on the phone
+The isometric skin was checked the same way, on a fixture harness: every state
+present, one open huddle, three hand-offs (one of them tainted), at 1100, 760
+and 375 px, in dark, light and Glass. Each run confirmed:
+
+- every state's act class
+- 4 edges and 3 packets on `po-fly`, and `animation: none` under reduced motion
+- no horizontal overflow, with the phone in `stack` mode
+- no bubble or avatar outside the floor
+- a click on the waiting avatar reaches `onAvatar`
 - no page errors
+
+Screenshots are in the task's artifacts.

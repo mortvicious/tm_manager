@@ -138,6 +138,15 @@
   --tm-diff-del-bg: rgba(244, 100, 95, 0.1);
   --tm-diff-hunk-fg: var(--tm-blue-5);
   --tm-diff-hunk-bg: rgba(96, 165, 250, 0.08);
+  /* the Pixel office skin's palette (docs/office.md § Pixel office): iso faces shade toward --tm-office-shade */
+  --tm-office-floor: var(--tm-gray-8);
+  --tm-office-wall: var(--tm-gray-6);
+  --tm-office-wood: #9a6b47;
+  --tm-office-metal: var(--tm-gray-5);
+  --tm-office-skin: #f1c7a1;
+  --tm-office-leaf: var(--tm-green-6);
+  --tm-office-paper: var(--tm-gray-0);
+  --tm-office-shade: #000000;
   /* one hue per task group; `groupColorSlot` picks the slot (1..7) */
   --tm-group-1: var(--tm-violet-5);
   --tm-group-2: var(--tm-blue-5);
@@ -190,6 +199,15 @@
   --tm-diff-del-bg: rgba(185, 28, 28, 0.07);
   --tm-diff-hunk-fg: var(--tm-blue-7);
   --tm-diff-hunk-bg: rgba(29, 78, 216, 0.06);
+  /* the Pixel office skin's palette (docs/office.md § Pixel office): iso faces shade toward --tm-office-shade */
+  --tm-office-floor: var(--tm-gray-2);
+  --tm-office-wall: var(--tm-gray-3);
+  --tm-office-wood: #b88458;
+  --tm-office-metal: var(--tm-gray-4);
+  --tm-office-skin: #e9b48c;
+  --tm-office-leaf: var(--tm-green-7);
+  --tm-office-paper: #ffffff;
+  --tm-office-shade: var(--tm-gray-8);
   --tm-group-1: var(--tm-violet-7);
   --tm-group-2: var(--tm-blue-7);
   --tm-group-3: var(--tm-amber-7);
@@ -326,6 +344,15 @@
   --tm-diff-del-bg: rgba(255, 69, 58, 0.12);
   --tm-diff-hunk-fg: #64d2ff;
   --tm-diff-hunk-bg: rgba(100, 210, 255, 0.09);
+  /* the Pixel office skin's palette (docs/office.md § Pixel office): iso faces shade toward --tm-office-shade */
+  --tm-office-floor: #2c2c2e;
+  --tm-office-wall: #48484a;
+  --tm-office-wood: #a2845e;
+  --tm-office-metal: #636366;
+  --tm-office-skin: #f1c7a1;
+  --tm-office-leaf: #30d158;
+  --tm-office-paper: #f2f2f7;
+  --tm-office-shade: #000000;
 }
 
 [data-design='glass'][data-theme='light'] {
@@ -395,6 +422,15 @@
   --tm-diff-del-bg: rgba(255, 59, 48, 0.1);
   --tm-diff-hunk-fg: #0040dd;
   --tm-diff-hunk-bg: rgba(0, 122, 255, 0.08);
+  /* the Pixel office skin's palette (docs/office.md § Pixel office): iso faces shade toward --tm-office-shade */
+  --tm-office-floor: #e5e5ea;
+  --tm-office-wall: #d1d1d6;
+  --tm-office-wood: #ac8e68;
+  --tm-office-metal: #8e8e93;
+  --tm-office-skin: #e9b48c;
+  --tm-office-leaf: #248a3d;
+  --tm-office-paper: #ffffff;
+  --tm-office-shade: #1c1c1e;
 }
 
 /* A phone in Glass: iOS's scale (15pt subheadline base, 17pt headline, 34pt
@@ -1144,6 +1180,9 @@ footer .mono { font-family: var(--tm-font-mono); }
 
       <p class="eyebrow" style="margin-top: var(--tm-space-6);">diff lines — <code>--tm-diff-add|del|hunk-fg|bg</code></p>
       <pre class="diff-demo"><span class="hunk">@@ -12,4 +12,5 @@ export function landIfClean(task: Task) {</span><span>   const reason = landingReason(task);</span><span class="del">-  if (!reason) return;</span><span class="add">+  if (!reason) return null;</span><span class="add">+  audit(task, 'landing', reason);</span><span>   return land(task, reason);</span></pre>
+
+      <p class="eyebrow" style="margin-top: var(--tm-space-6);">pixel office — <code>--tm-office-*</code> (the /office skin's floor, walls, desks, sprites; iso faces shade toward <code>--tm-office-shade</code>)</p>
+      <div class="swatch-grid" id="officeRamp"></div>
     </section>
 
     <section id="status">
@@ -1429,6 +1468,10 @@ footer .mono { font-family: var(--tm-font-mono); }
   teals.forEach(function (s) { tealRamp.appendChild(makeSwatch(s[0], s[1])); });
   var semanticRamp = document.getElementById('semanticRamp');
   semantics.forEach(function (s) { semanticRamp.appendChild(makeSwatch(s[0], null)); });
+  var officeRamp = document.getElementById('officeRamp');
+  ['floor', 'wall', 'wood', 'metal', 'skin', 'leaf', 'paper', 'shade'].forEach(function (k) {
+    officeRamp.appendChild(makeSwatch('--tm-office-' + k, null));
+  });
 
   // ---- spacing bars ----
   var spaces = [
