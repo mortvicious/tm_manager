@@ -15640,6 +15640,486 @@ button.explain-tap:active {
   }
 }
 
+/* Space colony skin (web/src/pages/office/skins/SpaceColony.tsx,
+ * docs/office.md § Space colony): a top-down SVG colony map in TILE units
+ * (`--sc-t` = one tile in px, `--sc-px` one suit pixel); colonists and walkers
+ * are HTML over the SVG, placed by `--x/--y` in px. Every surface is a
+ * `--tm-*` token (the office palette, status hues, `--tm-group-<n>`). Module
+ * lights and console lamps read `ColonyLight`. Every infinite animation is
+ * stepped and in § Calm. */
+.sc-wrap {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.sc-map {
+  position: relative;
+  margin: 0 auto;
+  font-family: var(--tm-font-mono);
+  /* the regolith and a sparse starfield */
+  background-color: color-mix(in srgb, var(--tm-bg-inset) 85%, var(--tm-office-shade));
+  background-image:
+    radial-gradient(circle at 20% 30%, color-mix(in srgb, var(--tm-text-faint) 70%, transparent) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 70% 80%, color-mix(in srgb, var(--tm-text-faint) 45%, transparent) 0 1px, transparent 1.5px);
+  background-size:
+    calc(var(--sc-t) * 5) calc(var(--sc-t) * 4),
+    calc(var(--sc-t) * 7) calc(var(--sc-t) * 6);
+  border-radius: var(--tm-radius-md);
+}
+.sc-svg {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: visible;
+}
+.sc-tubes line {
+  stroke: color-mix(in srgb, var(--tm-office-metal) 55%, var(--tm-office-shade));
+  stroke-width: 0.7;
+  stroke-linecap: round;
+}
+.sc-hull {
+  fill: color-mix(in srgb, var(--tm-office-metal) 70%, var(--dept, var(--tm-office-metal)));
+  stroke: color-mix(in srgb, var(--tm-office-metal) 45%, var(--tm-office-shade));
+  stroke-width: 0.12;
+}
+.sc-deck {
+  fill: color-mix(in srgb, var(--tm-office-floor) 88%, var(--dept, var(--tm-office-floor)));
+}
+.sc-module-label,
+.sc-place-label {
+  fill: var(--tm-text-muted);
+  font-size: 0.8px;
+  font-weight: 700;
+  letter-spacing: 0.04px;
+  text-transform: uppercase;
+}
+.sc-place-label {
+  font-size: 0.7px;
+  text-transform: none;
+}
+.sc-hatch {
+  fill: color-mix(in srgb, var(--tm-office-metal) 40%, var(--tm-office-shade));
+}
+/* the module's roof light: its crew's most urgent state */
+.sc-light {
+  fill: var(--light, var(--tm-text-faint));
+}
+.sc-module.light-alert {
+  --light: var(--tm-status-attention);
+}
+.sc-module.light-fault {
+  --light: var(--tm-status-failed);
+}
+.sc-module.light-active {
+  --light: var(--tm-status-running);
+}
+.sc-module.light-standby {
+  --light: var(--tm-status-review);
+}
+.sc-module.light-dark {
+  --light: color-mix(in srgb, var(--tm-text-faint) 40%, transparent);
+}
+.sc-module.light-alert .sc-light {
+  animation: sc-blink 1.2s steps(2, jump-none) infinite;
+}
+.sc-console-body {
+  fill: color-mix(in srgb, var(--tm-office-metal) 60%, var(--tm-office-shade));
+}
+.sc-console-screen {
+  fill: color-mix(in srgb, var(--tm-office-shade) 80%, var(--tm-office-metal));
+}
+.sc-console.lamp-active .sc-console-screen {
+  fill: color-mix(in srgb, var(--tm-accent) 75%, var(--tm-office-paper));
+}
+.sc-lamp {
+  fill: var(--lamp, var(--tm-text-faint));
+}
+.sc-console.lamp-alert {
+  --lamp: var(--tm-status-attention);
+}
+.sc-console.lamp-fault {
+  --lamp: var(--tm-status-failed);
+}
+.sc-console.lamp-active {
+  --lamp: var(--tm-status-running);
+}
+.sc-console.lamp-standby {
+  --lamp: var(--tm-status-review);
+}
+.sc-console.lamp-dark {
+  --lamp: color-mix(in srgb, var(--tm-text-faint) 35%, transparent);
+}
+.sc-seat {
+  fill: color-mix(in srgb, var(--tm-office-floor) 70%, var(--tm-office-shade));
+}
+.sc-galley rect {
+  fill: color-mix(in srgb, var(--tm-office-metal) 80%, var(--tm-office-paper));
+}
+.sc-galley circle {
+  fill: var(--tm-status-review);
+}
+.sc-hydro rect {
+  fill: color-mix(in srgb, var(--tm-office-wood) 55%, var(--tm-office-shade));
+}
+.sc-hydro circle {
+  fill: var(--tm-office-leaf);
+}
+.sc-holo-ring {
+  fill: color-mix(in srgb, var(--tm-status-running) 10%, transparent);
+  stroke: var(--tm-status-running);
+  stroke-width: 0.08;
+  stroke-dasharray: 0.3 0.25;
+}
+.sc-holo-table {
+  fill: color-mix(in srgb, var(--tm-status-running) 45%, var(--tm-office-paper));
+}
+.sc-airlock circle {
+  fill: color-mix(in srgb, var(--tm-office-metal) 50%, var(--tm-office-shade));
+  stroke: var(--tm-accent);
+  stroke-width: 0.12;
+}
+.sc-airlock line {
+  stroke: var(--tm-accent);
+  stroke-width: 0.08;
+}
+.sc-mast line,
+.sc-mast path {
+  fill: none;
+  stroke: color-mix(in srgb, var(--tm-office-metal) 80%, var(--tm-office-paper));
+  stroke-width: 0.14;
+}
+.sc-beacon {
+  fill: var(--tm-accent);
+  animation: sc-blink 1.6s steps(2, jump-none) infinite;
+}
+/* a hand-off's route: a dotted trail along the tubes */
+.sc-trail {
+  fill: none;
+  stroke: var(--tm-accent);
+  stroke-width: 0.1;
+  stroke-dasharray: 0.12 0.28;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.8;
+}
+.sc-trail.k-route {
+  stroke: var(--tm-status-review);
+}
+.sc-trail.k-huddle {
+  stroke: var(--tm-status-running);
+  stroke-dasharray: 0.4 0.2;
+}
+.sc-trail.tainted {
+  stroke: var(--tm-status-attention);
+}
+.sc-trail.hl {
+  stroke-width: 0.2;
+  opacity: 1;
+}
+.sc-map.has-hl .sc-trail:not(.hl) {
+  opacity: 0.15;
+}
+/* the colonist walking a hand-off, carrying a data crate */
+.sc-walker {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 5000;
+  width: calc(var(--sc-t) * 0.7);
+  height: calc(var(--sc-t) * 0.7);
+  pointer-events: none;
+  offset-rotate: 0deg;
+  offset-distance: 50%;
+  animation-name: sc-walk;
+  animation-iteration-count: infinite;
+}
+.sc-walker-body {
+  position: absolute;
+  inset: 0;
+  border-radius: 50% 50% 35% 35%;
+  background: var(--c);
+  box-shadow:
+    inset 0 calc(var(--sc-t) * 0.12) 0 color-mix(in srgb, var(--tm-office-paper) 55%, transparent),
+    0 0 0 max(1px, calc(var(--sc-t) * 0.06)) color-mix(in srgb, var(--tm-office-shade) 60%, transparent);
+}
+.sc-crate {
+  position: absolute;
+  right: calc(var(--sc-t) * -0.25);
+  bottom: calc(var(--sc-t) * -0.1);
+  width: calc(var(--sc-t) * 0.4);
+  height: calc(var(--sc-t) * 0.32);
+  background: var(--tm-office-paper);
+  border: max(1px, calc(var(--sc-t) * 0.05)) solid var(--tm-accent);
+}
+.sc-walker.k-route .sc-crate {
+  border-color: var(--tm-status-review);
+}
+.sc-walker.tainted .sc-crate {
+  border-color: var(--tm-status-attention);
+}
+.sc-map.has-hl .sc-walker:not(.hl) {
+  opacity: 0.2;
+}
+@keyframes sc-walk {
+  from {
+    offset-distance: 0%;
+  }
+  to {
+    offset-distance: 100%;
+  }
+}
+@keyframes sc-blink {
+  to {
+    opacity: 0.25;
+  }
+}
+@keyframes sc-hop {
+  to {
+    transform: translate(-50%, -3px);
+  }
+}
+@keyframes sc-type {
+  to {
+    transform: translateY(1px);
+  }
+}
+.sc-colonist {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--tm-text);
+  font: inherit;
+  cursor: pointer;
+  /* anchored at its feet */
+  transform: translate(var(--x), var(--y)) translate(-50%, -100%);
+}
+.sc-map.walk .sc-colonist {
+  transition: transform 2.4s steps(12, jump-end);
+}
+.sc-colonist::before {
+  content: '';
+  position: absolute;
+  inset: -6px -10px -4px;
+}
+.sc-colonist:focus-visible {
+  outline: none;
+}
+.sc-suit {
+  position: relative;
+  display: block;
+  width: calc(var(--sc-px) * 10);
+  height: calc(var(--sc-px) * 14);
+}
+.sc-suit .helmet {
+  fill: color-mix(in srgb, var(--tm-office-paper) 85%, var(--c));
+}
+.sc-suit .visor {
+  fill: color-mix(in srgb, var(--tm-office-shade) 75%, var(--tm-accent));
+}
+.sc-suit .visor-hi {
+  fill: color-mix(in srgb, var(--tm-accent) 60%, var(--tm-office-paper));
+}
+.sc-suit .suit {
+  fill: var(--c);
+}
+.sc-suit .suit-hi {
+  fill: color-mix(in srgb, var(--c) 65%, var(--tm-office-paper));
+}
+.sc-suit .panel {
+  fill: color-mix(in srgb, var(--tm-office-paper) 70%, var(--c));
+}
+.sc-suit .arm {
+  fill: color-mix(in srgb, var(--c) 75%, var(--tm-office-shade));
+}
+.sc-suit .glove,
+.sc-suit .boot {
+  fill: color-mix(in srgb, var(--tm-office-metal) 45%, var(--tm-office-shade));
+}
+.sc-suit .ration {
+  fill: var(--tm-status-review);
+}
+.sc-shadow {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--sc-t) * -0.2);
+  width: calc(var(--sc-t) * 0.9);
+  height: calc(var(--sc-t) * 0.4);
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--tm-office-shade) 35%, transparent);
+}
+.sc-colonist.selected .sc-shadow,
+.sc-colonist:focus-visible .sc-shadow {
+  background: color-mix(in srgb, var(--tm-accent) 30%, transparent);
+  box-shadow: 0 0 0 2px var(--tm-accent);
+}
+.sc-colonist.hl .sc-shadow {
+  box-shadow: 0 0 0 3px var(--tm-accent-subtle);
+}
+.sc-map.has-hl .sc-colonist:not(.hl) {
+  opacity: 0.35;
+}
+/* a guarded role sleeps in a stasis pod */
+.sc-pod {
+  position: absolute;
+  inset: calc(var(--sc-px) * -1) calc(var(--sc-px) * -1.5);
+  border-radius: 45%;
+  border: max(1px, calc(var(--sc-px) / 2)) solid var(--tm-status-review);
+  background: color-mix(in srgb, var(--tm-status-review) 14%, transparent);
+  pointer-events: none;
+}
+.sc-colonist.act-typing .arm {
+  animation: sc-type 0.5s steps(2, jump-none) infinite;
+}
+.sc-colonist.act-typing .arm.ar {
+  animation-delay: 0.25s;
+}
+.sc-colonist.act-greyed .sc-suit {
+  filter: grayscale(1);
+  opacity: 0.7;
+}
+.sc-colonist.act-dozing .sc-suit,
+.sc-colonist.act-asleep .sc-suit {
+  filter: saturate(0.4);
+  opacity: 0.6;
+}
+.sc-colonist.act-greyed .sc-plate,
+.sc-colonist.act-dozing .sc-plate {
+  color: var(--tm-text-faint);
+}
+.sc-plate {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 3px);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  max-width: max(calc(var(--sc-t) * 4.4), 72px);
+  padding: 0 var(--tm-space-1);
+  transform: translateX(-50%);
+  background: color-mix(in srgb, var(--tm-office-shade) 55%, transparent);
+  border: 1px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-pill);
+  color: var(--tm-text);
+  font-size: var(--tm-text-xs);
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.sc-plate-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sc-pip {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pip, var(--tm-text-faint));
+}
+.sc-pip.st-on-shift {
+  --pip: var(--tm-status-running);
+}
+.sc-pip.st-in-huddle {
+  --pip: var(--tm-status-done);
+}
+.sc-pip.st-waiting-for-you {
+  --pip: var(--tm-status-attention);
+}
+.sc-pip.st-guarded {
+  --pip: var(--tm-status-review);
+}
+.sc-pip.st-scheduled {
+  --pip: var(--tm-status-queued);
+}
+.sc-pip.st-over-budget {
+  --pip: var(--tm-status-failed);
+}
+.sc-pip.st-paused {
+  --pip: transparent;
+  box-shadow: inset 0 0 0 2px var(--tm-status-failed);
+}
+.sc-pip.st-off-duty {
+  --pip: transparent;
+  box-shadow: inset 0 0 0 1px var(--tm-text-faint);
+}
+.sc-bubble {
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px var(--tm-space-1);
+  transform: translateX(-50%);
+  background: var(--tm-bg-raised);
+  border: 2px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-sm);
+  color: var(--tm-text);
+  font-size: var(--tm-text-xs);
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.sc-bubble.b-typing i {
+  width: 3px;
+  height: 3px;
+  background: var(--tm-accent);
+  animation: sc-blink 0.9s steps(2, jump-none) infinite;
+}
+.sc-bubble.b-typing i:nth-child(2) {
+  animation-delay: 0.3s;
+}
+.sc-bubble.b-typing i:nth-child(3) {
+  animation-delay: 0.6s;
+}
+.sc-bubble.b-waiting {
+  border-color: var(--tm-status-attention);
+  color: var(--tm-status-attention);
+  animation: sc-hop 1s steps(2, jump-none) infinite;
+}
+.sc-bubble.b-guarded {
+  border-color: var(--tm-status-review);
+  color: var(--tm-status-review);
+}
+.sc-bubble-why {
+  max-width: calc(var(--sc-t) * 6);
+  margin-left: var(--tm-space-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--tm-text-muted);
+  font-weight: 500;
+}
+.sc-bubble.b-dozing {
+  color: var(--tm-text-faint);
+}
+.sc-bubble.b-blocked {
+  border-color: var(--tm-status-failed);
+  color: var(--tm-status-failed);
+}
+.sc-bubble.b-huddle,
+.sc-bubble.b-chat {
+  border-color: var(--tm-status-running);
+}
+@media (prefers-reduced-motion: reduce) {
+  .sc-map.walk .sc-colonist {
+    transition: none;
+  }
+  .sc-walker,
+  .sc-beacon,
+  .sc-module.light-alert .sc-light,
+  .sc-colonist .arm,
+  .sc-bubble,
+  .sc-bubble i {
+    animation: none;
+  }
+}
+
 /* ---- Calm (docs/spa-performance.md § Calm) ------------------------------
  * src/calm.ts sets html[data-calm] while the window is unfocused or hidden,
  * after 60 s without input, and under reduced motion. Any running animation
@@ -15671,7 +16151,13 @@ html[data-calm]
     .po-packet,
     .po-avatar.act-typing .arm,
     .po-bubble.b-waiting,
-    .po-bubble.b-typing i
+    .po-bubble.b-typing i,
+    .sc-walker,
+    .sc-beacon,
+    .sc-module.light-alert .sc-light,
+    .sc-colonist.act-typing .arm,
+    .sc-bubble.b-waiting,
+    .sc-bubble.b-typing i
   ) {
   animation: none;
 }

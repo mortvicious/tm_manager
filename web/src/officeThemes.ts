@@ -39,6 +39,7 @@ export interface OfficeSkin {
  */
 export const OFFICE_THEMES: readonly OfficeSkin[] = [
   { id: 'pixel-office', label: 'Pixel office', component: lazy(() => import('./pages/office/skins/PixelOffice.tsx')) },
+  { id: 'space-colony', label: 'Space colony', component: lazy(() => import('./pages/office/skins/SpaceColony.tsx')) },
 ];
 
 export const DEFAULT_OFFICE_SKIN: OfficeSkin = OFFICE_THEMES[0];

@@ -3031,7 +3031,8 @@ default. The skin drawn is chosen by `resolveOfficeSkin`:
 2. else the office's `Office.theme`, when listed
 3. else the default
 
-So an office themed `fantasy-guild` renders Pixel office until that skin
+Listed today: *Pixel office* (the default) and *Space colony* (§ Space
+colony). So an office themed `fantasy-guild` renders Pixel office until that skin
 ships, with no migration either way. The Skin picker shows only while more
 than one skin is listed; its first option, *Office default*, clears the device
 pick. A skin gets `OfficeSkinProps` (`layout`, `mobile`, `selectedRoleId`,
@@ -3208,3 +3209,101 @@ and 375 px, in dark, light and Glass. Each run confirmed:
 - no page errors
 
 Screenshots are in the task's artifacts.
+
+### Space colony
+
+`web/src/pages/office/skins/SpaceColony.tsx`, registered in `OFFICE_THEMES` as
+`space-colony` (*Space colony*), so the Skin picker appears and an office
+themed `space-colony` draws it. It is a **top-down colony map** drawn with SVG
+and CSS only, from the same `layoutOffice`: the SVG works in tile units, one
+tile is `--sc-t` px (the frame's width ÷ the layout's width, 12–26 px, 24 on a
+phone; below 12 the map scrolls sideways).
+
+**The map.** Every department room is a pressurised **module**: a hull washed
+with its department's hue (the Pixel office's mapping), a deck, the room's name
+and a hatch in the middle of its bottom wall. Desks are **consoles** whose
+screen lights `--tm-accent` while the owner is on shift, with a **lamp** in
+the role's state and a seat. The engine's coffee corner is a **galley**, the
+strip's far corner a **hydroponics** bed, and an open huddle meets at a
+**holo table** on a dashed `--tm-status-running` ring. The lobby is the
+**docking hub**: the airlock (*You*, the stakeholder) and the comm mast with a
+beacon (*Channel*). Between the modules run the **tubes**
+(`colonyTubes` in `shared/src/office-colony.ts`): one along each row's gap, two
+side trunks down to the hub, and a short tube from each hatch. The ground is a
+sparse starfield in token colours.
+
+**Module lights.** A strip on each module's roof shows its crew's most urgent
+state, `colonyModuleLight(room, avatars)` over each role's lamp
+(`colonyLampOf`):
+
+| light | when | colour |
+| --- | --- | --- |
+| alert | someone is waiting for you (blinks) | `--tm-status-attention` |
+| fault | paused or over budget | `--tm-status-failed` |
+| active | on shift or in a huddle | `--tm-status-running` |
+| standby | scheduled, guarded, or on call | `--tm-status-review` |
+| dark | everyone off, or no crew | faint |
+
+**Colonists** are 10×14 pixel suits (helmet with visor, chest panel, the
+role's `--tm-group-<n>`), with the Pixel office's name plate and state pip.
+They act out every `OfficeRoleState` through the shared `officePixelAct`:
+
+| state | act |
+| --- | --- |
+| on-shift | seated at the lit console, seen from behind; arms type, typing dots |
+| guarded | asleep at the console inside an amber **stasis pod**; does not wander; `z` + the skip reason (`officeSkipReason`, 34 characters) |
+| off-duty (off) | dozing, dimmed, `z` |
+| off-duty (on call) / scheduled | ambient life (`officeWanderSpot`): console, galley with a ration pack, a stroll, a 💬 chat; the pip tells them apart |
+| waiting-for-you | arm raised, a hopping `!` bubble |
+| in-huddle | standing at the holo table, 💬 |
+| paused / over-budget | greyed, ⏸ / `$` |
+
+Clicking a colonist calls `onAvatar` (the role card); selection and feed
+highlights work as in the Pixel office.
+
+**Hand-offs: colonists walking the tubes.** `colonyRoute(edge, layout,
+spots)` is the walk for a message or forward. Inside one module it is a
+straight line. Otherwise it goes out through the sender's hatch, along its
+row tube (and, between rows or to the hub, the nearer side trunk), and in
+through the receiver's hatch. Its ends follow both colonists' current ambient
+spots. The route is drawn as a dotted trail, coloured like the Pixel office's
+edges (message accent, forward review, huddle running, tainted attention).
+A small colonist in the sender's colour walks it carrying a data crate (CSS
+`offset-path`; duration 0.35 s per tile, 3–14 s, stepped twice per tile, with
+a per-edge phase). A huddle edge is a trail only. At rest (calm, reduced
+motion) the walker stands halfway along its route.
+
+**Culling.** A large office draws only what is on screen. The skin measures
+the visible part of the map on scroll (any scroller, capture listener),
+resize and its own resize, one animation frame later, rounded out to 6-tile
+chunks so scrolling re-renders only when a chunk boundary is crossed.
+`colonyCull(layout, view, routes, spots)` (4 tiles of margin) then keeps
+modules whose rect touches the view, colonists whose current spot is in it,
+walks whose route's bounding box touches it, and the hub. The tube network is
+always drawn, being cheap. Before the first measure everything is drawn.
+
+**Motion.** As in the Pixel office: ambient steps every 8 s on the shared
+clock, only while not calm; the walk transition is stepped and skipped on a
+scale change. The infinite animations are the walkers, the hub beacon, an
+alert module light, the typing arms, the waiting bubble and the typing dots.
+They are stepped, listed in theme.css § Calm, and switched off (with the walk
+transition) under `prefers-reduced-motion: reduce`.
+
+**Tokens.** No new tokens: every colour is an existing `--tm-*` token (the
+`--tm-office-*` palette, status hues, `--tm-group-<n>`, `--tm-bg-inset`) or a
+`color-mix` of them, so dark/light and Classic/Glass come from the token
+blocks. The rules are `sc-*`, before § Calm.
+
+**Phone.** One column: the modules stack, the trunks run down both sides, and
+the hub is at the bottom; the hub's labels sit below its title so they fit
+14 tiles.
+
+**Verification.** `server/src/office-colony.test.ts` covers the lamps of every
+state and the module's most-urgent rule, walks between modules at 3/2/1
+columns (ends at the colonists, no zero-length leg, inner points on the
+tubes or in the hub, inside the map), walks following the ambient spots, and
+culling (all before a measure, one module for a small view, nothing off-map,
+a bounded slice of a 60-role office). A scratch fixture build was screenshot
+in headless Chromium at 1200 px (dark, light) and 390 px (Classic, Glass):
+every state, four walkers, no page errors. A 60-role office at 1200×900
+rendered 37 of 60 colonists and 3 of 5 modules.

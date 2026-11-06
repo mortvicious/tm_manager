@@ -3979,6 +3979,7 @@ export * from './office-chat.ts';
 // The office view: one pure layout every skin draws (docs/office.md § The view)
 export * from './office-view.ts';
 export * from './office-iso.ts';
+export * from './office-colony.ts';
 // The office planner: wizard, blueprint, blueprint diff (docs/office.md § Office planner)
 export * from './office-planner.ts';
 // The office scorecard: landed, bugs, proposals, $, interventions, skips, ratings (docs/office.md § Scorecard)

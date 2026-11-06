@@ -1024,7 +1024,9 @@ The /office page's **Office** view (docs/office.md § The view) on a phone:
   Engineering, …, then the lobby) stack vertically. The Pixel office draws each
   as its own isometric block (`stack` mode, docs/office.md § Pixel office),
   scaled to the width (half a tile = width ÷ the widest block, 8–18 px), with
-  no horizontal scroll.
+  no horizontal scroll. The Space colony skin stacks its modules down the
+  same column, with the tubes on both sides and the docking hub at the bottom
+  (docs/office.md § Space colony).
 - The **history feed** follows the floor, in the page's own scroller (no
   nested scroller).
 - **Tapping an avatar** opens its card in a `<Sheet>`: role, state, today's
