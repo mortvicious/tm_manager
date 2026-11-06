@@ -59,6 +59,7 @@ import {
   type OfficeRole,
   type OfficeRouteAction,
 } from '@tm/shared';
+import { CONVERSATIONAL_REPLY_RULE } from '../claude/reply-style.ts';
 import { broadcast } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 import { directorRole } from './docs.ts';
@@ -258,7 +259,10 @@ registerShiftSection<ShiftMessageInput[]>({
   describe:
     `messages to another role of this office, at most ${SHIFT_MESSAGES_MAX} of {to, kind, subject, body}: \`to\` a role key or \`director\`, ` +
     `kind ${OFFICE_MESSAGE_KINDS.map((k) => `\`${k}\``).join('/')}. The Director routes each one (a task, a note, a huddle, or a forward to the addressee) — ` +
-    'a message is how you hand work or a finding to a colleague; it is not a task.',
+    'a message is how you hand work or a finding to a colleague; it is not a task. ' +
+    // docs/office.md § Channel: a message is dialogue, not a document
+    'Write it as a message to a colleague: `subject` a short line (a few words), `body` only as long as it needs to be. ' +
+    `Style — ${CONVERSATIONAL_REPLY_RULE}`,
   schema: z.array(shiftMessageSchema).max(SHIFT_MESSAGES_MAX),
   jsonSchema: {
     type: 'array',

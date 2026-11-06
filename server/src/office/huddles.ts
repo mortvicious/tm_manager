@@ -52,6 +52,7 @@ import {
   type OfficeRole,
   type OfficeSubject,
 } from '@tm/shared';
+import { CONVERSATIONAL_REPLY_RULE } from '../claude/reply-style.ts';
 import { broadcast } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 import { directorRole } from './docs.ts';
@@ -456,7 +457,12 @@ export async function huddleTurnPlan(storage: Storage, office: Office, role: Off
     '',
     `This shift is one turn of a HUDDLE: a short, bounded discussion about ONE subject between ${participants.join(', ')}. ` +
       'Each participant speaks in turn, in its own session; nobody else reads this but the participants, the Director and the human.',
-    `There are ${huddle.maxTurns} turns in all; ${left === 0 ? 'this is the LAST one' : `${left} more after yours`}. Speak only to the subject — this is not a chat.`,
+    `There are ${huddle.maxTurns} turns in all; ${left === 0 ? 'this is the LAST one' : `${left} more after yours`}. Speak only to the subject — no small talk.`,
+    '',
+    // docs/office.md § Huddles: a dialogue between roles, so `say` follows
+    // the one conversational reply rule (docs/chat.md § Reply style)
+    `How to write \`say\` — ${CONVERSATIONAL_REPLY_RULE}`,
+    'Say only what moves the decision along: no recap of the subject or of what others said, no agreeing for the sake of it.',
     '',
     'Return the `huddle` section: `say` — your contribution (what you know from the code and your notes, what you propose, where you disagree with what was said), ' +
       'and `decision` once the participants agree on what should happen — it CLOSES the huddle. ' +

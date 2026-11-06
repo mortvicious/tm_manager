@@ -15,6 +15,7 @@ import Fastify from 'fastify';
 import { ZodError } from 'zod';
 import { OFFICE_ROUTE_DEBOUNCE_MS, type Office, type OfficeHuddle, type OfficeHuddlesResponse, type OfficeRole } from '@tm/shared';
 import { AuxRunner } from '../claude/aux.ts';
+import { CONVERSATIONAL_REPLY_RULE } from '../claude/reply-style.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 import { registerOfficeRoutes } from '../routes/offices.ts';
 import { SqliteStorage } from '../storage/sqlite.ts';
@@ -227,6 +228,8 @@ describe('running a huddle', () => {
         assert.match(p, /Checkout fails on Safari/, 'the subject is in the prompt');
         assert.doesNotMatch(p, /Saved commands you may request/, 'a turn has a lean prompt');
         assert.doesNotMatch(p, /"tasks"/, 'a turn cannot file tasks');
+        assert.ok(p.includes(CONVERSATIONAL_REPLY_RULE), 'a huddle turn carries the conversational reply rule');
+        assert.match(p, /Say only what moves the decision along/);
         return { huddle: { say: 'QA-SAYS: reproduced only on Safari 17 with ITP on.' } };
       });
       assert.ok(!t1.args.includes('--resume'), 'qa had no session yet');

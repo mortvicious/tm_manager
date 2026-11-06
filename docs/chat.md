@@ -102,6 +102,61 @@ There is deliberately **no setting between the two.** `acceptEdits` looks like a
 
 Mode, model and effort are read at the **start** of a turn, so changing them mid-turn is refused with a 409 rather than half-applied to a child already running on the old settings.
 
+## Reply style
+
+A chat is a dialogue, so a reply should read like a message in a human group
+chat. Before this, every turn was a plain `claude` turn with no style rule,
+and "sure, which repo?" could come back as an essay with headings. Now every
+chat turn carries ONE rule, `CONVERSATIONAL_REPLY_RULE`
+(`server/src/claude/reply-style.ts`):
+
+> This is a chat. Answer like a person in a group chat: usually 1–3 sentences, no headings, no preamble, no restating the question, no closing offers or "let me know if…". Go long only when asked to explain something, describe a feature, plan or review, or when the answer needs code, a table or a list. Then use structure, but stay tight. Reply in the language of the user's message.
+
+**Where it goes.** The rule is passed as the CLI's `--append-system-prompt`
+(`AuxSpec.appendSystemPrompt`, `--append-system-prompt=<rule>` as one argv
+element before the `--`), not in the user message. It is never echoed in the
+transcript, so the SPA and the phone, which share one transcript, see only
+what was typed. It holds across `--resume` because the CLI's
+`--system-prompt-snapshot` is on by default: the system prompt, including the
+appended text, is recorded with the conversation's first request and reused
+verbatim on every resume. Every turn still passes the rule, so a session the
+CLI compacted, which re-renders its prompt, keeps it. One consequence: a chat
+whose session started BEFORE this change keeps its recorded prompt without
+the rule until it is compacted. Start a new chat to get it.
+
+**Every conversational surface uses the same constant.** Repo chat (SPA
+`/chat` and Telegram `/chat`, one `ChatService.runTurn`), office group-chat
+personas including the Director (`OfficeChatTurnPlan.appendSystemPrompt`),
+huddle turns, and channel messages. Huddle turns and channel messages are
+shifts whose final message is a JSON result block, so for them the rule is
+quoted in the prompt rather than appended to the system prompt (docs/office.md
+§ Huddles › Turn style, § Channel › Message style). A future conversational
+surface, such as the office planner/assistant, takes the same constant.
+
+**Out of scope, on purpose:** worker turns, review/plan/report/brief outputs,
+deliverables and stand-up documents. Those are documents, not dialogue, and
+none of them reads this constant.
+
+Telegram's long-reply path is unchanged. A reply over 4096 characters is
+still split by `chunkMessage` (`telegram/api.ts`) at newline boundaries, with
+open tags re-opened, so the long answers that remain arrive whole.
+
+**Verified 2026-11-06** with the real CLI (2.1.318, `claude-opus-5-5`, the
+read-mode argv, in this repo):
+- *"hey, which test runner does this repo use?"* got 3 sentences, 58 words,
+  no headings. The same question without the rule got 83 words and a closing
+  caveat.
+- *"explain how the chat turns in server/src/chat/service.ts work"* got a
+  structured answer: 730 words, numbered bold sections and bullets.
+- A Director persona prompt with *"морнинг! есть кто-нибудь на связи
+  сегодня?"* got 3 short sentences in Russian.
+- `--append-system-prompt=<rule>` (the `=` form) is accepted by the CLI.
+- Tests: `office/chat.test.ts` § reply style checks that a repo chat's first
+  and resumed turns carry the flag and that the prompt is the message alone.
+  The persona turn test checks the flag is present and the rule is not in
+  the prompt. `huddles.test.ts` and `channel.test.ts` check that each turn's
+  prompt contains the constant.
+
 ## From the phone
 
 `/chat` is a **mode**, not a wizard. It survives a restart (`telegram.activeChatId` in `tm_config`, deliberately absent from `PUT /api/config` like the other bot-state keys), and you leave it by typing `/endchat`. That is the whole reason it is persisted rather than held in memory next to the conversational flows: a flow that evaporates costs you a re-typed title, but a chat mode that silently evaporated would turn your next message back into an offer to file a task.

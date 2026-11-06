@@ -30,6 +30,7 @@ import {
   type OfficeMessage,
   type OfficeRole,
 } from '@tm/shared';
+import { CONVERSATIONAL_REPLY_RULE } from '../claude/reply-style.ts';
 import { broadcast } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 import { postStakeholderMessage, OfficeChannelRefused } from './channel.ts';
@@ -89,6 +90,8 @@ export interface OfficeChatTurnPlan {
   denies: string[] | null;
   cwd: string;
   addDirs: string[];
+  /** `--append-system-prompt`: the conversational reply rule (docs/chat.md § Reply style) */
+  appendSystemPrompt: string;
 }
 
 /**
@@ -174,7 +177,7 @@ export async function planOfficeChatTurn(
     '',
     '## How a chat turn works',
     '',
-    '- You are read-only: you cannot edit files, run commands, or file tasks. Answer in plain prose, concisely, as yourself.',
+    '- You are read-only: you cannot edit files, run commands, or file tasks. Answer as yourself, in the reply style of this chat (your system prompt).',
     '- If something should be DONE, say what and why; the stakeholder can send their message to the office channel as a request, which the Director routes into work.',
     '- Never claim to have done what you cannot do here.',
     '',
@@ -191,6 +194,7 @@ export async function planOfficeChatTurn(
     denies,
     cwd: path.resolve(office.folderPath),
     addDirs: repos.map((r) => r.path),
+    appendSystemPrompt: CONVERSATIONAL_REPLY_RULE,
   };
 }
 

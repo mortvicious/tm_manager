@@ -9,6 +9,7 @@ import {
   type EffortLevel,
 } from '@tm/shared';
 import { READ_ONLY_DISALLOWED, aux, type AuxRunner } from '../claude/aux.ts';
+import { CONVERSATIONAL_REPLY_RULE } from '../claude/reply-style.ts';
 import { planOfficeChatTurn, resolveOfficeChatRole, type OfficeChatTurnPlan } from '../office/chat.ts';
 import type { ShiftIsolation } from '../office/shift.ts';
 import { pidLooksLikeOurs } from '../pty/session-manager.ts';
@@ -596,6 +597,10 @@ export class ChatService {
         tools: null,
         disallowedTools: [...(read ? READ_ONLY_DISALLOWED : []), ...NEVER_IN_CHAT],
         permission: read ? 'dontAsk' : 'bypass',
+        // A dialogue, not a document (docs/chat.md § Reply style): the CLI
+        // records it with the session's first request and keeps that record
+        // on every resume, so it holds for the SPA and the phone alike.
+        appendSystemPrompt: CONVERSATIONAL_REPLY_RULE,
         lean: false,
         timeoutMs: TURN_TIMEOUT_MS,
         // Any final text is the reply; there is no schema to correct against.
@@ -674,6 +679,7 @@ export class ChatService {
         disallowedTools: [...READ_ONLY_DISALLOWED, ...NEVER_IN_CHAT],
         addDirs: plan.addDirs,
         permissionsDeny: plan.denies ?? undefined,
+        appendSystemPrompt: plan.appendSystemPrompt,
         permission: 'dontAsk',
         lean: true,
         timeoutMs: TURN_TIMEOUT_MS,

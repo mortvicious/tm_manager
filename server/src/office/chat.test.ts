@@ -25,6 +25,7 @@ import {
   type OfficeRole,
 } from '@tm/shared';
 import { AuxRunner } from '../claude/aux.ts';
+import { CONVERSATIONAL_REPLY_RULE } from '../claude/reply-style.ts';
 import { ChatService, OFFICE_CHAT_NO_WRITE } from '../chat/service.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 import { registerChatRoutes } from '../routes/chat.ts';
@@ -240,6 +241,9 @@ describe('office chat turns', () => {
     assert.ok(a.sp.args.includes(`--add-dir=${repoPath}`));
     assert.ok(!a.sp.args.includes('--resume'));
     assert.ok(a.sp.args.includes('dontAsk'), 'read-only permission mode');
+    // the reply rule rides the system prompt, never the user message (docs/chat.md § Reply style)
+    assert.ok(a.sp.args.includes(`--append-system-prompt=${CONVERSATIONAL_REPLY_RULE}`), 'a persona turn carries the reply rule');
+    assert.ok(!a.prompt.includes(CONVERSATIONAL_REPLY_RULE), 'the rule is not echoed in the prompt');
     assert.equal(a.user.roleId, mira.id);
     assert.equal(a.reply.roleId, mira.id);
     assert.equal(a.reply.taintedAt, null);
@@ -338,6 +342,23 @@ describe('office chat turns', () => {
     const chat = await officeChat(o);
     const t = await turn(chat, '@Oz status?', 'ok');
     assert.ok(t.reply.taintedAt);
+  });
+});
+
+describe('reply style (docs/chat.md § Reply style)', () => {
+  test('a repo chat turn carries the conversational reply rule as an appended system prompt, fresh and resumed', async () => {
+    const c = await chats.create({ repoId } as never, 'human');
+    assert.ok(c.ok, c.ok ? '' : c.error);
+    const flag = `--append-system-prompt=${CONVERSATIONAL_REPLY_RULE}`;
+    const first = await turn(c.value, 'which repo is this?', 'This one, r.');
+    assert.ok(first.sp.args.includes(flag), 'the first turn carries the rule');
+    assert.ok(!first.prompt.includes(CONVERSATIONAL_REPLY_RULE), 'never in the user message');
+    assert.equal(first.prompt, 'which repo is this?');
+    const second = await turn((await storage.getChat(c.value.id))!, 'and the branch?', 'main.');
+    assert.ok(second.sp.args.includes('--resume'), 'the second turn resumes the session');
+    assert.ok(second.sp.args.includes(flag), 'a resumed turn passes it too');
+    // the flag is one argv element in the `=` form, before the `--` that ends the options
+    assert.ok(second.sp.args.indexOf(flag) < second.sp.args.indexOf('--'));
   });
 });
 

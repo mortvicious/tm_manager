@@ -24,6 +24,7 @@ import {
   type OfficeRole,
 } from '@tm/shared';
 import { AuxRunner } from '../claude/aux.ts';
+import { CONVERSATIONAL_REPLY_RULE } from '../claude/reply-style.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 import { registerOfficeRoutes } from '../routes/offices.ts';
 import { SqliteStorage } from '../storage/sqlite.ts';
@@ -191,12 +192,16 @@ describe('messages and the routing pass', () => {
     const qa = await role(o, { key: 'qa', preset: 'qa' });
     const dev = await role(o, { key: 'dev' });
 
-    const sent = await shift(o, qa, {
-      messages: [
-        { to: 'director', kind: 'request', subject: 'Flaky checkout test', body: 'checkout.spec fails 1 in 5 runs; needs a fix.' },
-        { to: 'dev', kind: 'handoff', subject: 'Retry helper', body: 'Please look at the retry helper before Friday.' },
-        { to: 'director', kind: 'finding', subject: 'Duplicate of last week', body: 'Same as the cache bug we already closed.' },
-      ],
+    const sent = await shift(o, qa, (p: string) => {
+      // the `messages` section's description carries the one reply rule (docs/office.md § Channel)
+      assert.ok(p.includes(CONVERSATIONAL_REPLY_RULE), 'a shift is told to write messages in the chat reply style');
+      return {
+        messages: [
+          { to: 'director', kind: 'request', subject: 'Flaky checkout test', body: 'checkout.spec fails 1 in 5 runs; needs a fix.' },
+          { to: 'dev', kind: 'handoff', subject: 'Retry helper', body: 'Please look at the retry helper before Friday.' },
+          { to: 'director', kind: 'finding', subject: 'Duplicate of last week', body: 'Same as the cache bug we already closed.' },
+        ],
+      };
     });
     assert.equal(sent.out.status, 'ok');
     assert.equal(sent.out.error, null);

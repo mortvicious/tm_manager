@@ -97,6 +97,13 @@ export interface AuxSpec<T> {
    */
   permissionsDeny?: string[];
   /**
+   * Text appended to the CLI's default system prompt (`--append-system-prompt`)
+   * — chat turns' `CONVERSATIONAL_REPLY_RULE` (docs/chat.md § Reply style).
+   * Never echoed in the transcript; the CLI records it with the conversation's
+   * first request and reuses that record on every `--resume`.
+   */
+  appendSystemPrompt?: string;
+  /**
    * `dontAsk` = deny anything that would prompt (every read-only role);
    * `bypass` = `--dangerously-skip-permissions` (chat write mode, human jobs);
    * `auto` = the CLI's classifier-gated mode (an agent-filed job while workers run `auto`).
@@ -642,6 +649,8 @@ export function buildAuxArgs(spec: AuxSpec<unknown>): string[] {
   if (spec.disallowedTools.length) args.push(`--disallowedTools=${spec.disallowedTools.join(',')}`);
   for (const dir of spec.addDirs ?? []) args.push(`--add-dir=${dir}`);
   if (spec.lean) args.push('--no-chrome');
+  // the `=` form, so a rule that starts with `-` is never read as a flag
+  if (spec.appendSystemPrompt) args.push(`--append-system-prompt=${spec.appendSystemPrompt}`);
   // `--` ends the options: a chat message that starts with `-` is a prompt.
   args.push('--', spec.prompt);
   return args;

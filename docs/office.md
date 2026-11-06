@@ -2064,6 +2064,16 @@ what they say (`server/src/office/channel.ts`, shared types and pure helpers
 at the end of `shared/src/office.ts`). A message is never work by itself: the
 Director decides whether it becomes a task, a note, a huddle (§ Huddles) or a forward.
 
+### Message style
+
+A message is dialogue, not a document. The `messages` section's description
+(what every shift prompt lists) asks for a short `subject` (a few words) and
+a `body` only as long as it needs to be, then quotes the one conversational
+reply rule, `CONVERSATIONAL_REPLY_RULE` (`server/src/claude/reply-style.ts`,
+docs/chat.md § Reply style). The caps (`OFFICE_MESSAGE_SUBJECT_MAX`,
+`OFFICE_MESSAGE_BODY_MAX`) are unchanged: the rule shapes the text, and the
+caps only bound it. The stakeholder's own posts are not touched.
+
 ### Writing a message
 
 - **A role** returns the `messages` section (every role): at most
@@ -2192,6 +2202,19 @@ a chat: there is no huddle without a subject, and every turn is a normal
 read-only shift of one participant, in that role's own session, with that
 role's own notes. Code: `server/src/office/huddles.ts`; the row and its
 conditional writes are migration 60's `tm_office_huddles` (§ Data model).
+
+### Turn style
+
+A huddle is a dialogue between roles, so every turn's prompt block
+(`huddleTurnPlan`) quotes `CONVERSATIONAL_REPLY_RULE` (docs/chat.md § Reply
+style) as how to write `say`, plus one huddle line: *say only what moves the
+decision along — no recap of the subject or of what others said, no agreeing
+for the sake of it.* The old "this is not a chat" line now reads "no small
+talk", so it does not contradict the rule. `decision` and `notes` are records
+and keep their own shape. `OFFICE_HUDDLE_SAY_MAX` stays 4000. The task asked
+for it to be lowered only if measured turns pad up to it, and on 2026-11-06
+the live database had no huddle turns to measure (`tm_office_messages` with
+`subject_kind = 'huddle'`: 0 rows). Re-measure once huddles have run.
 
 ### Opening one
 
@@ -2374,6 +2397,17 @@ creation. One transcript; the stakeholder talks, the roles answer. Server:
 shift block, send-to-channel) on top of `ChatService` (`chat/service.ts`);
 the pure half (mention parsing, transcript filters) is
 `shared/src/office-chat.ts`, shared with the SPA's autocomplete.
+
+### Reply style
+
+Every persona turn gets the one conversational reply rule,
+`CONVERSATIONAL_REPLY_RULE`, as `--append-system-prompt`
+(`OfficeChatTurnPlan.appendSystemPrompt`, docs/chat.md § Reply style). That
+includes the Director, who is always present. Replies are 1–3 sentences by
+default, and long, structured answers come back only when they are asked for.
+The prompt's "How a chat turn works" block points at it ("in the reply style
+of this chat") and does not repeat it. A persona turn is always fresh, so the
+rule is in force on every turn.
 
 ### Who answers
 
