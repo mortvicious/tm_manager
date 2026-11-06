@@ -261,6 +261,22 @@ request. Office chats live on /office only: `GET /api/chats` without
 `?officeId=` leaves them out, as do the Chat page, the palette and Telegram;
 their writes need `Origin`.
 
+## The office planner chat
+
+A chat with `planner_workspace_id` set (migration 63) is the **office
+planner's** conversation for that workspace — docs/office.md § Office planner.
+Its turns are ordinary chat aux terminals (the lock, stop, pid, boot recovery,
+`/killall` and the restart guard all apply) but planned by
+`planPlannerTurn`: read-only with NO web tools, cwd a scratch dir outside every
+checkout (`<os tmpdir>/tm-office-planner/<workspaceId>`), the
+workspace repos added, the office folder denied, a trusted office snapshot in
+the prompt, and a validated `{blueprint}`/`{diff}` json block stored on the
+reply (`tm_chat_messages.blueprint`, `blueprint_applied_at`). Unlike other
+chats it is stopped by Pause all and refused while paused, and asks the day
+fuse. It is used only through `/api/office-planner/*`: `GET /api/chats`, the
+Chat page, the palette and Telegram leave it out, and `/api/chats/:id`
+PATCH/DELETE/messages refuse it (400).
+
 ## What it is not
 
 - **Not an agent.** It has no task, no run row, no review round, no publish turn. If a chat turns up something worth doing, file a task.

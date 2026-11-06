@@ -62,6 +62,7 @@ import { OfficeChat } from '../components/OfficeChat.tsx';
 import { OfficeHuddles } from '../components/OfficeHuddles.tsx';
 import { OfficePlace } from '../components/office/OfficePlace.tsx';
 import { useOfficeViewMode, type OfficeViewMode } from '../officeThemes.ts';
+import { OfficeAssistant, OfficePlannerFlow } from '../components/OfficePlanner.tsx';
 import { useNow } from '../components/TimeAgo.tsx';
 import { useArm } from '../arm.ts';
 import { toastError } from '../toast.ts';
@@ -229,7 +230,7 @@ export function OfficePage({ onOpenTask, onOpenTerminal }: Props) {
       ) : office ? (
         <OfficeView key={office.id} officeId={office.id} onOpenTask={onOpenTask} onOpenTerminal={onOpenTerminal} />
       ) : (
-        <CreateOffice workspace={workspace} onCreated={reload} />
+        <NoOffice key={workspace.id} workspace={workspace} onCreated={reload} />
       )}
     </div>
   );
@@ -269,7 +270,39 @@ function OfficeList({ offices }: { offices: Office[] | null }) {
   );
 }
 
-function CreateOffice({ workspace, onCreated }: { workspace: Workspace; onCreated: () => void }) {
+/**
+ * No office yet: the plain create form, or the planner (docs/office.md §
+ * Office planner) — opened by its button, or straight away when this
+ * workspace already has a planner conversation going.
+ */
+function NoOffice({ workspace, onCreated }: { workspace: Workspace; onCreated: () => void }) {
+  const mobile = useIsMobile();
+  const [planning, setPlanning] = useState(false);
+  useEffect(() => {
+    let live = true;
+    api.getOfficePlanner(workspace.id).then(
+      (v) => live && v.chat && setPlanning(true),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [workspace.id]);
+  const flow = <OfficePlannerFlow workspace={workspace} inSheet={mobile} onCreated={onCreated} onCancel={() => setPlanning(false)} />;
+  return (
+    <>
+      {!(planning && !mobile) && <CreateOffice workspace={workspace} onCreated={onCreated} onPlan={() => setPlanning(true)} />}
+      {planning && !mobile && flow}
+      {planning && mobile && (
+        <Sheet label="Plan an office" title="Plan with the assistant" onClose={() => setPlanning(false)} disableDrag tall>
+          {flow}
+        </Sheet>
+      )}
+    </>
+  );
+}
+
+function CreateOffice({ workspace, onCreated, onPlan }: { workspace: Workspace; onCreated: () => void; onPlan: () => void }) {
   const [folder, setFolder] = useState('');
   const [tz, setTz] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
   const [busy, setBusy] = useState(false);
@@ -319,6 +352,10 @@ function CreateOffice({ workspace, onCreated }: { workspace: Workspace; onCreate
         <button className="btn primary" disabled={busy || tzBad} onClick={() => void create()}>
           Create office
         </button>
+        <button className="btn" onClick={onPlan}>
+          Plan with the assistant
+        </button>
+        <span className="office-hint muted">a short wizard, then one read-only session reads the repos and drafts the office for you to edit</span>
       </div>
     </div>
   );
@@ -329,7 +366,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   const now = useNow();
   const { detail, states, error, reload } = useOfficeDetail(officeId);
   const [editing, setEditing] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | 'channel' | 'huddles' | 'chat' | null>(null);
+  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | 'channel' | 'huddles' | 'chat' | 'assistant' | null>(null);
   const briefs = useOfficeBriefs(officeId);
   const [briefId, setBriefId] = useBriefParam();
   const [mode, setMode] = useOfficeViewMode();
@@ -356,6 +393,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   const ask = <AskDirector office={office} director={director} onAsked={reload} />;
   const channel = <OfficeChannel office={office} roles={roles} inSheet={mobile} onOpenTask={onOpenTask} />;
   const chat = <OfficeChat office={office} roles={roles} inSheet={mobile} />;
+  const assistant = <OfficeAssistant office={office} roles={roles} inSheet={mobile} />;
   const huddles = <OfficeHuddles office={office} roles={roles} inSheet={mobile} onOpenTask={onOpenTask} />;
   const briefList = (
     <BriefList office={office} roles={roles} briefs={briefs} selected={briefId} inSheet={mobile} onSelect={(id) => setBriefId(id === briefId ? null : id)} />
@@ -373,6 +411,9 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
         <div className="office-phone-bar">
           <button className="btn" onClick={() => setSheet('settings')}>
             Settings
+          </button>
+          <button className="btn" onClick={() => setSheet('assistant')}>
+            Assistant
           </button>
           <button className="btn" onClick={() => setSheet('vision')}>
             Vision &amp; wishes
@@ -444,9 +485,15 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
           {ask}
         </div>
       )}
+      {!mobile && <div className="panel">{assistant}</div>}
       {!mobile && <div className="panel">{chat}</div>}
       {!mobile && <div className="panel">{channel}</div>}
       {!mobile && <div className="panel">{huddles}</div>}
+      {mobile && sheet === 'assistant' && (
+        <Sheet label="Office assistant" title="Assistant" onClose={() => setSheet(null)} disableDrag tall>
+          {assistant}
+        </Sheet>
+      )}
       {mobile && sheet === 'chat' && (
         <Sheet label="Office group chat" title="Group chat" onClose={() => setSheet(null)} disableDrag tall>
           {chat}

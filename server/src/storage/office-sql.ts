@@ -1071,7 +1071,8 @@ export function rowToOfficeSignal(r: any): OfficeSignal {
  * features). A run matching several branches is still one row, so it is
  * counted once. With `roleId`, only that role's shifts and tasks — and the
  * office's feature planning only when that role is a Director (features keep
- * no role column; only a Director files one).
+ * no role column; only a Director files one). Without `roleId` the office
+ * planner's turns count too (aux `chat` runs of the workspace's planner chat).
  */
 export function officeSpendSql(officeId: string, sinceIso: string, roleId?: string | null): { sql: string; params: unknown[] } {
   const shiftScope = roleId ? `s.office_id = ? AND s.role_id = ?` : `s.office_id = ?`;
@@ -1080,6 +1081,12 @@ export function officeSpendSql(officeId: string, sinceIso: string, roleId?: stri
     ? `f.office_id = ? AND f.office_id IN (SELECT ro.office_id FROM tm_office_roles ro WHERE ro.id = ? AND ro.preset = 'director')`
     : `f.office_id = ?`;
   const scope = (roleId ? [officeId, roleId] : [officeId]) as unknown[];
+  // the office planner's turns (docs/office.md § Office planner): aux `chat`
+  // runs of the workspace's planner chat — the office's, never a role's
+  const planner = roleId
+    ? ''
+    : `
+          OR (r.mode = 'aux' AND r.kind = 'chat' AND r.subject_id IN (SELECT c.id FROM tm_chats c WHERE c.planner_workspace_id IN (SELECT o.workspace_id FROM tm_offices o WHERE o.id = ?)))`;
   return {
     sql: `SELECT COALESCE(SUM(r.cost_usd), 0) AS s FROM tm_runs r
       WHERE r.started_at >= ?
@@ -1087,8 +1094,8 @@ export function officeSpendSql(officeId: string, sinceIso: string, roleId?: stri
           OR (r.mode = 'aux' AND r.kind = 'shift' AND r.subject_id IN (SELECT s.id FROM tm_office_shifts s WHERE ${shiftScope}))
           OR r.task_id IN (SELECT t.id FROM tm_tasks t WHERE ${taskScope})
           OR (r.mode = 'aux' AND r.kind IN ('review', 'compact') AND r.subject_id IN (SELECT t.id FROM tm_tasks t WHERE ${taskScope}))
-          OR (r.mode = 'aux' AND r.kind IN ('plan', 'plan-review') AND r.subject_id IN (SELECT f.id FROM tm_features f WHERE ${featureScope})))`,
-    params: [sinceIso, ...scope, ...scope, ...scope, ...scope, ...scope],
+          OR (r.mode = 'aux' AND r.kind IN ('plan', 'plan-review') AND r.subject_id IN (SELECT f.id FROM tm_features f WHERE ${featureScope}))${planner})`,
+    params: [sinceIso, ...scope, ...scope, ...scope, ...scope, ...scope, ...(roleId ? [] : [officeId])],
   };
 }
 

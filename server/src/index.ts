@@ -39,6 +39,7 @@ import { PushNotifier } from './push/notifier.ts';
 import { registerSpaceRoutes } from './routes/spaces.ts';
 import { registerWorkspaceRoutes } from './routes/workspaces.ts';
 import { registerOfficeRoutes } from './routes/offices.ts';
+import { registerOfficePlannerRoutes } from './routes/office-planner.ts';
 import { registerReportRoutes } from './routes/reports.ts';
 import { recoverReportsOnBoot } from './reports/service.ts';
 import { JobService } from './jobs.ts';
@@ -547,6 +548,7 @@ registerAgentJobRoutes(app, storage, jobs);
 registerSpaceRoutes(app, storage, orchestrator);
 registerWorkspaceRoutes(app, storage);
 registerOfficeRoutes(app, storage);
+registerOfficePlannerRoutes(app, storage, chats);
 registerOfficeProposalRoutes(app, storage, () => orchestrator);
 // Web Push to the Home Screen PWA (docs/push.md). Like the bot it reaches OUT
 // (to the browser vendors' push services); the routes only manage devices.

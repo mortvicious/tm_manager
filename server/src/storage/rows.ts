@@ -390,6 +390,7 @@ export function rowToChat(r: any): Chat {
     lastMessageAt: r.last_message_at ?? null,
     officeId: r.office_id ?? null,
     participants: chatParticipants(r.participants),
+    plannerWorkspaceId: r.planner_workspace_id ?? null,
   };
 }
 
@@ -412,7 +413,19 @@ export function rowToChatMessage(r: any): ChatMessage {
     roleId: r.role_id ?? null,
     taintedAt: r.tainted_at ?? null,
     channelMessageId: r.channel_message_id ?? null,
+    blueprint: chatBlueprint(r.blueprint),
+    blueprintAppliedAt: r.blueprint_applied_at ?? null,
   };
+}
+
+function chatBlueprint(raw: unknown): ChatMessage['blueprint'] {
+  if (raw === null || raw === undefined || raw === '') return null;
+  try {
+    const v = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return v && typeof v === 'object' && (v.kind === 'blueprint' || v.kind === 'diff') ? v : null;
+  } catch {
+    return null;
+  }
 }
 
 export function rowToProposal(r: any): Proposal {

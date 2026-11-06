@@ -329,9 +329,25 @@ export interface OfficeRouteOptions {
   scheduler?: () => Pick<OfficeScheduler, 'wake'> | null;
 }
 
-export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opts: OfficeRouteOptions = {}) {
+/** What an office write answers: the status code and the body the route sends. */
+export interface OfficeWriteOut {
+  code: number;
+  body: unknown;
+}
+const out = (code: number, body: unknown): OfficeWriteOut => ({ code, body });
+
+/** The request bodies the office writes take, as the routes parse them (the planner's Apply reuses them). */
+export const officeWriteBodies = { createBody, officePatchBody, roleCreateBody, rolePatchBody };
+
+/**
+ * The office and role WRITES of the API — create/patch an office, create/
+ * patch/delete a role — as functions over already-parsed bodies, so the
+ * routes and the office planner's Apply (docs/office.md § Office planner)
+ * run the SAME validation, audit and broadcast. There is no second path into
+ * storage: Apply calls these.
+ */
+export function officeWrites(storage: Storage) {
   const audit = (data: Record<string, unknown>) => storage.appendEvent({ kind: 'office.changed', actor: 'human', data });
-  const scheduler = opts.scheduler ?? officeScheduler;
 
   /** The role states after an edit (docs/office.md § Scheduler and states); best effort — the row is the truth. */
   const statesOf = async (office: Office) => (await officeStates(storage, office.id).catch(() => null)) ?? undefined;
@@ -358,6 +374,306 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opt
   /** Another office already using this folder (two offices must not share notes). */
   const folderTakenBy = async (p: string, selfId: string | null) =>
     (await storage.listOffices()).find((o) => o.id !== selfId && o.folderPath === p) ?? null;
+
+  /** The office and role, or the refusal to send. */
+  const findRole = async (id: string, roleId: string): Promise<{ office: Office; role: OfficeRole } | OfficeWriteOut> => {
+    const office = await storage.getOffice(id);
+    if (!office) return out(404, { error: 'office not found' });
+    const role = await storage.getOfficeRole(roleId);
+    if (!role || role.officeId !== id) return out(404, { error: 'role not found in this office' });
+    return { office, role };
+  };
+
+  const createOffice = async (body: z.infer<typeof createBody>): Promise<OfficeWriteOut> => {
+    const ws = await storage.getWorkspace(body.workspaceId);
+    if (!ws) return out(400, { error: `unknown workspace id: ${body.workspaceId}` });
+    if (await storage.getOfficeByWorkspace(ws.id)) {
+      return out(409, { error: `workspace "${ws.name}" already has an office` });
+    }
+    const tz = body.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (!isValidTimeZone(tz)) return out(400, { error: `unknown time zone "${tz}" (an IANA name like Europe/Berlin)` });
+
+    const repos = await storage.listRepos();
+    let folder: string;
+    if (body.folderPath !== undefined) {
+      const v = validateOfficeFolder(body.folderPath, repos);
+      if ('error' in v) return out(400, { error: `folderPath: ${v.error}` });
+      folder = v.path;
+    } else {
+      const d = defaultOfficeFolder(ws, await storage.listSpaces(), repos);
+      if (!d) {
+        return out(400, { error: `the repos of "${ws.name}" do not share one shared space, so there is no default folder: pick one (folderPath)` });
+      }
+      if ('error' in d) return out(400, { error: `default folder: ${d.error}` });
+      folder = d.path;
+    }
+    const taken = await folderTakenBy(folder, null);
+    if (taken) return out(409, { error: `folder ${folder} is already the folder of another office` });
+
+    let office: Office;
+    try {
+      office = await storage.createOffice({
+        workspaceId: ws.id,
+        folderPath: folder,
+        timezone: tz,
+        theme: body.theme ?? DEFAULT_OFFICE_THEME,
+        enabled: false,
+      });
+    } catch (e) {
+      if (isUniqueViolation(e)) return out(409, { error: `workspace "${ws.name}" already has an office` });
+      throw e;
+    }
+
+    let roles: OfficeRole[] = [];
+    let scaffold;
+    const archived: string[] = [];
+    try {
+      const ids = generateOfficeIdentities(
+        office.id,
+        OFFICE_ROLE_PRESETS.map((p) => roleFromPreset(p).key),
+        office.theme,
+      );
+      for (const preset of OFFICE_ROLE_PRESETS) {
+        const draft = roleFromPreset(preset);
+        const who = ids[draft.key]!;
+        roles.push(
+          await storage.createOfficeRole({
+            ...draft,
+            officeId: office.id,
+            name: who.name,
+            avatar: who.avatar,
+            notesPath: `roles/${draft.key}.md`,
+          }),
+        );
+      }
+      // notes already in the folder are not these roles' (§ API → Notes of a new role)
+      for (const r of roles) {
+        const moved = archiveRoleNotes(office, r.key);
+        if (moved) archived.push(moved);
+      }
+      scaffold = scaffoldOfficeFolder(office, roles, { repos });
+    } catch (e) {
+      // all or nothing: an office whose folder could not be laid out is not created
+      await storage.deleteOffice(office.id).catch(() => {});
+      return out(400, { error: `could not create the office: ${(e as Error).message}` });
+    }
+
+    await audit({
+      action: 'created',
+      officeId: office.id,
+      workspaceId: ws.id,
+      folderPath: office.folderPath,
+      theme: office.theme,
+      timezone: office.timezone,
+      roles: roles.map((r) => ({ id: r.id, key: r.key, name: r.name })),
+      ...(archived.length ? { archivedNotes: archived } : {}),
+    });
+    await announce(office, true);
+    const result: OfficeCreateResult = { office, roles, scaffold: { created: scaffold.created, kept: scaffold.kept, archived } };
+    return out(201, result);
+  };
+
+  const patchOffice = async (id: string, body: z.infer<typeof officePatchBody>): Promise<OfficeWriteOut> => {
+    const cur = await storage.getOffice(id);
+    if (!cur) return out(404, { error: 'office not found' });
+
+    const enabled = body.enabled ?? cur.enabled;
+    const budget = body.dayBudgetUsd ?? cur.dayBudgetUsd;
+    if (enabled && !(budget > 0)) {
+      return out(409, {
+        error: body.enabled
+          ? 'set a day budget above $0 (dayBudgetUsd) before enabling the office'
+          : 'an enabled office needs a day budget above $0: disable it first',
+      });
+    }
+    if (body.timezone !== undefined && !isValidTimeZone(body.timezone)) {
+      return out(400, { error: `unknown time zone "${body.timezone}" (an IANA name like Europe/Berlin)` });
+    }
+
+    const { paused, ...rest } = body;
+    const patch: OfficePatch = { ...rest };
+    const archivedNotes: string[] = [];
+    if (body.folderPath !== undefined) {
+      const repos = await storage.listRepos();
+      const v = validateOfficeFolder(body.folderPath, repos);
+      if ('error' in v) return out(400, { error: `folderPath: ${v.error}` });
+      if (v.path !== cur.folderPath) {
+        if (await folderTakenBy(v.path, id)) return out(409, { error: `folder ${v.path} is already the folder of another office` });
+        try {
+          const roles = await storage.listOfficeRoles(id);
+          // the new folder's notes are not these roles' (§ API → Notes of a new role)
+          for (const r of roles) {
+            const moved = archiveRoleNotes({ folderPath: v.path }, r.key);
+            if (moved) archivedNotes.push(moved);
+          }
+          scaffoldOfficeFolder({ ...cur, folderPath: v.path }, roles, { repos });
+        } catch (e) {
+          return out(400, { error: `folderPath: ${(e as Error).message}` });
+        }
+      }
+      patch.folderPath = v.path;
+    }
+
+    let office = (await storage.updateOffice(id, patch)) ?? null;
+    if (!office) return out(404, { error: 'office not found' });
+    // Turned on, or re-zoned: every role's schedule counts from now — a slot
+    // from while it was off (or read in the old zone) was never owed.
+    if ((body.enabled === true && !cur.enabled) || (body.timezone !== undefined && body.timezone !== cur.timezone)) {
+      const armedAt = new Date().toISOString();
+      for (const r of await storage.listOfficeRoles(id)) await storage.updateOfficeRole(r.id, { armedAt });
+    }
+    let pauseChanged = false;
+    if (paused !== undefined && paused !== Boolean(office.pausedAt)) {
+      const next = await storage.pauseOffice(id, paused ? OFFICE_HUMAN_PAUSE_REASON : null, !paused);
+      if (!next) return out(409, { error: 'the office was paused or resumed meanwhile: reload and try again' });
+      office = next;
+      pauseChanged = true;
+    }
+
+    const fields = Object.keys(body);
+    const autonomyRaised = body.autonomy !== undefined && AUTONOMY_RANK[body.autonomy] > AUTONOMY_RANK[cur.autonomy];
+    await audit({
+      action: 'edited',
+      officeId: id,
+      workspaceId: office.workspaceId,
+      fields,
+      ...(body.autonomy !== undefined && body.autonomy !== cur.autonomy ? { autonomy: { from: cur.autonomy, to: body.autonomy, raised: autonomyRaised } } : {}),
+      ...(body.enabled !== undefined && body.enabled !== cur.enabled ? { enabled: body.enabled } : {}),
+      ...(body.dayBudgetUsd !== undefined && body.dayBudgetUsd !== cur.dayBudgetUsd ? { dayBudgetUsd: { from: cur.dayBudgetUsd, to: body.dayBudgetUsd } } : {}),
+      ...(pauseChanged ? { paused } : {}),
+      ...(archivedNotes.length ? { archivedNotes } : {}),
+    });
+    await announce(office);
+    return out(200, office);
+  };
+
+  const createRole = async (id: string, body: z.infer<typeof roleCreateBody>): Promise<OfficeWriteOut> => {
+    const office = await storage.getOffice(id);
+    if (!office) return out(404, { error: 'office not found' });
+
+    const preset = body.preset ? roleFromPreset(body.preset as (typeof OFFICE_ROLE_PRESETS)[number]) : null;
+    const key = body.key ?? preset?.key;
+    if (!key) return out(400, { error: 'a role without a preset needs a key' });
+    if (!OFFICE_ROLE_KEY_RE.test(key)) {
+      return out(400, { error: `key "${key}" must be lowercase letters and digits in dash-separated words (like "qa" or "release-notes")` });
+    }
+    const { key: _k, preset: _p, ...input } = body;
+    const checked = checkRoleFields(input);
+    if ('error' in checked) return out(400, { error: checked.error });
+    const f = checked.fields;
+    const title = f.title ?? preset?.title;
+    const prompt = f.prompt ?? preset?.prompt;
+    if (!title || !prompt) return out(400, { error: 'a role without a preset needs a title and a prompt' });
+    const roles = await storage.listOfficeRoles(id);
+    if (roles.some((r) => r.key === key)) return out(409, { error: `this office already has a role with key "${key}"` });
+
+    // a generated identity whose given name no other role of the office wears
+    let who = generateRoleIdentity(office.id, key, office.theme);
+    for (let salt = 1; salt < 32 && roles.some((r) => r.name === who.name); salt++) who = generateRoleIdentity(office.id, key, office.theme, salt);
+
+    const draft: NewOfficeRole = {
+      officeId: id,
+      preset: preset?.preset ?? null,
+      key,
+      name: f.name ?? who.name,
+      avatar: f.avatar ?? who.avatar,
+      title,
+      prompt,
+      model: f.model ?? preset?.model ?? 'claude-opus-5-5',
+      effort: f.effort !== undefined ? (f.effort as OfficeRole['effort']) : (preset?.effort ?? null),
+      tools: f.tools ?? preset?.tools ?? [],
+      autonomy: f.autonomy ?? null,
+      capUsd: f.capUsd ?? null,
+      schedules: f.schedules ?? preset?.schedules ?? [],
+      triggers: f.triggers ?? preset?.triggers ?? [],
+      guards: f.guards ?? preset?.guards ?? [],
+      notesPath: `roles/${key}.md`,
+      enabled: f.enabled ?? true,
+    };
+    let role: OfficeRole;
+    try {
+      role = await storage.createOfficeRole(draft);
+    } catch (e) {
+      if (isUniqueViolation(e)) return out(409, { error: `this office already has a role with key "${key}"` });
+      throw e;
+    }
+    // a deleted role's notes (maybe written by a tainted shift) must not become this role's trusted notes
+    let archivedNotes: string | null;
+    try {
+      archivedNotes = archiveRoleNotes(office, role.key);
+    } catch (e) {
+      await storage.deleteOfficeRole(role.id).catch(() => {});
+      return out(400, { error: `could not prepare the role's notes: ${(e as Error).message}` });
+    }
+    await rescaffold(office);
+    await audit({
+      action: 'role-created',
+      ...(archivedNotes ? { archivedNotes } : {}),
+      officeId: id,
+      workspaceId: office.workspaceId,
+      roleId: role.id,
+      key: role.key,
+      preset: role.preset,
+      tools: role.tools,
+      autonomy: role.autonomy,
+    });
+    await announce(office, true);
+    return out(201, roleResult(role));
+  };
+
+  const patchRole = async (id: string, roleId: string, body: z.infer<typeof rolePatchBody>): Promise<OfficeWriteOut> => {
+    const found = await findRole(id, roleId);
+    if ('code' in found) return found;
+    const { office, role: cur } = found;
+    const checked = checkRoleFields(body);
+    if ('error' in checked) return out(400, { error: checked.error });
+    const f = checked.fields;
+    if (f.name !== undefined && f.name !== cur.name) {
+      const clash = (await storage.listOfficeRoles(office.id)).find((r) => r.id !== cur.id && r.name === f.name);
+      if (clash) return out(409, { error: `another role of this office is already called "${f.name}"` });
+    }
+    const patch: OfficeRolePatch = { ...(f as OfficeRolePatch) };
+    if (roleRearms(cur, f)) patch.armedAt = new Date().toISOString();
+    const role = await storage.updateOfficeRole(cur.id, patch);
+    if (!role) return out(404, { error: 'role not found in this office' });
+    if ((f.name !== undefined && f.name !== cur.name) || (f.title !== undefined && f.title !== cur.title)) await rescaffold(office);
+    const raised =
+      f.autonomy !== undefined &&
+      AUTONOMY_RANK[f.autonomy ?? office.autonomy] > AUTONOMY_RANK[cur.autonomy ?? office.autonomy];
+    const addedTools = role.tools.filter((t) => !cur.tools.includes(t));
+    await audit({
+      action: 'role-edited',
+      officeId: office.id,
+      workspaceId: office.workspaceId,
+      roleId: role.id,
+      key: role.key,
+      fields: Object.keys(body),
+      ...(addedTools.length ? { addedTools } : {}),
+      ...(f.autonomy !== undefined && f.autonomy !== cur.autonomy ? { autonomy: { from: cur.autonomy, to: f.autonomy, raised } } : {}),
+    });
+    await announce(office, true);
+    return out(200, roleResult(role));
+  };
+
+  const deleteRole = async (id: string, roleId: string): Promise<OfficeWriteOut> => {
+    const found = await findRole(id, roleId);
+    if ('code' in found) return found;
+    const { office, role } = found;
+    if (!(await storage.deleteOfficeRole(role.id))) return out(404, { error: 'role not found in this office' });
+    // the notes file stays (history); the README's role list drops it
+    await rescaffold(office);
+    await audit({ action: 'role-deleted', officeId: office.id, workspaceId: office.workspaceId, roleId: role.id, key: role.key, name: role.name });
+    await announce(office, true);
+    return out(200, { ok: true });
+  };
+
+  return { audit, announce, rescaffold, folderTakenBy, statesOf, createOffice, patchOffice, createRole, patchRole, deleteRole };
+}
+
+export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opts: OfficeRouteOptions = {}) {
+  const scheduler = opts.scheduler ?? officeScheduler;
+  const writes = officeWrites(storage);
+  const { audit, announce, rescaffold } = writes;
 
   app.get('/api/offices', async () => storage.listOffices());
 
@@ -438,171 +754,14 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opt
   });
 
   app.post('/api/offices', { preHandler: fromBrowser }, async (req, reply) => {
-    const body = createBody.parse(req.body);
-    const ws = await storage.getWorkspace(body.workspaceId);
-    if (!ws) return reply.code(400).send({ error: `unknown workspace id: ${body.workspaceId}` });
-    if (await storage.getOfficeByWorkspace(ws.id)) {
-      return reply.code(409).send({ error: `workspace "${ws.name}" already has an office` });
-    }
-    const tz = body.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
-    if (!isValidTimeZone(tz)) return reply.code(400).send({ error: `unknown time zone "${tz}" (an IANA name like Europe/Berlin)` });
-
-    const repos = await storage.listRepos();
-    let folder: string;
-    if (body.folderPath !== undefined) {
-      const v = validateOfficeFolder(body.folderPath, repos);
-      if ('error' in v) return reply.code(400).send({ error: `folderPath: ${v.error}` });
-      folder = v.path;
-    } else {
-      const d = defaultOfficeFolder(ws, await storage.listSpaces(), repos);
-      if (!d) {
-        return reply
-          .code(400)
-          .send({ error: `the repos of "${ws.name}" do not share one shared space, so there is no default folder: pick one (folderPath)` });
-      }
-      if ('error' in d) return reply.code(400).send({ error: `default folder: ${d.error}` });
-      folder = d.path;
-    }
-    const taken = await folderTakenBy(folder, null);
-    if (taken) return reply.code(409).send({ error: `folder ${folder} is already the folder of another office` });
-
-    let office: Office;
-    try {
-      office = await storage.createOffice({
-        workspaceId: ws.id,
-        folderPath: folder,
-        timezone: tz,
-        theme: body.theme ?? DEFAULT_OFFICE_THEME,
-        enabled: false,
-      });
-    } catch (e) {
-      if (isUniqueViolation(e)) return reply.code(409).send({ error: `workspace "${ws.name}" already has an office` });
-      throw e;
-    }
-
-    let roles: OfficeRole[] = [];
-    let scaffold;
-    const archived: string[] = [];
-    try {
-      const ids = generateOfficeIdentities(
-        office.id,
-        OFFICE_ROLE_PRESETS.map((p) => roleFromPreset(p).key),
-        office.theme,
-      );
-      for (const preset of OFFICE_ROLE_PRESETS) {
-        const draft = roleFromPreset(preset);
-        const who = ids[draft.key]!;
-        roles.push(
-          await storage.createOfficeRole({
-            ...draft,
-            officeId: office.id,
-            name: who.name,
-            avatar: who.avatar,
-            notesPath: `roles/${draft.key}.md`,
-          }),
-        );
-      }
-      // notes already in the folder are not these roles' (§ API → Notes of a new role)
-      for (const r of roles) {
-        const moved = archiveRoleNotes(office, r.key);
-        if (moved) archived.push(moved);
-      }
-      scaffold = scaffoldOfficeFolder(office, roles, { repos });
-    } catch (e) {
-      // all or nothing: an office whose folder could not be laid out is not created
-      await storage.deleteOffice(office.id).catch(() => {});
-      return reply.code(400).send({ error: `could not create the office: ${(e as Error).message}` });
-    }
-
-    await audit({
-      action: 'created',
-      officeId: office.id,
-      workspaceId: ws.id,
-      folderPath: office.folderPath,
-      theme: office.theme,
-      timezone: office.timezone,
-      roles: roles.map((r) => ({ id: r.id, key: r.key, name: r.name })),
-      ...(archived.length ? { archivedNotes: archived } : {}),
-    });
-    await announce(office, true);
-    const result: OfficeCreateResult = { office, roles, scaffold: { created: scaffold.created, kept: scaffold.kept, archived } };
-    return reply.code(201).send(result);
+    const r = await writes.createOffice(createBody.parse(req.body));
+    return reply.code(r.code).send(r.body);
   });
 
   app.patch('/api/offices/:id', { preHandler: fromBrowser }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = officePatchBody.parse(req.body);
-    const cur = await storage.getOffice(id);
-    if (!cur) return reply.code(404).send({ error: 'office not found' });
-
-    const enabled = body.enabled ?? cur.enabled;
-    const budget = body.dayBudgetUsd ?? cur.dayBudgetUsd;
-    if (enabled && !(budget > 0)) {
-      return reply.code(409).send({
-        error: body.enabled
-          ? 'set a day budget above $0 (dayBudgetUsd) before enabling the office'
-          : 'an enabled office needs a day budget above $0: disable it first',
-      });
-    }
-    if (body.timezone !== undefined && !isValidTimeZone(body.timezone)) {
-      return reply.code(400).send({ error: `unknown time zone "${body.timezone}" (an IANA name like Europe/Berlin)` });
-    }
-
-    const { paused, ...rest } = body;
-    const patch: OfficePatch = { ...rest };
-    const archivedNotes: string[] = [];
-    if (body.folderPath !== undefined) {
-      const repos = await storage.listRepos();
-      const v = validateOfficeFolder(body.folderPath, repos);
-      if ('error' in v) return reply.code(400).send({ error: `folderPath: ${v.error}` });
-      if (v.path !== cur.folderPath) {
-        if (await folderTakenBy(v.path, id)) return reply.code(409).send({ error: `folder ${v.path} is already the folder of another office` });
-        try {
-          const roles = await storage.listOfficeRoles(id);
-          // the new folder's notes are not these roles' (§ API → Notes of a new role)
-          for (const r of roles) {
-            const moved = archiveRoleNotes({ folderPath: v.path }, r.key);
-            if (moved) archivedNotes.push(moved);
-          }
-          scaffoldOfficeFolder({ ...cur, folderPath: v.path }, roles, { repos });
-        } catch (e) {
-          return reply.code(400).send({ error: `folderPath: ${(e as Error).message}` });
-        }
-      }
-      patch.folderPath = v.path;
-    }
-
-    let office = (await storage.updateOffice(id, patch)) ?? null;
-    if (!office) return reply.code(404).send({ error: 'office not found' });
-    // Turned on, or re-zoned: every role's schedule counts from now — a slot
-    // from while it was off (or read in the old zone) was never owed.
-    if ((body.enabled === true && !cur.enabled) || (body.timezone !== undefined && body.timezone !== cur.timezone)) {
-      const armedAt = new Date().toISOString();
-      for (const r of await storage.listOfficeRoles(id)) await storage.updateOfficeRole(r.id, { armedAt });
-    }
-    let pauseChanged = false;
-    if (paused !== undefined && paused !== Boolean(office.pausedAt)) {
-      const next = await storage.pauseOffice(id, paused ? OFFICE_HUMAN_PAUSE_REASON : null, !paused);
-      if (!next) return reply.code(409).send({ error: 'the office was paused or resumed meanwhile: reload and try again' });
-      office = next;
-      pauseChanged = true;
-    }
-
-    const fields = Object.keys(body);
-    const autonomyRaised = body.autonomy !== undefined && AUTONOMY_RANK[body.autonomy] > AUTONOMY_RANK[cur.autonomy];
-    await audit({
-      action: 'edited',
-      officeId: id,
-      workspaceId: office.workspaceId,
-      fields,
-      ...(body.autonomy !== undefined && body.autonomy !== cur.autonomy ? { autonomy: { from: cur.autonomy, to: body.autonomy, raised: autonomyRaised } } : {}),
-      ...(body.enabled !== undefined && body.enabled !== cur.enabled ? { enabled: body.enabled } : {}),
-      ...(body.dayBudgetUsd !== undefined && body.dayBudgetUsd !== cur.dayBudgetUsd ? { dayBudgetUsd: { from: cur.dayBudgetUsd, to: body.dayBudgetUsd } } : {}),
-      ...(pauseChanged ? { paused } : {}),
-      ...(archivedNotes.length ? { archivedNotes } : {}),
-    });
-    await announce(office);
-    return office;
+    const r = await writes.patchOffice(id, officePatchBody.parse(req.body));
+    return reply.code(r.code).send(r.body);
   });
 
   /** The office and role behind `:id`/`:roleId`, or the reply already sent. */
@@ -623,113 +782,14 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opt
 
   app.post('/api/offices/:id/roles', { preHandler: fromBrowser }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = roleCreateBody.parse(req.body);
-    const office = await storage.getOffice(id);
-    if (!office) return reply.code(404).send({ error: 'office not found' });
-
-    const preset = body.preset ? roleFromPreset(body.preset as (typeof OFFICE_ROLE_PRESETS)[number]) : null;
-    const key = body.key ?? preset?.key;
-    if (!key) return reply.code(400).send({ error: 'a role without a preset needs a key' });
-    if (!OFFICE_ROLE_KEY_RE.test(key)) {
-      return reply.code(400).send({ error: `key "${key}" must be lowercase letters and digits in dash-separated words (like "qa" or "release-notes")` });
-    }
-    const { key: _k, preset: _p, ...input } = body;
-    const checked = checkRoleFields(input);
-    if ('error' in checked) return reply.code(400).send({ error: checked.error });
-    const f = checked.fields;
-    const title = f.title ?? preset?.title;
-    const prompt = f.prompt ?? preset?.prompt;
-    if (!title || !prompt) return reply.code(400).send({ error: 'a role without a preset needs a title and a prompt' });
-    const roles = await storage.listOfficeRoles(id);
-    if (roles.some((r) => r.key === key)) return reply.code(409).send({ error: `this office already has a role with key "${key}"` });
-
-    // a generated identity whose given name no other role of the office wears
-    let who = generateRoleIdentity(office.id, key, office.theme);
-    for (let salt = 1; salt < 32 && roles.some((r) => r.name === who.name); salt++) who = generateRoleIdentity(office.id, key, office.theme, salt);
-
-    const draft: NewOfficeRole = {
-      officeId: id,
-      preset: preset?.preset ?? null,
-      key,
-      name: f.name ?? who.name,
-      avatar: f.avatar ?? who.avatar,
-      title,
-      prompt,
-      model: f.model ?? preset?.model ?? 'claude-opus-5-5',
-      effort: f.effort !== undefined ? (f.effort as OfficeRole['effort']) : (preset?.effort ?? null),
-      tools: f.tools ?? preset?.tools ?? [],
-      autonomy: f.autonomy ?? null,
-      capUsd: f.capUsd ?? null,
-      schedules: f.schedules ?? preset?.schedules ?? [],
-      triggers: f.triggers ?? preset?.triggers ?? [],
-      guards: f.guards ?? preset?.guards ?? [],
-      notesPath: `roles/${key}.md`,
-      enabled: f.enabled ?? true,
-    };
-    let role: OfficeRole;
-    try {
-      role = await storage.createOfficeRole(draft);
-    } catch (e) {
-      if (isUniqueViolation(e)) return reply.code(409).send({ error: `this office already has a role with key "${key}"` });
-      throw e;
-    }
-    // a deleted role's notes (maybe written by a tainted shift) must not become this role's trusted notes
-    let archivedNotes: string | null;
-    try {
-      archivedNotes = archiveRoleNotes(office, role.key);
-    } catch (e) {
-      await storage.deleteOfficeRole(role.id).catch(() => {});
-      return reply.code(400).send({ error: `could not prepare the role's notes: ${(e as Error).message}` });
-    }
-    await rescaffold(office);
-    await audit({
-      action: 'role-created',
-      ...(archivedNotes ? { archivedNotes } : {}),
-      officeId: id,
-      workspaceId: office.workspaceId,
-      roleId: role.id,
-      key: role.key,
-      preset: role.preset,
-      tools: role.tools,
-      autonomy: role.autonomy,
-    });
-    await announce(office, true);
-    return reply.code(201).send(roleResult(role));
+    const r = await writes.createRole(id, roleCreateBody.parse(req.body));
+    return reply.code(r.code).send(r.body);
   });
 
   app.patch('/api/offices/:id/roles/:roleId', { preHandler: fromBrowser }, async (req, reply) => {
-    const body = rolePatchBody.parse(req.body);
-    const found = await loadRole(req, reply);
-    if (!found) return reply;
-    const { office, role: cur } = found;
-    const checked = checkRoleFields(body);
-    if ('error' in checked) return reply.code(400).send({ error: checked.error });
-    const f = checked.fields;
-    if (f.name !== undefined && f.name !== cur.name) {
-      const clash = (await storage.listOfficeRoles(office.id)).find((r) => r.id !== cur.id && r.name === f.name);
-      if (clash) return reply.code(409).send({ error: `another role of this office is already called "${f.name}"` });
-    }
-    const patch: OfficeRolePatch = { ...(f as OfficeRolePatch) };
-    if (roleRearms(cur, f)) patch.armedAt = new Date().toISOString();
-    const role = await storage.updateOfficeRole(cur.id, patch);
-    if (!role) return reply.code(404).send({ error: 'role not found in this office' });
-    if ((f.name !== undefined && f.name !== cur.name) || (f.title !== undefined && f.title !== cur.title)) await rescaffold(office);
-    const raised =
-      f.autonomy !== undefined &&
-      AUTONOMY_RANK[f.autonomy ?? office.autonomy] > AUTONOMY_RANK[cur.autonomy ?? office.autonomy];
-    const addedTools = role.tools.filter((t) => !cur.tools.includes(t));
-    await audit({
-      action: 'role-edited',
-      officeId: office.id,
-      workspaceId: office.workspaceId,
-      roleId: role.id,
-      key: role.key,
-      fields: Object.keys(body),
-      ...(addedTools.length ? { addedTools } : {}),
-      ...(f.autonomy !== undefined && f.autonomy !== cur.autonomy ? { autonomy: { from: cur.autonomy, to: f.autonomy, raised } } : {}),
-    });
-    await announce(office, true);
-    return roleResult(role);
+    const { id, roleId } = req.params as { id: string; roleId: string };
+    const r = await writes.patchRole(id, roleId, rolePatchBody.parse(req.body));
+    return reply.code(r.code).send(r.body);
   });
 
   // The role's command allowlist (docs/office.md § Command runs): the ONLY
@@ -772,15 +832,9 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opt
   });
 
   app.delete('/api/offices/:id/roles/:roleId', { preHandler: fromBrowser }, async (req, reply) => {
-    const found = await loadRole(req, reply);
-    if (!found) return reply;
-    const { office, role } = found;
-    if (!(await storage.deleteOfficeRole(role.id))) return reply.code(404).send({ error: 'role not found in this office' });
-    // the notes file stays (history); the README's role list drops it
-    await rescaffold(office);
-    await audit({ action: 'role-deleted', officeId: office.id, workspaceId: office.workspaceId, roleId: role.id, key: role.key, name: role.name });
-    await announce(office, true);
-    return { ok: true };
+    const { id, roleId } = req.params as { id: string; roleId: string };
+    const r = await writes.deleteRole(id, roleId);
+    return reply.code(r.code).send(r.body);
   });
 
   app.post('/api/offices/:id/roles/:roleId/reset-notes', { preHandler: fromBrowser }, async (req, reply) => {

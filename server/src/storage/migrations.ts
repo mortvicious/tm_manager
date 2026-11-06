@@ -1182,6 +1182,21 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `ALTER TABLE tm_chat_messages ADD COLUMN channel_message_id TEXT`,
     ],
   },
+  {
+    id: 63,
+    // The office planner (docs/office.md § Office planner): one chat per
+    // WORKSPACE (`planner_workspace_id`; the office may not exist yet, and a
+    // workspace has at most one office), in no chat list. A planner reply's
+    // proposal — a blueprint, or a diff with the fingerprint of the office it
+    // was planned against — is `blueprint` (JSON), applied once
+    // (`blueprint_applied_at`, a conditional write).
+    statements: [
+      `ALTER TABLE tm_chats ADD COLUMN planner_workspace_id TEXT`,
+      `CREATE INDEX IF NOT EXISTS tm_chats_planner_idx ON tm_chats (planner_workspace_id)`,
+      `ALTER TABLE tm_chat_messages ADD COLUMN blueprint TEXT`,
+      `ALTER TABLE tm_chat_messages ADD COLUMN blueprint_applied_at TEXT`,
+    ],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */

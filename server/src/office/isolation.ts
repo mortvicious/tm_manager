@@ -86,3 +86,20 @@ export function trustedShiftDenies(office: Pick<Office, 'folderPath'>, taintedPa
   }
   return rules;
 }
+
+/**
+ * The office planner's `permissions.deny` (docs/office.md § Office planner):
+ * the WHOLE office folder, recursively, on its lexical and real path. The
+ * planner reads the office only through the server-built snapshot in its
+ * prompt (trusted fields only), so nothing in the folder — notes a tainted
+ * shift wrote, `untrusted/`, briefs — can reach it, whatever its taint state.
+ */
+export function plannerDenies(office: Pick<Office, 'folderPath'>): string[] {
+  const root = folderRoot(office);
+  const rules: string[] = [];
+  for (const p of [root, realPathDeep(root)]) {
+    const r = readRule(p, true);
+    if (!rules.includes(r)) rules.push(r);
+  }
+  return rules;
+}

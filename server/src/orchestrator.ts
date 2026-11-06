@@ -1,4 +1,5 @@
 import type { JobService } from './jobs.ts';
+import { stopPlannerTurns } from './office/planner-live.ts';
 import type { ShiftRunner } from './office/shift.ts';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
@@ -2282,6 +2283,8 @@ export class Orchestrator implements OrchestratorApi {
     this.jobs?.suspendAll();
     // a live office shift too: its row ends 'suspended by Pause all' (docs/office.md § Shifts at run time)
     this.shifts?.suspendAll();
+    // and a live office planner turn: it is stopped, and none starts while paused (docs/office.md § Office planner)
+    stopPlannerTurns();
     const suspended = new Set<string>();
     await this.suspendSweep(actor, suspended);
     const deadline = Date.now() + 15_000;

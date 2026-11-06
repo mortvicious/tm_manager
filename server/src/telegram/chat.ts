@@ -193,7 +193,7 @@ async function chatHeader(storage: Storage, c: Chat): Promise<string> {
  *  second: on a phone "chat with the frontend repo" means one conversation. */
 export async function openChat(deps: ChatDeps, repo: Repo, actor: string): Promise<Reply> {
   // office group chats are /office's alone (docs/office.md § Group chat)
-  const all = (await deps.storage.listChats(repo.id)).filter((c) => c.officeId === null);
+  const all = (await deps.storage.listChats(repo.id)).filter((c) => c.officeId === null && !c.plannerWorkspaceId);
   // When the phone may not run write turns, it does not silently land in a
   // write chat either: the newest chat it can actually USE is the one to
   // resume, and if there is none, a fresh (read) chat beats attaching to a
@@ -246,7 +246,7 @@ export async function chatCommand(deps: ChatDeps, args: string, actor: string): 
 /** `/chats` — every chat, with a button to switch to each. */
 export async function chatsCommand(deps: ChatDeps): Promise<ReplyLike> {
   if (!deps.cfg.enabled) return { html: OFF_REPLY, ok: false };
-  const all = (await deps.storage.listChats()).filter((c) => c.officeId === null);
+  const all = (await deps.storage.listChats()).filter((c) => c.officeId === null && !c.plannerWorkspaceId);
   if (all.length === 0) return '💬 No chats yet. /chat opens one.';
   const repos = new Map((await deps.storage.listRepos()).map((r) => [r.id, r.name]));
   const activeId = await activeChatId(deps.storage);
@@ -323,7 +323,7 @@ export async function handleChatButton(
     return { reply: await openChat(deps, found.value, actor), toast: 'Opened' };
   }
   // The remaining kinds all name a chat.
-  const all = (await deps.storage.listChats()).filter((c) => c.officeId === null);
+  const all = (await deps.storage.listChats()).filter((c) => c.officeId === null && !c.plannerWorkspaceId);
   const found = resolveIn(b.id, all, 'chat', (c) => c.title);
   if (!found.ok) return refuse(escapeHtml(found.error), 'Gone');
   const chat = found.value;

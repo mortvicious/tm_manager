@@ -14388,6 +14388,308 @@ button.explain-tap:active {
   background: var(--tm-accent-subtle);
 }
 
+/* The office planner (docs/office.md § Office planner) — the wizard, the
+   blueprint cards and the Assistant's diff cards. The transcript reuses
+   .office-chat-log / .chat-msg; in a phone Sheet nothing scrolls on its own. */
+.office-planner-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2) var(--tm-space-4);
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.office-planner-head .office-hint {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.office-planner.in-sheet .office-planner-head {
+  padding: var(--tm-space-2) 0;
+}
+
+.office-planner-wizard {
+  padding-bottom: var(--tm-space-4);
+}
+
+.office-planner-wizard > :not(.office-section-title) {
+  margin-left: var(--tm-space-4);
+  margin-right: var(--tm-space-4);
+}
+
+.office-planner-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-3);
+  padding: 0;
+  list-style: none;
+}
+
+.office-planner-step {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-1) var(--tm-space-3);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: none;
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-sm);
+  cursor: pointer;
+}
+
+.office-planner-step:disabled {
+  cursor: default;
+}
+
+.office-planner-steps .active .office-planner-step {
+  border-color: var(--tm-accent);
+  color: var(--tm-text);
+  background: var(--tm-accent-subtle);
+}
+
+.office-planner-steps .done .office-planner-step {
+  color: var(--tm-text);
+}
+
+.office-planner-step-n {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
+.office-planner-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-4);
+}
+
+.office-planner-goals,
+.office-blueprint-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+}
+
+.office-planner-goal,
+.office-planner-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  font-size: var(--tm-text-sm);
+  cursor: pointer;
+}
+
+.office-planner-goal.on,
+.office-planner-radio.on {
+  border-color: var(--tm-accent);
+  background: var(--tm-accent-subtle);
+}
+
+.office-blueprint-tools .office-planner-goal {
+  padding: var(--tm-space-1) var(--tm-space-2);
+  font-size: var(--tm-text-xs);
+}
+
+.office-planner-radios {
+  align-items: stretch;
+}
+
+.office-planner-wants {
+  width: 100%;
+  resize: vertical;
+}
+
+.office-planner-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+}
+
+.office-planner-num {
+  width: 7rem;
+}
+
+.office-planner-per {
+  width: auto;
+}
+
+.office-planner-current .chat-body {
+  border-color: var(--tm-accent);
+}
+
+.office-blueprint {
+  margin: var(--tm-space-3) var(--tm-space-4);
+  padding-bottom: var(--tm-space-4);
+}
+
+.office-planner.in-sheet .office-blueprint {
+  margin: var(--tm-space-3) 0;
+}
+
+.office-blueprint > :not(.office-section-title) {
+  margin-left: var(--tm-space-4);
+  margin-right: var(--tm-space-4);
+}
+
+.office-blueprint-settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-3);
+}
+
+.office-blueprint-settings label {
+  display: flex;
+  flex-direction: column;
+}
+
+.office-blueprint-cost {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-3);
+  font-size: var(--tm-text-sm);
+}
+
+.office-blueprint-roles {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-3);
+}
+
+.office-blueprint-role {
+  padding: var(--tm-space-3);
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-inset);
+}
+
+.office-blueprint-role-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+}
+
+.office-blueprint-title {
+  flex: 1;
+  min-width: 10rem;
+  font-weight: 600;
+}
+
+.office-blueprint-role-sub {
+  margin-top: var(--tm-space-1);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  overflow-wrap: anywhere;
+}
+
+.office-blueprint-role-edit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-3);
+}
+
+.office-blueprint-role-edit textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.office-blueprint-x {
+  border: 0;
+  background: none;
+  color: var(--tm-text-muted);
+  cursor: pointer;
+  padding: 0 var(--tm-space-1);
+}
+
+.office-blueprint-lists {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: var(--tm-space-3);
+  margin-top: var(--tm-space-3);
+  font-size: var(--tm-text-sm);
+}
+
+.office-blueprint-lists ul {
+  margin: var(--tm-space-1) 0 0;
+  padding-left: var(--tm-space-4);
+}
+
+.office-blueprint-doc {
+  margin-top: var(--tm-space-3);
+  font-size: var(--tm-text-sm);
+}
+
+.office-blueprint-doc summary {
+  cursor: pointer;
+}
+
+.office-diff {
+  margin-top: var(--tm-space-2);
+  padding: var(--tm-space-3);
+  border: 1px solid var(--tm-accent);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-inset);
+  font-size: var(--tm-text-sm);
+}
+
+.office-diff.stale,
+.office-diff.applied {
+  border-color: var(--tm-border);
+}
+
+.office-diff-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--tm-space-2);
+}
+
+.office-diff-title {
+  flex: 1;
+  font-weight: 600;
+}
+
+.office-diff-lines {
+  margin: var(--tm-space-2) 0 0;
+  padding-left: var(--tm-space-4);
+}
+
+.office-diff-doc {
+  max-height: 16rem;
+  overflow: auto;
+  margin: var(--tm-space-2) 0 0;
+  padding: var(--tm-space-2);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-bg-raised);
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  white-space: pre-wrap;
+}
+
+.office-planner.in-sheet .office-diff-doc {
+  max-height: none;
+  overflow: visible;
+}
+
+.office-diff-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  margin-top: var(--tm-space-2);
+}
+
 /* The office channel (docs/office.md § Channel) */
 .office-msg {
   padding: var(--tm-space-2) var(--tm-space-4);

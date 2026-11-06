@@ -37,11 +37,17 @@ const officeCreateSchema = z.object({ title: z.string().max(200).optional() }).s
  * An office group chat speaks for the STAKEHOLDER — its messages are trusted
  * input to the office (docs/office.md § Group chat) — so every write to one
  * must come from the dashboard: a worker's curl has no Origin. Ordinary
- * chats keep their old rule (the phone reaches them in-process).
+ * chats keep their old rule (the phone reaches them in-process). The office
+ * planner's chat is not written here at all.
  */
 async function officeChatFromBrowser(chats: ChatService, req: FastifyRequest, reply: FastifyReply): Promise<boolean> {
   const { id } = req.params as { id: string };
   const chat = await chats.get(id);
+  // the office planner's chat (docs/office.md § Office planner) has its own routes
+  if (chat?.plannerWorkspaceId) {
+    await reply.code(400).send({ error: 'the office planner chat is used through /api/office-planner' });
+    return false;
+  }
   if (chat?.officeId && !req.headers.origin) {
     await reply.code(403).send({ error: 'office chat messages come from the dashboard' });
     return false;

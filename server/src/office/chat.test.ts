@@ -212,6 +212,8 @@ describe('mentions (pure)', () => {
       roleId: 'm',
       taintedAt: null,
       channelMessageId: null,
+      blueprint: null,
+      blueprintAppliedAt: null,
       ...over,
     });
     const r = officeChatShiftLines(

@@ -112,7 +112,7 @@ function NewChat({ onCreated }: { onCreated: (c: Chat) => void }) {
 export function ChatPage() {
   const { chats: allChats, chatMessages, loadChat, repos } = useApp();
   // an office group chat lives on /office (docs/office.md § Group chat), never here
-  const chats = useMemo(() => allChats.filter((c) => c.officeId === null), [allChats]);
+  const chats = useMemo(() => allChats.filter((c) => c.officeId === null && !c.plannerWorkspaceId), [allChats]);
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [text, setText] = useState('');

@@ -46,6 +46,7 @@ import type {
 } from '@tm/shared';
 import type {
   LoopState,
+  OfficePlannerProposal,
   AppSettings,
   AuditEvent,
   AuditKind,
@@ -295,6 +296,8 @@ export interface NewChat {
   officeId?: string | null;
   /** the office chat's role ids — create-only */
   participants?: string[];
+  /** the office planner's chat for this workspace (migration 63) — create-only */
+  plannerWorkspaceId?: string | null;
 }
 
 /** Everything a human may change about a chat after it exists. */
@@ -317,6 +320,8 @@ export interface NewChatMessage {
   roleId?: string | null;
   /** office chat: the reply came from a tainted role context */
   taintedAt?: string | null;
+  /** office planner reply: its blueprint / diff (migration 63) */
+  blueprint?: OfficePlannerProposal | null;
 }
 
 /** How a turn ended, applied to the chat row in one write. */
@@ -771,6 +776,10 @@ export interface Storage {
    * already sent (or is gone), so a double click files one request.
    */
   setChatMessageChannel(id: string, channelMessageId: string): Promise<ChatMessage | null>;
+  /** The office planner's chat of a workspace (docs/office.md § Office planner), or null. */
+  getPlannerChat(workspaceId: string): Promise<Chat | null>;
+  /** Stamp a planner reply's proposal applied — once (conditional); null when already applied or not a proposal. */
+  markChatBlueprintApplied(id: string): Promise<ChatMessage | null>;
   /**
    * The serialisation lock. Flips `idle`/`error` → `thinking` and clears the
    * previous error, in ONE conditional statement — a chat already `thinking`

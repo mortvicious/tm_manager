@@ -84,6 +84,11 @@ import type {
   OfficeFeatureAskResult,
   OfficeWishCreateResult,
   OfficeWishPatchBody,
+  OfficeBlueprint,
+  OfficeBlueprintDiff,
+  OfficePlannerApplyResult,
+  OfficePlannerView,
+  OfficePlannerWizard,
 } from '@tm/shared';
 
 // Only user-editable fields — status/error/resultSummary are machine-owned and
@@ -561,6 +566,20 @@ export const api = {
   officeNotesReview: (id: string, roleId: string) => req<OfficeNotesReview>('GET', `/api/offices/${id}/roles/${roleId}/notes-review`),
   markOfficeNotesReviewed: (id: string, roleId: string, b: OfficeNotesReviewedBody) =>
     req<OfficeRoleWriteResult>('POST', `/api/offices/${id}/roles/${roleId}/notes-reviewed`, b),
+  // The office planner (docs/office.md § Office planner): a wizard + an assistant chat per workspace
+  getOfficePlanner: (workspaceId: string) => req<OfficePlannerView>('GET', `/api/office-planner/${workspaceId}`),
+  planOffice: (workspaceId: string, wizard: OfficePlannerWizard) =>
+    req<{ accepted: true; chat: Chat; message: ChatMessage }>('POST', `/api/office-planner/${workspaceId}/plan`, { wizard }),
+  sendPlannerMessage: (workspaceId: string, text: string) =>
+    req<{ accepted: true; chat: Chat; message: ChatMessage }>('POST', `/api/office-planner/${workspaceId}/messages`, { text }),
+  stopPlanner: (workspaceId: string) => req<{ stopped: boolean }>('POST', `/api/office-planner/${workspaceId}/stop`, {}),
+  resetPlanner: (workspaceId: string) => req<{ ok: true }>('DELETE', `/api/office-planner/${workspaceId}`),
+  applyBlueprint: (
+    workspaceId: string,
+    b: { blueprint: OfficeBlueprint; folderPath?: string; timezone?: string; messageId?: string },
+  ) => req<OfficePlannerApplyResult>('POST', `/api/office-planner/${workspaceId}/apply`, b),
+  applyBlueprintDiff: (workspaceId: string, b: { diff: OfficeBlueprintDiff; baseFingerprint: string; messageId?: string }) =>
+    req<OfficePlannerApplyResult>('POST', `/api/office-planner/${workspaceId}/apply-diff`, b),
   // Wishes and vision (docs/office.md § Wishes and vision)
   listOfficeWishes: (id: string) => req<OfficeWish[]>('GET', `/api/offices/${id}/wishes`),
   createOfficeWish: (id: string, text: string) => req<OfficeWishCreateResult>('POST', `/api/offices/${id}/wishes`, { text }),

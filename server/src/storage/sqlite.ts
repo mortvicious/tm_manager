@@ -1642,10 +1642,10 @@ export class SqliteStorage implements Storage {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tm_chats (id, repo_id, title, model, effort, mode, status, turns, cost_usd, created_at, updated_at, office_id, participants)
-         VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, 0, ?, ?, ?, ?)`,
+        `INSERT INTO tm_chats (id, repo_id, title, model, effort, mode, status, turns, cost_usd, created_at, updated_at, office_id, participants, planner_workspace_id)
+         VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, 0, ?, ?, ?, ?, ?)`,
       )
-      .run(id, c.repoId, c.title, c.model, c.effort ?? null, c.mode, ts, ts, c.officeId ?? null, JSON.stringify(c.participants ?? []));
+      .run(id, c.repoId, c.title, c.model, c.effort ?? null, c.mode, ts, ts, c.officeId ?? null, JSON.stringify(c.participants ?? []), c.plannerWorkspaceId ?? null);
     return (await this.getChat(id))!;
   }
 
@@ -1694,10 +1694,10 @@ export class SqliteStorage implements Storage {
     return this.inTxn(() => {
       this.db
         .prepare(
-          `INSERT INTO tm_chat_messages (id, chat_id, role, text, actor, error, cost_usd, duration_ms, created_at, role_id, tainted_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO tm_chat_messages (id, chat_id, role, text, actor, error, cost_usd, duration_ms, created_at, role_id, tainted_at, blueprint)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(id, m.chatId, m.role, m.text, m.actor, m.error ?? null, m.costUsd ?? 0, m.durationMs ?? null, at, m.roleId ?? null, m.taintedAt ?? null);
+        .run(id, m.chatId, m.role, m.text, m.actor, m.error ?? null, m.costUsd ?? 0, m.durationMs ?? null, at, m.roleId ?? null, m.taintedAt ?? null, m.blueprint ? JSON.stringify(m.blueprint) : null);
       this.db.prepare(`UPDATE tm_chats SET last_message_at = ?, updated_at = ? WHERE id = ?`).run(at, at, m.chatId);
       return rowToChatMessage(this.db.prepare(`SELECT * FROM tm_chat_messages WHERE id = ?`).get(id));
     });
@@ -1712,6 +1712,18 @@ export class SqliteStorage implements Storage {
     const r = this.db
       .prepare(`UPDATE tm_chat_messages SET channel_message_id = ? WHERE id = ? AND channel_message_id IS NULL RETURNING *`)
       .get(channelMessageId, id);
+    return r ? rowToChatMessage(r) : null;
+  }
+
+  async getPlannerChat(workspaceId: string): Promise<Chat | null> {
+    const r = this.db.prepare(`SELECT * FROM tm_chats WHERE planner_workspace_id = ? ORDER BY created_at ASC, id ASC LIMIT 1`).get(workspaceId);
+    return r ? rowToChat(r) : null;
+  }
+
+  async markChatBlueprintApplied(id: string): Promise<ChatMessage | null> {
+    const r = this.db
+      .prepare(`UPDATE tm_chat_messages SET blueprint_applied_at = ? WHERE id = ? AND blueprint IS NOT NULL AND blueprint_applied_at IS NULL RETURNING *`)
+      .get(now(), id);
     return r ? rowToChatMessage(r) : null;
   }
 

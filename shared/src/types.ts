@@ -2759,6 +2759,12 @@ export interface Chat {
   officeId: string | null;
   /** an office chat's role ids, in order; [] for an ordinary chat */
   participants: string[];
+  /**
+   * The office planner's conversation for this workspace (docs/office.md §
+   * Office planner, migration 63); null = not a planner chat. A planner chat
+   * is in no chat list and is written only through /api/office-planner.
+   */
+  plannerWorkspaceId: string | null;
 }
 
 export type ChatRole = 'user' | 'assistant';
@@ -2786,6 +2792,10 @@ export interface ChatMessage {
   taintedAt: string | null;
   /** the stakeholder's message was sent to the office channel as a request (that message's id) */
   channelMessageId: string | null;
+  /** office planner reply: the blueprint or blueprint diff it proposed (docs/office.md § Office planner) */
+  blueprint: OfficePlannerProposal | null;
+  /** …and when the owner applied it (once) */
+  blueprintAppliedAt: string | null;
 }
 
 // ---- WebSocket protocol ----
@@ -3939,5 +3949,8 @@ export * from './office.ts';
 export * from './office-chat.ts';
 // The office view: one pure layout every skin draws (docs/office.md § The view)
 export * from './office-view.ts';
+// The office planner: wizard, blueprint, blueprint diff (docs/office.md § Office planner)
+export * from './office-planner.ts';
+import type { OfficePlannerProposal } from './office-planner.ts';
 // TM Bar's summary read (docs/menubar.md)
 export * from './menubar.ts';

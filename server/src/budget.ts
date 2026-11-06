@@ -31,7 +31,9 @@ export type BudgetTurn =
   | 'conflict-round'
   | 'wait-resume'
   /** a scheduled job's automatic fire (docs/jobs.md): the day fuse only — a job owns no task */
-  | 'job';
+  | 'job'
+  /** an office planner turn (docs/office.md § Office planner): the day fuse only — it owns no task */
+  | 'office-plan';
 
 /**
  * `loop.budgetUsd` is a loop task's OWN ceiling (`Task.loopBudgetUsd`,
@@ -106,7 +108,7 @@ export async function budgetAllows(
     const refused = office ? await officeBudgetVerdict(storage, office, opts.now, KIND_LABEL[kind]) : null;
     if (refused) return { ok: false, ...refused };
   }
-  if (kind === 'claim' || kind === 'job') {
+  if (kind === 'claim' || kind === 'job' || kind === 'office-plan') {
     const cap = fuse(s, 'budget.dayUsd');
     if (!cap) return { ok: true };
     const spent = await spentToday(storage, opts.now === undefined ? undefined : new Date(opts.now));
@@ -116,7 +118,7 @@ export async function budgetAllows(
       fuse: 'budget.dayUsd',
       spentUsd: spent,
       capUsd: cap,
-      reason: `today's spend ${usd(spent)} reached the ${usd(cap)} day budget — ${kind === 'job' ? 'scheduled jobs' : 'claiming'} stopped until midnight`,
+      reason: `today's spend ${usd(spent)} reached the ${usd(cap)} day budget — ${kind === 'job' ? 'scheduled jobs' : kind === 'office-plan' ? 'the office planner' : 'claiming'} stopped until midnight`,
     };
   }
   const taskCap = fuse(s, 'budget.taskUsd');
@@ -154,6 +156,7 @@ const KIND_LABEL: Record<BudgetTurn, string> = {
   'conflict-round': 'rebase-conflict turn (worktree land)',
   'wait-resume': 'resume after a task wait',
   job: 'scheduled job run',
+  'office-plan': 'office planner turn',
 };
 
 /**

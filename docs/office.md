@@ -2444,7 +2444,7 @@ attachable from the runs list), serialized by `beginChatTurn` and settled by
 
 Pause all does not stop a chat turn (docs/pause.md: chats are human turns).
 Chat spend is the chat's (`tm_chats.cost_usd`), not the office day budget —
-`officeSpendSince` counts shifts and office tasks only.
+`officeSpendSince` counts shifts, office tasks and the office planner (§ Office planner) only.
 
 ### Taint
 
@@ -2519,6 +2519,158 @@ turn runs, Send becomes Stop.
 
 A reply's Web Push (kind `chat`) names the role, says `tainted` when it is,
 and opens `/office?ws=<slug>` rather than the Chat page.
+
+## Office planner
+
+The owner's assistant for **designing** an office before it exists and
+**tuning** it afterwards (decisions.md 2026-11-06). It is not a role and not a
+shift: it never wakes on its own, never files work, takes no worker slot and
+writes nothing until the owner presses **Apply**. Server:
+`server/src/office/planner.ts` (prompt, snapshot, result schemas, validators,
+Apply), `server/src/office/planner-live.ts` (the live-turn registry Pause all
+stops), `server/src/routes/office-planner.ts`; pure half (types, wizard
+vocabulary, blueprint → diff, the fingerprint input) `shared/src/office-planner.ts`;
+SPA `web/src/components/OfficePlanner.tsx`. Tests:
+`server/src/office/planner.test.ts`.
+
+### The wizard (no tokens)
+
+On /office, a workspace with no office shows the create form with **Plan with
+the assistant** beside it (a `<Sheet>` on the phone). Four steps, nothing
+spent: what the owner wants (checkboxes `OFFICE_PLANNER_GOALS` — ship
+features, keep it tested, SEO/content, ops/uptime, research — plus free text
+≤ 4000), how hands-off (`OfficeAutonomy`), a $ appetite per day or per month
+(`wizardDayBudget`: month ÷ 30), quiet hours + time zone. **Plan my office**
+sends it (`POST …/plan`, 409 when the workspace already has an office) as the
+conversation's first message.
+
+### The session
+
+Every planner turn is an ordinary **chat** aux terminal (kind `chat`, subject =
+the planner chat), run by `ChatService` under the chat lock
+(`beginChatTurn`/`finishChatTurn`), so stop, the persisted pid, boot recovery,
+`/killall` and the restart guard cover it like any chat turn. The planner chat
+is a `tm_chats` row keyed by **workspace** (`planner_workspace_id`, migration
+63) — the office may not exist yet, and a workspace has at most one office.
+
+- **Read-only, no web**: `--tools=` `READ_ONLY_TOOLS`; disallowed
+  `READ_ONLY_DISALLOWED` + WebFetch/WebSearch + the never-in-chat denials;
+  `--permission-mode dontAsk`; model `PLANNER_MODEL` (Opus).
+- **Where**: cwd = a scratch dir `<os tmpdir>/tm-office-planner/<workspaceId>`
+  — OUTSIDE every checkout, because the CLI loads every CLAUDE.md from the cwd
+  up and the cwd repo's git status (the first cut used `<data>/office-planner`,
+  inside this repo, and handed the planner this repo's CLAUDE.md). Each turn
+  re-checks it (`plannerScratchProblem`: no ancestor holds a `.git`, not
+  inside a registered repo — the office folder's rule) and refuses as the
+  turn's error otherwise; `--add-dir=<repo>` per workspace repo, and once the office exists
+  `plannerDenies(office)` denies Read of the **whole office folder** (lexical
+  and real path) — notes, briefs, deliverables and `untrusted/` alike.
+- **Trusted inputs only**: the prompt carries the validators' vocabulary
+  (tools allowlist, guard/trigger kinds, models, the presets) and, after
+  creation, `officeSnapshot`: settings, today's and 7-day spend, open task
+  count, each role's definition (prompt clipped), `notesTainted` as a
+  **boolean only**, its state/next slot/spend, the last 7 days of shifts as
+  verdict + `skipCode` (+ the server's `skipReason` for skips — never a shift's
+  error text), the owner's `vision.md`/`priorities.md` (≤ 6k each) and
+  `planner.md`. Never notes, briefs, signals, channel message bodies, chat
+  replies or anything under `untrusted/`. Test: planted text in tainted notes,
+  the untrusted twin, a tainted brief, a signal, a channel message and a shift
+  error reaches no planner prompt.
+- **Reply style**: `CONVERSATIONAL_REPLY_RULE` as `--append-system-prompt`
+  (docs/chat.md § Reply style).
+- **Memory**: one transcript per workspace plus `planner.md` in the office
+  folder, written **only by Apply** (`writePlannerLog`: `## Applied <at>` +
+  summary + the steps, last 20 entries). A turn resumes the chat's session
+  when the last planner run's `contextTokens` is under
+  `agent.resumeContextCap`, else it starts fresh with the newest 30 messages
+  (≤ 40k chars) in the prompt.
+- **Result**: the reply ends with a ```` ```json ```` block validated at accept
+  time — `{blueprint}` before the office exists (required on the wizard turn),
+  `{diff}` afterwards (optional; an empty diff = no proposal). The zod schema
+  AND the office validators (`checkBlueprint`/`checkPlannerDiff`, below) run
+  there, so an invalid proposal gets a correction typed into the same session
+  (≤ 2). The accepted proposal is stored on the reply
+  (`tm_chat_messages.blueprint`, `OfficePlannerProposal`); the prose before the
+  block is the message text.
+
+### Budget and pause
+
+A planner turn asks the **day fuse** (`budgetAllows(null, 'office-plan')`,
+429 when tripped) and its spend counts toward the office: `officeSpendSince`
+(office-wide only, never a role's) adds the workspace planner chat's aux runs,
+so it shows in the office's day spend and can trip its budget. It is **not**
+refused by the office's own day budget or pause — the assistant is how the
+owner fixes an office that is over budget or paused. **Pause all** stops it:
+`pauseAll` calls `stopPlannerTurns()` (the turn settles `stopped`) and a send
+while `orchestrator.paused` is set is 409 `PLANNER_PAUSED`; a drain
+(`suspend: false`) lets a running turn finish.
+
+### Blueprint and Apply
+
+A **blueprint** (`OfficeBlueprint`) is a whole office: settings (`maxSlots`,
+`dayBudgetUsd`, `maxTasksPerShift`, `maxOpenTasks`, `autonomy`), every role
+(a kept preset keeps its own key, a custom role may not take a preset's key;
+each with prompt, model/effort, tools ⊂ `SHIFT_TOOL_ALLOWLIST`, schedules,
+guards, triggers, `capUsd`, autonomy and a one-line `why`; a preset left out is
+dropped), drafts of `vision.md`/`priorities.md` ('' = keep the scaffold), 3–6
+first wins, what not to try, and an estimated daily cost with its derivation.
+
+The SPA shows it as editable cards (settings, roles with a fold-out editor —
+prompt, model, effort, cap, autonomy, cron lines checked live by `cronError`,
+tool checkboxes from the allowlist, removable guards — wins/avoid, the docs,
+folder and time zone). **Create this office** = `POST …/apply` (Origin):
+`blueprintSchema` → `checkBlueprint` (each role through `checkRoleFields`, the
+route's own zod bodies) → `createOffice` from the presets through
+`officeWrites(storage)` — the SAME functions the office routes call, so the
+folder rule and one-office-per-workspace hold — → `blueprintAsDiff` (drop,
+edit, add) through `applyPlannerDiff`; any refusal deletes the new office (all
+or nothing) and answers 400 with the validator's own message (e.g.
+`shiftForbiddenToolsMessage`, `schedule "…": <cronError>`). The office starts
+**disabled**; enabling still needs `dayBudgetUsd > 0` (unchanged). Audited
+`office.changed { action: 'planner-applied' }`; the reply is stamped
+`blueprint_applied_at` once.
+
+### Diffs and the fingerprint
+
+After creation a reply may carry a **diff** (`OfficeBlueprintDiff`: office
+fields, `addRoles`, `editRoles` with only the fields to change, `removeRoles`,
+`vision`, `priorities`). The server stamps it with the **fingerprint** of the
+state it showed the planner: sha256 of `plannerFingerprintInput` — the
+settings + timezone, every role's plannable fields + enabled by key, and the
+two docs' hashes (notes, budget trips and pauses are not in it). `POST
+…/apply-diff {diff, baseFingerprint}` (Origin) recomputes it and answers **409
+"the office changed since…"** on a mismatch; then `checkPlannerDiff` and the
+office writes in order office patch → removes → edits → adds → docs (a doc
+change goes through `saveOfficeDoc`, so it may wake the Director). Exactly
+the listed fields change (test). The diff card lists each change against the
+office now, shows **applied** once stamped, and a stale one says so instead of
+offering Apply.
+
+### API
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/office-planner/:workspaceId` | `OfficePlannerView`: the chat, its messages, the office, its current fingerprint |
+| `POST …/plan` | Origin. `{wizard}` → the first turn (202). 409 when an office exists |
+| `POST …/messages` | Origin. `{text}` (≤ 8000) → a turn (202) |
+| `POST …/stop` | Origin. Stop the running turn |
+| `DELETE /api/office-planner/:workspaceId` | Origin. Start over: the conversation goes, the office stays |
+| `POST …/apply` | Origin. `{blueprint, folderPath?, timezone?, messageId?}` → 201 `OfficePlannerApplyResult` |
+| `POST …/apply-diff` | Origin. `{diff, baseFingerprint, messageId?}` → 200, 409 stale |
+
+The planner chat is out of `/api/chats` lists, the Chat page, the palette and
+Telegram; `/api/chats/:id` PATCH/DELETE/messages refuse it (400).
+
+### UI
+
+No office: **Plan with the assistant** beside **Create office** opens the
+wizard, then the conversation with the newest blueprint as cards under it and
+a composer for changes (**Start over** two-press); a workspace with a planner
+conversation opens straight into it. With an office: an **Assistant** panel
+(desktop) / **Assistant** button → `<Sheet>` (phone) — transcript, diff cards
+with **Apply**, Stop while a turn runs, **Clear** (two-press). Both designs,
+`--tm-*` tokens only (`.office-planner*`, `.office-blueprint*`,
+`.office-diff*` in `theme.css`). Telegram is out of scope.
 
 ## UI
 

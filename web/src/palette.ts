@@ -383,7 +383,7 @@ export function buildEntries(src: PaletteSources, fx: PaletteEffects): PaletteEn
   const chatAt = (c: Chat) => c.lastMessageAt ?? c.updatedAt;
   for (const c of [...src.chats].sort((a, b) => chatAt(b).localeCompare(chatAt(a)))) {
     // an office group chat lives on /office, not /chat (docs/office.md § Group chat)
-    if (c.officeId || !src.inScopeRepo(c.repoId)) continue;
+    if (c.officeId || c.plannerWorkspaceId || !src.inScopeRepo(c.repoId)) continue;
     out.push({
       id: `chat:${c.id}`,
       section: 'chat',
