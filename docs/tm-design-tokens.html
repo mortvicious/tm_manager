@@ -147,6 +147,20 @@
   --tm-office-leaf: var(--tm-green-6);
   --tm-office-paper: var(--tm-gray-0);
   --tm-office-shade: #000000;
+  /* the Starship bridge skin's palette (docs/office.md § Starship bridge) */
+  --tm-bridge-space: #070b14;
+  --tm-bridge-hull: #182030;
+  --tm-bridge-bulkhead: #3a4762;
+  --tm-bridge-console: #232b3b;
+  --tm-bridge-trim: #0c1018;
+  --tm-bridge-star: #c8d4f0;
+  /* the Fantasy guild hall skin's palette (docs/office.md § Fantasy guild hall) */
+  --tm-guild-plank: #4a3423;
+  --tm-guild-stone: #5f5a55;
+  --tm-guild-oak: #6b4527;
+  --tm-guild-parchment: #e8d9b0;
+  --tm-guild-flame: #ffb347;
+  --tm-guild-iron: #2b2826;
   /* one hue per task group; `groupColorSlot` picks the slot (1..7) */
   --tm-group-1: var(--tm-violet-5);
   --tm-group-2: var(--tm-blue-5);
@@ -208,6 +222,20 @@
   --tm-office-leaf: var(--tm-green-7);
   --tm-office-paper: #ffffff;
   --tm-office-shade: var(--tm-gray-8);
+  /* the Starship bridge skin's palette (docs/office.md § Starship bridge) */
+  --tm-bridge-space: #dde4f0;
+  --tm-bridge-hull: #f3f5f9;
+  --tm-bridge-bulkhead: #a0adc4;
+  --tm-bridge-console: #cbd3e0;
+  --tm-bridge-trim: #2a3242;
+  --tm-bridge-star: #8796b3;
+  /* the Fantasy guild hall skin's palette (docs/office.md § Fantasy guild hall) */
+  --tm-guild-plank: #d9b98d;
+  --tm-guild-stone: #a39a8f;
+  --tm-guild-oak: #8a5a33;
+  --tm-guild-parchment: #f6ecd0;
+  --tm-guild-flame: #f08c1a;
+  --tm-guild-iron: #4a4440;
   --tm-group-1: var(--tm-violet-7);
   --tm-group-2: var(--tm-blue-7);
   --tm-group-3: var(--tm-amber-7);
@@ -353,6 +381,20 @@
   --tm-office-leaf: #30d158;
   --tm-office-paper: #f2f2f7;
   --tm-office-shade: #000000;
+  /* the Starship bridge skin's palette (docs/office.md § Starship bridge) */
+  --tm-bridge-space: #04060c;
+  --tm-bridge-hull: #1c2130;
+  --tm-bridge-bulkhead: #48506a;
+  --tm-bridge-console: #2a2f3e;
+  --tm-bridge-trim: #0b0d12;
+  --tm-bridge-star: #d1d9ee;
+  /* the Fantasy guild hall skin's palette (docs/office.md § Fantasy guild hall) */
+  --tm-guild-plank: #4d3a2a;
+  --tm-guild-stone: #66605a;
+  --tm-guild-oak: #74502f;
+  --tm-guild-parchment: #efe3c2;
+  --tm-guild-flame: #ff9f0a;
+  --tm-guild-iron: #2c2a28;
 }
 
 [data-design='glass'][data-theme='light'] {
@@ -431,6 +473,20 @@
   --tm-office-leaf: #248a3d;
   --tm-office-paper: #ffffff;
   --tm-office-shade: #1c1c1e;
+  /* the Starship bridge skin's palette (docs/office.md § Starship bridge) */
+  --tm-bridge-space: #e3e8f1;
+  --tm-bridge-hull: #f7f8fb;
+  --tm-bridge-bulkhead: #aab4c6;
+  --tm-bridge-console: #d4d9e3;
+  --tm-bridge-trim: #1c1c1e;
+  --tm-bridge-star: #8e9ab4;
+  /* the Fantasy guild hall skin's palette (docs/office.md § Fantasy guild hall) */
+  --tm-guild-plank: #dcc29e;
+  --tm-guild-stone: #aea69c;
+  --tm-guild-oak: #94643a;
+  --tm-guild-parchment: #f8f0da;
+  --tm-guild-flame: #ff9500;
+  --tm-guild-iron: #48443f;
 }
 
 /* A phone in Glass: iOS's scale (15pt subheadline base, 17pt headline, 34pt
@@ -1183,6 +1239,12 @@ footer .mono { font-family: var(--tm-font-mono); }
 
       <p class="eyebrow" style="margin-top: var(--tm-space-6);">pixel office — <code>--tm-office-*</code> (the /office skin's floor, walls, desks, sprites; iso faces shade toward <code>--tm-office-shade</code>)</p>
       <div class="swatch-grid" id="officeRamp"></div>
+
+      <p class="eyebrow" style="margin-top: var(--tm-space-6);">starship bridge — <code>--tm-bridge-*</code> (the /office skin's star field, station hulls, bulkheads, consoles, uniform trim)</p>
+      <div class="swatch-grid" id="bridgeRamp"></div>
+
+      <p class="eyebrow" style="margin-top: var(--tm-space-6);">fantasy guild hall — <code>--tm-guild-*</code> (the /office skin's planks, stone walls, oak tables, parchment, candle flame, iron)</p>
+      <div class="swatch-grid" id="guildRamp"></div>
     </section>
 
     <section id="status">
@@ -1471,6 +1533,14 @@ footer .mono { font-family: var(--tm-font-mono); }
   var officeRamp = document.getElementById('officeRamp');
   ['floor', 'wall', 'wood', 'metal', 'skin', 'leaf', 'paper', 'shade'].forEach(function (k) {
     officeRamp.appendChild(makeSwatch('--tm-office-' + k, null));
+  });
+  var bridgeRamp = document.getElementById('bridgeRamp');
+  ['space', 'hull', 'bulkhead', 'console', 'trim', 'star'].forEach(function (k) {
+    bridgeRamp.appendChild(makeSwatch('--tm-bridge-' + k, null));
+  });
+  var guildRamp = document.getElementById('guildRamp');
+  ['plank', 'stone', 'oak', 'parchment', 'flame', 'iron'].forEach(function (k) {
+    guildRamp.appendChild(makeSwatch('--tm-guild-' + k, null));
   });
 
   // ---- spacing bars ----

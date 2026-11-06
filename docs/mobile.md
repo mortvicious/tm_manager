@@ -1026,7 +1026,11 @@ The /office page's **Office** view (docs/office.md § The view) on a phone:
   scaled to the width (half a tile = width ÷ the widest block, 8–18 px), with
   no horizontal scroll. The Space colony skin stacks its modules down the
   same column, with the tubes on both sides and the docking hub at the bottom
-  (docs/office.md § Space colony).
+  (docs/office.md § Space colony). The top-down skins (Starship bridge,
+  Fantasy guild hall) draw that stack straight down at the largest whole-px
+  tile that fits (12–26 px), again with no horizontal scroll, and name plates
+  show the given name of a long themed name (docs/office.md § The top-down
+  skins).
 - The **history feed** follows the floor, in the page's own scroller (no
   nested scroller).
 - **Tapping an avatar** opens its card in a `<Sheet>`: role, state, today's

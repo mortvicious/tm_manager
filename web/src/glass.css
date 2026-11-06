@@ -1553,3 +1553,21 @@
 [data-design='glass'] :is(.po-plate, .po-bubble:not(.b-waiting, .b-guarded, .b-blocked, .b-huddle, .b-chat)) {
   border-color: var(--tm-glass-rim);
 }
+
+/* Starship bridge skin (docs/office.md § Starship bridge): the same lit glass
+   capsules as the Pixel office's — a bridge's readouts ARE glass. The Fantasy
+   guild hall keeps its parchment bubbles and plates in Glass (parchment is that
+   skin's material); they only gain the specular line. */
+[data-design='glass'] :is(.sb-bubble, .sb-plate) {
+  border-width: 1px;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-glass-thick);
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
+}
+[data-design='glass'] :is(.sb-plate, .sb-bubble:not(.b-waiting, .b-guarded, .b-blocked, .b-huddle, .b-chat)) {
+  border-color: var(--tm-glass-rim);
+}
+[data-design='glass'] :is(.fg-bubble, .fg-plate) {
+  border-width: 1px;
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
+}

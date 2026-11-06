@@ -7,7 +7,7 @@
 // Which skin: the DEVICE's pick (`tm.officeTheme`, read and written like
 // `tm.boardVersion`) when it names a listed skin, else the office's own
 // `Office.theme` when listed, else the default (the first entry). Only
-// implemented skins are listed, so an office themed `fantasy-guild` renders the
+// implemented skins are listed, so an office themed `space-colony` renders the
 // default until that skin ships — no migration either way.
 //
 // The /office page's list/place switch (`tm.officeView`) is kept here too: the
@@ -34,12 +34,14 @@ export interface OfficeSkin {
 
 /**
  * THE list, in menu order; the first entry is the default. A skin task adds
- * its entry here, e.g.
- * `{ id: 'starship-bridge', label: 'Starship bridge', component: lazy(() => import('./pages/office/skins/StarshipBridge.tsx')) }`.
+ * its entry here (a component in `pages/office/skins/`, shared helpers in its
+ * `common.tsx`).
  */
 export const OFFICE_THEMES: readonly OfficeSkin[] = [
   { id: 'pixel-office', label: 'Pixel office', component: lazy(() => import('./pages/office/skins/PixelOffice.tsx')) },
   { id: 'space-colony', label: 'Space colony', component: lazy(() => import('./pages/office/skins/SpaceColony.tsx')) },
+  { id: 'starship-bridge', label: 'Starship bridge', component: lazy(() => import('./pages/office/skins/StarshipBridge.tsx')) },
+  { id: 'fantasy-guild', label: 'Fantasy guild hall', component: lazy(() => import('./pages/office/skins/FantasyGuild.tsx')) },
 ];
 
 export const DEFAULT_OFFICE_SKIN: OfficeSkin = OFFICE_THEMES[0];

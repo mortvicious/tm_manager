@@ -15,15 +15,13 @@
 // (`html[data-calm]`: unfocused, hidden, 60 s idle, reduced motion). Every
 // infinite animation here is stepped and listed in theme.css § Calm, and
 // prefers-reduced-motion turns every animation and transition off.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useMemo, type CSSProperties, type ReactNode } from 'react';
 import {
   OFFICE_ISO_WALL,
-  officeEdgeEnds,
   officeHash,
   officeIsoProjection,
-  officePixelAct,
   officeSkipReason,
-  officeWanderSpot,
+  officeEdgeEnds,
   type OfficePixelAct as PixelAct,
   type OfficeIsoProjection,
   type OfficeIsoRegion,
@@ -36,62 +34,19 @@ import {
   type OfficeViewRoom,
   type OfficeWanderActivity,
 } from '@tm/shared';
-import { onTick } from '../../../clock.ts';
 import type { OfficeSkinProps } from '../../../officeThemes.ts';
+import { FALLBACK_WIDTH, STATE_LABEL, clip, cssVars as v, useAmbientScene, useAmbientTick, useWalk, useWidth } from './common.tsx';
 
-const AMBIENT_MS = 8_000;
-const FALLBACK_WIDTH = 720;
-
-/** The ambient step: frozen while the page is calm (no re-render at all then). */
-function useAmbientTick(): number {
-  const [tick, setTick] = useState(() => Math.floor(Date.now() / AMBIENT_MS));
-  useEffect(
-    () =>
-      onTick(AMBIENT_MS, () => {
-        if (document.documentElement.hasAttribute('data-calm')) return;
-        setTick(Math.floor(Date.now() / AMBIENT_MS));
-      }),
-    [],
-  );
-  return tick;
-}
-
-const v = (vars: Record<string, string | number>): CSSProperties => vars as CSSProperties;
 const pts = (list: readonly OfficeIsoScreenPoint[]): string => list.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
 
-const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-
 export default function PixelOffice({ layout, mobile, selectedRoleId, highlight, onAvatar }: OfficeSkinProps) {
-  const wrap = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
-  useLayoutEffect(() => {
-    const el = wrap.current;
-    if (!el) return;
-    setWidth(el.clientWidth);
-    const ro = new ResizeObserver(() => setWidth(el.clientWidth));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+  const [wrap, width] = useWidth();
   const proj = useMemo(() => officeIsoProjection(layout, width || FALLBACK_WIDTH, { maxA: mobile ? 18 : 22 }), [layout, width, mobile]);
   const tick = useAmbientTick();
   // avatars WALK only between ambient spots: a new scale (first measure, a
   // resize, the stack fallback) re-places them at once, then walking resumes
-  const [walk, setWalk] = useState(false);
-  useLayoutEffect(() => {
-    setWalk(false);
-    const id = requestAnimationFrame(() => requestAnimationFrame(() => setWalk(true)));
-    return () => cancelAnimationFrame(id);
-  }, [proj.a, proj.mode, proj.width]);
-
-  // a guarded role sleeps at its desk: it is taken out of ambient life (and out
-  // of its neighbours' chat partners) before the wander spots are read
-  const scene = useMemo<Pick<OfficeLayout, 'rooms' | 'avatars'>>(
-    () => ({ rooms: layout.rooms, avatars: layout.avatars.map((a) => (a.wanders && a.state === 'guarded' ? { ...a, wanders: false } : a)) }),
-    [layout],
-  );
-  const spots = useMemo(() => new Map(scene.avatars.map((a) => [a.roleId, officeWanderSpot(a, scene, tick)])), [scene, tick]);
-  const spotAt = useMemo(() => new Map([...spots].map(([id, s]) => [id, s.at])), [spots]);
-  const actOf = useMemo(() => new Map(layout.avatars.map((a) => [a.roleId, officePixelAct(a)])), [layout]);
+  const walk = useWalk(proj.a, proj.mode, proj.width);
+  const { spots, spotAt, actOf } = useAmbientScene(layout, tick);
 
   const roomBlocks = [...layout.rooms].sort((p, q) => p.rect.y - q.rect.y || p.rect.x - q.rect.x);
   const px = Math.max(2, Math.round((proj.a * 2.6) / 16)); // one sprite pixel, whole px so it stays crisp
@@ -364,17 +319,6 @@ function Packet({ edge, d, lit }: { edge: OfficeViewEdge; d: string; lit: boolea
 }
 
 // ---- avatars --------------------------------------------------------------------
-
-const STATE_LABEL: Record<OfficeViewAvatar['state'], string> = {
-  'off-duty': 'off duty',
-  scheduled: 'scheduled',
-  guarded: 'guarded',
-  'on-shift': 'on shift',
-  'in-huddle': 'in a huddle',
-  'waiting-for-you': 'waiting for you',
-  'over-budget': 'over budget',
-  paused: 'paused',
-};
 
 function bubbleFor(a: OfficeViewAvatar, act: PixelAct, activity: OfficeWanderActivity): { cls: string; text: ReactNode } | null {
   switch (act) {

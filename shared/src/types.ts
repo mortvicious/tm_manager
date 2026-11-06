@@ -3980,6 +3980,7 @@ export * from './office-chat.ts';
 export * from './office-view.ts';
 export * from './office-iso.ts';
 export * from './office-colony.ts';
+export * from './office-flat.ts';
 // The office planner: wizard, blueprint, blueprint diff (docs/office.md § Office planner)
 export * from './office-planner.ts';
 // The office scorecard: landed, bugs, proposals, $, interventions, skips, ratings (docs/office.md § Scorecard)

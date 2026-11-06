@@ -14,6 +14,8 @@ import {
   OFFICE_ROLE_COMMANDS_MAX,
   OFFICE_ROLE_KEY_RE,
   OFFICE_ROLE_PRESETS,
+  OFFICE_THEME_LABELS,
+  officeThemeId,
   OFFICE_WAKE_NOTE_MAX,
   isFeatureAskTrigger,
   OFFICE_POLLED_SIGNAL_SOURCES,
@@ -65,7 +67,7 @@ import { OfficeHuddles } from '../components/OfficeHuddles.tsx';
 import { RatingButtons, ratingKey, useOfficeRatings } from '../components/OfficeRating.tsx';
 import { OfficeWork } from '../components/OfficeWork.tsx';
 import { OfficePlace } from '../components/office/OfficePlace.tsx';
-import { useOfficeViewMode, type OfficeViewMode } from '../officeThemes.ts';
+import { OFFICE_THEMES, useOfficeViewMode, type OfficeViewMode } from '../officeThemes.ts';
 import { OfficeAssistant, OfficePlannerFlow } from '../components/OfficePlanner.tsx';
 import { useNow } from '../components/TimeAgo.tsx';
 import { useArm } from '../arm.ts';
@@ -309,6 +311,7 @@ function NoOffice({ workspace, onCreated }: { workspace: Workspace; onCreated: (
 function CreateOffice({ workspace, onCreated, onPlan }: { workspace: Workspace; onCreated: () => void; onPlan: () => void }) {
   const [folder, setFolder] = useState('');
   const [tz, setTz] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+  const [theme, setTheme] = useState<string>(OFFICE_THEMES[0].id);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const tzBad = tz.trim() !== '' && !isValidTimeZone(tz.trim());
@@ -320,6 +323,7 @@ function CreateOffice({ workspace, onCreated, onPlan }: { workspace: Workspace; 
         workspaceId: workspace.id,
         ...(folder.trim() ? { folderPath: folder.trim() } : {}),
         ...(tz.trim() ? { timezone: tz.trim() } : {}),
+        theme,
       });
       onCreated();
     } catch (e) {
@@ -349,6 +353,16 @@ function CreateOffice({ workspace, onCreated, onPlan }: { workspace: Workspace; 
           <label className="label">Time zone (schedules, quiet hours and the budget day)</label>
           <input className="field" value={tz} onChange={(e) => setTz(e.target.value)} />
           {tzBad && <div className="warn-text">not an IANA zone (like Europe/Berlin)</div>}
+        </div>
+        <div>
+          <label className="label">Theme (the Office view's skin and the roles' generated names)</label>
+          <select className="field" value={theme} onChange={(e) => setTheme(e.target.value)}>
+            {OFFICE_THEMES.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.label}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
       {err && <div className="warn-text">{err}</div>}
@@ -773,8 +787,8 @@ function OfficeSettings({ office, spentToday }: { office: Office; spentToday: nu
         </div>
         <div>
           <label className="label">Theme</label>
-          <div className="field office-readonly">{office.theme ?? 'pixel-office'}</div>
-          <div className="muted office-hint">the Office view draws this skin when it is implemented, else the default; a device may pick its own</div>
+          <div className="field office-readonly">{OFFICE_THEME_LABELS[officeThemeId(office.theme)]}</div>
+          <div className="muted office-hint">set at creation (it named the roles); the Office view draws this skin when it is implemented, else the default; a device may pick its own</div>
         </div>
         <div>
           <label className="label">Folder</label>

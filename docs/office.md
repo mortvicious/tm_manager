@@ -2825,8 +2825,8 @@ then assumes: every button waits for the route and the broadcast redraws.
   client-side copy of the rule.
 - *Settings*: day budget, autonomy (with what each level files), max slots
   (1…`CONCURRENCY_MAX`), tasks per shift, open tasks, time zone; Save sends
-  only the changed fields. The theme is shown read-only (a placeholder until
-  the themed view), the folder read-only.
+  only the changed fields. The theme (picked on the create form) is shown
+  read-only by its label, the folder read-only.
 
 **Roles** — one row each (a card on a phone): avatar, name and title, the
 state chip (`OfficeRoleState`, one colour per state) and its detail line (the
@@ -3031,16 +3031,34 @@ default. The skin drawn is chosen by `resolveOfficeSkin`:
 2. else the office's `Office.theme`, when listed
 3. else the default
 
-Listed today: *Pixel office* (the default) and *Space colony* (§ Space
-colony). So an office themed `fantasy-guild` renders Pixel office until that skin
-ships, with no migration either way. The Skin picker shows only while more
+Four skins are listed: **Pixel office** (the default), **Space colony**
+(§ Space colony), **Starship bridge** and **Fantasy guild hall** (§ The
+top-down skins). An office whose theme names a skin that is not listed renders
+Pixel office, with no migration either way. The Skin picker shows only while more
 than one skin is listed; its first option, *Office default*, clears the device
 pick. A skin gets `OfficeSkinProps` (`layout`, `mobile`, `selectedRoleId`,
 `highlight`, `onAvatar`) and draws only the floor.
 
 Adding a skin is a component in `web/src/pages/office/skins/` plus one
 registry entry. Its rules use a prefix of its own and go in theme.css's § Calm list for
-any infinite animation.
+any infinite animation. `skins/common.tsx` holds what the skins share (Space colony, which
+landed beside it, still keeps its own copies): the
+ambient clock (`useAmbientTick`), the frame width (`useWidth`), the walk
+switch (`useWalk`), the ambient scene (`useAmbientScene`: each avatar's spot
+and act, a guarded role kept at its desk), and the state words. For a
+top-down skin it also holds the avatar button (`FlatAvatar`: figure, bubble,
+name plate with the state pip, selection ring) and the hand-off arc
+(`flatEdgePath`).
+
+**The theme names the roles.** The office's `theme` is picked on the create
+form (*Theme*, the listed skins; the API takes any `OFFICE_THEMES` id), and
+`generateOfficeIdentities` names the preset roles in it (§ Names): Captain /
+Chief Engineer / Ops / Science / Comms Officer on a starship bridge,
+Guildmaster / the Artificer / the Smith / the Seeker / the Herald in a guild
+hall. A stored name is never re-derived, so a device that picks another skin
+keeps the office's names. The settings sheet shows the theme's label,
+read-only. Each skin names its places in the same words
+(`OFFICE_SKIN_PLACES` in `shared/src/office-flat.ts`).
 
 ### The seam and the frame
 
@@ -3307,3 +3325,141 @@ a bounded slice of a 60-role office). A scratch fixture build was screenshot
 in headless Chromium at 1200 px (dark, light) and 390 px (Classic, Glass):
 every state, four walkers, no page errors. A 60-role office at 1200×900
 rendered 37 of 60 colonists and 3 of 5 modules.
+
+### The top-down skins
+
+The Starship bridge and the Fantasy guild hall draw the layout straight down,
+not in isometric (Space colony is top-down too, but keeps its own map geometry
+in `office-colony.ts`). `shared/src/office-flat.ts` `officeFlatProjection(layout,
+width, {minTile, maxTile})` picks the largest whole-px tile that fits the frame
+(12–24 px, 26 on a phone; a narrower frame scrolls sideways). The engine's
+one-column stack is already a vertical stack, so there is no second mode.
+`server/src/office-flat.test.ts` pins:
+
+- the fit and the bounds, at desktop and phone widths
+- every point inside the drawn floor
+- the themed place names, and that they match the generated names
+- `officePlateName`
+- the star scatter
+
+Both skins share the acting of the Pixel office (`officePixelAct`): every
+`OfficeRoleState` reads distinctly, and the same state pip is on the name
+plate. They differ in dress:
+
+| state | Starship bridge | Fantasy guild hall |
+| --- | --- | --- |
+| on-shift | seated at the console, seen from behind, arms on the keys; the screen glows `--tm-accent`; typing dots | seated at the table; the candle burns (a stepped flicker); typing dots |
+| waiting-for-you | standing, right arm raised, a hopping `!`; the console screen blinks the amber hail (`--tm-status-attention`) | standing, sleeve raised, a hopping `!`; the candle gutters amber |
+| guarded | asleep at the console (head down); the screen on standby (`--tm-status-review`); a `standby` bubble with the skip reason | asleep at the table, the candle out; a `z` bubble with the skip reason |
+| off-duty (role or office off) | dozing at a dark console, dimmed, `z` | dozing at a cold table, dimmed, `z` |
+| off-duty (on call) / scheduled | ambient life: the console, the replicator (a cup in hand), a stroll, a 💬 chat | ambient life: the table, the ale barrel (a tankard in hand), a stroll, a 💬 chat |
+| in-huddle | standing round the holo-table on a dashed `--tm-status-running` ring, 📡 | standing round the council table (a map on it) on a dashed ring, 🗣️ |
+| paused | greyed, ⏸ in `--tm-status-failed`; the console screen red | greyed, ⏸; the candle out |
+| over-budget | greyed, `$`; the console screen red | greyed, 🪙; the candle out |
+
+The bubble's skip reason is clipped to 34 characters and to 4 tiles wide, so a
+desk in the first column keeps its bubble on the floor. The full line is in the
+title.
+
+**Name plates.** Themed names are long ("Chief Engineer Orion"), and four
+developers would all read "Chief…". So a plate shows `officePlateName(name)`:
+the whole name up to 10 characters, else the given name ("Orion", "Thorin" out
+of "Thorin the Artificer"). The full name stays in the title, the aria label
+and the card.
+
+**Hand-offs** use the kinds and colours of the Pixel office (message
+`--tm-accent`, forward `--tm-status-review`, huddle `--tm-status-running`,
+tainted `--tm-status-attention`). A role end follows the avatar's current spot
+(`officeEdgeEnds`), and a huddle edge has no traveller.
+
+**Shared rules.** Clicking an avatar calls `onAvatar`. The selected avatar
+gets an accent ring at its feet, and a feed selection dims everything it does
+not name. A change of scale re-places the avatars at once (`useWalk`), and they
+walk between ambient spots with a stepped transition.
+
+The infinite animations (in § Calm) are:
+
+- the pulse or scroll on its path
+- the beam's march
+- the hail screen
+- the candle's flicker and gutter
+- the typing arms, the waiting bubble and the typing dots
+
+All of them are stepped, stop when the page is calm, and are switched off
+under `prefers-reduced-motion: reduce`. That rule is written at least as
+specific as the rules it overrides; the Pixel office's own rule was corrected
+to the same specificity. The rules are `sb-*` and `fg-*`, with
+`:is(.sb-…, .fg-…)` for the avatar parts they share, before § Calm.
+
+### Starship bridge
+
+`web/src/pages/office/skins/StarshipBridge.tsx`. The office as a ship's
+bridge: each department is a **station** module with rounded bulkheads,
+floating in a deterministic star field (`officeScatter`).
+
+- **Rooms.** Each station's header strip and bulkhead carry its department's
+  hue (the Pixel office's mapping), and the rooms are named *Command*,
+  *Engineering*, *Ops station*, *Comms* and *Crew deck*.
+- **Consoles.** A desk is a curved console with three keys, and its screen is
+  lit by its owner's state (the table above): `s-on|hail|standby|off|alert|
+  away|idle`. The pilot's seat is under the avatar.
+- **Crew.** The figure is a uniform in the role's `--tm-group-<n>`, with a dark
+  collar and a combadge.
+- **Other places.** A **replicator** stands in for the coffee corner and a
+  **holo-table** for the huddle table. The lobby is the *Airlock*: sliding
+  doors (*You*) and the *Comms array*, a dish with status lights (the channel).
+- **Hand-offs** are **comms beams**: a soft glow, a dashed core that marches
+  (`steps(7)`), and a lit **pulse** running the path (`offset-path`,
+  `steps(16)`, 2.4 s, a per-edge phase, halfway at rest). A huddle is a steady
+  dotted link.
+
+**Tokens**: `--tm-bridge-space|hull|bulkhead|console|trim|star`, plus
+`--tm-office-skin|shade|paper` for the crew. They are defined for dark/light ×
+Classic/Glass in theme.css and docs/tm-design-tokens.html (a *starship
+bridge* swatch row). **Glass** turns the bubbles and plates into the Pixel
+office's lit glass capsules (glass.css).
+
+### Fantasy guild hall
+
+`web/src/pages/office/skins/FantasyGuild.tsx`. The office as a guild's hall:
+each department is a **chamber** on plank floors, with dashed stone walls and
+flagstones between the chambers.
+
+- **Rooms.** Each chamber's name is on a parchment ribbon: *Guildmaster's
+  hall*, *Artificers' workshop*, *Smithy*, *Heralds' tower*, *Common room*.
+  Beside it hangs the guild **banner**, a swallow-tailed cloth with a sigil in
+  the department's hue.
+- **Tables.** A desk is an oak table with an open book, an inkwell and a
+  **candle**. The candle burns while its owner works, gutters amber while it
+  waits on you, burns low for an idle owner, and is out otherwise. A stool sits
+  at the seat.
+- **Members.** The figure is a robe in the role's colour with a hood a shade
+  darker.
+- **Other places.** An **ale barrel** stands in for the coffee corner and a
+  round **council table** with a map for the huddle table. The lobby is the
+  *Gatehouse*: an arched, iron-banded gate (*You*) and the *Quest board* with
+  pinned parchment (the channel).
+- **Hand-offs** are **scrolls carried**: a rolled parchment with two rods and
+  a wax seal in the edge's colour, moving along a dotted footstep trail
+  (`offset-path`, `steps(20)`, 4 s, halfway at rest). A huddle is a dashed
+  link.
+
+**Tokens**: `--tm-guild-plank|stone|oak|parchment|flame|iron` (a *fantasy
+guild hall* swatch row), same four blocks. In **Glass** the parchment bubbles
+and plates stay parchment, since that is the skin's material, and gain only
+the specular line.
+
+**Checked** headless (Chromium) on a fixture harness, as the Pixel office was.
+The fixture has every state, one open huddle and three hand-offs (one
+tainted). It ran at 1100, 760 and 375 px, in dark, light and Glass, and under
+reduced motion. For both skins every run confirmed:
+
+- every state's act class
+- 4 edges and 3 travellers
+- no animation under `html[data-calm]`
+- no infinite animation under reduced motion
+- no avatar or bubble outside the floor, and no horizontal overflow
+- a click on the waiting avatar reaches `onAvatar`
+- no page errors
+
+Screenshots are in the task's artifacts.

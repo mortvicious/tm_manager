@@ -186,6 +186,20 @@
   --tm-office-leaf: var(--tm-green-6);
   --tm-office-paper: var(--tm-gray-0);
   --tm-office-shade: #000000;
+  /* the Starship bridge skin's palette (docs/office.md § Starship bridge) */
+  --tm-bridge-space: #070b14;
+  --tm-bridge-hull: #182030;
+  --tm-bridge-bulkhead: #3a4762;
+  --tm-bridge-console: #232b3b;
+  --tm-bridge-trim: #0c1018;
+  --tm-bridge-star: #c8d4f0;
+  /* the Fantasy guild hall skin's palette (docs/office.md § Fantasy guild hall) */
+  --tm-guild-plank: #4a3423;
+  --tm-guild-stone: #5f5a55;
+  --tm-guild-oak: #6b4527;
+  --tm-guild-parchment: #e8d9b0;
+  --tm-guild-flame: #ffb347;
+  --tm-guild-iron: #2b2826;
 }
 
 /* ---- semantic: light ---- */
@@ -249,6 +263,20 @@
   --tm-office-leaf: var(--tm-green-7);
   --tm-office-paper: #ffffff;
   --tm-office-shade: var(--tm-gray-8);
+  /* the Starship bridge skin's palette (docs/office.md § Starship bridge) */
+  --tm-bridge-space: #dde4f0;
+  --tm-bridge-hull: #f3f5f9;
+  --tm-bridge-bulkhead: #a0adc4;
+  --tm-bridge-console: #cbd3e0;
+  --tm-bridge-trim: #2a3242;
+  --tm-bridge-star: #8796b3;
+  /* the Fantasy guild hall skin's palette (docs/office.md § Fantasy guild hall) */
+  --tm-guild-plank: #d9b98d;
+  --tm-guild-stone: #a39a8f;
+  --tm-guild-oak: #8a5a33;
+  --tm-guild-parchment: #f6ecd0;
+  --tm-guild-flame: #f08c1a;
+  --tm-guild-iron: #4a4440;
 }
 
 /* ---- design: Glass (docs/glass.md) ----
@@ -379,6 +407,20 @@
   --tm-office-leaf: #30d158;
   --tm-office-paper: #f2f2f7;
   --tm-office-shade: #000000;
+  /* the Starship bridge skin's palette (docs/office.md § Starship bridge) */
+  --tm-bridge-space: #04060c;
+  --tm-bridge-hull: #1c2130;
+  --tm-bridge-bulkhead: #48506a;
+  --tm-bridge-console: #2a2f3e;
+  --tm-bridge-trim: #0b0d12;
+  --tm-bridge-star: #d1d9ee;
+  /* the Fantasy guild hall skin's palette (docs/office.md § Fantasy guild hall) */
+  --tm-guild-plank: #4d3a2a;
+  --tm-guild-stone: #66605a;
+  --tm-guild-oak: #74502f;
+  --tm-guild-parchment: #efe3c2;
+  --tm-guild-flame: #ff9f0a;
+  --tm-guild-iron: #2c2a28;
 }
 
 [data-design='glass'][data-theme='light'] {
@@ -459,6 +501,20 @@
   --tm-office-leaf: #248a3d;
   --tm-office-paper: #ffffff;
   --tm-office-shade: #1c1c1e;
+  /* the Starship bridge skin's palette (docs/office.md § Starship bridge) */
+  --tm-bridge-space: #e3e8f1;
+  --tm-bridge-hull: #f7f8fb;
+  --tm-bridge-bulkhead: #aab4c6;
+  --tm-bridge-console: #d4d9e3;
+  --tm-bridge-trim: #1c1c1e;
+  --tm-bridge-star: #8e9ab4;
+  /* the Fantasy guild hall skin's palette (docs/office.md § Fantasy guild hall) */
+  --tm-guild-plank: #dcc29e;
+  --tm-guild-stone: #aea69c;
+  --tm-guild-oak: #94643a;
+  --tm-guild-parchment: #f8f0da;
+  --tm-guild-flame: #ff9500;
+  --tm-guild-iron: #48443f;
 }
 
 /* A phone in Glass: iOS's scale (15pt subheadline base, 17pt headline, 34pt
@@ -15633,9 +15689,806 @@ button.explain-tap:active {
     transition: none;
   }
   .po-packet,
-  .po-avatar .arm,
-  .po-bubble,
-  .po-bubble i {
+  .po-avatar.act-typing .arm,
+  .po-bubble.b-waiting,
+  .po-bubble.b-typing i {
+    animation: none;
+  }
+}
+
+/* Top-down office skins: Starship bridge (sb-*) and Fantasy guild hall (fg-*)
+ * (web/src/pages/office/skins/StarshipBridge.tsx, FantasyGuild.tsx; docs/office.md
+ * § Starship bridge / § Fantasy guild hall). An SVG floor in px from the flat
+ * projection (`--sb-t` / `--fg-t` = one tile); avatars and the hand-off
+ * pulse / scroll are HTML over it, placed by `--x/--y`. Every surface is a
+ * `--tm-bridge-*` / `--tm-guild-*` palette token or a `--tm-*` hue. Every
+ * infinite animation is stepped and in § Calm. */
+.sb-wrap,
+.fg-wrap {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.sb-floor,
+.fg-floor {
+  position: relative;
+  margin: 0 auto;
+  font-family: var(--tm-font-mono);
+}
+.sb-floor {
+  --u: var(--sb-t);
+}
+.fg-floor {
+  --u: var(--fg-t);
+}
+.sb-svg,
+.fg-svg {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: visible;
+}
+
+/* ---- the avatars both skins share (common.tsx FlatAvatar) ---- */
+:is(.sb-avatar, .fg-avatar) {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--tm-text);
+  font: inherit;
+  cursor: pointer;
+  /* anchored at its feet: the point is where it stands */
+  transform: translate(var(--x), var(--y)) translate(-50%, -100%);
+}
+:is(.sb-floor, .fg-floor).walk :is(.sb-avatar, .fg-avatar) {
+  transition: transform 2.4s steps(12, jump-end);
+}
+/* a finger-sized hit area round a small figure */
+:is(.sb-avatar, .fg-avatar)::before {
+  content: '';
+  position: absolute;
+  inset: -6px -10px -4px;
+}
+:is(.sb-avatar, .fg-avatar):focus-visible {
+  outline: none;
+}
+:is(.sb-crew, .fg-robed) {
+  position: relative;
+  display: block;
+  width: calc(var(--u) * 1.15);
+  height: calc(var(--u) * 1.55);
+}
+:is(.sb-crew, .fg-robed).seated {
+  height: calc(var(--u) * 1.3);
+}
+:is(.sb-crew, .fg-robed) .skin {
+  fill: var(--tm-office-skin);
+}
+:is(.sb-crew, .fg-robed) .eye {
+  fill: var(--tm-office-shade);
+}
+:is(.sb-crew, .fg-robed) .body {
+  fill: var(--c);
+}
+:is(.sb-crew, .fg-robed) .arm {
+  fill: color-mix(in srgb, var(--c) 75%, var(--tm-office-shade));
+}
+/* the selection ring under the feet */
+:is(.sb-ring, .fg-ring) {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--u) * -0.25);
+  width: calc(var(--u) * 1.4);
+  height: calc(var(--u) * 0.6);
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--tm-office-shade) 30%, transparent);
+}
+:is(.sb-avatar, .fg-avatar):is(.selected, :focus-visible) :is(.sb-ring, .fg-ring) {
+  background: color-mix(in srgb, var(--tm-accent) 30%, transparent);
+  box-shadow: 0 0 0 2px var(--tm-accent);
+}
+:is(.sb-avatar, .fg-avatar).hl :is(.sb-ring, .fg-ring) {
+  box-shadow: 0 0 0 3px var(--tm-accent-subtle);
+}
+:is(.sb-floor, .fg-floor).has-hl :is(.sb-avatar, .fg-avatar):not(.hl) {
+  opacity: 0.35;
+}
+:is(.sb-avatar, .fg-avatar).act-greyed :is(.sb-crew, .fg-robed) {
+  filter: grayscale(1);
+  opacity: 0.7;
+}
+:is(.sb-avatar, .fg-avatar).act-dozing :is(.sb-crew, .fg-robed) {
+  filter: saturate(0.4);
+  opacity: 0.55;
+}
+:is(.sb-avatar, .fg-avatar).act-typing .arm {
+  animation: sb-type 0.5s steps(2, jump-none) infinite;
+}
+:is(.sb-avatar, .fg-avatar).act-typing .arm.ar {
+  animation-delay: 0.25s;
+}
+@keyframes sb-type {
+  to {
+    transform: translateY(0.6px);
+  }
+}
+:is(.sb-plate, .fg-plate) {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 3px);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  max-width: max(var(--plate), 72px);
+  padding: 0 var(--tm-space-1);
+  transform: translateX(-50%);
+  border: 1px solid var(--tm-border-strong);
+  color: var(--tm-text);
+  font-size: var(--tm-text-xs);
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.sb-plate {
+  border-radius: var(--tm-radius-pill);
+  background: color-mix(in srgb, var(--tm-bridge-space) 72%, transparent);
+  border-color: color-mix(in srgb, var(--tm-bridge-bulkhead) 80%, var(--tm-accent));
+}
+.fg-plate {
+  border-radius: var(--tm-radius-sm);
+  background: color-mix(in srgb, var(--tm-guild-parchment) 92%, transparent);
+  border-color: color-mix(in srgb, var(--tm-guild-oak) 70%, var(--tm-guild-iron));
+  color: var(--tm-guild-iron);
+}
+:is(.sb-avatar, .fg-avatar):is(.act-greyed, .act-dozing) :is(.sb-plate, .fg-plate) {
+  opacity: 0.7;
+}
+:is(.sb-plate-name, .fg-plate-name) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* the state pip: every OfficeRoleState its own hue (as the Pixel office's) */
+:is(.sb-pip, .fg-pip) {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pip, var(--tm-text-faint));
+}
+:is(.sb-pip, .fg-pip).st-on-shift {
+  --pip: var(--tm-status-running);
+}
+:is(.sb-pip, .fg-pip).st-in-huddle {
+  --pip: var(--tm-status-done);
+}
+:is(.sb-pip, .fg-pip).st-waiting-for-you {
+  --pip: var(--tm-status-attention);
+}
+:is(.sb-pip, .fg-pip).st-guarded {
+  --pip: var(--tm-status-review);
+}
+:is(.sb-pip, .fg-pip).st-scheduled {
+  --pip: var(--tm-status-queued);
+}
+:is(.sb-pip, .fg-pip).st-over-budget {
+  --pip: var(--tm-status-failed);
+}
+:is(.sb-pip, .fg-pip).st-paused {
+  --pip: transparent;
+  box-shadow: inset 0 0 0 2px var(--tm-status-failed);
+}
+:is(.sb-pip, .fg-pip).st-off-duty {
+  --pip: transparent;
+  box-shadow: inset 0 0 0 1px var(--tm-text-faint);
+}
+:is(.sb-bubble, .fg-bubble) {
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px var(--tm-space-1);
+  transform: translateX(-50%);
+  background: var(--tm-bg-raised);
+  border: 2px solid var(--tm-border-strong);
+  color: var(--tm-text);
+  font-size: var(--tm-text-xs);
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.sb-bubble {
+  border-radius: var(--tm-radius-sm);
+}
+.fg-bubble {
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-guild-parchment);
+  border-color: color-mix(in srgb, var(--tm-guild-oak) 70%, var(--tm-guild-iron));
+  color: var(--tm-guild-iron);
+}
+:is(.sb-bubble, .fg-bubble).b-typing i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--tm-accent);
+  animation: sb-blink 0.9s steps(2, jump-none) infinite;
+}
+:is(.sb-bubble, .fg-bubble).b-typing i:nth-child(2) {
+  animation-delay: 0.3s;
+}
+:is(.sb-bubble, .fg-bubble).b-typing i:nth-child(3) {
+  animation-delay: 0.6s;
+}
+:is(.sb-bubble, .fg-bubble).b-waiting {
+  border-color: var(--tm-status-attention);
+  color: var(--tm-status-attention);
+  animation: sb-hop 1s steps(2, jump-none) infinite;
+}
+:is(.sb-bubble, .fg-bubble).b-guarded {
+  border-color: var(--tm-status-review);
+  color: var(--tm-status-review);
+}
+:is(.sb-bubble-why, .fg-bubble-why) {
+  /* short enough that a desk in the first column keeps its bubble on the floor */
+  max-width: calc(var(--u) * 4);
+  margin-left: var(--tm-space-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--tm-text-muted);
+  font-weight: 500;
+}
+.fg-bubble-why {
+  color: color-mix(in srgb, var(--tm-guild-iron) 70%, var(--tm-guild-parchment));
+}
+:is(.sb-bubble, .fg-bubble).b-dozing {
+  color: var(--tm-text-faint);
+}
+.fg-bubble.b-dozing {
+  color: color-mix(in srgb, var(--tm-guild-iron) 55%, var(--tm-guild-parchment));
+}
+:is(.sb-bubble, .fg-bubble).b-blocked {
+  border-color: var(--tm-status-failed);
+  color: var(--tm-status-failed);
+}
+:is(.sb-bubble, .fg-bubble):is(.b-huddle, .b-chat) {
+  border-color: var(--tm-status-running);
+}
+@keyframes sb-hop {
+  to {
+    transform: translate(-50%, -3px);
+  }
+}
+@keyframes sb-blink {
+  to {
+    opacity: 0.2;
+  }
+}
+.sb-label,
+.fg-label,
+.sb-place-label,
+.fg-place-label {
+  font-family: var(--tm-font-mono);
+  font-weight: 700;
+}
+.sb-place-label,
+.fg-place-label {
+  font-size: var(--tm-text-xs);
+  text-anchor: middle;
+}
+
+/* ---- Starship bridge ---- */
+.sb-space {
+  fill: var(--tm-bridge-space);
+}
+.sb-star {
+  fill: var(--tm-bridge-star);
+  opacity: 0.45;
+}
+.sb-star.k1 {
+  opacity: 0.7;
+}
+.sb-star.k2 {
+  opacity: 0.9;
+}
+.sb-dept-leadership {
+  --dept: var(--tm-group-1);
+}
+.sb-dept-engineering {
+  --dept: var(--tm-group-2);
+}
+.sb-dept-operations {
+  --dept: var(--tm-group-6);
+}
+.sb-dept-growth {
+  --dept: var(--tm-group-5);
+}
+.sb-dept-commons {
+  --dept: var(--tm-group-3);
+}
+.sb-hull {
+  fill: var(--tm-bridge-hull);
+}
+.sb-hull.lobby {
+  fill: color-mix(in srgb, var(--tm-bridge-hull) 85%, var(--tm-bridge-console));
+}
+.sb-grid line {
+  stroke: color-mix(in srgb, var(--tm-bridge-hull) 70%, var(--tm-bridge-bulkhead));
+  stroke-width: 1px;
+}
+.sb-bulkhead {
+  fill: none;
+  stroke: var(--tm-bridge-bulkhead);
+  stroke-width: 3px;
+}
+.sb-station .sb-bulkhead {
+  stroke: color-mix(in srgb, var(--tm-bridge-bulkhead) 75%, var(--dept, var(--tm-bridge-bulkhead)));
+}
+.sb-head {
+  fill: color-mix(in srgb, var(--dept, var(--tm-bridge-bulkhead)) 30%, var(--tm-bridge-hull));
+  stroke: color-mix(in srgb, var(--dept, var(--tm-bridge-bulkhead)) 65%, var(--tm-bridge-hull));
+  stroke-width: 1px;
+}
+.sb-label {
+  fill: var(--tm-text);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.sb-label.lobby {
+  fill: var(--tm-text-muted);
+  text-anchor: middle;
+}
+.sb-place-label {
+  fill: var(--tm-text-muted);
+}
+.sb-seat {
+  fill: color-mix(in srgb, var(--tm-bridge-bulkhead) 70%, var(--tm-bridge-trim));
+}
+.sb-desk {
+  fill: var(--tm-bridge-console);
+  stroke: var(--tm-bridge-bulkhead);
+  stroke-width: 1px;
+}
+.sb-screen {
+  fill: color-mix(in srgb, var(--tm-bridge-trim) 80%, var(--tm-bridge-console));
+}
+.sb-key {
+  fill: color-mix(in srgb, var(--tm-bridge-bulkhead) 60%, var(--tm-bridge-console));
+}
+/* the console screen is lit by its owner's state */
+.sb-console.s-on .sb-screen {
+  fill: var(--tm-accent);
+  filter: drop-shadow(0 0 3px var(--tm-accent));
+}
+.sb-console.s-on .sb-key.k1 {
+  fill: var(--tm-accent);
+}
+.sb-console.s-hail .sb-screen {
+  fill: var(--tm-status-attention);
+  animation: sb-hail 1s steps(2, jump-none) infinite;
+}
+.sb-console.s-standby .sb-screen {
+  fill: color-mix(in srgb, var(--tm-status-review) 45%, var(--tm-bridge-trim));
+}
+.sb-console.s-alert .sb-screen {
+  fill: color-mix(in srgb, var(--tm-status-failed) 60%, var(--tm-bridge-trim));
+}
+.sb-console.s-away .sb-screen {
+  fill: color-mix(in srgb, var(--tm-status-running) 35%, var(--tm-bridge-trim));
+}
+.sb-console.s-idle .sb-screen {
+  fill: color-mix(in srgb, var(--tm-accent) 22%, var(--tm-bridge-trim));
+}
+.sb-console.s-off {
+  opacity: 0.75;
+}
+@keyframes sb-hail {
+  to {
+    opacity: 0.35;
+  }
+}
+.sb-slot {
+  fill: color-mix(in srgb, var(--tm-status-review) 70%, var(--tm-bridge-trim));
+}
+.sb-holo-ring {
+  fill: color-mix(in srgb, var(--tm-status-running) 10%, transparent);
+  stroke: var(--tm-status-running);
+  stroke-width: 2px;
+  stroke-dasharray: 4 3;
+}
+.sb-holo-table {
+  fill: var(--tm-bridge-console);
+  stroke: var(--tm-bridge-bulkhead);
+  stroke-width: 2px;
+}
+.sb-holo-light {
+  fill: color-mix(in srgb, var(--tm-status-running) 55%, transparent);
+  filter: drop-shadow(0 0 4px var(--tm-status-running));
+}
+.sb-door {
+  fill: var(--tm-bridge-console);
+  stroke: var(--tm-bridge-bulkhead);
+  stroke-width: 1px;
+}
+.sb-door-light {
+  fill: var(--tm-accent);
+}
+.sb-dish {
+  fill: var(--tm-bridge-console);
+  stroke: var(--tm-bridge-bulkhead);
+  stroke-width: 2px;
+}
+.sb-dish-core {
+  fill: var(--tm-bridge-bulkhead);
+}
+.sb-array-led {
+  fill: var(--tm-status-done);
+}
+.sb-array-led.l2 {
+  fill: var(--tm-accent);
+}
+.sb-array-led.l3 {
+  fill: var(--tm-status-review);
+}
+.sb-crew .hair {
+  fill: color-mix(in srgb, var(--c) 30%, var(--tm-office-shade));
+}
+.sb-crew .trim {
+  fill: var(--tm-bridge-trim);
+}
+.sb-crew .badge {
+  fill: var(--tm-status-review);
+}
+.sb-crew .legs {
+  fill: var(--tm-bridge-trim);
+}
+.sb-crew .cup {
+  fill: var(--tm-office-paper);
+}
+/* a comms beam: a soft glow and a marching core */
+.sb-beam path {
+  fill: none;
+  stroke: var(--beam, var(--tm-accent));
+}
+.sb-beam.k-route {
+  --beam: var(--tm-status-review);
+}
+.sb-beam.k-huddle {
+  --beam: var(--tm-status-running);
+}
+.sb-beam.tainted {
+  --beam: var(--tm-status-attention);
+}
+.sb-beam-glow {
+  stroke-width: 6px;
+  opacity: 0.18;
+  stroke-linecap: round;
+}
+.sb-beam-core {
+  stroke-width: 2px;
+  stroke-dasharray: 8 6;
+  opacity: 0.85;
+  animation: sb-march 1.4s steps(7, jump-none) infinite;
+}
+.sb-beam.k-huddle .sb-beam-core {
+  stroke-dasharray: 2 4;
+  animation: none;
+}
+.sb-beam.hl .sb-beam-glow {
+  opacity: 0.4;
+  stroke-width: 9px;
+}
+.sb-beam.hl .sb-beam-core {
+  stroke-width: 3px;
+  opacity: 1;
+}
+.sb-floor.has-hl .sb-beam:not(.hl) {
+  opacity: 0.15;
+}
+@keyframes sb-march {
+  to {
+    stroke-dashoffset: -14;
+  }
+}
+/* the pulse running the beam; waits halfway at rest */
+.sb-pulse {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 100000;
+  width: max(6px, calc(var(--sb-t) * 0.4));
+  height: max(6px, calc(var(--sb-t) * 0.4));
+  border-radius: 50%;
+  background: var(--tm-office-paper);
+  box-shadow: 0 0 0 2px var(--beam, var(--tm-accent)), 0 0 8px 2px var(--beam, var(--tm-accent));
+  pointer-events: none;
+  offset-rotate: 0deg;
+  offset-distance: 50%;
+  animation: sb-fly 2.4s steps(16, jump-none) infinite;
+}
+.sb-pulse.k-route {
+  --beam: var(--tm-status-review);
+}
+.sb-pulse.tainted {
+  --beam: var(--tm-status-attention);
+}
+.sb-floor.has-hl .sb-pulse:not(.hl) {
+  opacity: 0.2;
+}
+@keyframes sb-fly {
+  from {
+    offset-distance: 0%;
+  }
+  to {
+    offset-distance: 100%;
+  }
+}
+
+/* ---- Fantasy guild hall ---- */
+.fg-ground {
+  fill: color-mix(in srgb, var(--tm-guild-stone) 70%, var(--tm-office-shade));
+}
+.fg-flag {
+  fill: color-mix(in srgb, var(--tm-guild-stone) 85%, var(--tm-office-shade));
+}
+.fg-dept-leadership {
+  --dept: var(--tm-group-1);
+}
+.fg-dept-engineering {
+  --dept: var(--tm-group-2);
+}
+.fg-dept-operations {
+  --dept: var(--tm-group-6);
+}
+.fg-dept-growth {
+  --dept: var(--tm-group-5);
+}
+.fg-dept-commons {
+  --dept: var(--tm-group-3);
+}
+.fg-planks {
+  fill: var(--tm-guild-plank);
+}
+.fg-planks.lobby {
+  fill: color-mix(in srgb, var(--tm-guild-plank) 80%, var(--tm-guild-stone));
+}
+.fg-plank-lines line {
+  stroke: color-mix(in srgb, var(--tm-guild-plank) 72%, var(--tm-office-shade));
+  stroke-width: 1px;
+}
+.fg-wall {
+  fill: none;
+  stroke: var(--tm-guild-stone);
+  stroke-width: 5px;
+  stroke-dasharray: 14 2;
+}
+.fg-ribbon {
+  fill: var(--tm-guild-parchment);
+  stroke: color-mix(in srgb, var(--tm-guild-oak) 60%, var(--tm-guild-parchment));
+  stroke-width: 1px;
+}
+.fg-label {
+  fill: var(--tm-guild-iron);
+  font-family: var(--tm-font-display);
+  font-style: italic;
+  letter-spacing: 0.02em;
+}
+.fg-label.lobby {
+  fill: var(--tm-guild-parchment);
+  text-anchor: middle;
+}
+.fg-place-label {
+  fill: var(--tm-guild-parchment);
+}
+.fg-pole {
+  fill: var(--tm-guild-iron);
+}
+.fg-cloth {
+  fill: var(--dept, var(--tm-guild-oak));
+  stroke: color-mix(in srgb, var(--dept, var(--tm-guild-oak)) 60%, var(--tm-office-shade));
+  stroke-width: 1px;
+}
+.fg-sigil {
+  fill: var(--tm-guild-parchment);
+  opacity: 0.85;
+}
+.fg-stool,
+.fg-oak {
+  fill: var(--tm-guild-oak);
+}
+.fg-stool {
+  fill: color-mix(in srgb, var(--tm-guild-oak) 75%, var(--tm-office-shade));
+}
+.fg-oak-edge {
+  fill: color-mix(in srgb, var(--tm-guild-oak) 65%, var(--tm-office-shade));
+}
+.fg-page {
+  fill: var(--tm-guild-parchment);
+}
+.fg-spine,
+.fg-ink {
+  fill: var(--tm-guild-iron);
+}
+.fg-candle {
+  fill: var(--tm-guild-parchment);
+  stroke: color-mix(in srgb, var(--tm-guild-oak) 60%, var(--tm-office-shade));
+  stroke-width: 1px;
+}
+/* the candle burns while its owner works, gutters while it waits on you, is out otherwise */
+.fg-flame {
+  fill: var(--tm-guild-flame);
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+}
+.fg-table.c-lit .fg-flame {
+  opacity: 1;
+  filter: drop-shadow(0 0 4px var(--tm-guild-flame));
+  animation: fg-flicker 0.8s steps(2, jump-none) infinite;
+}
+.fg-table.c-gutter .fg-flame {
+  opacity: 1;
+  fill: var(--tm-status-attention);
+  animation: sb-hail 1s steps(2, jump-none) infinite;
+}
+.fg-table.c-low .fg-flame {
+  opacity: 0.45;
+  transform: scale(0.6);
+}
+@keyframes fg-flicker {
+  to {
+    transform: scale(0.85, 1.1);
+  }
+}
+.fg-cask {
+  fill: var(--tm-guild-oak);
+  stroke: var(--tm-guild-iron);
+  stroke-width: 2px;
+}
+.fg-hoop {
+  fill: none;
+  stroke: var(--tm-guild-iron);
+  stroke-width: 1px;
+}
+.fg-bung {
+  fill: var(--tm-guild-iron);
+}
+.fg-council-ring {
+  fill: color-mix(in srgb, var(--tm-status-running) 12%, transparent);
+  stroke: var(--tm-status-running);
+  stroke-width: 2px;
+  stroke-dasharray: 5 3;
+}
+.fg-map {
+  fill: var(--tm-guild-parchment);
+}
+.fg-door {
+  fill: var(--tm-guild-oak);
+  stroke: var(--tm-guild-iron);
+  stroke-width: 2px;
+}
+.fg-band {
+  fill: var(--tm-guild-iron);
+}
+.fg-board {
+  fill: color-mix(in srgb, var(--tm-guild-oak) 85%, var(--tm-office-shade));
+  stroke: var(--tm-guild-iron);
+  stroke-width: 1px;
+}
+.fg-note {
+  fill: var(--tm-guild-parchment);
+}
+.fg-note.n1 {
+  fill: color-mix(in srgb, var(--tm-guild-parchment) 75%, var(--tm-guild-flame));
+}
+.fg-note.n3 {
+  fill: color-mix(in srgb, var(--tm-guild-parchment) 80%, var(--tm-accent));
+}
+.fg-robed .hood {
+  fill: color-mix(in srgb, var(--c) 62%, var(--tm-office-shade));
+}
+.fg-robed .belt {
+  fill: var(--tm-guild-iron);
+}
+.fg-robed .tankard {
+  fill: var(--tm-guild-oak);
+  stroke: var(--tm-guild-iron);
+  stroke-width: 0.4px;
+}
+/* a scroll's trail: dotted footsteps */
+.fg-trail {
+  fill: none;
+  stroke: var(--trail, var(--tm-accent));
+  stroke-width: 2.5px;
+  stroke-linecap: round;
+  stroke-dasharray: 0.5 6;
+  opacity: 0.8;
+}
+.fg-trail.k-route {
+  --trail: var(--tm-status-review);
+}
+.fg-trail.k-huddle {
+  --trail: var(--tm-status-running);
+  stroke-dasharray: 5 3;
+  stroke-linecap: butt;
+  stroke-width: 2px;
+}
+.fg-trail.tainted {
+  --trail: var(--tm-status-attention);
+}
+.fg-trail.hl {
+  stroke-width: 4px;
+  opacity: 1;
+}
+.fg-floor.has-hl .fg-trail:not(.hl) {
+  opacity: 0.15;
+}
+/* the scroll: rolled parchment with two rods, carried along the trail; waits halfway at rest */
+.fg-scroll {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 100000;
+  width: max(12px, calc(var(--fg-t) * 0.95));
+  height: max(6px, calc(var(--fg-t) * 0.42));
+  border-radius: 2px;
+  background: var(--tm-guild-parchment);
+  border-left: max(2px, calc(var(--fg-t) * 0.12)) solid var(--tm-guild-oak);
+  border-right: max(2px, calc(var(--fg-t) * 0.12)) solid var(--tm-guild-oak);
+  box-shadow: 0 0 0 1px var(--seal, var(--tm-accent)), 0 2px 0 color-mix(in srgb, var(--tm-office-shade) 40%, transparent);
+  pointer-events: none;
+  offset-rotate: 0deg;
+  offset-distance: 50%;
+  animation: fg-carry 4s steps(20, jump-none) infinite;
+}
+/* the wax seal */
+.fg-scroll::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: max(4px, calc(var(--fg-t) * 0.22));
+  height: max(4px, calc(var(--fg-t) * 0.22));
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--seal, var(--tm-accent));
+}
+.fg-scroll.k-route {
+  --seal: var(--tm-status-review);
+}
+.fg-scroll.tainted {
+  --seal: var(--tm-status-attention);
+}
+.fg-floor.has-hl .fg-scroll:not(.hl) {
+  opacity: 0.2;
+}
+@keyframes fg-carry {
+  from {
+    offset-distance: 0%;
+  }
+  to {
+    offset-distance: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.sb-floor, .fg-floor).walk :is(.sb-avatar, .fg-avatar) {
+    transition: none;
+  }
+  /* each selector at least as specific as the rule that animates it */
+  .sb-pulse,
+  .sb-beam-core,
+  .sb-console.s-hail .sb-screen,
+  .fg-scroll,
+  .fg-table:is(.c-lit, .c-gutter) .fg-flame,
+  :is(.sb-avatar, .fg-avatar).act-typing .arm,
+  :is(.sb-bubble, .fg-bubble).b-waiting,
+  :is(.sb-bubble, .fg-bubble).b-typing i {
     animation: none;
   }
 }
@@ -16157,7 +17010,16 @@ html[data-calm]
     .sc-module.light-alert .sc-light,
     .sc-colonist.act-typing .arm,
     .sc-bubble.b-waiting,
-    .sc-bubble.b-typing i
+    .sc-bubble.b-typing i,
+    .sb-pulse,
+    .sb-beam-core,
+    .sb-console.s-hail .sb-screen,
+    :is(.sb-avatar, .fg-avatar).act-typing .arm,
+    :is(.sb-bubble, .fg-bubble).b-waiting,
+    :is(.sb-bubble, .fg-bubble).b-typing i,
+    .fg-scroll,
+    .fg-table.c-lit .fg-flame,
+    .fg-table.c-gutter .fg-flame
   ) {
   animation: none;
 }
