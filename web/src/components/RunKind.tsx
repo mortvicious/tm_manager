@@ -1,4 +1,5 @@
 import { runTaskId as sharedRunTaskId, type Run, type RunKind, type Task } from '@tm/shared';
+import { liveReviewOf } from '../runIndex.ts';
 
 /**
  * Every claude the server spawns is a terminal (docs/design.md § PTY
@@ -52,5 +53,6 @@ export function runTitle(r: Run, tasks: Task[]): string {
 
 /** The live reviewer terminal of a task, if one is running right now. */
 export function liveReviewRun(runs: Run[], taskId: string): Run | undefined {
-  return runs.find((r) => r.kind === 'review' && r.subjectId === taskId && r.status === 'running');
+  // = runs.find(kind review, subject taskId, running), off the shared per-list index
+  return liveReviewOf(runs, taskId);
 }

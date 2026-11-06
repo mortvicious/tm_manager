@@ -2,7 +2,8 @@ import { useState, type CSSProperties, type HTMLAttributes, type MouseEvent, typ
 import { publishCaution, publishGateReason, type Task, type TaskStatus } from '@tm/shared';
 import { api } from '../api.ts';
 import { confirmMarkPublished, confirmPublish, markPublishedLabel, markPublishedOffered, publishIsPrimary } from '../publish.ts';
-import { useApp } from '../state.tsx';
+import { useApp, useAppSelector } from '../state.tsx';
+import { runsOfTask } from '../runIndex.ts';
 import { toastError } from '../toast.ts';
 import { ACTION_TITLE, publishBusy, runTaskAction, usePendingAction, type TaskActionId } from '../pending.ts';
 import { nextStep, type NextStep } from '../nextStep.ts';
@@ -98,7 +99,7 @@ export function TaskRow({
   progress?: boolean;
   children?: ReactNode;
 }) {
-  const { runs, tasks, activity, refresh, orch, questions } = useApp();
+  const { runs, tasks, refresh, orch, questions } = useApp();
   const mobile = useIsMobile();
   // one action at a time per TASK, whichever surface pressed it (src/pending.ts)
   const pend = usePendingAction(task.id);
@@ -110,7 +111,7 @@ export function TaskRow({
   // so the × arms first and a second press cancels (src/arm.ts)
   const arm = useArm();
 
-  const taskRuns = runs.filter((r) => r.taskId === task.id);
+  const taskRuns = runsOfTask(runs, task.id);
   // Prefer the live session (its PTY is certain to still be attachable);
   // listRuns is started_at DESC, so [0] is otherwise the newest.
   const run = taskRuns.find((r) => r.status === 'running') ?? taskRuns[0];
@@ -203,7 +204,10 @@ export function TaskRow({
   // The live line: what the agent is doing right now, straight off its
   // transcript. The server only tracks live, non-idle runs and clears the
   // entry when one ends, so a present entry means "still working".
-  const liveLine = run ? activity[run.id] : undefined;
+  // A selector, not the whole `activity` slice: a run's activity line
+  // re-renders only its own row (docs/spa-performance.md § Store).
+  const runId = run?.id;
+  const liveLine = useAppSelector((s) => (runId ? s.activity[runId] : undefined));
 
   const termLabel = run
     ? `Open terminal (session ${run.id.slice(0, 8)}${run.status === 'running' ? '' : ', ended'})`

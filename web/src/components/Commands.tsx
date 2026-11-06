@@ -945,6 +945,7 @@ function SuggestedChecks({
   useEffect(() => {
     if (!runningIds) return;
     const t = setInterval(async () => {
+      if (document.visibilityState === 'hidden') return; // caught up on the next visible tick
       for (const pair of runningIds.split(',')) {
         const [key, id] = pair.split('=');
         try {

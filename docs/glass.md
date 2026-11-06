@@ -220,6 +220,12 @@ browser with no `backdrop-filter`. Both are token overrides in `theme.css`.
 Small fills (buttons, the tab lens) and the dimming scrim stay translucent; on
 a solid surface they read as tints.
 
+**Idle cost** (docs/spa-performance.md § Calm): every frame of ANY running
+animation re-blurs the header's capsules, so an infinite pulse is what made an
+idle Glass board cost 50 % GPU. The live pulses step while the human is active
+and stop under `html[data-calm]`; a new infinite animation goes in both lists
+at the end of `theme.css`.
+
 ## Materials: where a blur may go
 
 `backdrop-filter`, like `filter` and `transform`, makes an element the

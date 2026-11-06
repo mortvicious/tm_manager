@@ -249,6 +249,11 @@ function ShellOutput({ shell, inSheet }: { shell: BackgroundShell; inSheet?: boo
     setText('');
     setErr(null);
     const tick = async () => {
+      // a hidden page reads nothing (docs/spa-performance.md); it catches up from `next` on return
+      if (document.visibilityState === 'hidden') {
+        timer = setTimeout(() => void tick(), POLL_MS);
+        return;
+      }
       try {
         const r = await api.backgroundShellOutput(shell.runId, shell.shellId, next);
         if (stopped) return;

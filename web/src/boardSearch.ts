@@ -581,6 +581,15 @@ export function parseText(text: string, ctx: SearchContext): { typed: SearchToke
   return { typed, words };
 }
 
+/**
+ * A task's haystack depends on the row and on four names looked up elsewhere;
+ * rows are replaced, never mutated, on every change (state.tsx), so the row
+ * object plus those names is the whole key. Rebuilding all of them on every
+ * board render — the board renders on every task/run event and every 30 s —
+ * was the largest single cost of an idle board (docs/spa-performance.md).
+ */
+const haystackCache = new WeakMap<Task, { key: string; hay: string }>();
+
 /** Everything free text is matched against, one lowercase string per task. */
 export function buildHaystacks(ctx: SearchContext): Map<string, string> {
   const repoName = new Map(ctx.repos.map((r) => [r.id, r.name]));
@@ -589,33 +598,42 @@ export function buildHaystacks(ctx: SearchContext): Map<string, string> {
   const out = new Map<string, string>();
   for (const t of ctx.tasks) {
     const g = ctx.groups.get(t.groupId);
-    out.set(
+    const group = g && g.size > 1 ? `${t.groupId} ${g.label}` : null;
+    const repo = t.repoId ? repoName.get(t.repoId) : null;
+    const feature = t.featureId ? featureTitle.get(t.featureId) : null;
+    const role = t.roleId ? roleName.get(t.roleId) : null;
+    const key = `${group ?? ''}\u0000${repo ?? ''}\u0000${feature ?? ''}\u0000${role ?? ''}`;
+    const hit = haystackCache.get(t);
+    if (hit && hit.key === key) {
+      out.set(t.id, hit.hay);
+      continue;
+    }
+    const hay = [
+      t.title,
+      t.brief,
+      t.description,
+      t.resultSummary,
       t.id,
-      [
-        t.title,
-        t.brief,
-        t.description,
-        t.resultSummary,
-        t.id,
-        t.parentId,
-        g && g.size > 1 ? `${t.groupId} ${g.label}` : null,
-        t.repoId ? repoName.get(t.repoId) : null,
-        t.status,
-        provenanceOf(t),
-        t.source,
-        t.sourceRef,
-        t.category,
-        t.featureId ? featureTitle.get(t.featureId) : null,
-        t.model,
-        t.roleId ? roleName.get(t.roleId) : null,
-        t.error,
-        localDay(new Date(t.createdAt)),
-        localDay(new Date(t.updatedAt)),
-      ]
-        .filter(Boolean)
-        .join('\n')
-        .toLowerCase(),
-    );
+      t.parentId,
+      group,
+      repo,
+      t.status,
+      provenanceOf(t),
+      t.source,
+      t.sourceRef,
+      t.category,
+      feature,
+      t.model,
+      role,
+      t.error,
+      localDay(new Date(t.createdAt)),
+      localDay(new Date(t.updatedAt)),
+    ]
+      .filter(Boolean)
+      .join('\n')
+      .toLowerCase();
+    haystackCache.set(t, { key, hay });
+    out.set(t.id, hay);
   }
   return out;
 }

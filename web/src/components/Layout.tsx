@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import type { UsageSnapshot, UsageWindow } from '@tm/shared';
 import { NavLink } from 'react-router-dom';
 import { api } from '../api.ts';
+import { onTick } from '../clock.ts';
 import { toggleScheme, useLook } from '../appearance.ts';
 import type { InboxReturn, ReturnTo } from '../returnTo.ts';
 import { useApp } from '../state.tsx';
@@ -246,10 +247,11 @@ function UsagePill() {
     let alive = true;
     const load = () => api.usage().then((u) => alive && setUsage(u)).catch(() => {});
     load();
-    const t = setInterval(load, 120_000);
+    // the shared clock (src/clock.ts): paused while hidden, re-read on return
+    const off = onTick(120_000, load);
     return () => {
       alive = false;
-      clearInterval(t);
+      off();
     };
   }, []);
   if (!usage) return null;

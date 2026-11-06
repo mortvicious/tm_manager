@@ -17,6 +17,7 @@ import {
   type TimelineState,
 } from '@tm/shared';
 import { api } from './api.ts';
+import { onTick } from './clock.ts';
 import { computeProgress, useProgressBaseline } from './progress.ts';
 import { onServerEvent, useApp } from './state.tsx';
 import { useWorkspace } from './workspace.ts';
@@ -78,10 +79,8 @@ export const TIMELINE_TICK_MS = 30_000;
 
 function useTick(ms: number): [number, () => void] {
   const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), ms);
-    return () => clearInterval(t);
-  }, [ms]);
+  // the shared clock (src/clock.ts): one timer for the app, paused while hidden
+  useEffect(() => onTick(ms, () => setNow(Date.now())), [ms]);
   const bump = useCallback(() => setNow(Date.now()), []);
   return [now, bump];
 }

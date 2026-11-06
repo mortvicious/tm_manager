@@ -1,34 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useClock } from '../clock.ts';
 
 /** Fresh enough to be worth a marker: anything filed in the last day. */
 export const NEW_MS = 24 * 60 * 60 * 1000;
 /** Past this the row is dimmed — an old task should not look like today's. */
 export const STALE_MS = 14 * 24 * 60 * 60 * 1000;
 
-// One shared clock: a board renders dozens of ages and each one owning its own
-// interval would be dozens of timers doing the same tick.
-const listeners = new Set<(n: number) => void>();
-let timer: ReturnType<typeof setInterval> | null = null;
-
+/**
+ * The board's minute clock: `Date.now()` as of the last 30 s tick of the ONE
+ * shared clock (src/clock.ts) — paused while the window is hidden.
+ */
 export function useNow(): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    listeners.add(setNow);
-    if (!timer) {
-      timer = setInterval(() => {
-        const n = Date.now();
-        for (const l of listeners) l(n);
-      }, 30_000);
-    }
-    return () => {
-      listeners.delete(setNow);
-      if (listeners.size === 0 && timer) {
-        clearInterval(timer);
-        timer = null;
-      }
-    };
-  }, []);
-  return now;
+  return useClock(30_000);
 }
 
 /** "now" / "9m" / "5h" / "3d" / "6w" / "2y" — narrow enough to end a task row. */

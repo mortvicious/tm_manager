@@ -1,16 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useClock } from '../clock.ts';
 import { contextPctOf, formatMb, type Run } from '@tm/shared';
 import { useApp } from '../state.tsx';
 
 export function Elapsed({ since, until }: { since: string; until?: string | null }) {
-  const [, tick] = useState(0);
-  useEffect(() => {
-    if (until) return;
-    const t = setInterval(() => tick((n) => n + 1), 1000);
-    return () => clearInterval(t);
-  }, [until]);
+  // The shared clock (src/clock.ts): seconds are shown under an hour, so a 1 s
+  // tick there; past it only minutes are, so the 30 s tick does. None once ended.
+  const start = new Date(since).getTime();
+  const period = until ? 0 : Date.now() - start < 3600_000 ? 1000 : 30_000;
+  useClock(period); // re-renders on the tick; the reading below is the real time
   const end = until ? new Date(until).getTime() : Date.now();
-  const s = Math.max(0, Math.floor((end - new Date(since).getTime()) / 1000));
+  const s = Math.max(0, Math.floor((end - start) / 1000));
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   const txt = h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s % 60}s` : `${s}s`;

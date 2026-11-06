@@ -3,8 +3,10 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from 'react';
 import type {
@@ -131,7 +133,98 @@ interface AppState {
   setOrch: (o: OrchestratorStatus) => void;
 }
 
-const Ctx = createContext<AppState | null>(null);
+/**
+ * The store behind `useApp()` (docs/spa-performance.md § Store). The provider
+ * keeps its `useState` slices and publishes the assembled state here after
+ * each commit; consumers read it through a TRACKED view, so a component
+ * re-renders only when a slice it actually read changed. One context value
+ * re-rendered all ~60 consumers — the whole board included — for every
+ * `run.activity` and `event.appended` frame.
+ */
+interface AppStore {
+  state: AppState;
+  subscribe: (l: () => void) => () => void;
+  publish: (next: AppState) => void;
+}
+
+function createAppStore(initial: AppState): AppStore {
+  const listeners = new Set<() => void>();
+  const store: AppStore = {
+    state: initial,
+    subscribe: (l) => {
+      listeners.add(l);
+      return () => {
+        listeners.delete(l);
+      };
+    },
+    publish: (next) => {
+      const cur = store.state;
+      let same = true;
+      for (const k of Object.keys(next) as (keyof AppState)[]) {
+        if (cur[k] !== next[k]) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return;
+      store.state = next;
+      for (const l of [...listeners]) l();
+    },
+  };
+  return store;
+}
+
+const StoreCtx = createContext<AppStore | null>(null);
+
+/** how long a hidden page lets server events pile up before applying them */
+const HIDDEN_FLUSH_MS = 10_000;
+
+interface TrackedView {
+  store: AppStore;
+  view: AppState;
+  version: () => number;
+}
+
+/**
+ * A view of the store that records which slices its component read. Its
+ * `version` moves only when one of THOSE changed between two published
+ * states, which is what useSyncExternalStore compares. Reads accumulate and
+ * are never forgotten (a slice read once, even conditionally, keeps
+ * re-rendering the component) — conservative, never stale. Every read returns
+ * the store's current value, i.e. the state the render is rendering.
+ */
+function trackedView(store: AppStore): TrackedView {
+  const read = new Set<keyof AppState>();
+  let seen = store.state;
+  let version = 0;
+  const view = {} as AppState;
+  for (const k of Object.keys(store.state) as (keyof AppState)[]) {
+    Object.defineProperty(view, k, {
+      enumerable: true,
+      get() {
+        read.add(k);
+        return store.state[k];
+      },
+    });
+  }
+  return {
+    store,
+    view,
+    version: () => {
+      const s = store.state;
+      if (s !== seen) {
+        for (const k of read) {
+          if (s[k] !== seen[k]) {
+            version++;
+            break;
+          }
+        }
+        seen = s;
+      }
+      return version;
+    },
+  };
+}
 
 /**
  * Every `/ws/events` message, AFTER the store above applied it — for a view
@@ -166,9 +259,26 @@ function byWorkspaceOrder(a: Workspace, b: Workspace): number {
 }
 
 export function useApp(): AppState {
-  const v = useContext(Ctx);
-  if (!v) throw new Error('useApp outside provider');
-  return v;
+  const store = useContext(StoreCtx);
+  if (!store) throw new Error('useApp outside provider');
+  const ref = useRef<TrackedView | null>(null);
+  if (ref.current === null || ref.current.store !== store) ref.current = trackedView(store);
+  const t = ref.current;
+  useSyncExternalStore(store.subscribe, t.version, t.version);
+  return t.view;
+}
+
+/**
+ * One derived value off the store, re-rendering only when it changes (by
+ * `Object.is`). The selector must return something stable for an unchanged
+ * state — a slice, an entry of one, a primitive — never a fresh object or
+ * array, or every publish re-renders (and React warns).
+ */
+export function useAppSelector<T>(select: (s: AppState) => T): T {
+  const store = useContext(StoreCtx);
+  if (!store) throw new Error('useAppSelector outside provider');
+  const get = () => select(store.state);
+  return useSyncExternalStore(store.subscribe, get, get);
 }
 
 export function AppProvider({ children }: { children: ReactNode }) {
@@ -327,7 +437,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const refreshHost = useCallback(async () => {
     try {
-      setHost(await api.hostStatus());
+      const h = await api.hostStatus();
+      // an unchanged status keeps its object: a new one re-rendered every host reader every 3 s while offline
+      setHost((cur) => (cur && JSON.stringify(cur) === JSON.stringify(h) ? cur : h));
     } catch {
       setHost(null); // no front door in front of this page — hide its controls
     }
@@ -338,7 +450,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refreshHost();
     if (connected) return;
-    const t = setInterval(() => void refreshHost(), 3000);
+    const t = setInterval(() => {
+      if (document.visibilityState !== 'hidden') void refreshHost();
+    }, 3000);
     return () => clearInterval(t);
   }, [connected, refreshHost]);
 
@@ -348,6 +462,322 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!token) return;
     let closed = false;
     let timer: ReturnType<typeof setTimeout>;
+
+    // One server event into the store, then to the onServerEvent listeners.
+    const apply = (e: ServerEvent) => {
+      switch (e.type) {
+        case 'task.updated':
+          setTasks((cur) => {
+            const task = normalizeTask(e.task);
+            const i = cur.findIndex((t) => t.id === task.id);
+            if (i === -1) return [...cur, task];
+            const next = cur.slice();
+            next[i] = task;
+            return next;
+          });
+          break;
+        case 'task.deleted':
+          setTasks((cur) => cur.filter((t) => t.id !== e.taskId));
+          break;
+        case 'run.started':
+        case 'run.updated':
+        case 'run.exited':
+        case 'run.needs-attention':
+          setRuns((cur) => {
+            const i = cur.findIndex((r) => r.id === e.run.id);
+            if (i === -1) return [e.run, ...cur];
+            const next = cur.slice();
+            next[i] = e.run;
+            return next;
+          });
+          break;
+        case 'run.activity':
+          setActivity((cur) => {
+            // text:null is the server saying "this run is no longer live"
+            if (e.activity.text === null) {
+              if (!(e.activity.runId in cur)) return cur;
+              const next = { ...cur };
+              delete next[e.activity.runId];
+              return next;
+            }
+            return { ...cur, [e.activity.runId]: e.activity };
+          });
+          break;
+        case 'proposal.created':
+          setProposals((cur) => {
+            const i = cur.findIndex((p) => p.id === e.proposal.id);
+            if (i === -1) return [e.proposal, ...cur];
+            const next = cur.slice();
+            next[i] = e.proposal;
+            return next;
+          });
+          break;
+        case 'chat.updated':
+          setChats((cur) => {
+            const i = cur.findIndex((c) => c.id === e.chat.id);
+            if (i === -1) return [e.chat, ...cur];
+            const next = cur.slice();
+            next[i] = e.chat;
+            return next;
+          });
+          break;
+        case 'chat.deleted':
+          setChats((cur) => cur.filter((c) => c.id !== e.chatId));
+          setChatMessages((cur) => {
+            if (!(e.chatId in cur)) return cur;
+            const next = { ...cur };
+            delete next[e.chatId];
+            return next;
+          });
+          break;
+        case 'chat.message':
+          setChatMessages((cur) => {
+            const list = cur[e.message.chatId];
+            // Not loaded = not being looked at; `loadChat` will fetch the
+            // whole transcript including this one. Appending to an absent
+            // key would build a one-message "transcript" the page then
+            // renders as if it were complete.
+            if (!list) return cur;
+            // The sender already has its own message from the POST's 202;
+            // the broadcast is the same row coming back — or the row
+            // UPDATED (an office chat message sent to the channel), which
+            // replaces the copy held here.
+            const at = list.findIndex((m) => m.id === e.message.id);
+            if (at !== -1) {
+              const next = list.slice();
+              next[at] = e.message;
+              return { ...cur, [e.message.chatId]: next };
+            }
+            return { ...cur, [e.message.chatId]: [...list, e.message] };
+          });
+          break;
+        case 'question.updated':
+          // The slice is the PENDING set: an answered or expired question
+          // leaves it, so the modal and the chips read the slice directly.
+          setQuestions((cur) => {
+            const rest = cur.filter((q) => q.id !== e.question.id);
+            return e.question.status === 'pending' ? [e.question, ...rest] : rest;
+          });
+          // Nobody answered and the server picked the Recommended option
+          // (docs/questions.md § Autopilot): say so until dismissed — the
+          // question just vanished from the modal and the chip.
+          if (e.question.status === 'answered' && e.question.answeredBy === AUTOPILOT_ACTOR) {
+            const q = e.question;
+            const title = tasksRef.current.find((t) => t.id === q.taskId)?.title ?? `task ${q.taskId.slice(0, 8)}`;
+            const picks = q.questions.map((item) => `"${q.answers?.[item.question] ?? '—'}"`).join(', ');
+            toastSticky(
+              `autopick-${q.id}`,
+              `Auto-picked after ${questionWaitedMinutes(q) ?? '?'} min — nobody answered "${title}": ${picks}`,
+              { label: 'Open', run: () => openTaskFromAnywhere(q.taskId) },
+            );
+          }
+          break;
+        case 'approval.updated': {
+          // the PENDING set, like questions; the outcome of one the human
+          // approved is a toast (a failure stays until dismissed)
+          const a = e.approval;
+          setApprovals((cur) => {
+            const rest = cur.filter((x) => x.id !== a.id);
+            return a.status === 'pending' ? [...rest, a] : rest;
+          });
+          if (a.status === 'failed') toastError(a.result ?? 'unknown error', `${APPROVAL_LABELS[a.action]} failed`);
+          else if (a.status === 'done') {
+            toastSticky(`approval-${a.id}`, `${APPROVAL_LABELS[a.action]} done${a.result ? ` — ${a.result.split('\n')[0]}` : ''}`, { label: 'OK', run: () => {} });
+          }
+          break;
+        }
+        case 'report.updated':
+          // Newest first, matching the server's ORDER BY: a re-run keeps its
+          // place in the list rather than jumping to the top.
+          setReports((cur) => {
+            const i = cur.findIndex((r) => r.id === e.report.id);
+            if (i === -1) return [e.report, ...cur];
+            const next = [...cur];
+            next[i] = e.report;
+            return next;
+          });
+          break;
+        case 'report.deleted':
+          setReports((cur) => cur.filter((r) => r.id !== e.reportId));
+          break;
+        case 'job.updated':
+          setJobs((cur) => {
+            const i = cur.findIndex((j) => j.id === e.job.id);
+            if (i === -1) return [e.job, ...cur];
+            const next = [...cur];
+            next[i] = e.job;
+            return next;
+          });
+          break;
+        case 'job.deleted':
+          setJobs((cur) => cur.filter((j) => j.id !== e.jobId));
+          setJobRuns((cur) => cur.filter((r) => r.jobId !== e.jobId));
+          break;
+        case 'job-run.updated': {
+          // only the open (attention/error, unacknowledged) ones are held
+          const r = e.run;
+          setJobRuns((cur) => {
+            const rest = cur.filter((x) => x.id !== r.id);
+            return jobRunNeedsHuman(r) ? [r, ...rest] : rest;
+          });
+          break;
+        }
+        case 'space.updated':
+          setSpaces((cur) => {
+            const i = cur.findIndex((x) => x.id === e.space.id);
+            if (i === -1) return [...cur, e.space];
+            const next = [...cur];
+            next[i] = e.space;
+            return next;
+          });
+          break;
+        case 'workspace.updated':
+          setWorkspaces((cur) => {
+            const i = cur.findIndex((x) => x.id === e.workspace.id);
+            const next = [...cur];
+            if (i === -1) next.push(e.workspace);
+            else next[i] = e.workspace;
+            // a reorder re-broadcasts every row, so keep the server's order here too
+            return next.sort(byWorkspaceOrder);
+          });
+          break;
+        case 'office-proposal.updated': {
+          // the PENDING set, like approvals
+          const p = e.proposal;
+          setOfficeProposals((cur) => {
+            const rest = cur.filter((x) => x.id !== p.id);
+            return p.status === 'pending' ? [...rest, p] : rest;
+          });
+          break;
+        }
+        case 'office.updated':
+          setOffices((cur) => {
+            const i = cur.findIndex((x) => x.id === e.office.id);
+            const next = [...cur];
+            if (i === -1) next.push(e.office);
+            else next[i] = e.office;
+            return next;
+          });
+          // `roles` is the office's FULL list after a role write; absent = unchanged
+          if (e.roles) {
+            const roles = e.roles;
+            setOfficeRoles((cur) => [...cur.filter((r) => r.officeId !== e.office.id), ...roles]);
+          }
+          break;
+        case 'workspace.deleted':
+          setWorkspaces((cur) => cur.filter((x) => x.id !== e.workspaceId));
+          break;
+        case 'space.deleted':
+          setSpaces((cur) => cur.filter((x) => x.id !== e.spaceId));
+          setSharedNotes((cur) => cur.filter((n) => n.spaceId !== e.spaceId));
+          break;
+        case 'shared-note.updated':
+          setSharedNotes((cur) => {
+            const i = cur.findIndex((n) => n.id === e.note.id);
+            if (i === -1) return [e.note, ...cur];
+            const next = [...cur];
+            next[i] = e.note;
+            return next;
+          });
+          break;
+        case 'shared-note.deleted':
+          setSharedNotes((cur) => cur.filter((n) => n.id !== e.noteId));
+          break;
+        case 'dispatch.updated':
+          setDispatches((cur) => {
+            const i = cur.findIndex((d) => d.id === e.dispatch.id);
+            if (i === -1) return [e.dispatch, ...cur];
+            const next = cur.slice();
+            next[i] = e.dispatch;
+            return next;
+          });
+          break;
+        case 'feature.updated':
+          setFeatures((cur) => {
+            const i = cur.findIndex((f) => f.id === e.feature.id);
+            if (i === -1) return [e.feature, ...cur];
+            const next = cur.slice();
+            next[i] = e.feature;
+            return next;
+          });
+          break;
+        case 'feature.deleted':
+          setFeatures((cur) => cur.filter((f) => f.id !== e.featureId));
+          break;
+        case 'event.appended':
+          setAuditEvents((cur) => [...cur.slice(-199), e.event]);
+          break;
+        case 'command.updated':
+          setCommands((cur) => {
+            const i = cur.findIndex((c) => c.id === e.command.id);
+            if (i === -1) return [...cur, e.command];
+            const next = cur.slice();
+            next[i] = e.command;
+            return next;
+          });
+          break;
+        case 'command.deleted':
+          setCommands((cur) => cur.filter((c) => c.id !== e.commandId));
+          break;
+        case 'command.run':
+          setCommandRuns((cur) => {
+            const i = cur.findIndex((r) => r.id === e.run.id);
+            if (i === -1) return [e.run, ...cur];
+            const next = cur.slice();
+            next[i] = e.run;
+            return next;
+          });
+          break;
+        case 'shell.session':
+          setShells((cur) => {
+            const i = cur.findIndex((s) => s.id === e.session.id);
+            if (i === -1) return [...cur, e.session];
+            const next = cur.slice();
+            next[i] = e.session;
+            return next;
+          });
+          break;
+        case 'shell.closed':
+          setShells((cur) => cur.filter((s) => s.id !== e.id));
+          break;
+        case 'background-shells':
+          setBackgroundShells(e.shells);
+          break;
+        case 'orchestrator.status':
+          setOrch(e.status);
+          break;
+      }
+      emitServerEvent(e);
+    };
+    // Frames are applied in batches (docs/spa-performance.md § Batched events):
+    // once per animation frame while visible — so a burst (task.updated +
+    // run.updated + event.appended for one step) is ONE render — and at most
+    // every HIDDEN_FLUSH_MS while hidden, where nothing is drawn anyway. The
+    // 250 ms timer backs the rAF up: a page hidden with a frame pending gets
+    // no rAF callback until it is shown again.
+    const queue: ServerEvent[] = [];
+    let raf = 0;
+    let flushTimer: ReturnType<typeof setTimeout> | undefined;
+    const flush = () => {
+      if (raf) cancelAnimationFrame(raf);
+      clearTimeout(flushTimer);
+      raf = 0;
+      flushTimer = undefined;
+      for (const e of queue.splice(0)) apply(e);
+    };
+    const scheduleFlush = () => {
+      if (raf || flushTimer !== undefined) return;
+      if (document.visibilityState === 'hidden') {
+        flushTimer = setTimeout(flush, HIDDEN_FLUSH_MS);
+        return;
+      }
+      raf = requestAnimationFrame(flush);
+      flushTimer = setTimeout(flush, 250);
+    };
+    const onVisible = () => {
+      if (document.visibilityState !== 'hidden' && queue.length) flush();
+    };
+    document.addEventListener('visibilitychange', onVisible);
 
     const connect = () => {
       if (closed) return;
@@ -368,293 +798,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         } catch {
           return;
         }
-        // const so narrowing survives into the setState closures below
-        const e = parsed as ServerEvent;
-        switch (e.type) {
-          case 'task.updated':
-            setTasks((cur) => {
-              const task = normalizeTask(e.task);
-              const i = cur.findIndex((t) => t.id === task.id);
-              if (i === -1) return [...cur, task];
-              const next = cur.slice();
-              next[i] = task;
-              return next;
-            });
-            break;
-          case 'task.deleted':
-            setTasks((cur) => cur.filter((t) => t.id !== e.taskId));
-            break;
-          case 'run.started':
-          case 'run.updated':
-          case 'run.exited':
-          case 'run.needs-attention':
-            setRuns((cur) => {
-              const i = cur.findIndex((r) => r.id === e.run.id);
-              if (i === -1) return [e.run, ...cur];
-              const next = cur.slice();
-              next[i] = e.run;
-              return next;
-            });
-            break;
-          case 'run.activity':
-            setActivity((cur) => {
-              // text:null is the server saying "this run is no longer live"
-              if (e.activity.text === null) {
-                if (!(e.activity.runId in cur)) return cur;
-                const next = { ...cur };
-                delete next[e.activity.runId];
-                return next;
-              }
-              return { ...cur, [e.activity.runId]: e.activity };
-            });
-            break;
-          case 'proposal.created':
-            setProposals((cur) => {
-              const i = cur.findIndex((p) => p.id === e.proposal.id);
-              if (i === -1) return [e.proposal, ...cur];
-              const next = cur.slice();
-              next[i] = e.proposal;
-              return next;
-            });
-            break;
-          case 'chat.updated':
-            setChats((cur) => {
-              const i = cur.findIndex((c) => c.id === e.chat.id);
-              if (i === -1) return [e.chat, ...cur];
-              const next = cur.slice();
-              next[i] = e.chat;
-              return next;
-            });
-            break;
-          case 'chat.deleted':
-            setChats((cur) => cur.filter((c) => c.id !== e.chatId));
-            setChatMessages((cur) => {
-              if (!(e.chatId in cur)) return cur;
-              const next = { ...cur };
-              delete next[e.chatId];
-              return next;
-            });
-            break;
-          case 'chat.message':
-            setChatMessages((cur) => {
-              const list = cur[e.message.chatId];
-              // Not loaded = not being looked at; `loadChat` will fetch the
-              // whole transcript including this one. Appending to an absent
-              // key would build a one-message "transcript" the page then
-              // renders as if it were complete.
-              if (!list) return cur;
-              // The sender already has its own message from the POST's 202;
-              // the broadcast is the same row coming back — or the row
-              // UPDATED (an office chat message sent to the channel), which
-              // replaces the copy held here.
-              const at = list.findIndex((m) => m.id === e.message.id);
-              if (at !== -1) {
-                const next = list.slice();
-                next[at] = e.message;
-                return { ...cur, [e.message.chatId]: next };
-              }
-              return { ...cur, [e.message.chatId]: [...list, e.message] };
-            });
-            break;
-          case 'question.updated':
-            // The slice is the PENDING set: an answered or expired question
-            // leaves it, so the modal and the chips read the slice directly.
-            setQuestions((cur) => {
-              const rest = cur.filter((q) => q.id !== e.question.id);
-              return e.question.status === 'pending' ? [e.question, ...rest] : rest;
-            });
-            // Nobody answered and the server picked the Recommended option
-            // (docs/questions.md § Autopilot): say so until dismissed — the
-            // question just vanished from the modal and the chip.
-            if (e.question.status === 'answered' && e.question.answeredBy === AUTOPILOT_ACTOR) {
-              const q = e.question;
-              const title = tasksRef.current.find((t) => t.id === q.taskId)?.title ?? `task ${q.taskId.slice(0, 8)}`;
-              const picks = q.questions.map((item) => `"${q.answers?.[item.question] ?? '—'}"`).join(', ');
-              toastSticky(
-                `autopick-${q.id}`,
-                `Auto-picked after ${questionWaitedMinutes(q) ?? '?'} min — nobody answered "${title}": ${picks}`,
-                { label: 'Open', run: () => openTaskFromAnywhere(q.taskId) },
-              );
-            }
-            break;
-          case 'approval.updated': {
-            // the PENDING set, like questions; the outcome of one the human
-            // approved is a toast (a failure stays until dismissed)
-            const a = e.approval;
-            setApprovals((cur) => {
-              const rest = cur.filter((x) => x.id !== a.id);
-              return a.status === 'pending' ? [...rest, a] : rest;
-            });
-            if (a.status === 'failed') toastError(a.result ?? 'unknown error', `${APPROVAL_LABELS[a.action]} failed`);
-            else if (a.status === 'done') {
-              toastSticky(`approval-${a.id}`, `${APPROVAL_LABELS[a.action]} done${a.result ? ` — ${a.result.split('\n')[0]}` : ''}`, { label: 'OK', run: () => {} });
-            }
-            break;
-          }
-          case 'report.updated':
-            // Newest first, matching the server's ORDER BY: a re-run keeps its
-            // place in the list rather than jumping to the top.
-            setReports((cur) => {
-              const i = cur.findIndex((r) => r.id === e.report.id);
-              if (i === -1) return [e.report, ...cur];
-              const next = [...cur];
-              next[i] = e.report;
-              return next;
-            });
-            break;
-          case 'report.deleted':
-            setReports((cur) => cur.filter((r) => r.id !== e.reportId));
-            break;
-          case 'job.updated':
-            setJobs((cur) => {
-              const i = cur.findIndex((j) => j.id === e.job.id);
-              if (i === -1) return [e.job, ...cur];
-              const next = [...cur];
-              next[i] = e.job;
-              return next;
-            });
-            break;
-          case 'job.deleted':
-            setJobs((cur) => cur.filter((j) => j.id !== e.jobId));
-            setJobRuns((cur) => cur.filter((r) => r.jobId !== e.jobId));
-            break;
-          case 'job-run.updated': {
-            // only the open (attention/error, unacknowledged) ones are held
-            const r = e.run;
-            setJobRuns((cur) => {
-              const rest = cur.filter((x) => x.id !== r.id);
-              return jobRunNeedsHuman(r) ? [r, ...rest] : rest;
-            });
-            break;
-          }
-          case 'space.updated':
-            setSpaces((cur) => {
-              const i = cur.findIndex((x) => x.id === e.space.id);
-              if (i === -1) return [...cur, e.space];
-              const next = [...cur];
-              next[i] = e.space;
-              return next;
-            });
-            break;
-          case 'workspace.updated':
-            setWorkspaces((cur) => {
-              const i = cur.findIndex((x) => x.id === e.workspace.id);
-              const next = [...cur];
-              if (i === -1) next.push(e.workspace);
-              else next[i] = e.workspace;
-              // a reorder re-broadcasts every row, so keep the server's order here too
-              return next.sort(byWorkspaceOrder);
-            });
-            break;
-          case 'office-proposal.updated': {
-            // the PENDING set, like approvals
-            const p = e.proposal;
-            setOfficeProposals((cur) => {
-              const rest = cur.filter((x) => x.id !== p.id);
-              return p.status === 'pending' ? [...rest, p] : rest;
-            });
-            break;
-          }
-          case 'office.updated':
-            setOffices((cur) => {
-              const i = cur.findIndex((x) => x.id === e.office.id);
-              const next = [...cur];
-              if (i === -1) next.push(e.office);
-              else next[i] = e.office;
-              return next;
-            });
-            // `roles` is the office's FULL list after a role write; absent = unchanged
-            if (e.roles) {
-              const roles = e.roles;
-              setOfficeRoles((cur) => [...cur.filter((r) => r.officeId !== e.office.id), ...roles]);
-            }
-            break;
-          case 'workspace.deleted':
-            setWorkspaces((cur) => cur.filter((x) => x.id !== e.workspaceId));
-            break;
-          case 'space.deleted':
-            setSpaces((cur) => cur.filter((x) => x.id !== e.spaceId));
-            setSharedNotes((cur) => cur.filter((n) => n.spaceId !== e.spaceId));
-            break;
-          case 'shared-note.updated':
-            setSharedNotes((cur) => {
-              const i = cur.findIndex((n) => n.id === e.note.id);
-              if (i === -1) return [e.note, ...cur];
-              const next = [...cur];
-              next[i] = e.note;
-              return next;
-            });
-            break;
-          case 'shared-note.deleted':
-            setSharedNotes((cur) => cur.filter((n) => n.id !== e.noteId));
-            break;
-          case 'dispatch.updated':
-            setDispatches((cur) => {
-              const i = cur.findIndex((d) => d.id === e.dispatch.id);
-              if (i === -1) return [e.dispatch, ...cur];
-              const next = cur.slice();
-              next[i] = e.dispatch;
-              return next;
-            });
-            break;
-          case 'feature.updated':
-            setFeatures((cur) => {
-              const i = cur.findIndex((f) => f.id === e.feature.id);
-              if (i === -1) return [e.feature, ...cur];
-              const next = cur.slice();
-              next[i] = e.feature;
-              return next;
-            });
-            break;
-          case 'feature.deleted':
-            setFeatures((cur) => cur.filter((f) => f.id !== e.featureId));
-            break;
-          case 'event.appended':
-            setAuditEvents((cur) => [...cur.slice(-199), e.event]);
-            break;
-          case 'command.updated':
-            setCommands((cur) => {
-              const i = cur.findIndex((c) => c.id === e.command.id);
-              if (i === -1) return [...cur, e.command];
-              const next = cur.slice();
-              next[i] = e.command;
-              return next;
-            });
-            break;
-          case 'command.deleted':
-            setCommands((cur) => cur.filter((c) => c.id !== e.commandId));
-            break;
-          case 'command.run':
-            setCommandRuns((cur) => {
-              const i = cur.findIndex((r) => r.id === e.run.id);
-              if (i === -1) return [e.run, ...cur];
-              const next = cur.slice();
-              next[i] = e.run;
-              return next;
-            });
-            break;
-          case 'shell.session':
-            setShells((cur) => {
-              const i = cur.findIndex((s) => s.id === e.session.id);
-              if (i === -1) return [...cur, e.session];
-              const next = cur.slice();
-              next[i] = e.session;
-              return next;
-            });
-            break;
-          case 'shell.closed':
-            setShells((cur) => cur.filter((s) => s.id !== e.id));
-            break;
-          case 'background-shells':
-            setBackgroundShells(e.shells);
-            break;
-          case 'orchestrator.status':
-            setOrch(e.status);
-            break;
-        }
-        emitServerEvent(e);
+        queue.push(parsed as ServerEvent);
+        scheduleFlush();
       };
       ws.onclose = () => {
+        flush(); // what arrived before the close still happened
         setConnected(false);
         // Only null the ref if it still points at THIS socket — a StrictMode
         // remount may have already connected a newer one (review R1).
@@ -683,55 +831,59 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => {
       closed = true;
       clearTimeout(timer);
+      if (raf) cancelAnimationFrame(raf);
+      clearTimeout(flushTimer);
+      queue.length = 0;
+      document.removeEventListener('visibilitychange', onVisible);
       wsRef.current?.close();
     };
   }, [token]);
 
-  return (
-    <Ctx.Provider
-      value={{
-        repos,
-        tasks,
-        runs,
-        activity,
-        proposals,
-        dispatches,
-        questions,
-        approvals,
-        questionNudge,
-        nudgeQuestions,
-        features,
-        chats,
-        chatMessages,
-        loadChat,
-        reports,
-        jobs,
-        jobRuns,
-        spaces,
-        workspaces,
-        workspacesLoaded,
-        offices,
-        officeRoles,
-        officeProposals,
-        sharedNotes,
-        commands,
-        commandRuns,
-        shells,
-        backgroundShells,
-        auditEvents,
-        orch,
-        settings,
-        token,
-        connected,
-        loaded,
-        bootedAt,
-        host,
-        refresh,
-        refreshHost,
-        setOrch,
-      }}
-    >
-      {children}
-    </Ctx.Provider>
-  );
+  const value: AppState = {
+    repos,
+    tasks,
+    runs,
+    activity,
+    proposals,
+    dispatches,
+    questions,
+    approvals,
+    questionNudge,
+    nudgeQuestions,
+    features,
+    chats,
+    chatMessages,
+    loadChat,
+    reports,
+    jobs,
+    jobRuns,
+    spaces,
+    workspaces,
+    workspacesLoaded,
+    offices,
+    officeRoles,
+    officeProposals,
+    sharedNotes,
+    commands,
+    commandRuns,
+    shells,
+    backgroundShells,
+    auditEvents,
+    orch,
+    settings,
+    token,
+    connected,
+    loaded,
+    bootedAt,
+    host,
+    refresh,
+    refreshHost,
+    setOrch,
+  };
+  // created once with the first render's state; later states are published
+  // after each commit (consumers re-render in the same frame, before paint)
+  const [store] = useState(() => createAppStore(value));
+  useLayoutEffect(() => store.publish(value));
+
+  return <StoreCtx.Provider value={store}>{children}</StoreCtx.Provider>;
 }

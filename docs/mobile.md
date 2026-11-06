@@ -642,9 +642,10 @@ never a guess at progress (that is the progress %). An action in flight
 (`PendingAction.since`) and the agent's publish turn (its run's `startedAt`)
 tick per second, `0:42`; a working turn (`running`/`waiting`, the newest live
 worker run's `startedAt`) reads in minutes off the shared 30 s clock, `12m`.
-On a phone the timer takes the age's place; a desktop row shows both. The
-per-second clock is one interval shared by every fine timer on screen and
-stops when none is.
+On a phone the timer takes the age's place; a desktop row shows both. Both
+clocks are periods of the ONE shared clock (`src/clock.ts`,
+docs/spa-performance.md § Shared clock): the 1 s period runs only while a fine
+timer is on screen, and nothing ticks while the page is hidden.
 
 **Row swipe** (`components/RowSwipe.tsx`, every phone `TaskRow`). Swipe the row
 LEFT to reveal its trailing buttons — the next step, plus **Cancel** for a

@@ -51,6 +51,7 @@ import {
   type Workspace,
 } from '@tm/shared';
 import { api } from '../api.ts';
+import { onTick } from '../clock.ts';
 import { onServerEvent, useApp } from '../state.tsx';
 import { useIsMobile } from '../components/Layout.tsx';
 import { Sheet } from '../components/Sheet.tsx';
@@ -170,7 +171,8 @@ function useOfficeDetail(officeId: string) {
     setDetail(null);
     setStates(null);
     reload();
-    const iv = setInterval(reload, 60_000);
+    // the shared clock (src/clock.ts): paused while hidden, re-read on return
+    const offTick = onTick(60_000, reload);
     const off = onServerEvent((e) => {
       if (e.type !== 'office.updated' || e.office.id !== officeId) return;
       setDetail((cur) => (cur ? { ...cur, office: e.office, roles: e.roles ?? cur.roles } : cur));
@@ -178,7 +180,7 @@ function useOfficeDetail(officeId: string) {
       soon();
     });
     return () => {
-      clearInterval(iv);
+      offTick();
       clearTimeout(timer.current);
       off();
     };

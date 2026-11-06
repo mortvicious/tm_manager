@@ -14520,3 +14520,67 @@ button.explain-tap:active {
   align-items: center;
   gap: var(--tm-space-1);
 }
+
+
+/* ---- Calm (docs/spa-performance.md § Calm) ------------------------------
+ * src/calm.ts sets html[data-calm] while the window is unfocused or hidden,
+ * after 60 s without input, and under reduced motion. Any running animation
+ * keeps the compositor drawing at the display rate (the GPU half of an idle
+ * board), so the infinite "live" pulses stop there — the dot stays, at full
+ * opacity. A NEW infinite animation belongs in this list. Left out on purpose:
+ * an in-flight button (the human just pressed it and is waiting on it) and
+ * the offline dot (the page is out of touch — worth the motion). */
+html[data-calm]
+  :is(
+    .badge.s-running .dot,
+    .badge.s-attention .dot,
+    .badge.s-fixing .dot,
+    .badge.s-checking .dot,
+    .badge.s-publishing .dot,
+    .badge.s-autoreview .dot,
+    .badge.s-waiting .dot,
+    .badge.s-loopnext .dot,
+    .chip.verdict.v-pending,
+    .chip.office-verdict.v-on-shift,
+    .dispatch-row.pending .dispatch-status,
+    .chip.queue-chip .dot,
+    .task-row .row-activity .live-dot,
+    .cmd-dot.live,
+    .qchip .dot,
+    .rm-edge-dispatch.pending,
+    .sl-card-live .live-dot,
+    .mt-pulse
+  ) {
+  animation: none;
+}
+/* Awake, the opacity pulses STEP (four values per half-cycle): a smooth one
+ * makes the compositor draw every display frame, a stepped one only when its
+ * value changes — measured Glass GPU 55 % → 9 % with running rows, because
+ * every frame re-blurs the header's glass capsules (steps(5) was 12 %). The
+ * ring and the marching dash of the board versions keep their smooth motion. */
+html:not([data-calm])
+  :is(
+    .badge.s-running .dot,
+    .badge.s-attention .dot,
+    .badge.s-fixing .dot,
+    .badge.s-checking .dot,
+    .badge.s-publishing .dot,
+    .badge.s-autoreview .dot,
+    .badge.s-waiting .dot,
+    .badge.s-loopnext .dot,
+    .chip.verdict.v-pending,
+    .chip.office-verdict.v-on-shift,
+    .dispatch-row.pending .dispatch-status,
+    .chip.queue-chip .dot,
+    .task-row .row-activity .live-dot,
+    .cmd-dot.live,
+    .qchip .dot,
+    .sl-card-live .live-dot
+  ) {
+  animation-timing-function: steps(4, jump-none);
+}
+/* the metro ring at rest reads like its reduced-motion twin, not a solid ring */
+html[data-calm] .mt-pulse {
+  opacity: 0.6;
+  transform: scale(1.5);
+}

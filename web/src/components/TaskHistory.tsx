@@ -12,6 +12,7 @@ import {
   type TimelineSegmentKind,
 } from '@tm/shared';
 import { api } from '../api.ts';
+import { onTick } from '../clock.ts';
 import { byId, historyEvent, historyRun, historySegments, mergeRows, type Rows } from '../taskHistory.ts';
 import { onServerEvent, useApp } from '../state.tsx';
 import { useIsMobile } from './Layout.tsx';
@@ -303,8 +304,8 @@ export function TaskHistory({
   const hasOpen = !!history?.steps.some((s) => s.end === null);
   useEffect(() => {
     if (!hasOpen) return;
-    const t = setInterval(() => setNow(Date.now()), TICK_MS);
-    return () => clearInterval(t);
+    // the shared clock (src/clock.ts): one timer for the app, paused while hidden
+    return onTick(TICK_MS, () => setNow(Date.now()));
   }, [hasOpen]);
 
   const titleOf = useCallback((id: string) => tasks.find((t) => t.id === id)?.title, [tasks]);

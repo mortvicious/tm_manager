@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
 import type { Run, Task } from '@tm/shared';
 import type { PendingAction } from '../pending.ts';
 import { useNow } from './TimeAgo.tsx';
+import { useClock } from '../clock.ts';
+import { runsOfTask } from '../runIndex.ts';
 
 /**
  * Live elapsed time on a row (docs/mobile.md § Live timers): how long the
@@ -28,7 +29,7 @@ export function elapsedSource(
   if (pending) return { since: pending.since, fine: true, what: pending.verb.replace(/…$/, '') };
   if (task.status !== 'running' && task.status !== 'waiting') return null;
   // runs are started_at DESC: the first live worker run is the turn under way
-  const run = runs.find((r) => r.taskId === task.id && r.mode !== 'aux' && r.status === 'running');
+  const run = runsOfTask(runs, task.id).find((r) => r.mode !== 'aux' && r.status === 'running');
   const since = run ? Date.parse(run.startedAt) : NaN;
   if (!run || !Number.isFinite(since)) return null;
   if (run.label === 'publish' && !run.idle) return { since, fine: true, what: 'Publish turn' };
@@ -54,35 +55,9 @@ export function fmtElapsed(ms: number): string {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
-// One shared per-second clock, alive only while a fine timer is on screen.
-const listeners = new Set<(n: number) => void>();
-let timer: ReturnType<typeof setInterval> | null = null;
-
-function useSecond(on: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!on) return;
-    setNow(Date.now());
-    listeners.add(setNow);
-    if (!timer) {
-      timer = setInterval(() => {
-        const n = Date.now();
-        for (const l of listeners) l(n);
-      }, 1000);
-    }
-    return () => {
-      listeners.delete(setNow);
-      if (listeners.size === 0 && timer) {
-        clearInterval(timer);
-        timer = null;
-      }
-    };
-  }, [on]);
-  return now;
-}
-
 export function Elapsed({ source }: { source: ElapsedSource }) {
-  const second = useSecond(source.fine);
+  // the shared clock's 1 s period, subscribed only while a fine timer is on screen
+  const second = useClock(1000, source.fine);
   const minute = useNow();
   // the coarse clock can be up to 30 s behind a fresh `since`: never read negative
   const ms = Math.max(0, (source.fine ? second : Math.max(minute, source.since)) - source.since);
