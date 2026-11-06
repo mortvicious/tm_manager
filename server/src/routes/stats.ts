@@ -5,6 +5,7 @@ import type { Orchestrator } from '../orchestrator.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 import type { Storage } from '../storage/types.ts';
 import { maxSpawnDepth } from './agent-caps.ts';
+import { memoryHold } from '../memory.ts';
 
 /**
  * Does this `task.transition` row count as a completion on the Dashboard?
@@ -302,6 +303,9 @@ export function registerStatsRoutes(
     if (!day.ok) {
       anomalies.push({ severity: 'critical', kind: 'day-budget', message: day.reason });
     }
+    // the memory fuse (docs/memory.md)
+    const memHold = memoryHold(settings);
+    if (memHold) anomalies.push({ severity: 'warn', kind: 'memory-pressure', message: memHold });
     for (const t of tasks) {
       if (t.status === 'review' && nowMs - Date.parse(t.updatedAt) > staleReviewMs) {
         anomalies.push({

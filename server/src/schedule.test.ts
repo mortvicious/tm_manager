@@ -392,4 +392,23 @@ describe('predictSchedule', () => {
     assert.deepEqual(codes(slotOf(day, 'a')), ['day-budget']);
     assert.deepEqual(codes(slotOf(day, 'm')), ['day-budget']);
   });
+
+  test('the memory fuse holds every automatic start with its reason; a live turn keeps running', () => {
+    const hold = 'memory pressure: 6% free (minimum 10%) — new automatic work waits until it clears';
+    const slots = predict({
+      tasks: [
+        task('live', { status: 'running' }),
+        task('a', { repoId: 'vite' }),
+        task('m', { repoId: 'mono', customQueueAt: at(-1) }),
+      ],
+      runs: [{ id: 'run-live', taskId: 'live', startedAt: at(-5), label: null, mode: 'worker' }],
+      memoryHold: hold,
+    });
+    assert.deepEqual(slotOf(slots, 'a').waits, [{ code: 'memory', text: hold }]);
+    assert.deepEqual(codes(slotOf(slots, 'm')), ['memory']);
+    assert.equal(scheduled(slots, 'live').source, 'running');
+    // cleared → the same board claims
+    const clear = predict({ tasks: [task('a', { repoId: 'vite' })], memoryHold: null });
+    assert.equal(startMin(scheduled(clear, 'a')), 0);
+  });
 });

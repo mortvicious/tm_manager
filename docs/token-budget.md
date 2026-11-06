@@ -590,6 +590,15 @@ At or OVER the cap refuses. It returns `{ ok: true }` or
   never touches `budget.dayUsd`, `orchestrator.paused` or any non-office task,
   and a human click is never gated.
 
+- **The memory fuse (2026-11-06, `docs/memory.md`)** — not a dollar fuse but
+  the same family: `memory.minFreePct` / `memory.maxSwapPct` (0 = off) hold
+  every NEW automatic start — claims, loops, paused/wait resumes, dispatch
+  delivery, wake-ups, verify rounds, office feature planning, jobs, office
+  shifts and their command runs — while the Mac is low on memory. It is not a
+  `budgetAllows` kind: a refusal there is final for that turn (the task lands
+  in `review` with the reason), while a memory hold must WAIT and resume by
+  itself, so each source checks `memoryHold()` where it can defer.
+
 ### The expensive-task alert: each repo's own history (2026-10-26)
 
 The `cost-high` notification (`docs/telegram.md` § Anomalies, push kind

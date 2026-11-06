@@ -184,7 +184,11 @@ function medianOrNull(xs: number[]): number | null {
 //   office slot share — only when the caller passes `offices`)
 //   then the 30 s wake sweep (`wakeDue`, only with `agent.autoWake`): due
 //   wake-ups within the cap, the queue switch holding non-members.
-// Steps 3–6 also stop at the day budget fuse. A twin edit on the server side
+// Steps 3–6 also stop at the day budget fuse. The memory fuse (`memoryHold`,
+// docs/memory.md) stops EVERY step like Pause all — the server's pass returns
+// at its top — and is assumed to last the whole horizon (it cannot be
+// predicted when it clears); the verify rounds it also holds are not modelled.
+// A twin edit on the server side
 // must move this simulator with it (the SQL comments point here).
 
 export type ScheduleSource = 'resume' | 'custom-queue' | 'loop' | 'global' | 'overflow' | 'wake' | 'running';
@@ -198,6 +202,7 @@ export type ScheduleWaitCode =
   | 'no-repo'
   | 'queue-off'
   | 'day-budget'
+  | 'memory'
   | 'push-failing'
   | 'feature'
   | 'phase'
@@ -276,6 +281,8 @@ export interface ScheduleInput {
   pushFailing?: readonly string[];
   /** `budget.dayUsd` spent for today: nothing new is claimed */
   dayBudgetReached?: boolean;
+  /** `OrchestratorStatus.memory.hold`: the memory fuse's reason while it holds automatic work (docs/memory.md) */
+  memoryHold?: string | null;
   /** repoId → the names of its check commands (`isCheck`); absent = no checks */
   repoChecks?: Readonly<Record<string, readonly string[]>>;
   /**
@@ -345,6 +352,8 @@ export function predictSchedule(input: ScheduleInput): PredictedSlot[] {
   const reviewOn = input.settings['review.enabled'] ?? true;
   const autoWake = input.settings['agent.autoWake'] ?? true;
   const dayOk = !input.dayBudgetReached;
+  const memoryHeld = !!input.memoryHold;
+  const memoryWait: ScheduleWait = { code: 'memory', text: input.memoryHold || 'memory fuse' };
   const repos = new Map(input.repos.map((r) => [r.id, r]));
   const features = new Map(input.features.map((f) => [f.id, f]));
   const pushFailing = new Set(input.pushFailing ?? []);
@@ -699,10 +708,12 @@ export function predictSchedule(input: ScheduleInput): PredictedSlot[] {
 
   const pass = (): boolean => {
     let started = false;
-    if (paused) {
+    if (paused || memoryHeld) {
+      const w = paused ? W.paused : memoryWait;
       for (const s of sims.values()) {
         const r = s.row;
-        if (isCandidate(r) || (r.pausedTurn && !s.slot) || (s.wakeDue != null && !s.slot)) why(r, W.paused);
+        const loopDue = r.status === 'running' && r.kind === 'loop' && r.loopState === 'next' && !s.slot;
+        if (isCandidate(r) || (r.pausedTurn && !s.slot) || (s.wakeDue != null && !s.slot) || (!paused && loopDue)) why(r, w);
       }
       return false;
     }

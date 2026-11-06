@@ -1955,6 +1955,17 @@ export interface AppSettings {
   'budget.dayUsd': number;
   /** wall clock per worker turn, in minutes: past it the run is flagged needs-attention and you are pinged — never killed */
   'budget.runMinutes': number;
+  /**
+   * The memory fuse (docs/memory.md). 0 = off, the default for both. While the
+   * machine has less free memory than `minFreePct` % (macOS
+   * `kern.memorystatus_level`) or more than `maxSwapPct` % of its swap in use,
+   * nothing new AUTOMATIC starts — claims, loops, wake-ups, dispatch and wait
+   * resumes, verify rounds, feature planning, jobs, office shifts. Live turns
+   * finish; a human click is never held. Trips after 2 samples, clears after
+   * 3 samples 5 points inside both limits.
+   */
+  'memory.minFreePct': number;
+  'memory.maxSwapPct': number;
   'pty.scrollbackBytes': number;
   /** how long a finished (idle) or exited PTY stays attachable, in minutes; 0 = forever */
   'pty.sessionTtlMinutes': number;
@@ -2124,6 +2135,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'budget.taskUsd': 0,
   'budget.dayUsd': 0,
   'budget.runMinutes': 0,
+  'memory.minFreePct': 0,
+  'memory.maxSwapPct': 0,
   'pty.scrollbackBytes': 2 * 1024 * 1024,
   // 0 = never evict on age (user request 2026-08-25); the MAX_LIVE_SESSIONS
   // eviction still reclaims the oldest unwatched session under cap pressure.
@@ -2520,6 +2533,10 @@ export type AuditKind =
   | 'approval.finished'
   /** an automatic turn was refused, or claiming stopped for the day, by a budget fuse (docs/token-budget.md § Fuses) */
   | 'task.budget'
+  /** the memory fuse tripped (`tripped: true`, reason + reading) or cleared (docs/memory.md) */
+  | 'memory.fuse'
+  /** the memory fuse held a task's verify round (once per task per episode; docs/memory.md) */
+  | 'task.memory-held'
   /** an anomaly notification went out — also the coalescing memory, so a restart does not re-ping (docs/push.md § What pings) */
   | 'anomaly.notified';
 
@@ -2584,7 +2601,7 @@ export interface Anomaly {
  * The anomalies that are NOTIFIED (push kind `anomaly`, Telegram class
  * `anomaly`), one per task per type per episode — docs/push.md § What pings.
  */
-export type AnomalyAlertType = 'long-run' | 'cost-high' | 'stale-review' | 'task-budget' | 'day-budget' | 'push-failed';
+export type AnomalyAlertType = 'long-run' | 'cost-high' | 'stale-review' | 'task-budget' | 'day-budget' | 'push-failed' | 'memory-pressure';
 
 /** How every surface (push, Telegram) names an alert type — one record so they cannot drift. */
 export const ANOMALY_ALERT_LABELS: Record<AnomalyAlertType, { icon: string; label: string }> = {
@@ -2594,6 +2611,7 @@ export const ANOMALY_ALERT_LABELS: Record<AnomalyAlertType, { icon: string; labe
   'task-budget': { icon: '🧯', label: 'Task budget reached' },
   'day-budget': { icon: '🧯', label: 'Day budget reached' },
   'push-failed': { icon: '⛔', label: 'Push to origin fails' },
+  'memory-pressure': { icon: '🧠', label: 'Memory fuse tripped' },
 };
 
 export interface AnomalyAlert {
@@ -2750,6 +2768,13 @@ export interface OrchestratorStatus {
    * server predating it omits it.
    */
   jobs?: { enabled: boolean; due: number; overdue: number; running: number; hold: JobsHold | null; activeTasks: number; maxActiveTasks: number };
+  /**
+   * The memory fuse (docs/memory.md): the sampler's cached state — latest
+   * reading, limits, tripped + reason. `hold` is the readable reason while it
+   * holds automatic work (null otherwise), the line the board and the
+   * predicted schedule show. A server predating it omits it.
+   */
+  memory?: MemoryFuseState & { hold: string | null };
 }
 
 /** What a failed git network command says about its cause (`classifyGitFailure`). */
@@ -3786,7 +3811,10 @@ export * from './metro.ts';
 export * from './triage.ts';
 // Scheduled jobs: schedule parsing + the firing rule (docs/jobs.md)
 export * from './jobs.ts';
+// The memory fuse: samples + hysteresis (docs/memory.md)
+export * from './memory.ts';
 import { jobRunNeedsHuman, type Job, type JobRun, type JobsHold } from './jobs.ts';
+import type { MemoryFuseState } from './memory.ts';
 import type { Office, OfficeBrief, OfficeHuddle, OfficeMessage, OfficeMessageRoute, OfficeProposal, OfficeRole, OfficeStates, OfficeWish } from './office.ts';
 // Virtual Office: types, cron, catch-up, guards, the hard gate, autonomy and taint (docs/office.md)
 export * from './office.ts';

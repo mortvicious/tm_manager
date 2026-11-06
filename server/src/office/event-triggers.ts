@@ -61,7 +61,7 @@ export const OFFICE_EVENT_DEFER_MAX_MS = 60 * 60_000;
 /** A broadcast seen twice (a run's status re-sent) is one event: ids are remembered this long. */
 const SEEN_TTL_MS = 6 * 60 * 60_000;
 
-const DEFER_CODES = new Set<string>(['slots', 'office-busy', 'busy', 'paused']);
+const DEFER_CODES = new Set<string>(['slots', 'office-busy', 'busy', 'paused', 'memory']);
 const LANDED = new Set<string>(['done', 'published']);
 
 /** The scheduler's coalesced skip row (`OfficeScheduler.coalescedEvent`). */

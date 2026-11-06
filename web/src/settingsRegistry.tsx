@@ -727,6 +727,20 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     render: num('budget.dayUsd', { min: 0, step: 1, label: 'Day budget' }),
   },
   {
+    key: 'memory.minFreePct',
+    section: 'budget',
+    label: 'Memory fuse: minimum free (%)',
+    help: 'nothing new automatic (claims, wake-ups, verify rounds, planning, jobs, office shifts) starts while the machine has less free memory than this; running turns finish, your clicks always work. 0 = off (docs/memory.md)',
+    render: num('memory.minFreePct', { min: 0, max: 95, step: 1, label: 'Minimum free memory' }),
+  },
+  {
+    key: 'memory.maxSwapPct',
+    section: 'budget',
+    label: 'Memory fuse: maximum swap used (%)',
+    help: 'the same hold while more than this share of swap is in use. Clears 5 points inside both limits. 0 = off',
+    render: num('memory.maxSwapPct', { min: 0, max: 99, step: 1, label: 'Maximum swap used' }),
+  },
+  {
     key: 'budget.runMinutes',
     section: 'budget',
     label: 'Turn time limit (min)',

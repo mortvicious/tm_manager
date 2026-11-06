@@ -89,6 +89,7 @@ docs/timeline.md § Prediction accuracy). The work-segment figure is
 | `baseline` | `GET /api/schedule/baseline`; null → `SCHEDULE_DEFAULT_LINE` (work 20 min / p75 35, review 8, checks 4) |
 | `pushFailing` | repo ids whose push health is failing |
 | `dayBudgetReached` | `budget.dayUsd` spent today |
+| `memoryHold` | `OrchestratorStatus.memory.hold` — the memory fuse's reason while it holds (docs/memory.md) |
 | `repoChecks` | repoId → its check command names (absent = no checks) |
 | `runTaskIds` | runId → taskId for `createdByRun` ids that are not live runs (the filer gate) |
 | `now` | ISO string, ms or Date |
@@ -96,7 +97,12 @@ docs/timeline.md § Prediction accuracy). The work-segment figure is
 ### The pass (same order as `maybeSchedule`)
 
 1. **Pause all** → nothing starts and no verify round settles; every candidate
-   waits `paused`. Live turns keep their predicted end.
+   waits `paused`. Live turns keep their predicted end. **The memory fuse**
+   (`memoryHold`, docs/memory.md) stops the pass the same way — the server's
+   `maybeSchedule` returns at its top — with wait code `memory` and the fuse's
+   own reason as the text, due loop iterations included. It is assumed to last
+   the whole horizon (when it clears cannot be predicted), and the verify
+   rounds it also holds are not modelled.
 2. **Paused-turn markers** (`review`/`failed` + `pausedTurn`) resume first,
    oldest marker first, within `orchestrator.concurrency` — `resume` as a work
    segment, `publish` as a publish turn, `land` as an immediate landing.

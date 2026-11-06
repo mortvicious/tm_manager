@@ -16,6 +16,7 @@ import { useWorkspace, WorkspaceGuard } from '../workspace.ts';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { InboxChip, InboxSheet, ReviewDeckChip, decisions, useInbox } from './Inbox.tsx';
 import { Explainable } from './Explain.tsx';
+import { MemoryFuseBanner } from './MemoryFuseBanner.tsx';
 import { openPalette } from '../palette.ts';
 import {
   IconBoard,
@@ -740,6 +741,9 @@ const OFFLINE_GRACE_MS = 4000;
  * page: "stopped" (the front door says the API is not running) carries Start
  * server; "offline" (socket down, nobody to ask) just says we are retrying.
  */
+/** Pages that read the queue, where a memory-fuse hold explains why nothing starts. */
+const MEMORY_BANNER_PATHS = new Set(['/', '/board', '/timeline', '/queue', '/inbox']);
+
 function OfflineBanner() {
   const { connected, loaded } = useApp();
   const { stopped, canStart, blocked, downReason, startTitle, starting, err, start } = useServerStart();
@@ -1220,6 +1224,8 @@ export function Layout({
       <WorkspaceGuard />
       <main className="main" ref={mainRef}>
         {mobile && <OfflineBanner />}
+        {/* the memory fuse holds automatic work (docs/memory.md) — where the queue is read */}
+        {MEMORY_BANNER_PATHS.has(pathname) && <MemoryFuseBanner />}
         {children}
       </main>
       {mobile && <TabBar moreOpen={moreOpen} onMore={() => setMoreOpen((v) => !v)} />}

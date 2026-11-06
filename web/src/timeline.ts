@@ -467,6 +467,8 @@ export function useTimeline(win: TimelineWindowArg): UseTimeline {
       baseline: base,
       // auth/protected hold the repo (docs/parallel.md § Push health); a network blip does not
       pushFailing: (orch.pushHealth ?? []).filter((h) => !h.ok && (h.kind === 'auth' || h.kind === 'protected')).map((h) => h.repoId),
+      // the memory fuse holds every automatic start (docs/memory.md)
+      memoryHold: orch.memory?.hold ?? null,
       repoChecks,
       runTaskIds,
       now,

@@ -15,6 +15,7 @@ import type { Storage } from '../storage/types.ts';
 import { officeWorkspaceRepos } from './feature-context.ts';
 import { officeActor } from './filing.ts';
 import { registerShiftSection, type ShiftSectionCtx } from './shift-result.ts';
+import { memoryHold } from '../memory.ts';
 
 export const OFFICE_FEATURE_TITLE_MAX = 200;
 export const OFFICE_FEATURE_REQUEST_MAX = 20_000;
@@ -99,7 +100,9 @@ export async function fileOfficeFeature(storage: Storage, ctx: Pick<ShiftSection
   const fresh = await storage.getOffice(office.id);
   let feature = created;
   let analyzing = false;
-  if (fresh && fresh.pausedAt === null && fresh.enabled) {
+  // the memory fuse (docs/memory.md): no automatic planning session under memory pressure
+  const memHold = memoryHold(await storage.getSettings());
+  if (fresh && fresh.pausedAt === null && fresh.enabled && !memHold) {
     const moved = await storage.transitionFeature(created.id, ['draft'], 'analyzing', actor, { error: null });
     if (moved) {
       feature = moved;
@@ -108,7 +111,13 @@ export async function fileOfficeFeature(storage: Storage, ctx: Pick<ShiftSection
       analyzing = true;
     }
   } else {
-    const why = !fresh ? 'the office no longer exists' : fresh.pausedAt ? `the office is paused (${fresh.pausedReason ?? 'by a human'})` : 'the office is off';
+    const why = !fresh
+      ? 'the office no longer exists'
+      : fresh.pausedAt
+        ? `the office is paused (${fresh.pausedReason ?? 'by a human'})`
+        : !fresh.enabled
+          ? 'the office is off'
+          : (memHold ?? 'the memory fuse holds automatic work');
     feature = (await storage.updateFeature(created.id, { error: `not analyzed: ${why} — press Analyze to plan it` }, actor)) ?? created;
     broadcast({ type: 'feature.updated', feature });
   }

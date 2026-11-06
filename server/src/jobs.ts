@@ -36,6 +36,7 @@ import type { JobPatch } from './storage/job-sql.ts';
 import type { Storage } from './storage/types.ts';
 import { createTask } from './task-actions.ts';
 import type { BudgetVerdict } from './budget.ts';
+import { memoryHold } from './memory.ts';
 
 // Scheduled jobs (docs/jobs.md): an instruction + a due time (+ an optional
 // simple repeat) the server fires by itself as an aux `claude` terminal (kind
@@ -398,7 +399,9 @@ export class JobService {
       const r = jobsDue(jobs, { now, activeTasks, liveJobRuns: this.live.size, settings: js, paused });
       let fired = 0;
       let budgetHold = false;
-      for (const job of r.fire) {
+      // the memory fuse (docs/memory.md): due jobs stay due until it clears
+      const memoryHeld = r.fire.length > 0 && memoryHold(settings) !== null;
+      for (const job of memoryHeld ? [] : r.fire) {
         const verdict = await this.deps.budget(settings);
         if (!verdict.ok) {
           budgetHold = true;
@@ -414,7 +417,7 @@ export class JobService {
         due: r.due.length,
         overdue: r.due.length - fired,
         running: this.live.size,
-        hold: budgetHold ? 'budget' : r.due.length - fired > 0 ? r.hold : null,
+        hold: memoryHeld ? 'memory' : budgetHold ? 'budget' : r.due.length - fired > 0 ? r.hold : null,
         activeTasks,
         maxActiveTasks: js.maxActiveTasks,
       });

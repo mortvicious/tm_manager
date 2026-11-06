@@ -236,8 +236,8 @@ export function nextRunAfter(
   return new Date(next).toISOString();
 }
 
-/** `budget` is the server's own (the day fuse), never returned by jobsDue */
-export type JobsHold = 'off' | 'paused' | 'busy' | 'concurrency' | 'budget';
+/** `budget` (the day fuse) and `memory` (the memory fuse, docs/memory.md) are the server's own, never returned by jobsDue */
+export type JobsHold = 'off' | 'paused' | 'busy' | 'concurrency' | 'budget' | 'memory';
 
 export interface JobsDueInput {
   now: number;
@@ -297,6 +297,8 @@ export function jobHoldText(hold: JobsHold | null, input: { activeTasks: number;
       return 'another job is running';
     case 'budget':
       return 'the day budget is spent';
+    case 'memory':
+      return 'the memory fuse holds automatic work (the machine is low on memory)';
     default:
       return null;
   }

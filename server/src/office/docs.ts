@@ -67,7 +67,7 @@ export interface OfficeDocsDeps {
 }
 
 /** Refusals that mean "not now": the wake stays pending and the tick retries it. */
-const PENDING_CODES = new Set(['slots', 'office-busy', 'busy', 'paused', 'server-paused']);
+const PENDING_CODES = new Set(['slots', 'office-busy', 'busy', 'paused', 'server-paused', 'memory']);
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

@@ -793,6 +793,38 @@ export function ConfigPage({ headSlot, topSlot }: { headSlot?: ReactNode; topSlo
         </div>
         <div className="cfg-row">
           <div>
+            <div>Memory fuse: minimum free (%)</div>
+            <div className="hint">nothing new automatic (claims, wake-ups, verify rounds, planning, jobs, office shifts) starts while the machine has less free memory than this; running turns finish, your clicks always work. 0 = off (docs/memory.md)</div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={0}
+            max={95}
+            step={1}
+            style={{ width: 90 }}
+            value={cfg['memory.minFreePct'] ?? DEFAULT_SETTINGS['memory.minFreePct']}
+            onChange={(e) => set('memory.minFreePct', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Memory fuse: maximum swap used (%)</div>
+            <div className="hint">the same hold while more than this share of swap is in use. Clears 5 points inside both limits. 0 = off</div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={0}
+            max={99}
+            step={1}
+            style={{ width: 90 }}
+            value={cfg['memory.maxSwapPct'] ?? DEFAULT_SETTINGS['memory.maxSwapPct']}
+            onChange={(e) => set('memory.maxSwapPct', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
             <div>Turn time limit (min)</div>
             <div className="hint">a worker turn running longer than this is flagged needs-attention and you are pinged — it is never killed. 0 = off</div>
           </div>

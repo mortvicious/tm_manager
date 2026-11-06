@@ -121,7 +121,7 @@ const GH_TIMEOUT_MS = 60_000;
 /** the same fetch error is logged once per hour */
 const ERROR_LOG_MS = 60 * 60_000;
 
-const DEFER_CODES = new Set<string>(['slots', 'office-busy', 'busy', 'paused']);
+const DEFER_CODES = new Set<string>(['slots', 'office-busy', 'busy', 'paused', 'memory']);
 const iso = (ms: number) => new Date(ms).toISOString();
 
 // ---------------------------------------------------------------------------

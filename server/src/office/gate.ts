@@ -23,6 +23,7 @@ import { run as runCmd } from '../git.ts';
 import { EVENT_LIST_MAX } from '../storage/event-sql.ts';
 import type { Storage } from '../storage/types.ts';
 import { officeZone, settleOfficeBudget } from './budget.ts';
+import { memoryHold } from '../memory.ts';
 
 /** What woke the role; a human's `request` skips the guards (never the hard gate). */
 export type OfficeGateTrigger = Pick<OfficeShift['trigger'], 'kind'> & Partial<OfficeShift['trigger']>;
@@ -33,8 +34,8 @@ export type OfficeGateResult =
       ok: false;
       skip: true;
       reason: string;
-      /** a hard-gate code, or `guard` with the failing guard's kind */
-      code: OfficeGateCode | 'guard' | 'role-mismatch';
+      /** a hard-gate code, `memory` (the memory fuse, docs/memory.md), or `guard` with the failing guard's kind */
+      code: OfficeGateCode | 'guard' | 'role-mismatch' | 'memory';
       guard?: OfficeGuardKind;
       hard: OfficeGateFacts | null;
       facts: OfficeGuardFacts | null;
@@ -202,7 +203,7 @@ async function officeHardFacts(storage: Storage, office: Office, role: OfficeRol
     activeShifts: live.length,
     maxSlots: o.maxSlots,
   };
-  return { hard, budget, roleSpentUsd };
+  return { hard, budget, roleSpentUsd, settings };
 }
 
 /**
@@ -218,11 +219,14 @@ export async function officeCommandGate(
   office: Office,
   role: OfficeRole,
   opts: { now?: number; settings?: AppSettings } = {},
-): Promise<{ code: OfficeGateCode | 'role-mismatch'; reason: string; hard: OfficeGateFacts | null } | null> {
+): Promise<{ code: OfficeGateCode | 'role-mismatch' | 'memory'; reason: string; hard: OfficeGateFacts | null } | null> {
   if (role.officeId !== office.id) return { code: 'role-mismatch', reason: 'role is not in this office', hard: null };
-  const { hard } = await officeHardFacts(storage, office, role, opts.now ?? Date.now(), opts.settings);
+  const { hard, settings } = await officeHardFacts(storage, office, role, opts.now ?? Date.now(), opts.settings);
   const refusal = officeHardGate({ ...hard, activeShifts: 0 });
-  return refusal ? { ...refusal, hard } : null;
+  if (refusal) return { ...refusal, hard };
+  // the memory fuse (docs/memory.md): a command run is automatic work too
+  const memHold = memoryHold(settings);
+  return memHold ? { code: 'memory', reason: memHold, hard } : null;
 }
 
 /**
@@ -244,10 +248,15 @@ export async function officeGate(
   if (role.officeId !== office.id) {
     return { ok: false, skip: true, reason: 'role is not in this office', code: 'role-mismatch', hard: null, facts: null };
   }
-  const { hard, budget, roleSpentUsd } = await officeHardFacts(storage, office, role, now, opts.settings);
+  const { hard, budget, roleSpentUsd, settings } = await officeHardFacts(storage, office, role, now, opts.settings);
   const o = budget.office;
   const refusal = officeHardGate(hard);
   if (refusal) return { ok: false, skip: true, reason: refusal.reason, code: refusal.code, hard, facts: null };
+  // The memory fuse (docs/memory.md): no automatic shift under memory
+  // pressure — a DEFER code, so the slot stays owed. A human's `request`
+  // (Wake now, a wish, Ask the Director) is a click and is never held.
+  const memHold = trigger.kind === 'request' ? null : memoryHold(settings);
+  if (memHold) return { ok: false, skip: true, reason: memHold, code: 'memory', hard, facts: null };
   if (trigger.kind === 'request' || opts.skipGuards) return { ok: true, hard, facts: null };
 
   const facts = await officeGuardFacts(storage, o, role, {

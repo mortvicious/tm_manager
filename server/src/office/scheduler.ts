@@ -44,7 +44,7 @@ export const OFFICE_TICK_MS = 60_000;
 export const OFFICE_SKIP_COALESCE_MS = 60 * 60_000;
 
 /** Refusals that mean "not now", never "not this slot": the slot stays owed. */
-const DEFER_CODES = new Set<string>(['slots', 'office-busy', 'busy', 'paused']);
+const DEFER_CODES = new Set<string>(['slots', 'office-busy', 'busy', 'paused', 'memory']);
 
 /** What the scheduler needs of the shift runner. */
 export interface ShiftStarter {

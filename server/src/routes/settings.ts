@@ -95,6 +95,9 @@ const settingsSchema = z
     'budget.taskUsd': z.number().min(0).max(10_000).nullable().transform((v) => v ?? 0),
     'budget.dayUsd': z.number().min(0).max(100_000).nullable().transform((v) => v ?? 0),
     'budget.runMinutes': z.number().int().min(0).max(7 * 24 * 60).nullable().transform((v) => v ?? 0),
+    // The memory fuse (docs/memory.md): percent, 0 — or null — is off.
+    'memory.minFreePct': z.number().min(0).max(95).nullable().transform((v) => v ?? 0),
+    'memory.maxSwapPct': z.number().min(0).max(99).nullable().transform((v) => v ?? 0),
     'router.enabled': z.boolean(),
     'router.primaryModel': z.string().min(1),
     'router.fallbackModel': z.string().min(1),

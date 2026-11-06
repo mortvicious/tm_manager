@@ -33,6 +33,7 @@ import {
   type TaskDiffResponse,
   type TaskStatus,
   type TaskWait,
+  MEMORY_SAMPLE_MS,
 } from '@tm/shared';
 import type { ActionResult, OrchestratorApi, TaskChangeResult } from './app-types.ts';
 
@@ -158,6 +159,7 @@ import {
 import { dependenciesNote, WAIT_MAX_MS, waitOutcome, waitTurnMessage, type WaitOutcome } from './task-wait.ts';
 import { closePr, confirmMerged, fastForwardCheckout, integratedIn, landedCheck, landWorktree, syncPr, type LandResult } from './land.ts';
 import { probePush, pushHealth } from './push-health.ts';
+import { memoryHold, memoryState, sampleMemory } from './memory.ts';
 import type { RepoPushHealth } from '@tm/shared';
 
 /** Upper bound on how long a custom-queue hold may outlive its follow-on (docs/queue.md). */
@@ -547,6 +549,9 @@ export class Orchestrator implements OrchestratorApi {
   private readonly alerts: AnomalyAlerts;
   /** single-flight for the anomaly/budget sweep */
   private anomalySweeping = false;
+  private memorySweeping = false;
+  /** `${taskId}:${episode}` verify rounds the memory fuse held and audited */
+  private readonly memoryHeldNoted = new Set<string>();
   private worktreeSweeping = false;
   private pushHealthSweeping = false;
   /** the `cost-high` baseline: one 30-day task read, reused for an hour */
@@ -721,6 +726,63 @@ export class Orchestrator implements OrchestratorApi {
     setInterval(() => {
       void this.pushHealthSweep();
     }, 60_000).unref();
+    // The memory fuse (docs/memory.md): sample the machine's free memory and
+    // swap; while it is tripped nothing new automatic starts.
+    setInterval(() => {
+      void this.memorySweep();
+    }, MEMORY_SAMPLE_MS).unref();
+    void this.memorySweep();
+  }
+
+  // ---- memory fuse (docs/memory.md) -----------------------------------------
+
+  /**
+   * One memory sample. A trip alerts once per episode (key = its start) and
+   * is audited; a clear is audited and releases what the fuse held: the
+   * scheduling pass (claims, loops, paused/wait resumes, dispatch delivery,
+   * jobs) and the verify rounds left `pending`. Wakes and office shifts pick
+   * up on their own sweeps. Never throws.
+   */
+  async memorySweep(): Promise<void> {
+    if (this.memorySweeping) return;
+    this.memorySweeping = true;
+    try {
+      const settings = await this.storage.getSettings();
+      const { state, change } = await sampleMemory(settings);
+      if (!change) return;
+      const s = state.sample;
+      const reading = s
+        ? { freePct: Math.round(s.freePct), swapPct: Math.round(s.swapPct), swapUsedMb: Math.round(s.swapUsedMb), swapTotalMb: Math.round(s.swapTotalMb), pressureLevel: s.pressureLevel }
+        : { error: state.error };
+      if (change === 'tripped') {
+        const reason = memoryHold(settings) ?? state.reason ?? 'memory pressure';
+        console.log(`memory fuse tripped: ${reason}`);
+        await this.storage
+          .appendEvent({ kind: 'memory.fuse', actor: 'system', data: { tripped: true, reason: state.reason, limits: state.limits, ...reading } })
+          .catch(() => {});
+        await this.alerts.emit({
+          type: 'memory-pressure',
+          severity: 'warn',
+          message: `${reason}. Running turns finish; your own clicks still work.`,
+          key: `memory-pressure:${state.since}`,
+          data: { limits: state.limits, ...reading },
+        });
+      } else {
+        console.log('memory fuse cleared');
+        await this.storage
+          .appendEvent({ kind: 'memory.fuse', actor: 'system', data: { tripped: false, limits: state.limits, ...reading } })
+          .catch(() => {});
+      }
+      this.broadcastStatusSoon();
+      if (change === 'cleared' && !settings['orchestrator.paused']) {
+        await this.resumeVerifyRounds();
+        this.maybeSchedule();
+      }
+    } catch (err) {
+      console.error('memory sweep error:', err);
+    } finally {
+      this.memorySweeping = false;
+    }
   }
 
   // ---- push health (docs/parallel.md § Push health) ------------------------
@@ -1132,7 +1194,8 @@ export class Orchestrator implements OrchestratorApi {
       if (!settings['agent.autoWake']) return;
       await this.parkStalledSessions(settings);
       // paused: the marks stay and the wakes fire after Continue (docs/pause.md)
-      if (!settings['orchestrator.paused']) await this.wakeDue(settings);
+      // memory fuse (docs/memory.md): the marks stay; the wakes fire once it clears
+      if (!settings['orchestrator.paused'] && !memoryHold(settings)) await this.wakeDue(settings);
     } catch (err) {
       console.error('orchestrator wake sweep error:', err);
     } finally {
@@ -1981,6 +2044,7 @@ export class Orchestrator implements OrchestratorApi {
       pushHealth: pushHealth.list(),
       landing: [...this.landing],
       ...(this.jobs ? { jobs: this.jobs.status() } : {}),
+      memory: { ...memoryState(), hold: memoryHold(settings) },
     };
   }
 
@@ -2267,6 +2331,11 @@ export class Orchestrator implements OrchestratorApi {
           // Pause all (docs/pause.md): no claim, no pump, no dispatch
           // delivery — every source of a new turn on this pass is held.
           if (settings['orchestrator.paused']) return;
+          // The memory fuse (docs/memory.md): under memory pressure no new
+          // automatic turn starts from this pass either — no claim, loop,
+          // paused/wait resume or dispatch delivery. Live turns go on; the
+          // sweep's clear calls maybeSchedule again.
+          if (memoryHold(settings)) return;
           const cap = settings['orchestrator.concurrency'];
           // Turns Continue still owes (docs/pause.md § Continue) come first:
           // they were working when the pause was pressed, and their markers
@@ -5382,11 +5451,16 @@ export class Orchestrator implements OrchestratorApi {
         // Pause all (docs/pause.md): no check or review session starts. The
         // row keeps `pending`, which is what Continue (or boot) re-runs.
         if (await this.isPaused()) return this.deferLanding(taskId);
+        // The memory fuse (docs/memory.md): no check or reviewer session
+        // starts under memory pressure; the row keeps `pending` and the
+        // clear re-runs it. A human's Review now is never held.
+        if (await this.memoryHeldRound(taskId, 'any')) return;
         // Checks come first (docs/checks.md): cheap and deterministic, so a
         // reviewer never spends a session on a change that does not build.
         // False = no review this pass (a fix turn was sent, or red landed).
         const review = await this.runCheckStage(taskId);
         if (await this.isPaused()) return this.deferLanding(taskId);
+        if (review && (await this.memoryHeldRound(taskId, 'review'))) return;
         // only the first pass is the forced one; a recheck is a Stop's pass
         if (review) await this.runReviewRound(taskId, forced && pass === 0);
         if (!this.reviewRecheck.has(taskId)) {
@@ -5425,6 +5499,35 @@ export class Orchestrator implements OrchestratorApi {
    * a settled one would never be looked at again, so a task whose tier lands
    * on its own is marked `land` for Continue to run `landIfClean`.
    */
+  /**
+   * Does the memory fuse hold this verify round (docs/memory.md)? Only while
+   * a session is actually due — `review_state` pending/reviewing, or (for
+   * `'any'`) checks pending/running — and the row says so, which is what the
+   * clear's `resumeVerifyRounds` re-runs; a pass with nothing to run (review
+   * off, no checks) goes on to its landing. Never a requested review (a
+   * human click). Audited once per task per episode.
+   */
+  private async memoryHeldRound(taskId: string, stage: 'any' | 'review'): Promise<boolean> {
+    if (this.requestedReviews.has(taskId)) return false;
+    const settings = await this.storage.getSettings();
+    const hold = memoryHold(settings);
+    if (!hold) return false;
+    const task = await this.storage.getTask(taskId);
+    if (!task || task.status !== 'review') return false;
+    const reviewDue = task.reviewState === 'pending' || task.reviewState === 'reviewing';
+    const checksDue = stage === 'any' && !!task.checkState && CHECK_BUSY_STATES.includes(task.checkState);
+    if (!reviewDue && !checksDue) return false;
+    const key = `${taskId}:${memoryState().since}`;
+    if (!this.memoryHeldNoted.has(key)) {
+      this.memoryHeldNoted.add(key);
+      if (this.memoryHeldNoted.size > 500) this.memoryHeldNoted.clear();
+      await this.storage
+        .appendEvent({ kind: 'task.memory-held', actor: 'system', taskId, data: { held: 'verify-round', reason: hold } })
+        .catch(() => {});
+    }
+    return true;
+  }
+
   private async deferLanding(taskId: string): Promise<void> {
     const task = await this.storage.getTask(taskId);
     if (!task || task.status !== 'review' || task.pausedTurn || verifyOpen(task) || !task.repoId) return;
