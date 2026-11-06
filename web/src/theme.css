@@ -15440,3 +15440,68 @@ html[data-calm] .mt-pulse {
   opacity: 0.6;
   transform: scale(1.5);
 }
+
+/* Stakeholder ratings (docs/office.md § Ratings) */
+.office-rating {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-1);
+}
+.office-rating-btn {
+  padding: 0 var(--tm-space-1);
+  border-radius: var(--tm-radius-pill);
+  opacity: 0.55;
+  filter: grayscale(1);
+}
+.office-rating-btn:hover,
+.office-rating-btn.on {
+  opacity: 1;
+  filter: none;
+}
+.office-rating-btn.on.up {
+  background: var(--tm-accent-subtle);
+  box-shadow: inset 0 0 0 1px var(--tm-status-done);
+}
+.office-rating-btn.on.down {
+  background: var(--tm-accent-subtle);
+  box-shadow: inset 0 0 0 1px var(--tm-status-failed);
+}
+.office-rating-comment-btn {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+  max-width: 24em;
+}
+.office-rating-comment {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.office-rating-form {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-1);
+}
+.office-rating-form .input {
+  min-width: 12em;
+}
+.office-work-head {
+  padding: var(--tm-space-2) var(--tm-space-4) 0;
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  color: var(--tm-text-muted);
+}
+.office-work-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2) var(--tm-space-4);
+  border-bottom: 1px solid var(--tm-border);
+}
+.office-work-title {
+  flex: 1 1 14em;
+  min-width: 0;
+  text-align: left;
+  overflow-wrap: anywhere;
+}

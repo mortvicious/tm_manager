@@ -1,5 +1,6 @@
 import { parseApprovalData, type ApprovalButton } from './approvals.ts';
 import { parseOfficeProposalData, type OfficeProposalButton } from './office-proposals.ts';
+import { parseOfficeRatingData, runOfficeRatingButton, type OfficeRatingButton } from './office-ratings.ts';
 import { acceptProposal, rejectProposal } from '../office/proposals.ts';
 import type { ApprovalService } from '../approvals.ts';
 import { DEFAULT_DIGEST, saveTelegramDigest, saveTelegramNotify, type TelegramConfig } from '../config.ts';
@@ -840,6 +841,13 @@ export class TelegramBot {
       await this.handleOfficeProposalPress(cb, officeProposalButton);
       return;
     }
+    // Then the rating buttons (docs/office.md § Ratings) — 👍/👎 under a
+    // briefing or a proposal; a gone subject is refused with a toast.
+    const ratingButton = cb.data ? parseOfficeRatingData(cb.data) : null;
+    if (ratingButton) {
+      await this.handleOfficeRatingPress(cb, ratingButton);
+      return;
+    }
     // Then the job buttons (docs/jobs.md § Telegram) — a job can be deleted
     // from either surface, so a stale one is refused with the reason.
     const jobButton = cb.data ? parseJobData(cb.data) : null;
@@ -1209,6 +1217,24 @@ export class TelegramBot {
     await this.audit('telegram.command', { command: `button:office-proposal.${button.accept ? 'accept' : 'reject'}`, target: button.id, ok });
     await this.answerCallback(cb.id, toast);
     await this.send(this.cfg.allowedUserId, html);
+  }
+
+  private async handleOfficeRatingPress(cb: TelegramCallbackQuery, button: OfficeRatingButton): Promise<void> {
+    let r: { ok: boolean; changed: boolean; toast: string };
+    try {
+      r = await runOfficeRatingButton(this.storage, button, ACTOR);
+    } catch (e) {
+      console.error('telegram: office rating button failed:', errText(e));
+      r = { ok: false, changed: false, toast: 'Failed' };
+    }
+    // Audited BEFORE the answer, like every other button.
+    await this.audit('telegram.command', {
+      command: `button:office-rating.${button.value === 1 ? 'up' : 'down'}`,
+      target: `${button.kind}:${button.id}`,
+      ok: r.ok,
+      ...(r.ok ? { changed: r.changed } : { error: r.toast }),
+    });
+    await this.answerCallback(cb.id, r.toast);
   }
 
   private async handleJobPress(cb: TelegramCallbackQuery, button: JobButton): Promise<void> {

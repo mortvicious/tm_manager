@@ -52,6 +52,10 @@ import type {
   JobScheduleInput,
   OfficeProposal,
   OfficeProposalAcceptBody,
+  OfficeRating,
+  OfficeRatingBody,
+  OfficeRatingResult,
+  OfficeRatingSubjectKind,
   OfficeProposalDecided,
 } from '@tm/shared';
 import type {
@@ -605,6 +609,18 @@ export const api = {
     req<OfficeProposalDecided>('POST', `/api/office-proposals/${id}/accept`, b),
   rejectOfficeProposal: (id: string, note?: string) =>
     req<OfficeProposalDecided>('POST', `/api/office-proposals/${id}/reject`, note ? { note } : {}),
+  /** every status, newest first — the /office rate panel (docs/office.md § Ratings) */
+  listOfficeProposalsOf: (officeId: string, limit = 30) =>
+    req<OfficeProposal[]>('GET', `/api/office-proposals?officeId=${encodeURIComponent(officeId)}&limit=${limit}`),
+  /** Stakeholder 👍/👎 (docs/office.md § Ratings); `comment` omitted keeps the stored one */
+  rateOffice: (b: OfficeRatingBody) => req<OfficeRatingResult>('POST', '/api/office-ratings', b),
+  listOfficeRatings: (q: { officeId?: string; kind?: OfficeRatingSubjectKind; ids?: string[] }) => {
+    const p = new URLSearchParams();
+    if (q.officeId) p.set('officeId', q.officeId);
+    if (q.kind) p.set('kind', q.kind);
+    if (q.ids) p.set('ids', q.ids.join(','));
+    return req<OfficeRating[]>('GET', `/api/office-ratings?${p}`);
+  },
   /** Ask the Director for a feature (docs/office.md § Director features → Ask the Director) */
   askOfficeFeature: (id: string, text: string) => req<OfficeFeatureAskResult>('POST', `/api/offices/${id}/ask-feature`, { text }),
   wakeOfficeRole: (id: string, roleId: string, note?: string) =>

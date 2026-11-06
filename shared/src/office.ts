@@ -2204,3 +2204,71 @@ export interface OfficeHuddleOpenBody {
   /** the human's question (trusted text, the transcript's first line) */
   question?: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Ratings (docs/office.md § Ratings, phase 6, migration 64)
+// ---------------------------------------------------------------------------
+
+/** What a stakeholder can rate: a role's brief, proposal, role-tagged task or channel message. */
+export const OFFICE_RATING_SUBJECT_KINDS = ['brief', 'proposal', 'task', 'message'] as const;
+export type OfficeRatingSubjectKind = (typeof OFFICE_RATING_SUBJECT_KINDS)[number];
+export type OfficeRatingValue = 1 | -1;
+/** The stakeholder's optional comment, after whitespace is folded. */
+export const OFFICE_RATING_COMMENT_MAX = 500;
+
+/** One 👍/👎 per subject (`tm_office_ratings`, unique on the subject); a second rating updates it. */
+export interface OfficeRating {
+  id: string;
+  officeId: string;
+  /** the role whose work it rates — its feedback file got the line */
+  roleId: string;
+  subjectKind: OfficeRatingSubjectKind;
+  subjectId: string;
+  value: OfficeRatingValue;
+  /** the stakeholder's — trusted text */
+  comment: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * `POST /api/office-ratings` (Origin). `comment` omitted keeps the stored one
+ * (a Telegram button carries none); `null`/empty clears it.
+ */
+export interface OfficeRatingBody {
+  kind: OfficeRatingSubjectKind;
+  id: string;
+  value: OfficeRatingValue;
+  comment?: string | null;
+}
+
+export interface OfficeRatingResult {
+  rating: OfficeRating;
+  /** false = the same value and comment were already stored: no feedback line, no audit row */
+  changed: boolean;
+}
+
+export const ratingEmoji = (v: OfficeRatingValue): string => (v === 1 ? '👍' : '👎');
+
+/** Fold whitespace and cap; empty → null. */
+export function cleanRatingComment(s: string | null | undefined): string | null {
+  const t = (s ?? '').replace(/\s+/g, ' ').trim();
+  if (!t) return null;
+  return t.length > OFFICE_RATING_COMMENT_MAX ? `${t.slice(0, OFFICE_RATING_COMMENT_MAX - 1)}…` : t;
+}
+
+/**
+ * The line a rating appends to the role's FEEDBACK file — `👍 brief
+ * 2026-11-04: <comment>`. `label` names the subject (server-built: a date, an
+ * id, a title only when it is not tainted); the comment is the stakeholder's,
+ * so it is trusted. A changed rating says what it replaced.
+ */
+export function ratingFeedbackLine(
+  value: OfficeRatingValue,
+  label: string,
+  comment: string | null,
+  previous: OfficeRatingValue | null = null,
+): string {
+  const was = previous !== null && previous !== value ? ` (was ${ratingEmoji(previous)})` : '';
+  return `${ratingEmoji(value)} ${label}${was}${comment ? `: ${comment}` : ''}`;
+}

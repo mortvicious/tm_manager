@@ -24,6 +24,7 @@ import type {
   OfficeSignalFilter,
 } from './office-sql.ts';
 import type { MoveAnchor } from './group.ts';
+import type { NewOfficeRating, OfficeRatingFilter } from './rating-sql.ts';
 import type { QueueMoveAnchor } from './queue-sql.ts';
 import type {
   Approval,
@@ -38,6 +39,8 @@ import type {
   OfficeBrief,
   OfficeProposal,
   OfficeWish,
+  OfficeRating,
+  OfficeRatingSubjectKind,
   OfficeMessage,
   OfficeHuddle,
   OfficeSignal,
@@ -1006,6 +1009,15 @@ export interface Storage {
   listWishes(f?: OfficeWishFilter): Promise<OfficeWish[]>;
   updateWish(id: string, patch: OfficeWishPatch): Promise<OfficeWish | null>;
   deleteWish(id: string): Promise<boolean>;
+  /**
+   * Stakeholder ratings (docs/office.md § Ratings, migration 64; SQL in
+   * `rating-sql.ts`). One row per subject: `upsertOfficeRating` inserts or
+   * updates it in place. FK-less; `deleteOffice` removes them with the office.
+   */
+  getOfficeRating(kind: OfficeRatingSubjectKind, subjectId: string): Promise<OfficeRating | null>;
+  upsertOfficeRating(r: NewOfficeRating): Promise<OfficeRating>;
+  /** newest first */
+  listOfficeRatings(f?: OfficeRatingFilter): Promise<OfficeRating[]>;
   /**
    * Messages, huddles, signals (docs/office.md § Data model, migration 60; SQL
    * in `office-sql.ts`). FK-less; `deleteOffice` removes them with the office.

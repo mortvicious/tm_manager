@@ -721,6 +721,16 @@ race or was refused, and the caller re-reads:
   the same transaction (office chats stay — they are chats, deleted by the
   chat service).
 
+**Ratings** (migration 64, SQL in `storage/rating-sql.ts`, both drivers — §
+Ratings): `tm_office_ratings` (`id`, `office_id`, `role_id`, `subject_kind`
+`brief|proposal|task|message`, `subject_id`, `value` 1|-1, `comment`,
+`created_at`, `updated_at`), FK-less, UNIQUE on `(subject_kind, subject_id)`.
+`upsertOfficeRating` is `INSERT … ON CONFLICT (subject_kind, subject_id) DO
+UPDATE … RETURNING *` (the row's id and `created_at` survive a change);
+`getOfficeRating(kind, id)`, `listOfficeRatings({officeId, subjectKind,
+subjectIds, limit})` (newest first; an empty `subjectIds` matches nothing).
+`deleteOffice` deletes them in its transaction.
+
 ## API
 
 `server/src/routes/offices.ts`, registered in `index.ts`. Request and response
@@ -2671,6 +2681,52 @@ conversation opens straight into it. With an office: an **Assistant** panel
 with **Apply**, Stop while a turn runs, **Clear** (two-press). Both designs,
 `--tm-*` tokens only (`.office-planner*`, `.office-blueprint*`,
 `.office-diff*` in `theme.css`). Telegram is out of scope.
+
+## Ratings
+
+Phase 6 (measuring autonomy): the stakeholder rates a role's work 👍/👎 so the
+role learns what was worth doing. `server/src/office/ratings.ts`
+(`rateOfficeSubject`), shared types `OfficeRating*` + `ratingFeedbackLine` in
+`shared/src/office.ts`, table in § Data model.
+
+- **Subjects**: a `brief` (its role), a `proposal` (its role, any status), a
+  role-tagged `task` (`office_id` + `role_id` set — any other task is 400) and
+  a role's channel `message` (`from_role_id` set — the stakeholder's own is
+  400). The role must still exist in the office (409); a gone subject is 404.
+- **Once per subject, updated on change.** One row per subject; rating it
+  again with the other thumb or a new comment updates the row in place. The
+  same value and comment again is a no-op (`changed: false`): no feedback
+  line, no audit row, no broadcast. An omitted `comment` keeps the stored one
+  (a Telegram press carries none), `null`/empty clears it; folded and capped
+  at `OFFICE_RATING_COMMENT_MAX` (500).
+- **Feedback, never notes.** Every change appends ONE line to the role's
+  append-only feedback file through `appendRoleFeedback` (§ Shifts at run
+  time → Notes and feedback) — never the role-owned notes file, so a shift
+  running at that moment, whose `notes` section replaces the notes whole,
+  cannot overwrite it (test), and the next shift's prompt carries it. The line
+  is `👍 brief 2026-11-04: <comment>` — the subject label is server-built:
+  `brief|stand-up <office-local day>`, `proposal|task <id8> “<title>”` (a
+  tainted proposal/task: `(from a tainted shift — title withheld)`, like a
+  rejected tainted proposal), `message <id8> (<kind>)`; a changed rating adds
+  `(was 👎)`. The comment is the stakeholder's, so it is trusted text. A failed
+  append is logged and the rating stands.
+- **Audit and live**: each change is an `office.rated` row (actor `human` /
+  `telegram`; data `officeId`, `roleId`, `subject {kind, id}`, `value`,
+  `previous`, `feedback`, `comment`) and an `office-rating.updated` broadcast.
+- **API** (`routes/office-ratings.ts`): `POST /api/office-ratings` `{kind, id,
+  value: 1|-1, comment?}` → `{rating, changed}` — **403 without `Origin`** (a
+  worker's or a shift's curl has none; the rating speaks for the stakeholder).
+  `GET /api/office-ratings?officeId=&kind=&ids=a,b` lists.
+- **Telegram** (docs/telegram.md § Office ratings): 👍/👎 under every briefing
+  document and every office proposal card, `rt:<b|p|t|m>:<uuid>:<u|d>`,
+  parsed before the action codec; audited.
+- **UI**: 👍/👎 (`components/OfficeRating.tsx` `RatingButtons`, live through
+  `useOfficeRatings`) in the brief viewer (a rated brief shows its thumb on its
+  list row), on the /office **Rate the work** panel
+  (`components/OfficeWork.tsx`: the office's newest 20 proposals of any status
+  and 20 role-tagged tasks; a `<Sheet>` from the phone bar), and in the task
+  panel's meta row for a role-tagged task. Pressing the active thumb opens the
+  comment editor.
 
 ## UI
 

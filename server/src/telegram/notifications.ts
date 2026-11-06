@@ -27,6 +27,7 @@ import { buildBriefReport, buildReport, type ReportDocument } from './report.ts'
 import type { InlineKeyboardMarkup } from './types.ts';
 import { jobRunMessage } from './jobs.ts';
 import { officeProposalMessage } from './office-proposals.ts';
+import { officeRatingRow } from './office-ratings.ts';
 import { questionMessages, settledNotice } from './questions.ts';
 
 // The push half of the bot (docs/telegram.md § Notifications): subscribes to
@@ -388,7 +389,8 @@ export class TelegramNotifier {
       if (!this.deps.notify.briefing) return;
       const doc = await buildBriefReport(this.deps.storage, b.id);
       if (!doc) return;
-      await this.deps.sendDocument(doc, doc.summary);
+      // 👍/👎 under the document (docs/office.md § Ratings)
+      await this.deps.sendDocument(doc, doc.summary, { inline_keyboard: [officeRatingRow('brief', b.id)] });
     });
   }
 

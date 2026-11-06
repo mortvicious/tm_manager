@@ -33,6 +33,7 @@ import {
   type Office,
   type OfficeAutonomy,
   type OfficeBrief,
+  type OfficeRating,
   type OfficeBriefView,
   type OfficeDetail,
   type OfficeEventName,
@@ -60,6 +61,8 @@ import { OfficeVision } from '../components/OfficeVision.tsx';
 import { OfficeChannel } from '../components/OfficeChannel.tsx';
 import { OfficeChat } from '../components/OfficeChat.tsx';
 import { OfficeHuddles } from '../components/OfficeHuddles.tsx';
+import { RatingButtons, ratingKey, useOfficeRatings } from '../components/OfficeRating.tsx';
+import { OfficeWork } from '../components/OfficeWork.tsx';
 import { OfficePlace } from '../components/office/OfficePlace.tsx';
 import { useOfficeViewMode, type OfficeViewMode } from '../officeThemes.ts';
 import { OfficeAssistant, OfficePlannerFlow } from '../components/OfficePlanner.tsx';
@@ -366,8 +369,9 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   const now = useNow();
   const { detail, states, error, reload } = useOfficeDetail(officeId);
   const [editing, setEditing] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | 'channel' | 'huddles' | 'chat' | 'assistant' | null>(null);
+  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | 'channel' | 'huddles' | 'chat' | 'assistant' | 'work' | null>(null);
   const briefs = useOfficeBriefs(officeId);
+  const ratings = useOfficeRatings({ officeId });
   const [briefId, setBriefId] = useBriefParam();
   const [mode, setMode] = useOfficeViewMode();
 
@@ -396,9 +400,10 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   const assistant = <OfficeAssistant office={office} roles={roles} inSheet={mobile} />;
   const huddles = <OfficeHuddles office={office} roles={roles} inSheet={mobile} onOpenTask={onOpenTask} />;
   const briefList = (
-    <BriefList office={office} roles={roles} briefs={briefs} selected={briefId} inSheet={mobile} onSelect={(id) => setBriefId(id === briefId ? null : id)} />
+    <BriefList office={office} roles={roles} briefs={briefs} ratings={ratings} selected={briefId} inSheet={mobile} onSelect={(id) => setBriefId(id === briefId ? null : id)} />
   );
-  const viewer = briefId && <BriefViewer key={briefId} office={office} briefId={briefId} inSheet={mobile} onClose={() => setBriefId(null)} />;
+  const viewer = briefId && <BriefViewer key={briefId} office={office} briefId={briefId} ratings={ratings} inSheet={mobile} onClose={() => setBriefId(null)} />;
+  const work = <OfficeWork office={office} roles={roles} ratings={ratings} inSheet={mobile} onOpenTask={onOpenTask} />;
   const editor = editRole && (
     <RoleEditor key={editRole.id} office={office} role={editRole} inSheet={mobile} onClose={() => setEditing(null)} onSaved={reload} />
   );
@@ -432,6 +437,9 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
           </button>
           <button className="btn" onClick={() => setSheet('briefs')}>
             Briefs <span className="muted">{briefs?.length ?? ''}</span>
+          </button>
+          <button className="btn" onClick={() => setSheet('work')}>
+            Rate the work
           </button>
           <button className="btn" onClick={() => setSheet('log')}>
             Shift log <span className="muted">{shifts.length}</span>
@@ -531,6 +539,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
           {viewer}
         </div>
       )}
+      {!mobile && <div className="panel">{work}</div>}
       {!mobile && log}
       {mobile && sheet === 'briefs' && !briefId && (
         <Sheet label="Briefs" title="Briefs" onClose={() => setSheet(null)} tall>
@@ -545,6 +554,11 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
       {mobile && sheet === 'settings' && (
         <Sheet label="Office settings" title="Office settings" onClose={() => setSheet(null)} disableDrag tall>
           {settings}
+        </Sheet>
+      )}
+      {mobile && sheet === 'work' && (
+        <Sheet label="Rate the work" title="Rate the work" onClose={() => setSheet(null)} tall>
+          {work}
         </Sheet>
       )}
       {mobile && sheet === 'log' && (
@@ -1776,6 +1790,7 @@ function BriefList({
   office,
   roles,
   briefs,
+  ratings,
   selected,
   inSheet,
   onSelect,
@@ -1783,6 +1798,7 @@ function BriefList({
   office: Office;
   roles: OfficeRole[];
   briefs: OfficeBrief[] | null;
+  ratings: Map<string, OfficeRating>;
   selected: string | null;
   inSheet: boolean;
   onSelect: (id: string) => void;
@@ -1805,6 +1821,11 @@ function BriefList({
             <span className="office-shift-role">{role ? `${role.avatar} ${role.name}` : 'deleted role'}</span>
             {b.kind === 'standup' && <span className="chip office-brief-kind">stand-up</span>}
             {b.taintedAt && <span className="chip office-taint">untrusted</span>}
+            {ratings.get(ratingKey('brief', b.id)) && (
+              <span className="chip" title="your rating">
+                {ratings.get(ratingKey('brief', b.id))!.value === 1 ? '👍' : '👎'}
+              </span>
+            )}
             <span className="office-brief-summary">{b.summary}</span>
           </button>
         );
@@ -1813,7 +1834,19 @@ function BriefList({
   );
 }
 
-function BriefViewer({ office, briefId, inSheet, onClose }: { office: Office; briefId: string; inSheet: boolean; onClose: () => void }) {
+function BriefViewer({
+  office,
+  briefId,
+  ratings,
+  inSheet,
+  onClose,
+}: {
+  office: Office;
+  briefId: string;
+  ratings: Map<string, OfficeRating>;
+  inSheet: boolean;
+  onClose: () => void;
+}) {
   const now = useNow();
   const arm = useArm();
   const [view, setView] = useState<OfficeBriefView | null>(null);
@@ -1857,6 +1890,7 @@ function BriefViewer({ office, briefId, inSheet, onClose }: { office: Office; br
             {b.kind === 'standup' && <span className="chip office-brief-kind">stand-up</span>}
             {b.taintedAt && <span className="chip office-taint">untrusted</span>}
             {b.reviewedAt && <span className="chip">reviewed</span>}
+            {!elsewhere && <RatingButtons kind="brief" id={b.id} rating={ratings.get(ratingKey('brief', b.id))} />}
             <span className="muted office-hint">
               {formatOfficeTime(Date.parse(b.createdAt), now, office.timezone)} · <span className="mono">{b.path}</span>
             </span>

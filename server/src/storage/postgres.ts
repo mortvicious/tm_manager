@@ -30,6 +30,7 @@ import { machineDefaults } from '../machine.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE } from './feature-sql.ts';
 import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, CUSTOM_QUEUE_WAITING_SQL, OFFICE_CLAIM_GATE, OFFICE_TRIPPED_SQL, REPO_EXCLUSIVE_GATE, planQueueReorder, reorderAudit, skipRepos, type QueueMoveAnchor } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
+import { OFFICE_RATING_GET_SQL, OFFICE_RATINGS_DELETE_SQL, OFFICE_RATING_UPSERT_SQL, officeRatingListSql, officeRatingUpsertParams, rowToOfficeRating, type NewOfficeRating, type OfficeRatingFilter } from './rating-sql.ts';
 import { REPO_PARALLEL_SQL, repoParallelParams, worktreePatchSql } from './worktree-sql.ts';
 import { LOOP_LEAVES_RUNNING_SQL, loopStepSets, stepLoopSql } from './loop-sql.ts';
 import {
@@ -174,6 +175,8 @@ import type {
   OfficeShift,
   OfficeSignal,
   OfficeWish,
+  OfficeRating,
+  OfficeRatingSubjectKind,
 } from '@tm/shared';
 import { officeTrippedParam } from '@tm/shared';
 import {
@@ -2322,6 +2325,7 @@ export class PostgresStorage implements Storage {
       await c.query(toPg(OFFICE_BRIEFS_DELETE_SQL), [id]);
       await c.query(toPg(OFFICE_PROPOSALS_DELETE_SQL), [id]);
       await c.query(toPg(OFFICE_WISHES_DELETE_SQL), [id]);
+      await c.query(toPg(OFFICE_RATINGS_DELETE_SQL), [id]);
       await c.query(toPg(OFFICE_MESSAGES_DELETE_SQL), [id]);
       await c.query(toPg(OFFICE_HUDDLES_DELETE_SQL), [id]);
       await c.query(toPg(OFFICE_SIGNALS_DELETE_SQL), [id]);
@@ -2505,6 +2509,22 @@ export class PostgresStorage implements Storage {
 
   async deleteWish(id: string): Promise<boolean> {
     return (await this.q(`${OFFICE_WISH_DELETE_SQL} RETURNING id`, [id])).length > 0;
+  }
+
+  // ---- office ratings (migration 64; SQL in rating-sql.ts) ----
+
+  async getOfficeRating(kind: OfficeRatingSubjectKind, subjectId: string): Promise<OfficeRating | null> {
+    const r = (await this.q(OFFICE_RATING_GET_SQL, [kind, subjectId]))[0];
+    return r ? rowToOfficeRating(r) : null;
+  }
+
+  async upsertOfficeRating(r: NewOfficeRating): Promise<OfficeRating> {
+    return rowToOfficeRating((await this.q(OFFICE_RATING_UPSERT_SQL, officeRatingUpsertParams(randomUUID(), r, now())))[0]);
+  }
+
+  async listOfficeRatings(f?: OfficeRatingFilter): Promise<OfficeRating[]> {
+    const q = officeRatingListSql(f);
+    return (await this.q(q.sql, q.params)).map(rowToOfficeRating);
   }
 
   // ---- office messages, huddles, signals (migration 60; SQL in office-sql.ts) ----

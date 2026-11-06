@@ -1196,6 +1196,27 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `ALTER TABLE tm_chat_messages ADD COLUMN blueprint TEXT`,
       `ALTER TABLE tm_chat_messages ADD COLUMN blueprint_applied_at TEXT`,
     ],
+  },  {
+    id: 64,
+    // Stakeholder ratings (docs/office.md § Ratings): one 👍/👎 per subject — a
+    // role's brief, proposal, role-tagged task or channel message — unique on
+    // (subject_kind, subject_id), so a second rating UPDATES the row. FK-less
+    // like every office table; `deleteOffice` removes them with the office.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_office_ratings (
+        id TEXT PRIMARY KEY,
+        office_id TEXT NOT NULL,
+        role_id TEXT NOT NULL,
+        subject_kind TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        value INTEGER NOT NULL,
+        comment TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS tm_office_ratings_subject_idx ON tm_office_ratings (subject_kind, subject_id)`,
+      `CREATE INDEX IF NOT EXISTS tm_office_ratings_office_idx ON tm_office_ratings (office_id, created_at)`,
+    ],
   },
 ];
 

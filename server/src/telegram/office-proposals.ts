@@ -1,6 +1,7 @@
 import type { OfficeProposal, OfficeRole, Repo } from '@tm/shared';
 import { escapeHtml } from './api.ts';
 import { short } from './ids.ts';
+import { officeRatingRow } from './office-ratings.ts';
 import type { InlineKeyboardMarkup } from './types.ts';
 
 // Office proposals on the phone (docs/office.md § Proposals, docs/telegram.md
@@ -56,6 +57,6 @@ export function officeProposalMessage(
       : repos.slice(0, 6).map((r) => ({ text: `✅ ${clip(r.name, 20)}`, callback_data: encodeOfficeProposalButton(p.id, true, r.id) }));
   return {
     html,
-    keyboard: { inline_keyboard: [accept, [{ text: '✖ Reject', callback_data: encodeOfficeProposalButton(p.id, false) }]] },
+    keyboard: { inline_keyboard: [accept, [{ text: '✖ Reject', callback_data: encodeOfficeProposalButton(p.id, false) }], officeRatingRow('proposal', p.id)] },
   };
 }

@@ -34,6 +34,7 @@ import { ReviewerFields, reviewIsOn } from './ReviewerPicker.tsx';
 import { TaskStatsLine } from './RunMeta.tsx';
 import { BadgeStrip, StatusBadge } from './StatusBadge.tsx';
 import { RoleChip } from './RoleChip.tsx';
+import { RatingButtons, useOfficeRating } from './OfficeRating.tsx';
 import { KindBadge, liveReviewRun, runTaskId } from './RunKind.tsx';
 import { ReviewPanel } from './ReviewPanel.tsx';
 import { ChecksPanel } from './ChecksPanel.tsx';
@@ -795,6 +796,7 @@ export function TaskSlideOver({
           </span>
         )}
         <RoleChip task={task} />
+        {task.officeId && task.roleId && <TaskRating taskId={task.id} />}
         {task.category && (
           <span className="so-meta-item so-cat" title="category">
             {task.category}
@@ -1531,4 +1533,14 @@ function isTextField(el: HTMLElement): boolean {
   if (el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) return true;
   if (el instanceof HTMLInputElement) return TEXT_INPUTS.has(el.type);
   return el.isContentEditable;
+}
+
+/** 👍/👎 on a role-tagged office task (docs/office.md § Ratings) — the role's feedback file gets the line. */
+function TaskRating({ taskId }: { taskId: string }) {
+  const rating = useOfficeRating('task', taskId);
+  return (
+    <span className="so-meta-item" title="rate this office task — the role reads it next shift">
+      <RatingButtons kind="task" id={taskId} rating={rating} />
+    </span>
+  );
 }
