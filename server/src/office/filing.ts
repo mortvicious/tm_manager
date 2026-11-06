@@ -124,6 +124,12 @@ export interface ShiftFilingInput {
   maxOpenTasks: number;
   /** the office's non-terminal tasks right now (`countOpenOfficeTasks`) */
   openTasks: number;
+  /**
+   * What this SHIFT already filed or held (its `tasks` section and earlier
+   * `task` routes — docs/office.md § Channel): they count toward the per-shift
+   * cap and a repeat of one is a duplicate, so routes never widen the cap.
+   */
+  earlier?: readonly { repoId: string | null; title: string }[];
 }
 
 export interface ShiftFilingPlan extends OfficeShiftFiling {
@@ -142,8 +148,9 @@ export const dropReasons = {
 
 /**
  * What a shift's requests become. Order: a request for a repo outside the
- * workspace (or a repeat of one already listed) is dropped first; the per-shift
- * cap then keeps the first N; under proposals autonomy those are HELD (no task
+ * workspace (or a repeat of one already listed, or already filed/held by this
+ * shift — `earlier`) is dropped first; the per-shift cap, which counts
+ * `earlier` too, then keeps the rest up to N; under proposals autonomy those are HELD (no task
  * exists, so the open-task cap does not apply); otherwise the open-task cap
  * keeps as many as the office has room for. Every drop carries its reason.
  */
@@ -153,7 +160,8 @@ export function planShiftFiling(i: ShiftFilingInput): ShiftFilingPlan {
     status === 'proposal' ? OFFICE_PROPOSALS_NOTE : status === 'queued' ? null : i.tainted ? OFFICE_TAINTED_NOTE : OFFICE_QUEUE_STOPPED_NOTE;
   const perShift = clampInt(i.maxTasksPerShift, 1, OFFICE_MAX_TASKS_PER_SHIFT_MAX);
   const repos = new Set(i.workspaceRepoIds);
-  const seen = new Set<string>();
+  const seen = new Set<string>((i.earlier ?? []).map((e) => `${e.repoId ?? ''}\u0000${e.title.toLowerCase()}`));
+  const already = (i.earlier ?? []).length;
   const dropped: OfficeShiftFiling['dropped'] = [];
   const kept: ShiftTaskRequest[] = [];
   for (const r of i.requests) {
@@ -167,7 +175,7 @@ export function planShiftFiling(i: ShiftFilingInput): ShiftFilingPlan {
       continue;
     }
     seen.add(key);
-    if (kept.length >= perShift) {
+    if (already + kept.length >= perShift) {
       dropped.push({ ...r, reason: dropReasons.perShift(perShift) });
       continue;
     }
@@ -262,6 +270,16 @@ export async function fileShiftTasks(
       const byName = wsRepos.filter((w) => w.name.toLowerCase() === r.repoId.toLowerCase());
       if (byName.length === 1) r.repoId = byName[0].id;
     }
+    // what this shift already filed or held counts toward its cap and its duplicates
+    const shiftBefore = await storage.getShift(ctx.shiftId);
+    const earlier: { repoId: string | null; title: string }[] = [];
+    for (const id of shiftBefore?.filedTaskIds ?? []) {
+      const t = await storage.getTask(id);
+      if (t) earlier.push({ repoId: t.repoId, title: t.title });
+    }
+    for (const p of await storage.listOfficeProposals({ shiftId: ctx.shiftId, limit: 2000 })) {
+      if (p.origin === 'task') earlier.push({ repoId: p.repoId, title: p.title });
+    }
     const plan = office
       ? planShiftFiling({
           requests,
@@ -272,6 +290,7 @@ export async function fileShiftTasks(
           maxTasksPerShift: office.maxTasksPerShift,
           maxOpenTasks: office.maxOpenTasks,
           openTasks: autonomy === 'proposals' ? 0 : await storage.countOpenOfficeTasks(office.id),
+          earlier,
         })
       : {
           status: filingStatus(autonomy, ctx.tainted, { queueStopped: !settings['orchestrator.enabled'] }),

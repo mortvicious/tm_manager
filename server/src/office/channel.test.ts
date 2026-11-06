@@ -357,6 +357,35 @@ describe('messages and the routing pass', () => {
     assert.ok((await storage.getOfficeMessage(m.id))?.routedAt);
   });
 
+  test('task routes share the shift’s per-shift cap and duplicate check with its `tasks` section', async () => {
+    const o = await office();
+    await storage.updateOffice(o.id, { maxTasksPerShift: 2 });
+    await director(o);
+    const msgs: OfficeMessage[] = [];
+    for (const body of ['one', 'two', 'three']) {
+      msgs.push(await storage.appendOfficeMessage({ officeId: o.id, fromRoleId: null, toRoleId: null, kind: 'request', body }));
+    }
+    const route = (m: OfficeMessage, title: string) => ({ messageId: m.id, action: 'task', task: { repoId, title, description: `Do ${title}.` } });
+    const { started } = await routingPass(o);
+    assert.ok(started);
+    const done = await finish(started!, {
+      tasks: [{ repoId, title: 'Alpha', description: 'Do Alpha.' }],
+      // a repeat of the section's task, one more within the cap, one past it
+      routes: [route(msgs[0], 'alpha'), route(msgs[1], 'Beta'), route(msgs[2], 'Gamma')],
+    });
+    assert.equal(done.out.error, null);
+    const shiftRow = await storage.getShift(done.shiftId);
+    const titles = await Promise.all((shiftRow?.filedTaskIds ?? []).map(async (id) => (await storage.getTask(id))?.title));
+    assert.equal(titles.length, 2, `the cap (2) holds across the section and the routes: ${titles.join(', ')}`);
+    assert.equal(new Set(titles.map((t) => t?.toLowerCase())).size, 2, 'no duplicate title');
+    const reasons = [
+      ...(shiftRow?.filing?.dropped ?? []).map((d) => d.reason),
+      ...[...(await messageRoutes(storage, o.id)).values()].map((r) => r.dropped ?? ''),
+    ];
+    assert.ok(reasons.some((r) => /per-shift cap/.test(r)), reasons.join(' | '));
+    assert.ok(reasons.some((r) => /duplicate/.test(r)), reasons.join(' | '));
+  });
+
   test('routes: Director only, and only messages the shift was shown', async () => {
     const o = await office();
     const d = await director(o);
