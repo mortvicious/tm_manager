@@ -16,6 +16,7 @@ import { agentBrief, agentEnqueueGate, agentTitle, maxSpawnDepth, perRunCap } fr
 import { AGENT_COMMAND_DEFINE_CAP, AGENT_ONE_SHOT_TASK_CAP, registerAgentCommandRoutes } from './agent-commands.ts';
 import { registerAgentSharedRoutes, SHARED_NOTE_RUN_CAP } from './agent-shared.ts';
 import { AGENT_CLOSE_RUN_CAP, registerAgentTaskRoutes } from './agent-tasks.ts';
+import { registerAgentHeavyRoutes } from './agent-heavy.ts';
 import { registerAgentWaitRoutes } from './agent-waits.ts';
 import { DEPENDS_ON_MAX, dependsOnRefusal, edgeIndex, WAIT_MAX_MS } from '../task-wait.ts';
 
@@ -167,6 +168,8 @@ export function registerAgentRoutes(
   registerAgentCommandRoutes(app, storage, commandRunner, authRun, reaper);
   // Task waits + declared dependencies (docs/task-waits.md) — same prefix too.
   registerAgentWaitRoutes(app, storage, orchestrator, authRun);
+  // Heavy work leases (docs/memory.md § Heavy work) — same prefix too.
+  registerAgentHeavyRoutes(app, authRun);
 
   app.post('/api/agent/tasks', async (req, reply) => {
     const run = await authRun(req);

@@ -1248,6 +1248,12 @@ button.badge.badge-link:hover {
 .progress-pct.overrun {
   font-style: italic;
 }
+/* queued behind the heavy slots (docs/memory.md § Heavy work) */
+.progress-pct.heavy-wait {
+  font-family: var(--tm-font-body);
+  color: var(--tm-status-review);
+  white-space: nowrap;
+}
 @media (prefers-reduced-motion: reduce) {
   .row-progress {
     transition: none;

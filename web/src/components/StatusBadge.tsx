@@ -35,6 +35,12 @@ export interface BadgeInput {
   waitingFor?: string | null;
   /** `queued` behind a declared dependency that has not landed: its title (docs/task-waits.md) */
   dependsOnOpen?: string | null;
+  /**
+   * Queued for a heavy slot (docs/memory.md § Heavy work): `heavyWaitLabel`'s
+   * line — `waiting for a check slot` (its checks) or `waiting for a heavy slot`
+   * (its agent's Lighthouse/Playwright/build lease).
+   */
+  heavyWait?: string | null;
 }
 
 export interface BadgeReading extends Explanation {
@@ -91,6 +97,7 @@ export function badgeReading({
   busy,
   waitingFor,
   dependsOnOpen,
+  heavyWait,
 }: BadgeInput): BadgeReading {
   const r = (label: string, c: string, what: string, todo?: string, reviewer?: boolean): BadgeReading => ({
     label,
@@ -132,6 +139,20 @@ export function badgeReading({
       's-waiting',
       'Pause all suspended this task mid-turn. Its own session is kept and picks up exactly where it stopped.',
       'Nothing to do — Continue (header) resumes it. Proceed or Follow up resumes just this one now.',
+    );
+  if (heavyWait && status === 'review' && (checkState === 'pending' || checkState === 'running'))
+    return r(
+      heavyWait,
+      's-checking s-heavywait',
+      'Its repo checks are queued: another check or heavy job (a build, a Lighthouse run) holds the heavy slot. Heavy work runs one job at a time so the machine does not swap.',
+      'Nothing to do — the checks start when the slot frees, then the review follows.',
+    );
+  if (heavyWait && (status === 'running' || status === 'waiting'))
+    return r(
+      heavyWait,
+      's-running s-heavywait',
+      'The agent asked for a heavy slot (Lighthouse, Playwright, a full build) and waits for it: another heavy job holds it, or the memory fuse is tripped.',
+      'Nothing to do — it goes on by itself when the slot frees.',
     );
   if (status === 'review' && (checkState === 'pending' || checkState === 'running'))
     return r('checking', 's-checking', 'The server is running the repo checks on this change.', 'Nothing to do yet — the review follows.');

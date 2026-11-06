@@ -275,6 +275,40 @@ Stop hook (worker turn ends, not waiting, not a publish turn)
   turn comes only after they are green (2026-10-19). Enqueue/Retry clears the
   previous attempt's verdict.
 
+## One check at a time
+
+Checks of different repos used to run in parallel. On the 8 GB laptop two
+`tsc`/`next build` at once is ~3–4 GB, and it swapped. So every check run now
+takes one of the global **heavy slots** before it spawns (docs/memory.md §
+Heavy work). `CommandRunner.runCheck` is the single choke point, so this
+covers the verify stage, a worktree land's re-check, loop iterations,
+baselines and office shift commands alike. Agents' Lighthouse, Playwright and
+build leases share the same slots. `heavy.maxParallel` defaults to auto:
+1 slot on ≤ 8 GB.
+
+- **Queued, not failed.** The time spent waiting for a slot is not part of the
+  check's timeout. `abort` is polled while waiting (a task taken over gives up
+  its place), and `check_state` stays `running`, so the repo hold and the
+  notifiers' wait are unchanged.
+- **Visible.** While queued, the task's board row reads **waiting for a check
+  slot** next to its progress, on every board version, and the panel's badge
+  reads it instead of **checking** (`heavyWaitLabel` over
+  `OrchestratorStatus.heavy`). A check that had to queue writes a
+  `heavy.lease` audit row with `waitedMs`.
+- **Agents run saved checks through the API**, not their own `tsc`:
+  `POST /api/agent/commands/:id/check` (a saved check of the caller's own
+  repo, on its own tree — the worktree in a parallel repo). It answers within
+  ~50 s with the result, or with `waiting|running` and a `checkId` to poll at
+  `GET /api/agent/commands/checks/:checkId?waitMs=`. Each task has one live
+  check, which is aborted when the task leaves `running|waiting`.
+  - `POST …/:id/start` refuses a saved check (409), because it would run
+    outside the slot.
+  - A check behind the caller's own heavy lease is refused (409: release it
+    first), because with one slot it would wait for ever.
+  - `GET /api/agent/commands` marks checks with `isCheck`.
+  - The standing worker rule says to prefer this path over Bash when a saved
+    check covers it.
+
 ## State on the row
 
 `tm_tasks.check_state` (`CheckState`: `pending|running|green|red|error|null`),

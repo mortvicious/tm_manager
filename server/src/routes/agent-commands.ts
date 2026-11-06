@@ -6,7 +6,8 @@ import { AGENT_COMMANDS_PER_REPO_CAP } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import { directoryEscape, parseCommandLine, resolveCommandCwd, tempPathIn } from '../commands/parse.ts';
 import { CapRefusal, type IdleServerReaper } from '../commands/reaper.ts';
-import type { CommandRunner } from '../commands/runner.ts';
+import type { CheckRun, CommandRunner } from '../commands/runner.ts';
+import { heavy } from '../heavy.ts';
 import type { Storage } from '../storage/types.ts';
 
 // The agent side of repo commands (docs/commands.md § Agent API). A worker
@@ -133,6 +134,8 @@ export function registerAgentCommandRoutes(
       command: c.command,
       kind: c.kind,
       cwd: c.cwd,
+      /** a saved check: run it with POST /api/agent/commands/:id/check (docs/checks.md § One check at a time) */
+      isCheck: c.isCheck,
       /** the task whose agent saved it; null = a human's */
       ownerTaskId: c.ownerTaskId,
       run: runBrief(latest),
@@ -379,10 +382,123 @@ export function registerAgentCommandRoutes(
 
   // Start-or-reuse. A command that is already running is NOT an error here:
   // it is the shared server the caller should use, so it answers with that run.
+  /**
+   * Agent-run CHECKS (docs/checks.md § One check at a time): a saved check run
+   * on the caller's own tree through `runCheck`, so it queues for the heavy
+   * slot like the server's own check stage instead of being one more `tsc` in
+   * a Bash shell. In memory, one live per task; a finished one is kept until
+   * read or replaced. Aborted when the task leaves running/waiting (its turn
+   * ended: the server's own check stage takes over).
+   */
+  interface AgentCheck {
+    id: string;
+    taskId: string;
+    name: string;
+    startedAt: string;
+    result: CheckRun | null;
+    done: Promise<CheckRun>;
+  }
+  const agentChecks = new Map<string, AgentCheck>();
+  const checkView = (c: AgentCheck) => {
+    if (c.result) {
+      const r = c.result;
+      return {
+        status: 'done' as const,
+        checkId: c.id,
+        name: c.name,
+        outcome: r.error ? 'error' : r.exit === 0 ? 'green' : 'red',
+        exit: r.exit,
+        error: r.error,
+        durationMs: r.durationMs,
+        tail: r.tail,
+        runId: r.runId,
+      };
+    }
+    // not running yet = queued for the heavy slot (or behind a live run of the same check)
+    const waiting = !runner.running().some((x) => x.checkTaskId === c.taskId && x.name === c.name);
+    return {
+      status: waiting ? ('waiting' as const) : ('running' as const),
+      checkId: c.id,
+      name: c.name,
+      ...(waiting ? { note: 'waiting for a check slot — another heavy job holds it' } : {}),
+      next: `GET /api/agent/commands/checks/${c.id}?waitMs=50000`,
+    };
+  };
+  const settleCheck = async (c: AgentCheck, waitMs: number) => {
+    if (!c.result && waitMs > 0) {
+      await Promise.race([c.done, sleep(waitMs)]);
+    }
+    return checkView(c);
+  };
+
+  app.post('/api/agent/commands/:id/check', async (req, reply) => {
+    const t = await target(req);
+    if (!t.ok) return reply.code(t.code).send({ error: t.error });
+    if (!t.command.isCheck) return reply.code(400).send({ error: `"${t.command.name}" is not a saved check — start it with POST /api/agent/commands/${t.command.id}/start` });
+    if (!t.run.taskId || t.run.repoId !== t.command.repoId) return reply.code(403).send({ error: 'only a check of your own task\'s repo' });
+    const body = z.object({ waitMs: z.number().int().min(0).max(55_000).optional() }).strict().parse(req.body ?? {});
+    const taskId = t.run.taskId;
+    // with one slot, a check behind the caller's OWN lease would wait for ever
+    const ownLease = heavy()?.status().held.find((h) => h.taskId === taskId && h.kind !== 'check');
+    if (ownLease) {
+      return reply.code(409).send({ error: `release your heavy lease first (POST /api/agent/heavy/${ownLease.id}/release) — the check queues for the same slots` });
+    }
+    const live = [...agentChecks.values()].find((c) => c.taskId === taskId && !c.result);
+    if (live) return reply.code(409).send({ error: `a check of yours is already running ("${live.name}")`, ...checkView(live) });
+    const task = await storage.getTask(taskId);
+    // a worktree task's check judges ITS tree (docs/parallel.md § Commands)
+    const repo = task?.workdir && fs.existsSync(task.workdir) ? { ...t.repo, path: task.workdir } : t.repo;
+    const stale = Date.now() - 60 * 60_000;
+    for (const [id, c] of agentChecks) {
+      if (c.result && (c.taskId === taskId || Date.parse(c.startedAt) < stale)) agentChecks.delete(id);
+    }
+    const id = `achk-${crypto.randomUUID()}`;
+    const check: AgentCheck = {
+      id,
+      taskId,
+      name: t.command.name,
+      startedAt: new Date().toISOString(),
+      result: null,
+      done: Promise.resolve(null as unknown as CheckRun),
+    };
+    check.done = runner
+      .runCheck(
+        t.command,
+        repo,
+        { taskId },
+        async () => {
+          const now = await storage.getTask(taskId).catch(() => null);
+          return now?.status !== 'running' && now?.status !== 'waiting';
+        },
+        actorOf(t.run),
+      )
+      .catch((e: unknown): CheckRun => ({ runId: null, exit: null, durationMs: 0, tail: '', error: `could not run: ${(e as Error).message}` }))
+      .then((r) => {
+        check.result = r;
+        return r;
+      });
+    agentChecks.set(id, check);
+    return settleCheck(check, body.waitMs ?? 50_000);
+  });
+
+  app.get('/api/agent/commands/checks/:checkId', async (req, reply) => {
+    const run = await authRun(req);
+    if (!run) return reply.code(403).send({ error: 'forbidden' });
+    const { checkId } = req.params as { checkId: string };
+    const c = agentChecks.get(checkId);
+    if (!c || c.taskId !== run.taskId) return reply.code(404).send({ error: 'no such check of yours' });
+    const n = Number((req.query as { waitMs?: string }).waitMs);
+    return settleCheck(c, Number.isFinite(n) ? Math.max(0, Math.min(55_000, n)) : 0);
+  });
+
   app.post('/api/agent/commands/:id/start', async (req, reply) => {
     const t = await target(req);
     if (!t.ok) return reply.code(t.code).send({ error: t.error });
     const opts = startBody.parse(req.body ?? {});
+    // a check goes through the heavy slot, never as a free-running process
+    if (t.command.isCheck) {
+      return reply.code(409).send({ error: `"${t.command.name}" is a saved check — run it with POST /api/agent/commands/${t.command.id}/check (it queues for the heavy slot)` });
+    }
     let live = runner.runningFor(t.command.id);
     let started = false;
     if (!live && t.command.archivedAt) return reply.code(409).send({ error: archivedRefusal(t.command) });

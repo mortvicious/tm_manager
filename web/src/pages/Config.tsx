@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { CONCURRENCY_MAX, DEFAULT_SETTINGS, EFFORT_LEVELS, JOB_CONCURRENCY_MAX, JOB_MAX_ACTIVE_TASKS_MAX, MODEL_OPTIONS, taskPresets, type AppSettings } from '@tm/shared';
+import { CONCURRENCY_MAX, DEFAULT_SETTINGS, EFFORT_LEVELS, HEAVY_MAX_PARALLEL, JOB_CONCURRENCY_MAX, JOB_MAX_ACTIVE_TASKS_MAX, MODEL_OPTIONS, taskPresets, type AppSettings } from '@tm/shared';
 import { AppearanceSettings } from '../components/AppearanceSettings.tsx';
 import { PresetEditor } from '../components/PresetEditor.tsx';
 import { TemplateEditor } from '../components/TemplateEditor.tsx';
@@ -805,6 +805,22 @@ export function ConfigPage({ headSlot, topSlot }: { headSlot?: ReactNode; topSlo
             style={{ width: 90 }}
             value={cfg['memory.minFreePct'] ?? DEFAULT_SETTINGS['memory.minFreePct']}
             onChange={(e) => set('memory.minFreePct', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Heavy work slots</div>
+            <div className="hint">how many repo checks and agent heavy jobs (Lighthouse, Playwright, full builds) run at once across all repos; the rest wait for a slot. 0 = auto: 1 on ≤ 8 GB RAM, 2 up to 16 GB, 3 above (docs/memory.md § Heavy work)</div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={0}
+            max={HEAVY_MAX_PARALLEL}
+            step={1}
+            style={{ width: 90 }}
+            value={cfg['heavy.maxParallel'] ?? DEFAULT_SETTINGS['heavy.maxParallel']}
+            onChange={(e) => set('heavy.maxParallel', Number(e.target.value))}
           />
         </div>
         <div className="cfg-row">

@@ -474,7 +474,11 @@ export function registerInternalRoutes(
     const { id } = req.params as { id: string };
     if (await auxHook(id, 'stop', req.body)) return { ok: true };
     recordShells(id, req.body);
-    return settleStop(id, req.body, null);
+    const out = await settleStop(id, req.body, null);
+    // The turn is over: its heavy leases go (docs/memory.md § Heavy work) —
+    // unless it parked in `waiting`, where the session is still at work.
+    await orchestrator.releaseHeavyAfterTurn(id);
+    return out;
   });
   // StopFailure — the API ended the turn (`model_not_found`, overloaded,
   // rate limit, …), firing INSTEAD of Stop. For aux sessions it is how an
@@ -488,10 +492,12 @@ export function registerInternalRoutes(
     if (await auxHook(id, 'stop-failure', req.body)) return { ok: true };
     await recordRunInfo(id, req.body);
     await orchestrator.onStopFailure(id, req.body);
+    await orchestrator.releaseHeavyAfterTurn(id);
     return { ok: true };
   });
   orchestrator.onShellWaitExpired(async (runId, body, parkedAt, by) => {
     await settleStop(runId, body, parkedAt, by);
+    await orchestrator.releaseHeavyAfterTurn(runId);
   });
 
   // SubagentStart / SubagentStop (docs/design.md § Waiting): the count of a

@@ -1,5 +1,28 @@
 # Decision log
 
+- **2026-11-06 — One heavy job at a time: checks and browser automation share global slots, agents take a lease (`docs/memory.md` § Heavy work, `docs/checks.md` § One check at a time)**: task 0130d7f5, part of the "laptop must stop freezing" group. Repo checks ran in parallel across repos (two `tsc`/`next build` = 3–4 GB on 8 GB). One worker's Lighthouse pass alone was 19 headless Chromes, ≈ 1.5 GB and load 37–50. The memory fuse cannot help with either, because it only holds new claims and turns.
+
+  **One semaphore for both, not `checks.maxParallel` plus `heavy.maxParallel`.** A check and a Lighthouse run compete for the same RAM, so two separate limits of 1 would still allow two heavy jobs at once. The single setting `heavy.maxParallel` (0 = auto from RAM: 1 up to 8 GB) covers both, and raising it needs `Origin`. The slot is taken in `CommandRunner.runCheck`, the one place every check path passes through, and its wait is not counted against the check's timeout.
+
+  **A lease the agent asks for, not process detection.** "Is this Bash command Lighthouse?" is a regex over arbitrary shell, the same reason the ship gate is a prompt rule (2026-09-24). So the agent asks: `POST /api/agent/heavy/acquire` long-polls until a slot is free and the memory fuse is clear, and a standing worker rule tells it to. Leases cannot leak:
+  - they end at the turn's Stop, except while the task is parked `waiting`;
+  - they end at run exit;
+  - a waiting ticket that stops polling is dropped after 90 s;
+  - a granted lease nobody picked up goes after 2 min;
+  - every lease ends after 60 min.
+
+  An agent that ignores the rule runs unthrottled, which is exactly the old behaviour: the failure mode is visible and bounded.
+
+  **The fuse holds leases, not checks.** A verify round is already gated on the fuse before it starts. Holding a check mid-stage would keep `check_state: running`, and with it the repo, for as long as macOS swap stays high, which can be hours. A lease waiting on the fuse steps aside for a check queued behind it.
+
+  **The lease reports pressure.** Every 15 s while a slot is held the server samples memory and load. The release tells the agent whether the fuse tripped, macOS pressure reached warn, free memory dropped under 15 %, load exceeded 1.5 × cores, or another heavy job overlapped, so a performance task re-measures instead of trusting a noisy number.
+
+  **Agents run saved checks through the API.** `POST /api/agent/commands/:id/check` runs the check on the caller's own tree inside the slot. Without it, "prefer saved checks" would have had no capped path to point to: `/start` ran a check as a free process, so it now refuses one.
+
+  **Visible without touching the frozen board.** `ProgressPct`, which every board row renders, shows `waiting for a check slot` / `waiting for a heavy slot`. The panel badge and Stacks read it through `StatusBadge`'s new `heavyWait`.
+
+  **Verified** by `server/src/heavy.test.ts`. It has two tasks in different repos whose checks run one after the other through a real `CommandRunner` over a fake PTY pool, with B showing `waiting for a check slot` until A exits. It also covers the semaphore rules and the lease routes over `app.inject`. Also run: `npm test` (all green), `npm run typecheck`, and a scratch `vite build`. **Not exercised live:** a real Lighthouse run under a lease, and the badge in a browser.
+
 - **2026-11-06 — The API logs no routine request; its log writes are async (`docs/host.md` § Logging)**: task 8321a0fb, part of the "laptop must stop freezing" group. Fastify's default logged two `info` lines per request into the inherited TTY, synchronously on macOS — every hook curl, agent poll and SPA read — and a terminal that stopped reading wedged the API once (2026-10-29).
 
   **Off for every route, not a per-route list.** `disableRequestLogging: true` plus one global `onResponse` hook that writes a line only for a 5xx, a 4xx or a request slower than `log.slowRequestMs` (2 s; `?waitMs=` long polls exempt). Rejected: `logLevel: 'silent'` on the hook, agent and SPA routes one by one — a new route would be noisy by default, and silencing a route also silences its errors. Routine requests are at `debug`, so turning the level down is the way back, not a second switch.

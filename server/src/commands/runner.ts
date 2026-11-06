@@ -4,6 +4,7 @@ import type { CommandReap, CommandRun, Repo, RepoCommand } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 import type { Storage } from '../storage/types.ts';
+import { heavy } from '../heavy.ts';
 import { parseCommandLine, resolveBin, resolveCommandCwd } from './parse.ts';
 
 /** Finished runs kept for the launcher's history strip. */
@@ -349,6 +350,45 @@ export class CommandRunner {
     opts: { timeoutMs?: number; tailLines?: number; tailChars?: number } = {},
   ): Promise<CheckRun> {
     const timeoutMs = opts.timeoutMs ?? (command.timeoutSec ?? CHECK_DEFAULT_TIMEOUT_SEC) * 1000;
+    // One heavy slot first (docs/checks.md § One check at a time): checks of
+    // different repos queue behind each other and behind agents' Lighthouse /
+    // Playwright leases. The wait is NOT part of the check's timeout; `abort`
+    // is polled while waiting, like during the run.
+    const slots = heavy();
+    const ticket = slots?.acquire({
+      kind: 'check',
+      taskId: 'taskId' in target ? target.taskId : null,
+      runId: null,
+      repoId: repo.id,
+      label: command.name,
+      actor,
+      gateOnMemory: false,
+      polled: false,
+    });
+    try {
+      if (slots && ticket) {
+        while (!(await slots.wait(ticket.id, 2000))) {
+          if (!slots.get(ticket.id)) {
+            return { runId: null, exit: null, durationMs: 0, tail: '', error: 'the server is stopping' };
+          }
+          if (await abort?.()) return { runId: null, exit: null, durationMs: 0, tail: '', error: 'aborted' };
+        }
+      }
+      return await this.runCheckInSlot(command, repo, target, timeoutMs, abort, actor, opts);
+    } finally {
+      if (slots && ticket) slots.release(ticket.id);
+    }
+  }
+
+  private async runCheckInSlot(
+    command: RepoCommand,
+    repo: Repo,
+    target: CheckFor,
+    timeoutMs: number,
+    abort: (() => boolean | Promise<boolean>) | undefined,
+    actor: string,
+    opts: { tailLines?: number; tailChars?: number },
+  ): Promise<CheckRun> {
     const t0 = Date.now();
     const busy = this.runningCheckIn(command, repo);
     if (busy && !(await this.waitForExit(busy.id, timeoutMs))) {

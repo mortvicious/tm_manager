@@ -20,6 +20,7 @@ import {
   type StackSectionId,
   type Task,
   type TaskStatus,
+  heavyWaitLabel,
 } from '@tm/shared';
 import type { BoardVersionProps } from '../../boardVersions.ts';
 import { BoardFocusCard, BoardFocusProvider, BoardFocusScope, useBoardFocus, useBoardTasks } from '../../boardFocus.tsx';
@@ -94,6 +95,7 @@ function useBadgeInputs() {
     loopState: t.loopState,
     paused: !!t.pausedTurn,
     busy: publishBusy(t, runs, orch, pendingActs.get(t.id)),
+    heavyWait: heavyWaitLabel(orch.heavy, t.id),
   });
 }
 type BadgeInputsOf = ReturnType<typeof useBadgeInputs>;

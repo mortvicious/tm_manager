@@ -13,6 +13,7 @@ import {
   type Proposal,
   type Task,
   unmetDependency,
+  heavyWaitLabel,
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { topmostDialog, useDialogFocus } from '../dialogFocus.ts';
@@ -748,6 +749,7 @@ export function TaskSlideOver({
   const taskById = new Map(tasks.map((t) => [t.id, t]));
   const depOpen = unmetDependency(task, taskById);
   const waitTarget = task.waitFor ? (taskById.get(task.waitFor.taskId) ?? null) : null;
+  const heavyWait = heavyWaitLabel(orch.heavy, task.id);
   const head = (close: () => void) => (
     <div className="slideover-head">
       <div className="so-line">
@@ -762,6 +764,7 @@ export function TaskSlideOver({
           busy={busy}
           waitingFor={task.waitFor?.title ?? null}
           dependsOnOpen={depOpen?.title ?? null}
+          heavyWait={heavyWait}
           onOpenReviewer={reviewerRun ? () => onOpenTerminal(reviewerRun.id) : undefined}
         />
         {/* the title stays in view on every tab and while the body scrolls under it */}
@@ -902,6 +905,7 @@ export function TaskSlideOver({
           busy={busy}
           waitingFor={task.waitFor?.title ?? null}
           dependsOnOpen={depOpen?.title ?? null}
+          heavyWait={heavyWait}
         />
       )}
       <GroupPath task={task} tasks={tasks} onOpen={onOpenTask} />

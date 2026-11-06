@@ -160,6 +160,7 @@ import { dependenciesNote, WAIT_MAX_MS, waitOutcome, waitTurnMessage, type WaitO
 import { closePr, confirmMerged, fastForwardCheckout, integratedIn, landedCheck, landWorktree, syncPr, type LandResult } from './land.ts';
 import { probePush, pushHealth } from './push-health.ts';
 import { memoryHold, memoryState, sampleMemory } from './memory.ts';
+import { heavy } from './heavy.ts';
 import type { RepoPushHealth } from '@tm/shared';
 
 /** Upper bound on how long a custom-queue hold may outlive its follow-on (docs/queue.md). */
@@ -749,6 +750,8 @@ export class Orchestrator implements OrchestratorApi {
     try {
       const settings = await this.storage.getSettings();
       const { state, change } = await sampleMemory(settings);
+      // a lease held by the fuse may go now (docs/memory.md § Heavy work)
+      if (change) heavy()?.pump();
       if (!change) return;
       const s = state.sample;
       const reading = s
@@ -2045,7 +2048,32 @@ export class Orchestrator implements OrchestratorApi {
       landing: [...this.landing],
       ...(this.jobs ? { jobs: this.jobs.status() } : {}),
       memory: { ...memoryState(), hold: memoryHold(settings) },
+      ...(heavy() ? { heavy: heavy()!.status() } : {}),
     };
+  }
+
+  /**
+   * A worker turn ended (Stop, StopFailure, a shell-wait replay): release the
+   * run's heavy leases (docs/memory.md § Heavy work) — unless the task is
+   * parked in `waiting`, where a background shell or subagent of the same
+   * turn may still be using the slot; the next Stop or the exit releases it.
+   */
+  async releaseHeavyAfterTurn(runId: string): Promise<void> {
+    const slots = heavy();
+    if (!slots || !slots.forRun(runId).length) return;
+    try {
+      const run = await this.storage.getRun(runId);
+      const task = run?.taskId ? await this.storage.getTask(run.taskId) : null;
+      if (task?.status === 'waiting') return;
+    } catch {
+      /* release anyway */
+    }
+    slots.releaseForRun(runId, 'turn-ended');
+  }
+
+  /** Follow the heavy slots (index.ts): every change re-broadcasts the status. */
+  watchHeavy(): void {
+    heavy()?.onChange(() => this.broadcastStatusSoon());
   }
 
   /** Fire-and-forget `orchestrator.status` broadcast, for in-memory state the SPA renders. */
@@ -5215,6 +5243,8 @@ export class Orchestrator implements OrchestratorApi {
     this.shellsSeen.delete(runId);
     this.ignoredShells.delete(runId);
     this.backgroundShells.forgetRun(runId);
+    // Its heavy leases die with it (docs/memory.md § Heavy work).
+    heavy()?.releaseForRun(runId, 'run-exited');
     // Nothing will collect an answer for this run any more — stop asking the
     // human (docs/questions.md). Before the row is touched, so a consumer that
     // reacts to `run.exited` never sees a live question under a dead run.

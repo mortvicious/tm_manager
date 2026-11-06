@@ -123,6 +123,99 @@ with the reason), while a memory hold has to wait and then resume by itself.
 - **Audit.** Each trip and each clear writes one `memory.fuse` row
   `{ tripped, reason, limits, freePct, swapPct, swapUsedMb, swapTotalMb, pressureLevel }`.
 
+## Heavy work
+
+The fuse only holds NEW claims and turns, so it cannot stop a live worker
+that starts Lighthouse mid-turn. Measured 2026-11-06: one worker on a CLS fix
+in neko-frontend ran Lighthouse against two `next start` builds, which was 19
+headless Chrome processes, ≈ 1.5 GB and ≈ 1.5 cores. The load average went to
+37–50 with `kernel_task` at ≈ 60 % (memory compression), the laptop lagged
+with ONE agent running, and the Lighthouse scores measured on that machine
+were noise. Two `tsc`/`next build` repo checks in different repos at once is
+another 3–4 GB. So heavy work takes a **slot**.
+
+**One global set of slots** (`server/src/heavy.ts` `HeavySlots`, pure half
+`shared/src/heavy.ts`). `heavy.maxParallel` sets the count: 0 = auto (the
+default) gives 1 up to 8 GB of RAM, 2 up to 16 GB and 3 above, and 1..4 sets
+it explicitly. Raising it needs `Origin` (an agent must not widen the slots it
+is queued behind). The slots are a FIFO semaphore, in memory only, since a
+restart ends every holder anyway. Two kinds of holder share them:
+
+- **Repo checks** (kind `check`). `CommandRunner.runCheck` takes a slot
+  before it spawns and gives it back when the run ends, so the server's check
+  stage, a worktree land's re-check, a loop iteration's checks, a baseline, an
+  office shift's command and an agent's own check all queue together
+  (docs/checks.md § One check at a time). The wait is NOT counted against the
+  check's timeout, and `abort` is polled while waiting. A check is never held
+  by the memory fuse: the verify round was already gated on it before it
+  started (§ What it holds).
+- **Agent leases** (`lighthouse|playwright|browser|build|other`), taken
+  through the agent API (`server/src/routes/agent-heavy.ts`,
+  `docs/agent-instructions.md` § Heavy work):
+  - `POST /api/agent/heavy/acquire {kind, why, waitMs?}` long-polls (≤ 55 s)
+    until a slot is free AND the memory fuse is clear. It answers `granted`
+    or `waiting` (with `position`, `waitingOn: slot|memory` and the `reason`).
+  - `GET /api/agent/heavy/:id?waitMs=` keeps waiting.
+  - `POST …/:id/release` returns the pressure report.
+  - Worker runs only (aux → 409), one ticket per run (a second acquire returns
+    the first), and only the task's own sessions can poll or release it.
+  - A lease waiting on the fuse steps aside for a check behind it, never the
+    reverse.
+
+**A lease always ends.** These are the ends recorded in the audit:
+
+| End | When |
+| --- | --- |
+| `released` | the agent released it |
+| `turn-ended` | the Stop or StopFailure hook, or a shell-wait replay — except while the task is parked in `waiting`, where a background shell of the same turn may still be using it (`Orchestrator.releaseHeavyAfterTurn`) |
+| `run-exited` | `handleExit` |
+| `abandoned` | a waiting ticket nobody polled for 90 s (`HEAVY_TICKET_STALE_MS`) |
+| `unclaimed` | a granted lease no poll ever picked up within 2 min (`HEAVY_UNCLAIMED_MS`) |
+| `expired` | held for 60 min (`HEAVY_LEASE_MAX_MS`) |
+
+**The pressure report.** While anything is held the machine is sampled every
+15 s. Each sample is one `sampleSystemMemory` reading plus `os.loadavg()`,
+independent of whether the fuse is on, and every holder's accumulator keeps:
+- the lowest free %;
+- the highest swap % and macOS pressure level;
+- the peak 1-minute load;
+- whether the fuse was tripped;
+- the most OTHER holders seen at once.
+
+`judgeHeavyPressure` reports `underPressure` with readable `reasons` when any
+of these held: the fuse tripped, the macOS pressure level reached warn or
+worse, free memory went under 15 %, load went above 1.5 × the core count, or
+another heavy job ran at the same time. The release returns it together with
+an `advice` line telling the agent to re-measure. A poll while granted returns
+the report so far. A perf-measurement task can therefore tell a fair number
+from a noisy one.
+
+**Standing worker rule** (`STANDING_RULES` / `RESUME_REMINDER` in
+`claude/worker.ts`):
+- when a saved check covers it, run that check through the API
+  (`POST /api/agent/commands/:id/check`) instead of your own `tsc`, build or
+  test in Bash;
+- wrap Lighthouse, Playwright/Puppeteer, headless Chrome and full builds in a
+  lease;
+- run audits one at a time, close browsers between runs, and never run one
+  beside another heavy job;
+- re-measure under pressure.
+
+**Surfaces.**
+- `OrchestratorStatus.heavy` (`{max, auto, held, waiting}`) is re-broadcast on
+  every change.
+- Every board row's `ProgressPct` shows the task's wait from `heavyWaitLabel`,
+  the frozen original board included, without touching `Board.tsx`. It reads
+  `waiting for a check slot` (its checks), `waiting for a heavy slot` (its
+  agent's lease), plus ` (memory pressure)` when the fuse holds the lease.
+- `StatusBadge` takes the same line as `heavyWait`. The task panel and Stacks
+  pass it in, so the badge reads it instead of **checking** or **running**.
+- Settings → Budget has **Heavy work slots**.
+- **Audit:** each `heavy.lease` row carries `action` (`granted` or one of the
+  ends above), `kind`, `label`, `waitedMs`, `heldMs`, and `underPressure` +
+  `reasons`. Agent leases write the grant and the end; a check writes its end
+  only when it had to queue, so the log is not one row per check run.
+
 ## Verification
 
 `server/src/memory.test.ts` (`npm test`) covers:
@@ -137,3 +230,15 @@ with the reason), while a memory hold has to wait and then resume by itself.
 
 `server/src/schedule.test.ts` covers the predicted `memory` wait while a live turn
 keeps running.
+
+`server/src/heavy.test.ts` covers the heavy slots:
+- the pure slot count, the pressure verdict and the badge text;
+- the semaphore: FIFO order, a fuse-held lease stepping aside for a check,
+  release on turn end, stale/unclaimed tickets, and a raised setting;
+- two tasks in DIFFERENT repos whose checks run one after the other through a
+  real `CommandRunner` over a fake PTY pool, with task B reading `waiting for
+  a check slot` until A's check exits;
+- an aborted wait that never spawns;
+- the lease routes over `app.inject`: granted, then waiting, then granted
+  after the release, one lease per run, aux refused, not-yours 404, and the
+  saturated-machine pressure report.

@@ -55,6 +55,11 @@ Through them you can file follow-up tasks and coordinate work in OTHER repos.
   reuse it. Something only your task needs is a one-shot run
   (`POST /api/agent/commands/run`), not a new saved command.
 
+- You want to typecheck, build or test, or to run Lighthouse, Playwright or
+  another browser automation: **queue for a heavy slot** (see Heavy work) —
+  a saved check through `POST /api/agent/commands/<id>/check` instead of your
+  own `tsc`/build, and a heavy lease around any browser run or full build.
+
 ## API
 
 Discover your context (your task, your repo, all repos with roles):
@@ -413,6 +418,68 @@ curl -s -X POST -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/commands/
 curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
   "$TM_CALLBACK_URL/api/agent/commands" -d '{"name": "web dev", "command": "npm run dev", "cwd": "web", "kind": "service"}'
 ```
+
+## Heavy work (checks, builds, browser automation)
+
+The machine is shared: other agents, the human's own apps, and the server's
+own repo checks all run on it, and on an 8 GB laptop two `tsc`/`next build`
+runs or one Lighthouse pass beside a build is enough to swap and freeze it.
+Heavy work therefore queues for a small set of **global heavy slots**
+(usually 1) — the server's check runs take them too.
+
+**Typecheck / build / test: run the repo's saved check instead of your own.**
+When `GET /api/agent/commands` lists a command with `isCheck: true` that covers
+what you want to verify, run THAT through the API, not `tsc`/`npm run build`/
+`npm test` in Bash. It queues for a heavy slot, runs on your own tree (your
+worktree in a parallel repo) with `CI=1`, and gives you the exit code and the
+last lines:
+
+```bash
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
+  "$TM_CALLBACK_URL/api/agent/commands/<check id>/check" -d '{}'
+# → { "status": "done", "outcome": "green|red|error", "exit", "tail", ... }
+#   or { "status": "waiting|running", "checkId", "next" } after ~50 s — keep polling:
+curl -s -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/commands/checks/<checkId>?waitMs=50000"
+```
+
+`POST /api/agent/commands/<id>/start` refuses a saved check (409). One check of
+yours at a time; it is aborted when your turn ends (the server runs the checks
+itself then).
+
+**Lighthouse, Playwright/Puppeteer, headless Chrome, a full build or a
+`next build`/`next start` probe: take a heavy lease first.** The request
+long-polls until a slot is free AND the server's memory fuse is clear:
+
+```bash
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
+  "$TM_CALLBACK_URL/api/agent/heavy/acquire" \
+  -d '{"kind": "lighthouse", "why": "Lighthouse of / and /catalog on next start"}'
+# kind: lighthouse | playwright | browser | build | other
+# → { "status": "granted", "leaseId", "pressure", ... }
+#   or { "status": "waiting", "leaseId", "position", "reason", "next" } after ~50 s:
+curl -s -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/heavy/<leaseId>?waitMs=50000"
+
+# ... run the heavy job, then:
+curl -s -X POST -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/heavy/<leaseId>/release"
+# → { "status": "released", "heldMs", "pressure": { "underPressure", "reasons", "minFreePct", "peakLoad1", ... }, "advice" }
+```
+
+- **Keep polling while `waiting`** (each poll holds up to 55 s): a waiting
+  request nobody polls for 90 s loses its place, and a granted lease you
+  never picked up is released after 2 minutes.
+- **Release as soon as the heavy part is over.** The end of your turn (or
+  your session) releases it anyway, and so does an hour's hold.
+- One lease per session: a second acquire returns the first.
+- **Inside a lease:** run audits one after another, never in parallel; close
+  every browser between runs (`chrome.kill()`, `browser.close()`); stop the
+  servers you started for it once you are done; never start a second heavy
+  job beside it. Release your lease before running a saved check — the check
+  queues for the same slots (409 otherwise).
+- **Measuring performance?** The release (and every poll while granted)
+  returns `pressure`. With `underPressure: true` the machine was swapping,
+  saturated or running other heavy work while you measured: those numbers are
+  noise. Take a fresh lease and measure again before you report or act on
+  them, and say in your summary under which conditions you measured.
 
 ## Approvals (actions only the human may take)
 

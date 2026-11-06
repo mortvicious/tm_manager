@@ -19,8 +19,10 @@ import {
   taskPresets,
   taskTemplateProblem,
   type AppSettings,
+  HEAVY_MAX_PARALLEL,
 } from '@tm/shared';
 import { saveSentryAuthToken, serverRoot } from '../config.ts';
+import { heavy } from '../heavy.ts';
 import { LEGACY_TOKEN_KEY, sentryTokenStatus, syncSentryIssues } from '../sentry.ts';
 import type { Storage } from '../storage/types.ts';
 
@@ -100,6 +102,8 @@ const settingsSchema = z
     // The memory fuse (docs/memory.md): percent, 0 — or null — is off.
     'memory.minFreePct': z.number().min(0).max(95).nullable().transform((v) => v ?? 0),
     'memory.maxSwapPct': z.number().min(0).max(99).nullable().transform((v) => v ?? 0),
+    // Heavy work slots (docs/memory.md § Heavy work): 0 — or null — = auto from RAM.
+    'heavy.maxParallel': z.number().int().min(0).max(HEAVY_MAX_PARALLEL).nullable().transform((v) => v ?? 0),
     'router.enabled': z.boolean(),
     'router.primaryModel': z.string().min(1),
     'router.fallbackModel': z.string().min(1),
@@ -191,6 +195,11 @@ export function registerSettingsRoutes(app: FastifyInstance, storage: Storage) {
   app.put('/api/config', async (req, reply) => {
     // Whole body validated before any write — no half-applied configs.
     const body = settingsSchema.parse(req.body);
+    // An agent must not widen the heavy slots it is queued behind (docs/memory.md § Heavy work).
+    if (body['heavy.maxParallel'] !== undefined && !req.headers.origin) {
+      const current = (await storage.getSettings())['heavy.maxParallel'];
+      if (body['heavy.maxParallel'] !== current) return reply.code(403).send({ error: 'heavy.maxParallel is set from the dashboard' });
+    }
     if (body['task.templates']) {
       const custom = body['presets.custom'] ?? (await storage.getSettings())['presets.custom'];
       const problem = taskTemplateProblem(body['task.templates'], taskPresets({ 'presets.custom': custom }));
@@ -204,6 +213,7 @@ export function registerSettingsRoutes(app: FastifyInstance, storage: Storage) {
       // keys only — never values
       await storage.appendEvent({ kind: 'config.changed', actor: 'human', data: { keys } });
     }
+    if (body['heavy.maxParallel'] !== undefined) await heavy()?.refreshSettings();
     return publicSettings(storage);
   });
 

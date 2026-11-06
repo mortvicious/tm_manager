@@ -29,6 +29,8 @@ import { SessionManager } from './pty/session-manager.ts';
 import { createStorage } from './storage/index.ts';
 import { ChatService } from './chat/service.ts';
 import { registerAgentRoutes } from './routes/agent.ts';
+import { HeavySlots, heavy, initHeavy } from './heavy.ts';
+import { memoryHold, memoryState, sampleSystemMemory } from './memory.ts';
 import { registerChatRoutes } from './routes/chat.ts';
 import { registerQuestionRoutes } from './routes/questions.ts';
 import { registerPushRoutes } from './routes/push.ts';
@@ -147,6 +149,17 @@ initAux(new AuxRunner(storage, auxSessions, `http://127.0.0.1:${cfg.port}`));
 const orchestrator = new Orchestrator(storage, sessions, `http://127.0.0.1:${cfg.port}`);
 const commandRunner = new CommandRunner(storage, commandSessions);
 const commandReaper = new IdleServerReaper(storage, commandRunner);
+// Heavy work slots (docs/memory.md § Heavy work): repo checks and agents'
+// Lighthouse / Playwright / build leases share `heavy.maxParallel` global slots.
+initHeavy(
+  new HeavySlots({
+    storage,
+    memoryHold: () => memoryHold(),
+    fuseTripped: () => memoryState().tripped,
+    sample: sampleSystemMemory,
+  }),
+);
+orchestrator.watchHeavy();
 // Repo checks (docs/checks.md) run as ordinary command runs in that pool.
 orchestrator.setCommandRunner(commandRunner);
 const shellRunner = new ShellRunner(storage, shellSessions);
@@ -441,6 +454,7 @@ app.post('/api/server/restart', async (req, reply) => {
   // An office's queued command runs start nothing more (boot recovery closes them).
   officeCommands.stop();
   commandRunner.stopAll();
+  heavy()?.stopAll();
   shellRunner.stopAll();
   // before the aux stop: a job run ended by the restart is boot recovery's to re-arm, not a human's kill
   jobs.stop();
@@ -627,6 +641,7 @@ const stop = async (cause: Omit<StopCause, 'at' | 'pid'> | null) => {
   // are ended explicitly — they would keep spending tokens for nobody.
   officeCommands.stop();
   commandRunner.stopAll();
+  heavy()?.stopAll();
   shellRunner.stopAll();
   // before the aux stop: a job run ended by the restart is boot recovery's to re-arm, not a human's kill
   jobs.stop();

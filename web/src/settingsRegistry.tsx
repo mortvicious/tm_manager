@@ -17,6 +17,7 @@ import {
   type AppSettings,
   type OrchestratorStatus,
   type Repo,
+  HEAVY_MAX_PARALLEL,
 } from '@tm/shared';
 import { AppearanceSettings } from './components/AppearanceSettings.tsx';
 import { PresetEditor } from './components/PresetEditor.tsx';
@@ -732,6 +733,13 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     label: 'Memory fuse: minimum free (%)',
     help: 'nothing new automatic (claims, wake-ups, verify rounds, planning, jobs, office shifts) starts while the machine has less free memory than this; running turns finish, your clicks always work. 0 = off (docs/memory.md)',
     render: num('memory.minFreePct', { min: 0, max: 95, step: 1, label: 'Minimum free memory' }),
+  },
+  {
+    key: 'heavy.maxParallel',
+    section: 'budget',
+    label: 'Heavy work slots',
+    help: 'how many repo checks and agent heavy jobs (Lighthouse, Playwright, full builds) run at once across all repos; the rest wait for a slot. 0 = auto: 1 on ≤ 8 GB RAM, 2 up to 16 GB, 3 above (docs/memory.md § Heavy work)',
+    render: num('heavy.maxParallel', { min: 0, max: HEAVY_MAX_PARALLEL, step: 1, label: 'Heavy work slots' }),
   },
   {
     key: 'memory.maxSwapPct',
