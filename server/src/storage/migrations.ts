@@ -1218,6 +1218,47 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS tm_office_ratings_office_idx ON tm_office_ratings (office_id, created_at)`,
     ],
   },
+  {
+    id: 65,
+    // Product metrics (docs/office.md § Product metrics): a human-saved
+    // one-shot command an office runs on a cron with zero tokens, reading
+    // `TM_METRIC=<n>` from its output. The threshold's crossing state is
+    // persisted (`last_side`, written by a conditional UPDATE), so ok → breach
+    // files exactly ONE `metric` signal. `last_run_at`/`last_error` are the
+    // cron's anchor and why the last run gave no value. FK-less like every
+    // office table; `deleteOffice` removes both with the office.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS tm_office_metrics (
+        id TEXT PRIMARY KEY,
+        office_id TEXT NOT NULL,
+        role_id TEXT NOT NULL,
+        repo_id TEXT NOT NULL,
+        command_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        unit TEXT NOT NULL DEFAULT '',
+        better TEXT NOT NULL DEFAULT 'up',
+        schedule TEXT NOT NULL,
+        threshold_op TEXT,
+        threshold_value DOUBLE PRECISION,
+        last_value DOUBLE PRECISION,
+        last_at TEXT,
+        last_side TEXT,
+        breached_at TEXT,
+        last_run_at TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_office_metrics_office_idx ON tm_office_metrics (office_id, created_at)`,
+      `CREATE TABLE IF NOT EXISTS tm_office_metric_points (
+        metric_id TEXT NOT NULL,
+        at TEXT NOT NULL,
+        value DOUBLE PRECISION NOT NULL,
+        run_id TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS tm_office_metric_points_idx ON tm_office_metric_points (metric_id, at)`,
+    ],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */

@@ -33,6 +33,7 @@ import type { Storage } from '../storage/types.ts';
 import { officeZone } from './budget.ts';
 import { officeGate, type CommitCounter } from './gate.ts';
 import type { OfficeSignals } from './signals.ts';
+import type { OfficeMetrics } from './metrics.ts';
 import type { ShiftStart, ShiftTriggerInput } from './shift.ts';
 import { checkOfficeDocs } from './docs.ts';
 import { wakeChannelRouting } from './channel.ts';
@@ -64,6 +65,8 @@ export interface OfficeSchedulerDeps {
   signals?: () => Pick<OfficeSignals, 'onTick'> | null;
   /** the huddle runner (docs/office.md § Huddles), advanced once per office per tick */
   huddles?: () => Pick<HuddleRunner, 'advance'> | null;
+  /** the product-metric runner (docs/office.md § Product metrics): due metrics queued once per office per tick, run detached */
+  metrics?: () => Pick<OfficeMetrics, 'onTick'> | null;
 }
 
 export interface OfficeTickReport {
@@ -211,6 +214,12 @@ export class OfficeScheduler {
         await this.deps.signals?.()
           ?.onTick(office, now)
           .catch((e) => console.warn(`office ${office.id}: signals failed:`, (e as Error).message));
+        // product metrics due: queued, never awaited (a 10-minute command must not hold the tick)
+        if (office.enabled && !this.stopped) {
+          await this.deps.metrics?.()
+            ?.onTick(office, now)
+            .catch((e) => console.warn(`office ${office.id}: metrics failed:`, (e as Error).message));
+        }
         // the Director's routing pass, owed to unrouted channel messages (docs/office.md § Channel)
         if (office.enabled && !this.stopped) await this.routeChannel(office, now);
         // open huddles: the next turn, or close a spent / stale one (docs/office.md § Huddles)

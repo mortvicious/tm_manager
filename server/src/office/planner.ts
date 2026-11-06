@@ -457,7 +457,7 @@ function referenceBlock(): string[] {
     `- tools: a subset of ${SHIFT_TOOL_ALLOWLIST.join(', ')}. Prefer ${SHIFT_READ_TOOLS.join(', ')}: ${SHIFT_WEB_TOOLS.join(' and ')} read the open internet, which TAINTS every shift that uses them (drafts only). Never Bash, Edit, Write or NotebookEdit — they are refused.`,
     '- schedules: 5-field cron lines (minute hour day-of-month month day-of-week) read in the office time zone, like "0 9 * * 1-5".',
     `- guards (all must pass for a scheduled/event wake): ${OFFICE_GUARD_KINDS.join(', ')}. Fields: open-bugs-below {"n": int}, budget-left {"minUsd"?: number}, quiet-hours {"from": "HH:MM", "to": "HH:MM"}, cooldown {"minutes": int}, briefs-since {"orTasksLanded"?: bool}; the rest have no fields.`,
-    `- triggers: {"kind":"event","event": one of ${OFFICE_EVENT_NAMES.join(', ')}} | {"kind":"signal","source": one of ${OFFICE_SIGNAL_SOURCES.join(', ')}} (signals taint the shift) | {"kind":"command-done"}.`,
+    `- triggers: {"kind":"event","event": one of ${OFFICE_EVENT_NAMES.join(', ')}} | {"kind":"signal","source": one of ${OFFICE_SIGNAL_SOURCES.join(', ')}} (sentry/github signals taint the shift; metric = the role's own product metric crossed its threshold, defined by a human on /office, untainted) | {"kind":"command-done"}.`,
     '- capUsd: the role\'s own day cap in USD or null; autonomy: proposals | auto-run | autonomous, or null for the office\'s.',
     `- office: maxSlots 1–${CONCURRENCY_MAX}, dayBudgetUsd > 0, maxTasksPerShift 1–${OFFICE_MAX_TASKS_PER_SHIFT_MAX}, maxOpenTasks 1–${OFFICE_MAX_OPEN_TASKS_MAX}, autonomy proposals | auto-run | autonomous.`,
     '- A role key is lowercase words joined by dashes ("qa", "release-notes"). Presets keep their own key.',

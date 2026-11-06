@@ -296,6 +296,7 @@ export class CommandRunner {
       checkTaskId: check && 'taskId' in check ? check.taskId : null,
       ...(check && 'baseline' in check ? { checkBaseline: true } : {}),
       ...(check && 'officeShiftId' in check ? { officeShiftId: check.officeShiftId } : {}),
+      ...(check && 'officeMetricId' in check ? { officeMetricId: check.officeMetricId } : {}),
       ...(oneShot ? { oneShot: true } : {}),
     };
     this.runs.set(id, run);
@@ -318,6 +319,7 @@ export class CommandRunner {
         ...(check && 'taskId' in check ? { checkTaskId: check.taskId } : {}),
         ...(check && 'baseline' in check ? { checkBaseline: true } : {}),
         ...(check && 'officeShiftId' in check ? { officeShiftId: check.officeShiftId } : {}),
+      ...(check && 'officeMetricId' in check ? { officeMetricId: check.officeMetricId } : {}),
         ...(oneShot ? { oneShot: true } : { commandId: command.id }),
       },
     });
@@ -491,9 +493,10 @@ export class CommandRunner {
 
 /**
  * What a check run is for: a task's change, a baseline before saving, or an
- * office shift's allowlisted command (owned by no task; CI=1 like a check).
+ * office shift's allowlisted command (owned by no task; CI=1 like a check),
+ * or an office product metric's measurement (docs/office.md § Product metrics).
  */
-export type CheckFor = { taskId: string } | { baseline: true } | { officeShiftId: string };
+export type CheckFor = { taskId: string } | { baseline: true } | { officeShiftId: string } | { officeMetricId: string };
 
 /** How much of a check's output the worker and the reviewer get. */
 export const CHECK_TAIL_LINES = 80;

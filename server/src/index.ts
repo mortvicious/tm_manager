@@ -50,6 +50,7 @@ import { OfficeScheduler, initOfficeScheduler } from './office/scheduler.ts';
 import { HuddleRunner, initHuddles } from './office/huddles.ts';
 import { OfficeEventTriggers, initOfficeEventTriggers } from './office/event-triggers.ts';
 import { OfficeSignals, initOfficeSignals } from './office/signals.ts';
+import { OfficeMetrics, initOfficeMetrics } from './office/metrics.ts';
 import { registerJobRoutes } from './routes/jobs.ts';
 import { registerAgentJobRoutes } from './routes/agent-jobs.ts';
 import { registerCommandRoutes } from './routes/commands.ts';
@@ -71,6 +72,7 @@ import { registerTimelineRoutes } from './routes/timeline.ts';
 import { registerTaskRoutes } from './routes/tasks.ts';
 import { registerOfficeProposalRoutes } from './routes/office-proposals.ts';
 import { registerOfficeRatingRoutes } from './routes/office-ratings.ts';
+import { registerOfficeMetricRoutes } from './routes/office-metrics.ts';
 import { TelegramBot } from './telegram/bot.ts';
 import { describeStopCause, recordStopCause, signalCause, takeStopCause, type StopCause } from './stop-cause.ts';
 import { registerEventsWs } from './ws/events.ts';
@@ -211,6 +213,7 @@ const officeScheduler: OfficeScheduler = new OfficeScheduler({
   shifts: () => shiftRunner,
   signals: (): OfficeSignals => officeSignalPoller,
   huddles: () => huddleRunner,
+  metrics: (): OfficeMetrics => officeMetricRunner,
 });
 initOfficeScheduler(officeScheduler);
 // Event triggers (docs/office.md § Event triggers): in-process subscribers on
@@ -229,6 +232,15 @@ const officeSignalPoller: OfficeSignals = new OfficeSignals({
   audit: (...a) => officeScheduler.coalescedEvent(...a),
 });
 initOfficeSignals(officeSignalPoller);
+// Product metrics (docs/office.md § Product metrics): saved commands run on a
+// cron with zero tokens on the scheduler's tick; a threshold crossing files
+// ONE untainted `metric` signal for the metric's role.
+const officeMetricRunner: OfficeMetrics = new OfficeMetrics({
+  storage,
+  runner: () => commandRunner,
+  signals: () => officeSignalPoller,
+});
+initOfficeMetrics(officeMetricRunner);
 await orchestrator.recoverOnBoot({ lastStop });
 await storage.appendEvent({
   kind: 'server.started',
@@ -468,6 +480,7 @@ app.post('/api/server/restart', async (req, reply) => {
   huddleRunner.stop();
   officeEventTriggers.stop();
   officeSignalPoller.stop();
+  officeMetricRunner.stop();
   shiftRunner.stop();
   aux().stopAll();
   // Abort the in-flight long poll NOW so the socket is not still open when the
@@ -552,6 +565,7 @@ registerOfficeRoutes(app, storage);
 registerOfficePlannerRoutes(app, storage, chats);
 registerOfficeProposalRoutes(app, storage, () => orchestrator);
 registerOfficeRatingRoutes(app, storage);
+registerOfficeMetricRoutes(app, storage);
 // Web Push to the Home Screen PWA (docs/push.md). Like the bot it reaches OUT
 // (to the browser vendors' push services); the routes only manage devices.
 const push = new PushService(storage, cfg.push);
@@ -658,6 +672,7 @@ const stop = async (cause: Omit<StopCause, 'at' | 'pid'> | null) => {
   huddleRunner.stop();
   officeEventTriggers.stop();
   officeSignalPoller.stop();
+  officeMetricRunner.stop();
   shiftRunner.stop();
   aux().stopAll();
   // A resume gate (docs/token-budget.md § The fourth) sits between "task marked

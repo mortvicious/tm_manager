@@ -27,6 +27,11 @@
 //   notes go under `untrusted/`; it gets no web tools and runs no saved
 //   command (`shiftGrantedTools`, `SIGNAL_SHIFT_COMMANDS_REASON`). Audit rows
 //   carry ids and a ≤ 120-char single-line title only (`clipUntrusted`).
+// - **Metric signals** (docs/office.md § Product metrics) are the exception:
+//   the metric runner writes them from the server's own facts, so a wake on
+//   metric signals alone is untainted (`officeSignalRefTrusted`). They are
+//   never mixed into a shift with outside signals, and only the metric's own
+//   role takes them (`takesSignal`).
 import { execFile } from 'node:child_process';
 import {
   OFFICE_POLLED_SIGNAL_SOURCES,
@@ -36,6 +41,7 @@ import {
   OFFICE_SIGNAL_POLL_MS,
   OFFICE_SIGNAL_TEXT_MAX,
   OFFICE_SIGNAL_TITLE_MAX,
+  OFFICE_TRUSTED_SIGNAL_SOURCES,
   clipUntrusted,
   officeSignalTriggerRef,
   roleSignalSources,
@@ -289,7 +295,8 @@ export class OfficeSignals {
     const roles = (await storage.listOfficeRoles(office.id)).filter((r) => r.enabled && roleSignalSources(r).length);
     const sources = new Set<OfficeSignalSource>();
     for (const r of roles) for (const s of roleSignalSources(r)) if (OFFICE_POLLED_SIGNAL_SOURCES.includes(s)) sources.add(s);
-    if (!sources.size) return report;
+    // a role subscribed only to `metric` (rows the metric runner writes) still gets the backlog retry below
+    if (!roles.length) return report;
     const ws = await storage.getWorkspace(office.workspaceId);
     if (!ws) return report;
     const settings = await storage.getSettings();
@@ -347,10 +354,11 @@ export class OfficeSignals {
 
     // whom to wake: fresh rows for a subscribed source, or (hourly) a recent backlog
     const unconsumed = await storage.listSignals({ officeId: office.id, unconsumed: true, limit: 2000 });
+    const owners = await metricOwners(storage, office.id);
     for (const role of roles) {
       const mine = new Set(roleSignalSources(role));
       const fresh = report.created.some((s) => mine.has(s.source));
-      const backlog = unconsumed.some((s) => mine.has(s.source) && isRecent(s.receivedAt, now));
+      const backlog = unconsumed.some((s) => takesSignal(role, mine, owners, s) && isRecent(s.receivedAt, now));
       const last = this.lastAttempt.get(role.id);
       if (fresh || (backlog && (last === undefined || now - last >= OFFICE_SIGNAL_BACKLOG_RETRY_MS))) {
         if (this.enqueue(office, role, now)) report.enqueued.push(role.id);
@@ -386,6 +394,19 @@ export class OfficeSignals {
       }
       return null;
     }
+  }
+
+  /**
+   * The metric runner filed `signals` (source `metric`, docs/office.md §
+   * Product metrics): open a wake for the metric's role when it is on and
+   * subscribes to `signal: metric`. No poll is involved, and the wake goes
+   * through the same debounce, gate and refusal handling as an outside signal's.
+   */
+  async metricSignals(office: Office, roleId: string, now = this.now()): Promise<boolean> {
+    if (this.stopped || !office.enabled) return false;
+    const role = await this.deps.storage.getOfficeRole(roleId);
+    if (!role || !role.enabled || role.officeId !== office.id || !roleSignalSources(role).includes('metric')) return false;
+    return this.enqueue(office, role, now);
   }
 
   private enqueue(office: Office, role: OfficeRole, now: number): boolean {
@@ -428,20 +449,28 @@ export class OfficeSignals {
       return;
     }
     const mine = new Set(roleSignalSources(role));
+    const owners = await metricOwners(storage, office.id);
     // oldest first; another role's shift may have taken them since (one signal, one shift)
-    const waiting = (await storage.listSignals({ officeId: office.id, unconsumed: true, limit: 2000 })).filter(
-      (s) => mine.has(s.source) && isRecent(s.receivedAt, now),
+    const all = (await storage.listSignals({ officeId: office.id, unconsumed: true, limit: 2000 })).filter(
+      (s) => takesSignal(role, mine, owners, s) && isRecent(s.receivedAt, now),
     );
-    if (!waiting.length) {
+    if (!all.length) {
       this.buckets.delete(b.roleId);
       return;
     }
+    // Server-built (metric) and outside signals never share a shift: a metric
+    // wake stays untainted (docs/office.md § Product metrics). The class of the
+    // oldest waiting signal goes first; the other is re-opened after it.
+    const trustedClass = OFFICE_TRUSTED_SIGNAL_SOURCES.includes(all[0].source);
+    const waiting = all.filter((s) => OFFICE_TRUSTED_SIGNAL_SOURCES.includes(s.source) === trustedClass);
+    const otherClass = all.length - waiting.length;
     const take = waiting.slice(0, OFFICE_SIGNALS_PER_SHIFT);
     const dropped = waiting.length - take.length;
     this.lastAttempt.set(role.id, now);
     const trigger: ShiftTriggerInput = {
       kind: 'signal',
-      ref: officeSignalTriggerRef(take, dropped),
+      // a trusted ref names only `metric:<id>` parts (no `+N`), which is what `officeSignalRefTrusted` reads
+      ref: officeSignalTriggerRef(take, trustedClass ? 0 : dropped),
       at: take[0].receivedAt,
       signals: take,
       signalsDropped: dropped,
@@ -455,6 +484,8 @@ export class OfficeSignals {
     this.lastWake.set(role.id, now);
     let consumed = 0;
     for (const s of take) if (await storage.consumeSignal(s.id, res.shiftId)) consumed++;
+    // what is left (the other class, or past the per-shift cap of a metric batch) gets the next wake
+    if (otherClass > 0 || (trustedClass && dropped > 0)) this.enqueue(office, role, now);
     report.woken.push({ officeId: office.id, roleId: role.id, shiftId: res.shiftId, signals: consumed });
     (this.deps.log ?? console.log)(`office ${office.id}: ${role.key} woke on ${take.length} signal(s): ${trigger.ref}`);
   }
@@ -507,6 +538,30 @@ export class OfficeSignals {
       data: { officeId: office.id, workspaceId: office.workspaceId, roleId: role.id, roleKey: role.key, code, ...(guard ? { guard } : {}), reason, ...extra },
     });
   }
+}
+
+/** A metric signal's `externalId` is `<metric id>@<breach time>` (office/metrics.ts `metricSignalExternalId`). */
+export function metricIdOfSignal(s: Pick<OfficeSignal, 'source' | 'externalId'>): string | null {
+  if (s.source !== 'metric') return null;
+  const at = s.externalId.indexOf('@');
+  return at > 0 ? s.externalId.slice(0, at) : null;
+}
+
+/** metric id → its role, for the office's metrics. */
+async function metricOwners(storage: Storage, officeId: string): Promise<Map<string, string>> {
+  return new Map((await storage.listOfficeMetrics({ officeId })).map((m) => [m.id, m.roleId]));
+}
+
+/**
+ * Does this role take this signal: a subscribed source — and, for a metric
+ * signal, a metric of its OWN (a metric wakes the role it is measured for; a
+ * deleted metric's signal is nobody's and ages out).
+ */
+function takesSignal(role: Pick<OfficeRole, 'id'>, mine: ReadonlySet<OfficeSignalSource>, owners: ReadonlyMap<string, string>, s: OfficeSignal): boolean {
+  if (!mine.has(s.source)) return false;
+  if (s.source !== 'metric') return true;
+  const id = metricIdOfSignal(s);
+  return id !== null && owners.get(id) === role.id;
 }
 
 /** Opened / received within `OFFICE_SIGNAL_MAX_AGE_MS` of now (a future time counts as now). */

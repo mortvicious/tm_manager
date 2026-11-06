@@ -33,6 +33,8 @@ import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE } from './feature-sql.ts';
 import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, CUSTOM_QUEUE_WAITING_SQL, OFFICE_CLAIM_GATE, OFFICE_TRIPPED_SQL, REPO_EXCLUSIVE_GATE, planQueueReorder, reorderAudit, skipRepos, type QueueMoveAnchor } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
 import { OFFICE_RATING_GET_SQL, OFFICE_RATINGS_DELETE_SQL, OFFICE_RATING_UPSERT_SQL, officeRatingListSql, officeRatingUpsertParams, rowToOfficeRating, type NewOfficeRating, type OfficeRatingFilter } from './rating-sql.ts';
+import { OFFICE_METRIC_BREACH_SQL, OFFICE_METRIC_DELETE_SQL, OFFICE_METRIC_ERROR_SQL, OFFICE_METRIC_GET_SQL, OFFICE_METRIC_INSERT_SQL, OFFICE_METRIC_NO_SIDE_SQL, OFFICE_METRIC_OK_SQL, OFFICE_METRIC_POINTS_DELETE_SQL, OFFICE_METRIC_POINTS_PRUNE_SQL, OFFICE_METRIC_POINT_INSERT_SQL, OFFICE_METRIC_VALUE_SQL, OFFICE_METRICS_DELETE_SQL, OFFICE_METRICS_POINTS_DELETE_FOR_OFFICE_SQL, officeMetricInsertParams, officeMetricListSql, officeMetricPatchSql, officeMetricPointsSql, officeMetricPruneParams, rowToOfficeMetric, rowToOfficeMetricPoint, type NewOfficeMetric, type OfficeMetricFilter, type OfficeMetricPatch, type OfficeMetricRun, type OfficeMetricRunResult } from './metric-sql.ts';
+import { metricSide, type OfficeMetric, type OfficeMetricPoint } from '@tm/shared';
 import { REPO_PARALLEL_SQL, repoParallelParams, worktreePatchSql } from './worktree-sql.ts';
 import { LOOP_LEAVES_RUNNING_SQL, loopStepSets, stepLoopSql } from './loop-sql.ts';
 import {
@@ -2341,6 +2343,8 @@ export class SqliteStorage implements Storage {
       this.db.prepare(OFFICE_PROPOSALS_DELETE_SQL).run(id);
       this.db.prepare(OFFICE_WISHES_DELETE_SQL).run(id);
       this.db.prepare(OFFICE_RATINGS_DELETE_SQL).run(id);
+      this.db.prepare(OFFICE_METRICS_POINTS_DELETE_FOR_OFFICE_SQL).run(id);
+      this.db.prepare(OFFICE_METRICS_DELETE_SQL).run(id);
       this.db.prepare(OFFICE_MESSAGES_DELETE_SQL).run(id);
       this.db.prepare(OFFICE_HUDDLES_DELETE_SQL).run(id);
       this.db.prepare(OFFICE_SIGNALS_DELETE_SQL).run(id);
@@ -2538,6 +2542,66 @@ export class SqliteStorage implements Storage {
   async listOfficeRatings(f?: OfficeRatingFilter): Promise<OfficeRating[]> {
     const q = officeRatingListSql(f);
     return (this.db.prepare(q.sql).all(...(q.params as any[])) as any[]).map(rowToOfficeRating);
+  }
+
+  // ---- office product metrics (migration 65; SQL in metric-sql.ts) ----
+
+  async createOfficeMetric(m: NewOfficeMetric): Promise<OfficeMetric> {
+    const id = randomUUID();
+    this.db.prepare(OFFICE_METRIC_INSERT_SQL).run(...(officeMetricInsertParams(id, m, now()) as any[]));
+    return (await this.getOfficeMetric(id))!;
+  }
+
+  async getOfficeMetric(id: string): Promise<OfficeMetric | null> {
+    const r = this.db.prepare(OFFICE_METRIC_GET_SQL).get(id);
+    return r ? rowToOfficeMetric(r) : null;
+  }
+
+  async listOfficeMetrics(f?: OfficeMetricFilter): Promise<OfficeMetric[]> {
+    const q = officeMetricListSql(f);
+    return (this.db.prepare(q.sql).all(...(q.params as any[])) as any[]).map(rowToOfficeMetric);
+  }
+
+  async updateOfficeMetric(id: string, patch: OfficeMetricPatch): Promise<OfficeMetric | null> {
+    return this.inTxn(() => {
+      const r = this.db.prepare(OFFICE_METRIC_GET_SQL).get(id);
+      if (!r) return null;
+      const q = officeMetricPatchSql(id, patch, rowToOfficeMetric(r), now());
+      if (q) this.db.prepare(q.sql).run(...(q.params as any[]));
+      return rowToOfficeMetric(this.db.prepare(OFFICE_METRIC_GET_SQL).get(id));
+    });
+  }
+
+  async deleteOfficeMetric(id: string): Promise<boolean> {
+    return this.inTxn(() => {
+      this.db.prepare(OFFICE_METRIC_POINTS_DELETE_SQL).run(id);
+      return this.db.prepare(OFFICE_METRIC_DELETE_SQL).run(id).changes > 0;
+    });
+  }
+
+  async recordOfficeMetricRun(id: string, run: OfficeMetricRun): Promise<OfficeMetricRunResult | null> {
+    return this.inTxn(() => {
+      const r = this.db.prepare(OFFICE_METRIC_GET_SQL).get(id);
+      if (!r) return null;
+      const prev = rowToOfficeMetric(r);
+      let crossed = false;
+      if (run.value === null) this.db.prepare(OFFICE_METRIC_ERROR_SQL).run(run.at, run.error, id);
+      else {
+        this.db.prepare(OFFICE_METRIC_POINT_INSERT_SQL).run(id, run.at, run.value, run.runId);
+        this.db.prepare(OFFICE_METRIC_POINTS_PRUNE_SQL).run(...(officeMetricPruneParams(id) as any[]));
+        this.db.prepare(OFFICE_METRIC_VALUE_SQL).run(run.value, run.at, run.at, id);
+        const side = metricSide(run.value, prev);
+        if (side === 'breach') crossed = this.db.prepare(OFFICE_METRIC_BREACH_SQL).run(run.at, id).changes > 0;
+        else if (side === 'ok') this.db.prepare(OFFICE_METRIC_OK_SQL).run(id);
+        else this.db.prepare(OFFICE_METRIC_NO_SIDE_SQL).run(id);
+      }
+      return { metric: rowToOfficeMetric(this.db.prepare(OFFICE_METRIC_GET_SQL).get(id)), crossed, previousSide: prev.lastSide, previousValue: prev.lastValue };
+    });
+  }
+
+  async listOfficeMetricPoints(metricId: string, limit: number): Promise<OfficeMetricPoint[]> {
+    const q = officeMetricPointsSql(metricId, limit);
+    return (this.db.prepare(q.sql).all(...(q.params as any[])) as any[]).map(rowToOfficeMetricPoint).reverse();
   }
 
   // ---- office messages, huddles, signals (migration 60; SQL in office-sql.ts) ----

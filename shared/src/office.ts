@@ -1247,7 +1247,8 @@ export function shiftTaint(inputs: ShiftTaintInputs): { tainted: boolean; source
       sources.push(s);
     }
   };
-  if (inputs.trigger.kind === 'signal') add({ kind: 'signal', ref: inputs.trigger.ref || 'signal' });
+  // a wake on server-built signals only (product metrics — docs/office.md § Product metrics) reads no outside text
+  if (inputs.trigger.kind === 'signal' && !officeSignalRefTrusted(inputs.trigger.ref)) add({ kind: 'signal', ref: inputs.trigger.ref || 'signal' });
   for (const t of inputs.tools) if (SHIFT_WEB_TOOLS.includes(t)) add({ kind: 'web-tool', ref: t });
   for (const c of inputs.commandOutputs ?? []) add({ kind: 'command-output', ref: c });
   if (inputs.notes?.tainted) add({ kind: 'tainted-notes', ref: inputs.notes.path });
@@ -1880,7 +1881,7 @@ export interface OfficeSignal {
 // External signals (docs/office.md § Signals, decisions.md 2026-11-05 — open decision 6)
 // ---------------------------------------------------------------------------
 
-/** The sources the server POLLS (`server/src/office/signals.ts`); `metric` has no poller yet. */
+/** The sources the server POLLS (`server/src/office/signals.ts`); `metric` rows come from the metric runner (§ Product metrics). */
 export const OFFICE_POLLED_SIGNAL_SOURCES: readonly OfficeSignalSource[] = ['sentry', 'github'];
 /** Every office is polled at most this often (on the scheduler's minute tick). */
 export const OFFICE_SIGNAL_POLL_MS = 10 * 60_000;
@@ -2271,4 +2272,194 @@ export function ratingFeedbackLine(
 ): string {
   const was = previous !== null && previous !== value ? ` (was ${ratingEmoji(previous)})` : '';
   return `${ratingEmoji(value)} ${label}${was}${comment ? `: ${comment}` : ''}`;
+}
+
+// ---------------------------------------------------------------------------
+// Product metrics (docs/office.md § Product metrics, phase 6, migration 65)
+// ---------------------------------------------------------------------------
+
+/** Which way is good: a conversion rate goes `up`, a p95 latency `down` (drawn on the chart, never judged). */
+export type OfficeMetricBetter = 'up' | 'down';
+export const OFFICE_METRIC_BETTER: readonly OfficeMetricBetter[] = ['up', 'down'];
+/** A breach is a value strictly `below` / `above` the threshold. */
+export type OfficeMetricThresholdOp = 'below' | 'above';
+export const OFFICE_METRIC_THRESHOLD_OPS: readonly OfficeMetricThresholdOp[] = ['below', 'above'];
+/** The side of the threshold the last value fell on; null = no threshold, or never measured since it was set. */
+export type OfficeMetricSide = 'ok' | 'breach';
+
+/**
+ * A product metric an office measures over time: a HUMAN-saved one-shot repo
+ * command (the same rule as a role's allowlist — `allowlistCheck`) that the
+ * server runs on `schedule` with zero tokens and that prints
+ * `TM_METRIC=<number>`. The threshold's crossing state is persisted
+ * (`lastSide`), so a crossing from ok to breach is noticed once.
+ */
+export interface OfficeMetric {
+  id: string;
+  officeId: string;
+  /** the role whose editor it lives in, and the role a crossing wakes (when it subscribes to `signal: metric`) */
+  roleId: string;
+  repoId: string;
+  commandId: string;
+  name: string;
+  /** free text shown after the value (`ms`, `%`); '' = none */
+  unit: string;
+  better: OfficeMetricBetter;
+  /** 5-field cron, read in the office's timezone */
+  schedule: string;
+  thresholdOp: OfficeMetricThresholdOp | null;
+  thresholdValue: number | null;
+  /** the last value a run printed */
+  lastValue: number | null;
+  /** when `lastValue` was measured */
+  lastAt: string | null;
+  lastSide: OfficeMetricSide | null;
+  /** when the current breach began (null while ok) */
+  breachedAt: string | null;
+  /** when the server last ran it, value or not — the cron's anchor */
+  lastRunAt: string | null;
+  /** why the last run produced no value (null = it did) */
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OfficeMetricPoint {
+  metricId: string;
+  at: string;
+  value: number;
+  /** the commands-pool run that printed it */
+  runId: string | null;
+}
+
+/** A metric and its newest points, oldest first (what /office and the role editor draw). */
+export interface OfficeMetricWithPoints extends OfficeMetric {
+  points: OfficeMetricPoint[];
+}
+
+/** Create / edit body of `POST|PATCH /api/offices/:id/metrics[/:metricId]`. */
+export interface OfficeMetricInput {
+  roleId: string;
+  commandId: string;
+  name: string;
+  unit?: string;
+  better?: OfficeMetricBetter;
+  schedule: string;
+  thresholdOp?: OfficeMetricThresholdOp | null;
+  thresholdValue?: number | null;
+}
+
+/** Metrics per office. */
+export const OFFICE_METRICS_MAX = 20;
+export const OFFICE_METRIC_NAME_MAX = 80;
+export const OFFICE_METRIC_UNIT_MAX = 16;
+/** Points each metric keeps for its chart in the API response. */
+export const OFFICE_METRIC_POINTS_SHOWN = 60;
+/** Points a metric keeps in storage; older ones are pruned on append. */
+export const OFFICE_METRIC_POINTS_KEPT = 2000;
+
+/** `TM_METRIC=<n>` (or `TM_METRIC: <n>`) — the convention loop tasks' checks already print (docs/loops.md). */
+export const TM_METRIC_RE = /\bTM_METRIC\s*[=:]\s*(-?\d+(?:\.\d+)?)/g;
+
+/** The LAST `TM_METRIC=<number>` in `text`, or null. */
+export function lastTmMetric(text: string): number | null {
+  let found: number | null = null;
+  for (const m of text.matchAll(TM_METRIC_RE)) {
+    const v = Number(m[1]);
+    if (Number.isFinite(v)) found = v;
+  }
+  return found;
+}
+
+/** The side `value` falls on; null without a threshold. A value exactly AT the threshold is ok. */
+export function metricSide(
+  value: number,
+  m: Pick<OfficeMetric, 'thresholdOp' | 'thresholdValue'>,
+): OfficeMetricSide | null {
+  if (m.thresholdOp === null || m.thresholdValue === null) return null;
+  const breach = m.thresholdOp === 'below' ? value < m.thresholdValue : value > m.thresholdValue;
+  return breach ? 'breach' : 'ok';
+}
+
+/**
+ * Whether a metric's run is owed at `now`: the first cron slot after its last
+ * run (or, never run, after it was created) has come. At most ONE run however
+ * many slots a sleep missed — the anchor moves to the run. An unparsable cron
+ * is never due.
+ */
+export function metricDue(m: Pick<OfficeMetric, 'schedule' | 'lastRunAt' | 'createdAt'>, now: number, tz: string): boolean {
+  const anchor = Date.parse(m.lastRunAt ?? m.createdAt);
+  if (!Number.isFinite(anchor)) return false;
+  let next: number | null;
+  try {
+    next = nextCronSlot(m.schedule, anchor, tz);
+  } catch {
+    return false;
+  }
+  return next !== null && next <= now;
+}
+
+/** `12.5 ms`, `98 %`… — the value as a human reads it (up to 4 significant decimals). */
+export function formatMetricValue(v: number, unit: string): string {
+  const n = Number.isInteger(v) ? String(v) : String(Number(v.toFixed(4)));
+  return unit ? `${n} ${unit}` : n;
+}
+
+/** `below 10 ms` — the threshold as a phrase, or null without one. */
+export function metricThresholdText(m: Pick<OfficeMetric, 'thresholdOp' | 'thresholdValue' | 'unit'>): string | null {
+  if (m.thresholdOp === null || m.thresholdValue === null) return null;
+  return `${m.thresholdOp} ${formatMetricValue(m.thresholdValue, m.unit)}`;
+}
+
+/**
+ * A metric signal's title and text — built by the SERVER from the metric's
+ * human-set definition and the number the command printed, never from the
+ * command's output, so a metric signal is trusted (docs/office.md § Product
+ * metrics: its wake is untainted).
+ */
+export function metricSignalText(
+  m: Pick<OfficeMetric, 'id' | 'name' | 'unit' | 'better' | 'thresholdOp' | 'thresholdValue'>,
+  value: number,
+  at: string,
+  previous: number | null,
+): { title: string; rawText: string } {
+  const threshold = metricThresholdText(m) ?? 'its threshold';
+  const title = `Metric "${m.name}" breached: ${formatMetricValue(value, m.unit)} (breach = ${threshold})`;
+  const rawText = [
+    `Product metric "${m.name}" (id ${m.id}) crossed from ok into breach at ${at}.`,
+    `value now: ${formatMetricValue(value, m.unit)}${previous !== null ? ` · previous: ${formatMetricValue(previous, m.unit)}` : ''}`,
+    `breach when the value is ${threshold}; better is ${m.better}.`,
+    'The server measured this with a saved command; it signals once per crossing and re-arms when the value is back on the ok side.',
+  ].join('\n');
+  return { title, rawText };
+}
+
+/**
+ * Whether a signal wake's ref names only server-built signals — every part
+ * `metric:<id>` (officeSignalTriggerRef). Such a wake is NOT tainted
+ * (`shiftTaint`); any outside source, or a `+N` overflow, keeps it tainted.
+ */
+export function officeSignalRefTrusted(ref: string | null | undefined): boolean {
+  const parts = String(ref ?? '').trim().split(/\s+/).filter(Boolean);
+  return parts.length > 0 && parts.every((p) => /^metric:[^\s:]+$/.test(p));
+}
+
+/** The signal sources whose text the SERVER writes (never outside text). */
+export const OFFICE_TRUSTED_SIGNAL_SOURCES: readonly OfficeSignalSource[] = ['metric'];
+
+/**
+ * The prompt block of a metric wake: server-built text (`metricSignalText`),
+ * so no untrusted fence — but still a data block, never instructions.
+ */
+export function officeMetricSignalsBlock(signals: readonly OfficeSignal[]): string[] {
+  if (!signals.length) return [];
+  return [
+    '## Product metrics that crossed their threshold',
+    '',
+    `You were woken because ${signals.length} product metric(s) of this office went from ok into breach. ` +
+      'The server measured them with saved commands and wrote these lines itself. Find out why, and file what fixes it.',
+    '',
+    ...signals.flatMap((s) => [`- ${s.title}`, ...s.rawText.split('\n').map((l) => `  ${l}`)]),
+    '',
+  ];
 }

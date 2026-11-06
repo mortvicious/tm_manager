@@ -28,6 +28,7 @@
 import { z } from 'zod';
 import {
   OFFICE_HUDDLE_DECISION_MAX,
+  OFFICE_TRUSTED_SIGNAL_SOURCES,
   OFFICE_HUDDLE_DEFAULT_TURNS,
   OFFICE_HUDDLE_MAX_ROLES,
   OFFICE_HUDDLE_MAX_TURNS,
@@ -145,13 +146,14 @@ export async function huddleSubject(storage: Storage, office: Office, subject: O
     case 'signal': {
       const s = await storage.getSignal(id);
       if (!s || s.officeId !== office.id) throw new OfficeHuddleRefused(`no signal ${short(id)} in this office`);
-      // outside text: always untrusted
+      // outside text: always untrusted — except a metric signal, whose text the server built (docs/office.md § Product metrics)
+      const trusted = OFFICE_TRUSTED_SIGNAL_SOURCES.includes(s.source);
       return {
         label: `${s.source} signal ${short(s.id)}`,
-        tainted: true,
-        taintReason: 'subject:signal',
+        tainted: !trusted,
+        taintReason: trusted ? null : 'subject:signal',
         data: { kind: 'signal', id: s.id, source: s.source, externalId: s.externalId, url: s.url, title: s.title, text: clip(s.rawText, SUBJECT_TEXT_MAX) },
-        external: true,
+        external: !trusted,
       };
     }
     case 'message': {

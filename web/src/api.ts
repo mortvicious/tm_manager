@@ -53,6 +53,8 @@ import type {
   OfficeProposal,
   OfficeProposalAcceptBody,
   OfficeRating,
+  OfficeMetricInput,
+  OfficeMetricWithPoints,
   OfficeRatingBody,
   OfficeRatingResult,
   OfficeRatingSubjectKind,
@@ -616,6 +618,14 @@ export const api = {
   listOfficeProposalsOf: (officeId: string, limit = 30) =>
     req<OfficeProposal[]>('GET', `/api/office-proposals?officeId=${encodeURIComponent(officeId)}&limit=${limit}`),
   /** Stakeholder 👍/👎 (docs/office.md § Ratings); `comment` omitted keeps the stored one */
+  // product metrics (docs/office.md § Product metrics)
+  listOfficeMetrics: (officeId: string) => req<OfficeMetricWithPoints[]>('GET', `/api/offices/${officeId}/metrics`),
+  createOfficeMetric: (officeId: string, b: OfficeMetricInput) => req<OfficeMetricWithPoints>('POST', `/api/offices/${officeId}/metrics`, b),
+  updateOfficeMetric: (officeId: string, metricId: string, b: Partial<OfficeMetricInput>) =>
+    req<OfficeMetricWithPoints>('PATCH', `/api/offices/${officeId}/metrics/${metricId}`, b),
+  deleteOfficeMetric: (officeId: string, metricId: string) => req<{ ok: true }>('DELETE', `/api/offices/${officeId}/metrics/${metricId}`),
+  runOfficeMetric: (officeId: string, metricId: string) =>
+    req<{ metric: OfficeMetricWithPoints; value: number | null; error: string | null; crossed: boolean }>('POST', `/api/offices/${officeId}/metrics/${metricId}/run`, {}),
   rateOffice: (b: OfficeRatingBody) => req<OfficeRatingResult>('POST', '/api/office-ratings', b),
   listOfficeRatings: (q: { officeId?: string; kind?: OfficeRatingSubjectKind; ids?: string[] }) => {
     const p = new URLSearchParams();

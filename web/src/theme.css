@@ -17119,3 +17119,68 @@ html[data-calm] .mt-pulse {
   text-align: left;
   overflow-wrap: anywhere;
 }
+
+/* Product metrics (docs/office.md § Product metrics) */
+.office-metrics .office-metric,
+.office-role-metrics .office-metric {
+  padding: var(--tm-space-2) var(--tm-space-4);
+  border-bottom: 1px solid var(--tm-border);
+}
+.office-role-metrics .office-metric {
+  padding-left: 0;
+  padding-right: 0;
+}
+.office-metric-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tm-space-2);
+}
+.office-metric-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.office-metric-value {
+  font-size: var(--tm-text-sm);
+}
+.office-metric-meta {
+  font-size: var(--tm-text-xs);
+  margin-top: var(--tm-space-1);
+  overflow-wrap: anywhere;
+}
+.office-metric-side.ok {
+  color: var(--tm-status-done);
+}
+.office-metric-side.breach {
+  color: var(--tm-status-failed);
+}
+.office-metric-nochart {
+  font-size: var(--tm-text-xs);
+}
+svg.office-metric-spark {
+  flex: none;
+  overflow: visible;
+  color: var(--tm-accent);
+}
+svg.office-metric-spark.breach {
+  color: var(--tm-status-failed);
+}
+svg.office-metric-spark polyline {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+svg.office-metric-spark circle {
+  fill: currentColor;
+}
+svg.office-metric-spark line.threshold {
+  stroke: var(--tm-text-muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.office-metric-form {
+  padding: var(--tm-space-2) 0;
+  border-bottom: 1px solid var(--tm-border);
+}

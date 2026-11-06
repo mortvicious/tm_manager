@@ -662,6 +662,8 @@ export function officeWrites(storage: Storage) {
     if ('code' in found) return found;
     const { office, role } = found;
     if (!(await storage.deleteOfficeRole(role.id))) return out(404, { error: 'role not found in this office' });
+    // its product metrics go with it (docs/office.md § Product metrics) — a metric is measured for a role
+    for (const m of await storage.listOfficeMetrics({ roleId: role.id })) await storage.deleteOfficeMetric(m.id);
     // the notes file stays (history); the README's role list drops it
     await rescaffold(office);
     await audit({ action: 'role-deleted', officeId: office.id, workspaceId: office.workspaceId, roleId: role.id, key: role.key, name: role.name });

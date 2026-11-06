@@ -10,6 +10,7 @@ import { z } from 'zod';
 import {
   LOOP_DEFAULT_MAX_ITERATIONS,
   LOOP_NO_PROGRESS_LIMIT,
+  lastTmMetric,
   type CheckResult,
   type LoopIteration,
   type LoopState,
@@ -136,7 +137,6 @@ export function parseLoopResult(text: string | null | undefined): { goalMet: boo
   return { goalMet: null, note: first };
 }
 
-const METRIC_RE = /\bTM_METRIC\s*[=:]\s*(-?\d+(?:\.\d+)?)/g;
 
 /**
  * The iteration's progress metric: the LAST `TM_METRIC=<number>` any check
@@ -149,10 +149,8 @@ export function loopMetric(results: CheckResult[] | null): Pick<LoopIteration, '
   if (!results || !results.length) return { metric: null, metricSource: null };
   let found: number | null = null;
   for (const r of results) {
-    for (const m of r.tail.matchAll(METRIC_RE)) {
-      const v = Number(m[1]);
-      if (Number.isFinite(v)) found = v;
-    }
+    const v = lastTmMetric(r.tail);
+    if (v !== null) found = v;
   }
   if (found !== null) return { metric: found, metricSource: 'tm-metric' };
   return { metric: results.filter((r) => r.outcome === 'green').length, metricSource: 'green-count' };

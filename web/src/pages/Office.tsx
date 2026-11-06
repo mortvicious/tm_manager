@@ -18,7 +18,7 @@ import {
   officeThemeId,
   OFFICE_WAKE_NOTE_MAX,
   isFeatureAskTrigger,
-  OFFICE_POLLED_SIGNAL_SOURCES,
+  OFFICE_SIGNAL_SOURCES,
   isStandupRole,
   SHIFT_FORBIDDEN_TOOLS,
   SHIFT_TOOL_ALLOWLIST,
@@ -66,6 +66,7 @@ import { OfficeChat } from '../components/OfficeChat.tsx';
 import { OfficeHuddles } from '../components/OfficeHuddles.tsx';
 import { RatingButtons, ratingKey, useOfficeRatings } from '../components/OfficeRating.tsx';
 import { OfficeWork } from '../components/OfficeWork.tsx';
+import { OfficeMetricsPanel, RoleMetrics } from '../components/OfficeMetrics.tsx';
 import { OfficePlace } from '../components/office/OfficePlace.tsx';
 import { OFFICE_THEMES, useOfficeViewMode, type OfficeViewMode } from '../officeThemes.ts';
 import { OfficeAssistant, OfficePlannerFlow } from '../components/OfficePlanner.tsx';
@@ -384,7 +385,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   const now = useNow();
   const { detail, states, error, reload } = useOfficeDetail(officeId);
   const [editing, setEditing] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | 'channel' | 'huddles' | 'chat' | 'assistant' | 'work' | 'scorecard' | null>(null);
+  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | 'channel' | 'huddles' | 'chat' | 'assistant' | 'work' | 'scorecard' | 'metrics' | null>(null);
   const briefs = useOfficeBriefs(officeId);
   const ratings = useOfficeRatings({ officeId });
   const [briefId, setBriefId] = useBriefParam();
@@ -419,6 +420,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   );
   const viewer = briefId && <BriefViewer key={briefId} office={office} briefId={briefId} ratings={ratings} inSheet={mobile} onClose={() => setBriefId(null)} />;
   const work = <OfficeWork office={office} roles={roles} ratings={ratings} inSheet={mobile} onOpenTask={onOpenTask} />;
+  const metricsPanel = <OfficeMetricsPanel office={office} roles={roles} />;
   const editor = editRole && (
     <RoleEditor key={editRole.id} office={office} role={editRole} inSheet={mobile} onClose={() => setEditing(null)} onSaved={reload} />
   );
@@ -458,6 +460,9 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
           </button>
           <button className="btn" onClick={() => setSheet('scorecard')}>
             Scorecard
+          </button>
+          <button className="btn" onClick={() => setSheet('metrics')}>
+            Metrics
           </button>
           <button className="btn" onClick={() => setSheet('log')}>
             Shift log <span className="muted">{shifts.length}</span>
@@ -562,6 +567,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
           {viewer}
         </div>
       )}
+      {!mobile && <div className="panel">{metricsPanel}</div>}
       {!mobile && <div className="panel">{work}</div>}
       {!mobile && log}
       {mobile && sheet === 'briefs' && !briefId && (
@@ -587,6 +593,11 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
       {mobile && sheet === 'scorecard' && (
         <Sheet label="Office scorecard" title="Scorecard" onClose={() => setSheet(null)} tall>
           <OfficeScorecard office={office} />
+        </Sheet>
+      )}
+      {mobile && sheet === 'metrics' && (
+        <Sheet label="Product metrics" title="Product metrics" onClose={() => setSheet(null)} tall>
+          {metricsPanel}
         </Sheet>
       )}
       {mobile && sheet === 'log' && (
@@ -1297,7 +1308,7 @@ function RoleEditor({
         </button>
       </EditorSection>
 
-      <EditorSection title="Triggers" hint="wakes besides the schedule; a signal (new Sentry or GitHub issues) is outside text: its shift is tainted, files drafts only, and gets no web tools or command runs">
+      <EditorSection title="Triggers" hint="wakes besides the schedule; a signal (new Sentry or GitHub issues) is outside text: its shift is tainted, files drafts only, and gets no web tools or command runs — except signal: metric (this role's product metric crossed its threshold), which the server writes, so that wake is untainted">
         {triggers.map((t, i) => (
           <TriggerRow
             key={i}
@@ -1377,6 +1388,13 @@ function RoleEditor({
         ))}
       </EditorSection>
 
+      <EditorSection
+        title="Product metrics"
+        hint="a saved command the server runs on a cron with zero tokens; it prints TM_METRIC=<number>. Crossing the threshold files ONE metric signal (untainted) that wakes this role if it has a signal: metric trigger. Saved on their own, not by Save role."
+      >
+        <RoleMetrics office={office} role={role} />
+      </EditorSection>
+
       {problems.length > 0 && <div className="warn-text office-gap">{problems[0]}</div>}
       {warning && <div className="office-banner over office-gap">{warning}</div>}
       {err && <div className="warn-text office-gap">{err}</div>}
@@ -1406,11 +1424,11 @@ function EditorSection({ title, hint, children }: { title: string; hint?: string
   );
 }
 
-/** What the role editor's signal source picker says per polled source (docs/office.md § Signals). */
+/** What the role editor's signal source picker says per source (docs/office.md § Signals, § Product metrics). */
 const OFFICE_SIGNAL_SOURCE_LABELS: Record<OfficeSignalSource, string> = {
   sentry: 'Sentry — new unresolved issues',
   github: 'GitHub — new open issues in the workspace repos',
-  metric: 'metric',
+  metric: "Metric — this role's product metric crossed its threshold (untainted)",
 };
 
 function TriggerRow({
@@ -1475,13 +1493,13 @@ function TriggerRow({
           className="field"
           value={trigger.source}
           aria-label="Signal source"
-          title="New issues are polled every 10 min; their text is fenced as untrusted data, the shift is tainted, files drafts and runs nothing"
+          title="Sentry / GitHub issues are polled every 10 min; their text is fenced as untrusted data, the shift is tainted, files drafts and runs nothing. A metric signal is the server's own (an untainted wake)."
           onChange={(e) => onChange({ kind: 'signal', source: e.target.value })}
         >
-          {!OFFICE_POLLED_SIGNAL_SOURCES.includes(trigger.source as OfficeSignalSource) && (
+          {!OFFICE_SIGNAL_SOURCES.includes(trigger.source as OfficeSignalSource) && (
             <option value={trigger.source}>{trigger.source || 'pick a source'}</option>
           )}
-          {OFFICE_POLLED_SIGNAL_SOURCES.map((src) => (
+          {OFFICE_SIGNAL_SOURCES.map((src) => (
             <option key={src} value={src}>
               {OFFICE_SIGNAL_SOURCE_LABELS[src]}
             </option>

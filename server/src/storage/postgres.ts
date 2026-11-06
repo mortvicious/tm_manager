@@ -31,6 +31,8 @@ import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE } from './feature-sql.ts';
 import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, CUSTOM_QUEUE_WAITING_SQL, OFFICE_CLAIM_GATE, OFFICE_TRIPPED_SQL, REPO_EXCLUSIVE_GATE, planQueueReorder, reorderAudit, skipRepos, type QueueMoveAnchor } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
 import { OFFICE_RATING_GET_SQL, OFFICE_RATINGS_DELETE_SQL, OFFICE_RATING_UPSERT_SQL, officeRatingListSql, officeRatingUpsertParams, rowToOfficeRating, type NewOfficeRating, type OfficeRatingFilter } from './rating-sql.ts';
+import { OFFICE_METRIC_BREACH_SQL, OFFICE_METRIC_DELETE_SQL, OFFICE_METRIC_ERROR_SQL, OFFICE_METRIC_GET_SQL, OFFICE_METRIC_INSERT_SQL, OFFICE_METRIC_NO_SIDE_SQL, OFFICE_METRIC_OK_SQL, OFFICE_METRIC_POINTS_DELETE_SQL, OFFICE_METRIC_POINTS_PRUNE_SQL, OFFICE_METRIC_POINT_INSERT_SQL, OFFICE_METRIC_VALUE_SQL, OFFICE_METRICS_DELETE_SQL, OFFICE_METRICS_POINTS_DELETE_FOR_OFFICE_SQL, officeMetricInsertParams, officeMetricListSql, officeMetricPatchSql, officeMetricPointsSql, officeMetricPruneParams, rowToOfficeMetric, rowToOfficeMetricPoint, type NewOfficeMetric, type OfficeMetricFilter, type OfficeMetricPatch, type OfficeMetricRun, type OfficeMetricRunResult } from './metric-sql.ts';
+import { metricSide, type OfficeMetric, type OfficeMetricPoint } from '@tm/shared';
 import { REPO_PARALLEL_SQL, repoParallelParams, worktreePatchSql } from './worktree-sql.ts';
 import { LOOP_LEAVES_RUNNING_SQL, loopStepSets, stepLoopSql } from './loop-sql.ts';
 import {
@@ -2330,6 +2332,8 @@ export class PostgresStorage implements Storage {
       await c.query(toPg(OFFICE_PROPOSALS_DELETE_SQL), [id]);
       await c.query(toPg(OFFICE_WISHES_DELETE_SQL), [id]);
       await c.query(toPg(OFFICE_RATINGS_DELETE_SQL), [id]);
+      await c.query(toPg(OFFICE_METRICS_POINTS_DELETE_FOR_OFFICE_SQL), [id]);
+      await c.query(toPg(OFFICE_METRICS_DELETE_SQL), [id]);
       await c.query(toPg(OFFICE_MESSAGES_DELETE_SQL), [id]);
       await c.query(toPg(OFFICE_HUDDLES_DELETE_SQL), [id]);
       await c.query(toPg(OFFICE_SIGNALS_DELETE_SQL), [id]);
@@ -2529,6 +2533,69 @@ export class PostgresStorage implements Storage {
   async listOfficeRatings(f?: OfficeRatingFilter): Promise<OfficeRating[]> {
     const q = officeRatingListSql(f);
     return (await this.q(q.sql, q.params)).map(rowToOfficeRating);
+  }
+
+  // ---- office product metrics (migration 65; SQL in metric-sql.ts) ----
+
+  async createOfficeMetric(m: NewOfficeMetric): Promise<OfficeMetric> {
+    const id = randomUUID();
+    await this.q(OFFICE_METRIC_INSERT_SQL, officeMetricInsertParams(id, m, now()));
+    return (await this.getOfficeMetric(id))!;
+  }
+
+  async getOfficeMetric(id: string): Promise<OfficeMetric | null> {
+    const r = (await this.q(OFFICE_METRIC_GET_SQL, [id]))[0];
+    return r ? rowToOfficeMetric(r) : null;
+  }
+
+  async listOfficeMetrics(f?: OfficeMetricFilter): Promise<OfficeMetric[]> {
+    const q = officeMetricListSql(f);
+    return (await this.q(q.sql, q.params)).map(rowToOfficeMetric);
+  }
+
+  async updateOfficeMetric(id: string, patch: OfficeMetricPatch): Promise<OfficeMetric | null> {
+    return this.tx(async (c) => {
+      const r = (await c.query(toPg(`${OFFICE_METRIC_GET_SQL} FOR UPDATE`), [id])).rows[0];
+      if (!r) return null;
+      const q = officeMetricPatchSql(id, patch, rowToOfficeMetric(r), now());
+      if (q) await c.query(toPg(q.sql), q.params);
+      return rowToOfficeMetric((await c.query(toPg(OFFICE_METRIC_GET_SQL), [id])).rows[0]);
+    });
+  }
+
+  async deleteOfficeMetric(id: string): Promise<boolean> {
+    return this.tx(async (c) => {
+      await c.query(toPg(OFFICE_METRIC_POINTS_DELETE_SQL), [id]);
+      const r = await c.query(toPg(`${OFFICE_METRIC_DELETE_SQL} RETURNING id`), [id]);
+      return (r.rowCount ?? 0) > 0;
+    });
+  }
+
+  async recordOfficeMetricRun(id: string, run: OfficeMetricRun): Promise<OfficeMetricRunResult | null> {
+    return this.tx(async (c) => {
+      // the row lock serialises two runs of one metric; the breach UPDATE is conditional either way
+      const r = (await c.query(toPg(`${OFFICE_METRIC_GET_SQL} FOR UPDATE`), [id])).rows[0];
+      if (!r) return null;
+      const prev = rowToOfficeMetric(r);
+      let crossed = false;
+      if (run.value === null) await c.query(toPg(OFFICE_METRIC_ERROR_SQL), [run.at, run.error, id]);
+      else {
+        await c.query(toPg(OFFICE_METRIC_POINT_INSERT_SQL), [id, run.at, run.value, run.runId]);
+        await c.query(toPg(OFFICE_METRIC_POINTS_PRUNE_SQL), officeMetricPruneParams(id));
+        await c.query(toPg(OFFICE_METRIC_VALUE_SQL), [run.value, run.at, run.at, id]);
+        const side = metricSide(run.value, prev);
+        if (side === 'breach') crossed = ((await c.query(toPg(OFFICE_METRIC_BREACH_SQL), [run.at, id])).rowCount ?? 0) > 0;
+        else if (side === 'ok') await c.query(toPg(OFFICE_METRIC_OK_SQL), [id]);
+        else await c.query(toPg(OFFICE_METRIC_NO_SIDE_SQL), [id]);
+      }
+      const metric = rowToOfficeMetric((await c.query(toPg(OFFICE_METRIC_GET_SQL), [id])).rows[0]);
+      return { metric, crossed, previousSide: prev.lastSide, previousValue: prev.lastValue };
+    });
+  }
+
+  async listOfficeMetricPoints(metricId: string, limit: number): Promise<OfficeMetricPoint[]> {
+    const q = officeMetricPointsSql(metricId, limit);
+    return (await this.q(q.sql, q.params)).map(rowToOfficeMetricPoint).reverse();
   }
 
   // ---- office messages, huddles, signals (migration 60; SQL in office-sql.ts) ----

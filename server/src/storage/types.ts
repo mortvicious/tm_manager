@@ -25,6 +25,7 @@ import type {
 } from './office-sql.ts';
 import type { MoveAnchor } from './group.ts';
 import type { NewOfficeRating, OfficeRatingFilter } from './rating-sql.ts';
+import type { NewOfficeMetric, OfficeMetricFilter, OfficeMetricPatch, OfficeMetricRun, OfficeMetricRunResult } from './metric-sql.ts';
 import type { QueueMoveAnchor } from './queue-sql.ts';
 import type {
   Approval,
@@ -41,6 +42,8 @@ import type {
   OfficeWish,
   OfficeRating,
   OfficeRatingSubjectKind,
+  OfficeMetric,
+  OfficeMetricPoint,
   OfficeMessage,
   OfficeHuddle,
   OfficeSignal,
@@ -1020,6 +1023,23 @@ export interface Storage {
   upsertOfficeRating(r: NewOfficeRating): Promise<OfficeRating>;
   /** newest first */
   listOfficeRatings(f?: OfficeRatingFilter): Promise<OfficeRating[]>;
+  /**
+   * Product metrics (docs/office.md § Product metrics, migration 65; SQL in
+   * `metric-sql.ts`). FK-less; `deleteOffice` removes them and their points.
+   * `recordOfficeMetricRun` is the composite a run writes in one transaction:
+   * the point (pruned to `OFFICE_METRIC_POINTS_KEPT`), the last value and the
+   * side — `crossed` is true for exactly the run whose conditional UPDATE moved
+   * the row into breach. An edit of the command or threshold re-arms it.
+   */
+  createOfficeMetric(m: NewOfficeMetric): Promise<OfficeMetric>;
+  getOfficeMetric(id: string): Promise<OfficeMetric | null>;
+  /** oldest first */
+  listOfficeMetrics(f?: OfficeMetricFilter): Promise<OfficeMetric[]>;
+  updateOfficeMetric(id: string, patch: OfficeMetricPatch): Promise<OfficeMetric | null>;
+  deleteOfficeMetric(id: string): Promise<boolean>;
+  recordOfficeMetricRun(id: string, run: OfficeMetricRun): Promise<OfficeMetricRunResult | null>;
+  /** the newest `limit`, oldest first */
+  listOfficeMetricPoints(metricId: string, limit: number): Promise<OfficeMetricPoint[]>;
   /**
    * Messages, huddles, signals (docs/office.md § Data model, migration 60; SQL
    * in `office-sql.ts`). FK-less; `deleteOffice` removes them with the office.

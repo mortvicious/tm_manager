@@ -724,6 +724,8 @@ export interface CommandRun {
   checkBaseline?: boolean;
   /** set when an office shift asked for this run (docs/office.md § Command runs): the shift's id */
   officeShiftId?: string;
+  /** set when an office product metric ran it (docs/office.md § Product metrics): the metric's id */
+  officeMetricId?: string;
   /** true for an agent's ONE-SHOT run (POST /api/agent/commands/run): an
    *  unsaved command line, so `commandId` is null from the start */
   oneShot?: boolean;
@@ -2580,6 +2582,10 @@ export type AuditKind =
   | 'office.proposal-decided'
   /** a stakeholder rated an office role's brief / proposal / task / message 👍/👎 (docs/office.md § Ratings) */
   | 'office.rated'
+  /** a product metric run's error / breach / recovery (docs/office.md § Product metrics) */
+  | 'office.metric'
+  /** a human created, edited or deleted a product metric */
+  | 'office.metric-changed'
   /** a human added a wish, or edited / re-statused one (docs/office.md § Wishes and vision) */
   | 'office.wish'
   /** a Director shift's `wishUpdates` moved wish statuses (docs/office.md § Wishes and vision) */
@@ -3306,6 +3312,9 @@ export type ServerEvent =
   | { type: 'office-wish.updated'; wish: OfficeWish }
   /** a stakeholder rated (or re-rated) a brief, proposal, office task or message (docs/office.md § Ratings) */
   | { type: 'office-rating.updated'; rating: OfficeRating }
+  /** a product metric was defined, edited, measured (`metric.points` = its newest points) or deleted (docs/office.md § Product metrics) */
+  | { type: 'office-metric.updated'; metric: OfficeMetricWithPoints }
+  | { type: 'office-metric.deleted'; officeId: string; metricId: string }
   /** a row was appended to `tm_office_messages` (both drivers broadcast it) — the `office-message` event trigger listens (docs/office.md § Event triggers) */
   | { type: 'office-message.created'; message: OfficeMessage }
   /** a message was routed or marked reviewed (docs/office.md § Channel); `route` = its routing record when it was routed */
@@ -3971,7 +3980,7 @@ import type { MachineInfo } from './capacity.ts';
 import { jobRunNeedsHuman, type Job, type JobRun, type JobsHold } from './jobs.ts';
 import type { MemoryFuseState } from './memory.ts';
 import type { ProcMemorySnapshot } from './proc-memory.ts';
-import type { Office, OfficeBrief, OfficeHuddle, OfficeRating, OfficeMessage, OfficeMessageRoute, OfficeProposal, OfficeRole, OfficeStates, OfficeWish } from './office.ts';
+import type { Office, OfficeBrief, OfficeHuddle, OfficeRating, OfficeMetricWithPoints, OfficeMessage, OfficeMessageRoute, OfficeProposal, OfficeRole, OfficeStates, OfficeWish } from './office.ts';
 // Virtual Office: types, cron, catch-up, guards, the hard gate, autonomy and taint (docs/office.md)
 export * from './office.ts';
 // Office group chat: @mention routing and what a turn / a shift may read of it (docs/office.md § Group chat)

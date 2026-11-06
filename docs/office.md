@@ -679,6 +679,7 @@ be indexed:
 | `tm_office_messages` | `office_id`, `from_role_id` (NULL = the stakeholder, i.e. the human), `to_role_id` (NULL = the office channel), `kind` (`request` \| `finding` \| `handoff` \| `note`), `subject_kind`/`subject_id` (both NULL = no subject), `body`, `tainted_at`, `reviewed_at`, `routed_at`, `routed_task_id`, `created_at` | `(office_id, created_at)`, `(office_id, to_role_id, routed_at)`, `(subject_kind, subject_id)` |
 | `tm_office_huddles` | `office_id`, `subject_kind`/`subject_id` (required), `role_ids` (JSON), `turns` (0), `max_turns` (≥ 1, clamped on insert), `status` (`open` \| `decided` \| `expired`, default `open`), `decision`, `tainted_at`, `created_at`, `updated_at`, `closed_at` | `(office_id, status, created_at)`, `(subject_kind, subject_id)` |
 | `tm_office_signals` | `office_id`, `source` (`sentry` \| `github` \| `metric`), `external_id`, `title`, `raw_text`, `url`, `received_at`, `consumed_shift_id` | **unique** `(source, external_id)`, `(office_id, consumed_shift_id, received_at)` |
+| `tm_office_metrics` / `tm_office_metric_points` | migration 65 — see § Product metrics | `(office_id, created_at)` / `(metric_id, at)` |
 
 `tm_chats` gains `office_id` and `participants` (JSON role ids) —
 `Chat.officeId` (null = an ordinary chat) and `Chat.participants` ([] for an
@@ -1538,7 +1539,8 @@ prompt).
 
 A role with `{ kind: 'signal', source }` in `triggers` (`source` is `sentry` or
 `github` — `parseTrigger` refuses anything outside `OFFICE_SIGNAL_SOURCES`;
-`metric` is stored but has no poller yet) is woken when that outside source has
+`metric` has no poller: its rows come from § Product metrics, and its wake is
+untainted) is woken when that outside source has
 something NEW (`server/src/office/signals.ts`, `OfficeSignals`; decisions.md
 2026-11-05, open decision 6). The role editor picks the source from a list.
 
@@ -2785,6 +2787,105 @@ ten minutes. Read-only, no Origin needed. The office's tasks come from the new
   document gets a *Scorecard — last 7 days* section (tiles + one card per
   active role) and a Russian lede line (`Счёт офиса за 7 дн.: …`), computed at
   send time; a failure to compute leaves the document without it.
+
+## Product metrics
+
+Phase 6 (measuring autonomy): an office watches numbers over time — a signup
+conversion, a p95, a bundle size — and the role that owns one is woken when it
+crosses its threshold. Zero tokens until then: a metric is measured by the
+server, never by a claude. `server/src/office/metrics.ts`, routes in
+`routes/office-metrics.ts`, SQL in `storage/metric-sql.ts` (both drivers),
+pure parts at the end of `shared/src/office.ts`, test
+`server/src/office/metrics.test.ts`.
+
+**Data** (migration 65, FK-less; `deleteOffice` removes both tables' rows, a
+role delete removes its metrics):
+
+| Table | Columns |
+|---|---|
+| `tm_office_metrics` | `id`, `office_id`, `role_id`, `repo_id` (the command's, written by the server), `command_id`, `name`, `unit`, `better` (`up` \| `down`), `schedule` (cron), `threshold_op` (`below` \| `above` \| NULL), `threshold_value` (NULL with the op), `last_value`, `last_at`, `last_side` (`ok` \| `breach` \| NULL), `breached_at`, `last_run_at` (the cron's anchor), `last_error`, `created_at`, `updated_at` |
+| `tm_office_metric_points` | `metric_id`, `at`, `value`, `run_id` (the commands-pool run); index `(metric_id, at)`, pruned to the newest `OFFICE_METRIC_POINTS_KEPT` (2000) per metric |
+
+**Definition** (`checkMetricInput`, zod + server checks; an edit is merged
+over the stored row and the WHOLE result is checked again):
+
+- the command passes the role allowlist's own rule, `allowlistCheck`
+  (§ Command runs): a saved, NON-check, non-archived, human-owned
+  (`owner_task_id` null), one-shot command of a repo in the office's
+  workspace — anything else is 400 with the reason;
+- the role is a role of this office; the cron parses (`cronError`);
+- `thresholdOp` and `thresholdValue` come together — both set or both null;
+- at most `OFFICE_METRICS_MAX` (20) per office (409).
+
+Changing the command or the threshold RE-ARMS the metric (`last_side` →
+null): a breach under the new rule is news.
+
+**Runs.** The scheduler's minute tick calls `OfficeMetrics.onTick` for every
+ENABLED office; a metric is due when the first cron slot after its last run
+(never run: after it was created) has come (`metricDue`) — one run however
+many slots a sleep missed. Due runs are queued DETACHED (a 10-minute command
+never holds the tick), one at a time per office, each behind
+`officeCommandGate` (office on and not paused, Pause all, the day budget, the
+role cap, the memory fuse); a refusal leaves the slot owed for the next tick
+and writes nothing. A run is `CommandRunner.runCheck` with target
+`{ officeMetricId }` (`CommandRun.officeMetricId`): the commands pool, argv
+only, CI=1, `OFFICE_COMMAND_TIMEOUT_MS` (10 min), the last 200 plain lines,
+one heavy slot like every check. The value is the LAST `TM_METRIC=<number>`
+(or `TM_METRIC: <n>`) in that output — `lastTmMetric`, the regex loop tasks
+use (docs/loops.md). The number decides, not the exit code: a script may print
+it and exit 1. No number, a timeout or a spawn failure is `last_error` (one
+`office.metric {action: 'error'}` audit row per distinct error); the anchor
+moves either way, so a broken command runs once per slot, not every minute.
+**Measure now** (`POST …/metrics/:metricId/run`) runs it at once, out of
+schedule and without the office gate (a human click, zero tokens); a second
+run of a metric already queued is 409.
+
+**Crossing.** `recordOfficeMetricRun` writes the point, the last value and
+the side in one transaction. `metricSide`: a breach is a value strictly
+`below` / `above` the threshold (equal is ok). Moving to breach is ONE
+conditional UPDATE (`… SET last_side = 'breach' WHERE last_side IS NULL OR
+last_side <> 'breach'`), so exactly one run per crossing gets `crossed` — a
+first measurement already in breach counts (a metric is armed when created).
+That run files ONE `tm_office_signals` row: source `metric`, external id
+`<metric id>@<breach start>` (unique), title and text built by the SERVER from
+the metric's human-set definition and the number (`metricSignalText`), never
+from the command's output — and an `office.metric {action: 'breach'}` row.
+Staying in breach files nothing; a value back on the ok side resets
+`breached_at` (`office.metric {action: 'recovered'}`) and re-arms it.
+
+**The wake** goes through the signal service (§ Signals),
+`OfficeSignals.metricSignals`: the metric's OWN role is woken when it is on
+and has `{kind: 'signal', source: 'metric'}` in its triggers — debounced,
+through `officeGate` with its guards, refusals as for any signal; a role
+without the trigger is not woken and the signal waits (72 h, like every
+signal). Another subscribed role never takes it (`takesSignal`). A metric
+wake is **untainted**: its signals are server-built, so it never shares a
+shift with outside signals (the oldest waiting class goes first, the other is
+re-opened after it), and its ref names only `metric:<id>` parts, which is
+what `officeSignalRefTrusted` and `shiftTaint` read (no `+N` overflow in a
+trusted ref — the rest wait for the next wake). The shift still loses its web
+tools (`shiftGrantedTools`, so a role with WebFetch stays untainted too), its
+prompt says it was started by the metrics and carries the plain
+`officeMetricSignalsBlock` instead of the untrusted fence, and it may request
+its allowlisted commands. A metric signal as a huddle subject does not taint
+the huddle.
+
+**API** (every write needs `Origin` → 403; `office.metric-changed` audit rows,
+`office-metric.updated` / `office-metric.deleted` broadcasts, which runs also
+send): `GET /api/offices/:id/metrics` (each with its newest
+`OFFICE_METRIC_POINTS_SHOWN` (60) points, oldest first), `POST`, `PATCH
+/:metricId`, `DELETE /:metricId`, `POST /:metricId/run`.
+
+**UI** (`components/OfficeMetrics.tsx`, tokens only): the /office **Product
+metrics** panel (every metric: role avatar, last value, ok/breach chip,
+sparkline with the threshold dashed, schedule, next run, last error, Measure
+now; a `<Sheet>` from the phone bar), and the role editor's **Product
+metrics** section — the role's metrics with the same line plus Edit / Delete
+(two-press) and an add form (command picker = the allowlist rule read off the
+client's list, name, unit, better, cron, below/above + value). Metrics save on
+their own, not with Save role; the section says when the role lacks the
+`signal: metric` trigger. The trigger picker offers `metric` beside Sentry and
+GitHub.
 
 ## UI
 
