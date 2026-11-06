@@ -12,6 +12,9 @@
  * Info.plist carries `TMRepoRoot` = this checkout, which the app reads to find
  * server/data/config.json (`host.port`, default 5176). TM_BAR_REPO overrides
  * the recorded root (e.g. build in a worktree, point at the main checkout).
+ * `TMNodePath` = the node running this script (TM_BAR_NODE overrides): the
+ * node the app's Service actions run `scripts/service.mjs` with, since a GUI
+ * app's PATH has no nvm — build with the node the service should use (v24).
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -46,7 +49,7 @@ function plistEscape(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function infoPlist(repoRoot, version) {
+function infoPlist(repoRoot, version, nodePath) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -68,6 +71,7 @@ function infoPlist(repoRoot, version) {
     <key>NSAllowsLocalNetworking</key><true/>
   </dict>
   <key>TMRepoRoot</key><string>${plistEscape(repoRoot)}</string>
+  <key>TMNodePath</key><string>${plistEscape(nodePath)}</string>
 </dict>
 </plist>
 `;
@@ -97,7 +101,8 @@ function build() {
 
   const repoRoot = process.env.TM_BAR_REPO ? path.resolve(process.env.TM_BAR_REPO) : repo;
   const version = JSON.parse(fs.readFileSync(path.join(repo, 'package.json'), 'utf8')).version ?? '0.1.0';
-  fs.writeFileSync(path.join(staging, 'Contents', 'Info.plist'), infoPlist(repoRoot, version));
+  const nodePath = process.env.TM_BAR_NODE ? path.resolve(process.env.TM_BAR_NODE) : process.execPath;
+  fs.writeFileSync(path.join(staging, 'Contents', 'Info.plist'), infoPlist(repoRoot, version, nodePath));
   fs.writeFileSync(path.join(staging, 'Contents', 'PkgInfo'), 'APPL????');
 
   // Ad-hoc signature: enough for Gatekeeper on the machine that built it.
@@ -105,7 +110,7 @@ function build() {
 
   fs.rmSync(app, { recursive: true, force: true });
   fs.renameSync(staging, app);
-  console.log(`✓ ${path.relative(repo, app)}  (repo root: ${repoRoot})`);
+  console.log(`✓ ${path.relative(repo, app)}  (repo root: ${repoRoot}, node: ${nodePath})`);
 }
 
 function open() {

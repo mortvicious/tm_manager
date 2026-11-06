@@ -5,6 +5,8 @@ import SwiftUI
 /// chrome only: system fonts, SF Symbols, system colours (docs/menubar.md § Look).
 struct MenuView: View {
     let store: Store
+    /// the two-press control that is armed (Uninstall, Force …); disarms after 4 s
+    @State private var armed: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -12,6 +14,7 @@ struct MenuView: View {
             Divider()
             serverSection
             ControlsView(store: store)
+            serviceSection
             if store.host?.api.up == true {
                 Divider()
                 tasksSection
@@ -20,6 +23,7 @@ struct MenuView: View {
                 memorySection
             }
             Divider()
+            loginRow
             footer
         }
         .padding(12)
@@ -60,7 +64,7 @@ struct MenuView: View {
                     row("arrow.triangle.2.circlepath", "Rebuild & restart running" + (r.drain == true ? " (drain)" : ""), color: .orange)
                 }
                 if h.host.stale == true {
-                    secondary("Front door code changed — restart " + (h.host.service == "launchd" ? "with npm run service:restart" : "npm start"), color: .orange)
+                    secondary("Front door code changed — " + (h.host.service == "launchd" ? "Restart service below" : "restart npm start"), color: .orange)
                 }
                 if h.host.dev { secondary("Dev mode (page on :5173)") }
             }
@@ -68,7 +72,165 @@ struct MenuView: View {
             VStack(alignment: .leading, spacing: 3) {
                 row("exclamationmark.triangle", "Front door not answering", color: .red)
                 secondary("\(store.client.base.absoluteString) — \(store.hostError ?? "no reply")")
-                secondary("Start it with npm start or npm run service:install")
+            }
+        }
+    }
+
+    // MARK: service (docs/menubar.md § Service)
+
+    @ViewBuilder private var serviceSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            serviceStatus
+            if store.serviceRunning == nil { serviceButtons }
+            if let cmd = store.serviceRunning {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(cmd.progress).font(.caption).foregroundStyle(.secondary)
+                }
+            } else if let o = store.serviceOutcome {
+                secondary(o.summary, color: o.ok ? .secondary : .red)
+                ForEach(o.warnings, id: \.self) { secondary($0, color: .orange) }
+                if o.refusedWhileWorking {
+                    twoPress("force-\(o.command.rawValue)", "Force \(o.command.rawValue) — kills running agents",
+                             confirm: "Confirm: kill agents and \(o.command.rawValue)", role: .destructive) {
+                        await store.runService(o.command, force: true)
+                    }
+                }
+            }
+            logsRow
+        }
+    }
+
+    @ViewBuilder private var serviceStatus: some View {
+        let svc = store.service
+        if let h = store.host {
+            switch store.runsAs(h) {
+            case "launchd":
+                row("gearshape.2", "Runs as the launchd service" + (svc?.pid.map { " · pid \($0)" } ?? ""))
+            case "dev":
+                row("hammer", "Runs in dev (npm run dev)")
+            default:
+                row("terminal", "Runs in a terminal (npm start)")
+                if svc?.installed != true {
+                    secondary("To run it as a service: stop npm start (Ctrl-C in its terminal), then Install service here.")
+                }
+            }
+        } else if let svc {
+            if svc.loaded && svc.running {
+                row("gearshape.2", "Service running" + (svc.pid.map { " · pid \($0)" } ?? "") + " — not answering yet", color: .orange)
+            } else if svc.loaded {
+                row("gearshape.2", "Service stopped" + (svc.state.map { " (\($0))" } ?? ""), color: .red)
+            } else if svc.installed {
+                row("gearshape.2", "Service installed, not loaded", color: .red)
+            } else {
+                row("gearshape.2", "Service not installed")
+            }
+        }
+    }
+
+    @ViewBuilder private var serviceButtons: some View {
+        let svc = store.service
+        HStack(spacing: 6) {
+            if let h = store.host {
+                if store.runsAs(h) == "launchd" {
+                    actionButton("Restart service") { await store.runService(.restart) }
+                        .help("Restart the front door and the API (refused while agents work)")
+                    actionButton("Reinstall") { await store.runService(.install) }
+                        .help("Rewrite the plist from scripts/service.mjs and reload it (refused while agents work)")
+                    twoPress("uninstall", "Uninstall…", confirm: "Confirm uninstall", role: .destructive) {
+                        await store.runService(.uninstall)
+                    }
+                    .help("Stop the service and remove its plist — the task manager stays down until npm start")
+                } else if svc?.loaded == true || svc?.installed == true {
+                    // a service exists but a terminal/dev front door holds the port
+                    twoPress("uninstall", "Uninstall service…", confirm: "Confirm uninstall", role: .destructive) {
+                        await store.runService(.uninstall)
+                    }
+                } else {
+                    Button("Install service") {}
+                        .disabled(true)
+                        .help("Stop the terminal front door first — the installer refuses while its port is taken")
+                }
+            } else if let svc {
+                if svc.loaded && svc.running {
+                    actionButton("Restart service") { await store.runService(.restart) }
+                } else if svc.loaded || svc.installed {
+                    actionButton("Start service", prominent: true) { await store.runService(.start) }
+                } else {
+                    actionButton("Install service", prominent: true) { await store.runService(.install) }
+                        .help("Write ~/Library/LaunchAgents/\(svc.label).plist and start it (npm run service:install)")
+                }
+                if svc.loaded || svc.installed {
+                    twoPress("uninstall", "Uninstall…", confirm: "Confirm uninstall", role: .destructive) {
+                        await store.runService(.uninstall)
+                    }
+                }
+            }
+        }
+        .controlSize(.small)
+    }
+
+    @ViewBuilder private var logsRow: some View {
+        if let dir = store.logDir {
+            let present = Logs.files.filter { FileManager.default.fileExists(atPath: dir + "/" + $0.1) }
+            if !present.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "doc.text").foregroundStyle(.secondary).frame(width: 14)
+                    Text("Logs").font(.caption).foregroundStyle(.secondary)
+                    ForEach(present, id: \.1) { name, file in
+                        Button(name) { Logs.open(dir + "/" + file) }
+                            .help("Open \(file) in Console")
+                    }
+                    Button { Logs.reveal(dir) } label: { Image(systemName: "folder") }
+                        .help("Show \(dir) in Finder")
+                }
+                .controlSize(.small)
+            }
+        }
+    }
+
+    private func actionButton(_ title: String, prominent: Bool = false, _ action: @escaping @MainActor () async -> Void) -> some View {
+        Button(title) { Task { await action() } }
+            .buttonStyle(prominent ? AnyPrimitiveButtonStyle(.borderedProminent) : AnyPrimitiveButtonStyle(.bordered))
+    }
+
+    /// A control that needs two presses within 4 s — for the ones that stop
+    /// the task manager or kill agents.
+    private func twoPress(_ key: String, _ title: String, confirm: String, role: ButtonRole? = nil,
+                          _ action: @escaping @MainActor () async -> Void) -> some View {
+        Button(armed == key ? confirm : title, role: role) {
+            if armed == key {
+                armed = nil
+                Task { await action() }
+            } else {
+                armed = key
+                Task {
+                    try? await Task.sleep(for: .seconds(4))
+                    if armed == key { armed = nil }
+                }
+            }
+        }
+        .tint(armed == key ? .red : nil)
+    }
+
+    // MARK: login item
+
+    @ViewBuilder private var loginRow: some View {
+        if LoginItem.available {
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle("Open TM Bar at login", isOn: Binding(
+                    get: { store.loginStatus == .enabled || store.loginStatus == .requiresApproval },
+                    set: { store.setLogin($0) }
+                ))
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+                if store.loginStatus == .requiresApproval {
+                    HStack {
+                        secondary("Allow it in System Settings → Login Items", color: .orange)
+                        Button("Open") { LoginItem.openSettings() }.controlSize(.small)
+                    }
+                }
+                if let e = store.loginError { secondary(e, color: .red) }
             }
         }
     }
@@ -247,6 +409,13 @@ struct MenuView: View {
         case .running(let n): n > 0 ? .green : .secondary
         }
     }
+}
+
+/// `.bordered` or `.borderedProminent` chosen at run time.
+struct AnyPrimitiveButtonStyle: PrimitiveButtonStyle {
+    private let make: (Configuration) -> AnyView
+    init<S: PrimitiveButtonStyle>(_ style: S) { make = { AnyView(style.makeBody(configuration: $0)) } }
+    func makeBody(configuration: Configuration) -> some View { make(configuration) }
 }
 
 /// A menu-like row: highlight on hover, no bezel.

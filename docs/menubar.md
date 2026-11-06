@@ -24,8 +24,9 @@ npm run menubar:build -- --debug # debug compile, same bundle layout
   `TMRepoRoot` = the checkout it was built from. The bundle is assembled in
   `TM Bar.app.next` and swapped in, then `codesign --sign -` (ad-hoc) — enough
   for Gatekeeper on the Mac that built it. Double-click it in Finder, or drag it
-  to /Applications; to start at login add it under System Settings → General →
-  Login Items.
+  to /Applications; to start it at login tick **Open TM Bar at login** in the
+  menu (§ Open at login). `TMNodePath` = the node that ran the build
+  (`TM_BAR_NODE` overrides) — the node the Service actions run with (§ Service).
 - It is outside the npm workspaces: `npm run typecheck|build|test` never need
   Xcode or Swift.
 
@@ -117,6 +118,11 @@ API is up:
 - **Inbox** N — questions · need you; a click opens `/inbox`.
 - **Memory** free % · swap %, pressure word; the fuse's hold reason in red while
   tripped; heavy slots while any are held or queued.
+- **Service**: how the front door runs — the launchd agent (with its pid), a
+  terminal `npm start`, or dev — and, when it does not answer, what launchd says
+  (running but not answering yet / stopped / installed but not loaded / not
+  installed); the service actions and the logs (§ Service).
+- **Open TM Bar at login** (§ Open at login).
 - **Open task manager** (⌘O), **Quit** (⌘Q).
 
 Pages open in the installed Brave (`com.brave.Browser`, through
@@ -191,6 +197,99 @@ request is in flight every control is disabled.
 There is no new unauthenticated surface: everything the app can do, a
 loopback `curl` with the same Origin could already do.
 
+## Service
+
+The front door as a per-user launchd agent (docs/host.md § Running as a
+service) from the menu. The app holds no plist logic. It runs
+`scripts/service.mjs` the way `npm run service:*` does:
+`<node> --import tsx scripts/service.mjs <command> [--force]`, an argv in
+`TMRepoRoot`, never a shell. So every rule stays in one place: the port checks,
+the fail-closed restart guard, plist generation and `plutil -lint`.
+
+**Which node**: `TM_BAR_NODE`, `defaults write com.taskmanager.bar nodePath …`,
+Info.plist `TMNodePath` (the build's node), the installed plist's
+`ProgramArguments[0]`, then `/opt/homebrew/bin/node` and `/usr/local/bin/node`.
+The first executable one wins. A GUI app's PATH has no nvm, so the build
+records the node. Build with the node the service should run (v24): `install`
+writes `process.execPath` into the plist. The child's PATH is that node's dir
+first, then the app's own. `install` adds the login shell's PATH as it always
+does, so `claude`/`git`/`gh` from Homebrew are found (measured: a `zsh -l` from
+an empty environment yields `/opt/homebrew/bin` first). `TM_SERVICE_LABEL` and
+`TM_LAUNCH_AGENTS_DIR` are passed explicitly, so the script and the app always
+look at the same job.
+
+**Mode**, read every poll while the menu is open, with no node involved:
+`launchctl print gui/<uid>/<label>` (`state`, `pid`; the first match, as in
+service.mjs) plus whether the plist exists. `host.service === 'launchd'` in
+`/host/status` decides "runs as the service". The label is `TM_SERVICE_LABEL`,
+else `defaults … serviceLabel`, else `com.taskmanager.server`.
+
+| front door | launchd | buttons |
+|---|---|---|
+| answers, `service: launchd` | — | **Restart service**, **Reinstall** (rewrites the plist), **Uninstall…** |
+| answers, a terminal / dev | no plist | **Install service** disabled: "stop npm start (Ctrl-C), then Install". The installer refuses while the port is taken anyway. |
+| answers, a terminal / dev | plist or loaded | **Uninstall service…** |
+| not answering | loaded, running | **Restart service** (+ Uninstall…) |
+| not answering | loaded, not running, or plist only | **Start service** (+ Uninstall…) |
+| not answering | none | **Install service** |
+
+- **Start service** = the new `service.mjs start` (`npm run service:start`).
+  Already running → nothing. Loaded → `launchctl kickstart`. Plist on disk but
+  not loaded → `launchctl bootstrap` of the file as written (regenerating it is
+  `install`'s job). No plist → "not installed". Then it waits for the API, like
+  install. Nothing is stopped, so no guard is read. A port held by something
+  else refuses.
+- Restart, Reinstall and Uninstall stop the front door, so service.mjs reads
+  `restart-check` first (fail-closed). A refusal exits **3**
+  (`REFUSED_WHILE_WORKING`, the only exit the app treats as overridable). The
+  menu shows the script's line verbatim ("4 agent session(s) still working —
+  …") and a **Force … — kills running agents** button. Force takes two presses
+  (the second within 4 s; the label turns red to "Confirm: kill agents and
+  …"), then reruns with `--force`. **Uninstall…** is two-press too: afterwards
+  nothing serves the task manager until `npm start`.
+- One command at a time. A spinner shows "Restarting the service…" and so on,
+  then the script's last `✓`/`✗` line plus any `⚠` lines (an old node, `claude`
+  missing from the service PATH). Its output also goes to the unified log
+  (`service <cmd> exit=<n> <line>`). The command keeps running if the menu
+  closes. A 180 s ceiling SIGTERMs a hung script: guard 20 s + stop 40 s +
+  login shell 10 s + up 60 s is install's worst case.
+
+**Logs**: buttons **API**, **Front door** and **launchd** open `api.log`,
+`host.log` and `launchd.log` in Console.app (`com.apple.Console`, else the
+default app). The folder button reveals the folder in Finder. The folder is
+`host.logDir` from `/host/status`, else `<TMRepoRoot>/server/data/logs` (the
+front door is down, or it is a terminal one that writes no files). Only files
+that exist get a button.
+
+None of this is an HTTP surface: the app runs a local script as the logged-in
+user, exactly what that user can already type.
+
+## Open at login
+
+**Open TM Bar at login** registers the app with `SMAppService.mainApp`
+(ServiceManagement, macOS 13+): the system's own Login Items list, with no
+helper and no plist of ours. `requiresApproval` shows "Allow it in System
+Settings → Login Items" with an **Open** button
+(`SMAppService.openSystemSettingsLoginItems`). An error is shown under the
+toggle. The toggle is hidden when the binary is not in a `.app` bundle (`swift
+run`).
+
+**Verified with the ad-hoc signature** (2026-11-06, macOS 26): `register()` →
+`enabled`. It stays `enabled` after `npm run menubar:build` rebuilds and
+re-signs the bundle at the same path (new cdhash). `unregister()` →
+`notRegistered`. The registration is tied to the bundle's PATH, so register
+the copy you keep: the main checkout's `macos/TMBar/build/TM Bar.app`, or a
+copy in /Applications. Never register a worktree's build: the worktree is
+deleted when its task lands. A launch at a real login was not exercised
+(that needs a logout). `sfltool dumpbtm`, which lists the entry, needs admin.
+
+**Fallback** if a future macOS refuses ad-hoc apps (status `notFound` or an
+error on register): a LaunchAgent that opens the bundle,
+`~/Library/LaunchAgents/com.taskmanager.bar.plist` with `ProgramArguments`
+`/usr/bin/open`, `-a`, `<path>/TM Bar.app` and `RunAtLoad` true, loaded with
+`launchctl bootstrap gui/$(id -u) <plist>`. No `KeepAlive`, because Quit must
+stay quit.
+
 ## Look
 
 Native chrome: system font, SF Symbols, system colours (green running, orange
@@ -201,7 +300,9 @@ the `--tm-*` sheet; a future custom colour must come from that sheet.
 
 The poll is two small HTTP GETs every 5 s with a 1 s timer tolerance
 (coalesced wakeups); decoding and diffing are microseconds, and an unchanged
-poll redraws nothing.
+poll redraws nothing. While the menu is OPEN each poll also spawns one
+`launchctl print` for § Service (a few ms; never while closed); node runs only
+when a service button is pressed.
 
 ### Measurements
 
@@ -239,6 +340,24 @@ under 1 ms on a copy of the live DB (≈1,000 tasks). On the server side, a
   the restart check is blocked (→ the Force offer, never confirmed) and Cancel
   drain only while no drain runs. 2026-11-06: refusal shown verbatim
   ("4 agent session(s) still working — stop them first, or retry with force.").
+- `--env TM_BAR_LOGIN=on|off` registers or unregisters the login item at
+  launch. `--env TM_BAR_SERVICE_ACTION=install|start|restart|uninstall` runs
+  that service command once at launch, through the same `Store.runService` as
+  the button. Both log their result. Verification only, like
+  `TM_BAR_ALWAYS_OPEN`.
+- **Rehearsal service** (how § Service was verified on 2026-11-06, with the
+  real front door in a terminal and agents working): in a worktree, write
+  `server/data/config.json` = `{"port":5185,"host":{"port":5186}}`. Then launch
+  with `--env TM_BAR_URL=http://127.0.0.1:5186 --env
+  TM_SERVICE_LABEL=com.taskmanager.server.rehearsal --env
+  TM_LAUNCH_AGENTS_DIR=<scratch dir>`. Results: install → `exit=0 ✓ up`,
+  `svc=…:running/pid…`, `runs-as=launchd`, `api.log`/`host.log`/`launchd.log`
+  written. restart → `exit=0`. `launchctl kill SIGTERM` (clean exit, left
+  down) then start → kickstart, `exit=0`. `launchctl bootout` then start →
+  bootstrap, `exit=0`. uninstall → `exit=0`, plist gone. The refusal: the same
+  label with `--env TM_HOST_PORT=5176`, so the script reads the LIVE front
+  door's restart-check (a GET). restart → `exit=3 ✗ 4 agent session(s) still
+  working — …`, and the rehearsal agent's pid was unchanged.
 
 ## Files
 
@@ -254,5 +373,8 @@ under 1 ms on a copy of the live DB (≈1,000 tasks). On the server side, a
 | `Sources/TMBar/Config.swift` | front door URL resolution |
 | `Sources/TMBar/HostModels.swift`, `ApiModels.swift` | decodable subsets of `HostStatus`, `OrchestratorStatus`, `MenubarSummary` |
 | `Sources/TMBar/Browser.swift` | Brave-or-default opener, deep links |
+| `Sources/TMBar/Service.swift` | `launchctl print` reading, the service.mjs runner, Console.app logs |
+| `Sources/TMBar/LoginItem.swift` | `SMAppService.mainApp` |
+| `scripts/service.mjs` | the launchd agent (docs/host.md § Running as a service); `start`, exit 3 on a guard refusal |
 | `scripts/menubar.mjs` | build + bundle + sign, open |
 | `server/src/routes/menubar.ts`, `shared/src/menubar.ts`, `server/src/inbox-input.ts` | the summary route |

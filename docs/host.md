@@ -444,8 +444,13 @@ npm run service:install     # writes ~/Library/LaunchAgents/com.taskmanager.serv
 npm run service:status      # launchd state + /host/status + where the logs are
 npm run service:logs        # tail -F host.log api.log
 npm run service:restart     # restart the FRONT DOOR (loads host.ts changes); refuses while agents work, -- --force
+npm run service:start       # start an installed agent that is down (kickstart, or bootstrap the plist as written)
 npm run service:uninstall   # stop it and remove the plist; `npm start` works as before
 ```
+
+The same commands are in TM Bar's menu (Install / Reinstall / Restart / Start /
+Uninstall, logs in Console.app — [menubar.md](menubar.md) § Service), which
+runs this script rather than a copy of it.
 
 Stop a terminal `npm start` first: the installer refuses while something holds
 the front door's port, or the API's (the agent would crash-loop on
@@ -457,8 +462,9 @@ the front door, and with it the API and every worker PTY. So they read
 `GET /api/server/restart-check` first, and the check **fails closed**. They
 proceed only on a 200 with `blocked: false`, a 503 `apiDown` (no API, so no
 agents), or nothing listening on the front door's port. A blocked guard, a
-timeout (20 s), an error or an unreadable answer refuses with the reason;
-`-- --force` overrides.
+timeout (20 s), an error or an unreadable answer refuses with the reason and
+exit code 3 (the only failure `--force` overrides, so TM Bar offers Force on it
+alone); `-- --force` overrides.
 
 **The plist** (`scripts/service.mjs`, regenerated on every install, linted
 with `plutil -lint` before it replaces the old one):

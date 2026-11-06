@@ -28,6 +28,8 @@ struct HostStatus: Decodable, Equatable, Sendable {
         let buildId: String?
         let stale: Bool?
         let service: String?
+        /// server/data/logs when the front door writes file logs, else null
+        let logDir: String?
     }
     struct Rebuild: Decodable, Equatable, Sendable {
         /// a drain's latest restart-check reading (`RebuildWaitingFor`)

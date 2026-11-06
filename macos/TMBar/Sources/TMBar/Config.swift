@@ -37,4 +37,50 @@ enum Config {
         else { return nil }
         return port
     }
+
+    // MARK: the launchd service (docs/menubar.md § Service)
+
+    /// The front door's launchd label — `TM_SERVICE_LABEL` (the same variable
+    /// scripts/service.mjs reads, so a rehearsal instance lines up), then
+    /// `defaults write com.taskmanager.bar serviceLabel …`, then the default.
+    static var serviceLabel: String {
+        if let env = ProcessInfo.processInfo.environment["TM_SERVICE_LABEL"], !env.isEmpty { return env }
+        if let stored = UserDefaults.standard.string(forKey: "serviceLabel"), !stored.isEmpty { return stored }
+        return "com.taskmanager.server"
+    }
+
+    /// Where service.mjs writes the plist — `TM_LAUNCH_AGENTS_DIR`, else ~/Library/LaunchAgents.
+    static var launchAgentsDir: String {
+        if let env = ProcessInfo.processInfo.environment["TM_LAUNCH_AGENTS_DIR"], !env.isEmpty { return env }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents").path
+    }
+
+    static var servicePlistPath: String {
+        URL(fileURLWithPath: launchAgentsDir).appendingPathComponent("\(serviceLabel).plist").path
+    }
+
+    /// The node that runs scripts/service.mjs. A GUI app's PATH has no nvm, so:
+    /// `TM_BAR_NODE`, `defaults … nodePath`, Info.plist `TMNodePath` (the node
+    /// that ran `npm run menubar:build`), the installed service's own node
+    /// (ProgramArguments[0]), then Homebrew's and /usr/local's. First executable wins.
+    static func nodePath() -> String? {
+        var candidates: [String?] = [
+            ProcessInfo.processInfo.environment["TM_BAR_NODE"],
+            UserDefaults.standard.string(forKey: "nodePath"),
+            Bundle.main.object(forInfoDictionaryKey: "TMNodePath") as? String,
+        ]
+        if let data = FileManager.default.contents(atPath: servicePlistPath),
+           let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+           let args = plist["ProgramArguments"] as? [String] {
+            candidates.append(args.first)
+        }
+        candidates += ["/opt/homebrew/bin/node", "/usr/local/bin/node"]
+        return candidates.compactMap { $0 }.first { !$0.isEmpty && FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    /// The front door's log folder when it has not said (`host.logDir` is null
+    /// in a terminal, and nothing answers when it is down).
+    static var defaultLogDir: String? {
+        repoRoot.map { URL(fileURLWithPath: $0).appendingPathComponent("server/data/logs").path }
+    }
 }

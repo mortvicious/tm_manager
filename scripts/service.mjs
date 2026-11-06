@@ -6,6 +6,7 @@
  *   npm run service:install   [-- --process-type Standard|Interactive|Background] [--no-caffeinate] [--force]
  *   npm run service:status
  *   npm run service:restart   [-- --force]     restart the FRONT DOOR (and the API it supervises)
+ *   npm run service:start                      start an installed agent that is not running
  *   npm run service:logs                       tail -F api.log + host.log
  *   npm run service:uninstall                  stop it and remove the plist
  *
@@ -52,10 +53,13 @@ const option = (name) => {
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-function fail(msg) {
+function fail(msg, code = 1) {
   console.error(`✗ ${msg}`);
-  process.exit(1);
+  process.exit(code);
 }
+/** Exit code of a restart-guard refusal (agents working / guard unreadable) —
+ *  the one failure `--force` overrides; TM Bar offers Force only on it. */
+const REFUSED_WHILE_WORKING = 3;
 
 if (process.platform !== 'darwin') fail('launchd is macOS only — on another OS run `npm start` under your own supervisor.');
 
@@ -246,7 +250,7 @@ async function waitStopped(timeoutMs = 40_000) {
 async function refuseIfWorking(what) {
   if (flag('--force')) return;
   const why = await restartCheckRefusal();
-  if (why) fail(`${why} — not ${what}. Wait and retry, or pass \`-- --force\` (it kills any running agents).`);
+  if (why) fail(`${why} — not ${what}. Wait and retry, or pass \`-- --force\` (it kills any running agents).`, REFUSED_WHILE_WORKING);
 }
 
 async function restartCheckRefusal() {
@@ -347,6 +351,34 @@ async function restart() {
   console.log(`✓ restarted: front door pid ${serviceInfo()?.pid ?? '?'}, API booted ${up.api.bootedAt}`);
 }
 
+/**
+ * Start an INSTALLED agent that is not running — after a clean exit (KeepAlive
+ * leaves it down), a `launchctl bootout`, or a login where it was booted out.
+ * Nothing is stopped, so there is no restart guard to read. Loaded → kickstart;
+ * plist on disk but not loaded → bootstrap it as written (never regenerated
+ * here: that is `install`'s job); no plist → not installed. TM Bar's
+ * "Start service" (docs/menubar.md § Service).
+ */
+async function start() {
+  const i = serviceInfo();
+  if (i?.state === 'running') {
+    console.log(`✓ ${LABEL} is already running (pid ${i.pid ?? '?'})`);
+  } else if (i) {
+    if (await portTaken(cfg.host.port)) fail(`port ${cfg.host.port} is in use by something other than ${LABEL} — stop it first`);
+    const k = launchctl(['kickstart', target]);
+    if (k.status !== 0) fail(`launchctl kickstart ${target} failed`);
+  } else if (fs.existsSync(plistPath)) {
+    if (await portTaken(cfg.host.port)) fail(`port ${cfg.host.port} is in use — a front door is already running (\`npm start\` in a terminal?)`);
+    const b = launchctl(['bootstrap', domain, plistPath]);
+    if (b.status !== 0) fail(`launchctl bootstrap ${domain} ${plistPath} failed`);
+  } else {
+    fail(`${LABEL} is not installed — \`npm run service:install\``);
+  }
+  const up = await waitUp();
+  if (!up) fail(`the API did not come up within 60 s — see ${logDir}`);
+  console.log(`✓ up: ${HOST} (front door pid ${serviceInfo()?.pid ?? '?'}, API booted ${up.api.bootedAt})`);
+}
+
 async function status() {
   const i = serviceInfo();
   console.log(`${LABEL}: ${i ? `${i.state}${i.pid ? `, pid ${i.pid}` : ''}, runs ${i.runs}, last exit ${i.lastExit}` : 'not loaded'}`);
@@ -368,9 +400,9 @@ function logs() {
   spawnSync('tail', ['-n', '50', '-F', ...files], { stdio: 'inherit' });
 }
 
-const commands = { install, uninstall, restart, status, logs };
+const commands = { install, uninstall, restart, start, status, logs };
 if (!commands[cmd]) {
-  console.error('usage: tsx scripts/service.mjs install|uninstall|restart|status|logs');
+  console.error('usage: tsx scripts/service.mjs install|uninstall|restart|start|status|logs');
   process.exit(2);
 }
 await commands[cmd]();

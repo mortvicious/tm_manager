@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import ServiceManagement
 import os
 
 /// What the menu-bar icon says, most urgent first (docs/menubar.md § The icon).
@@ -62,6 +63,14 @@ final class Store {
     var busy: Control?
     /// the rebuild failure the human closed (its finishedAt), so it stays closed
     var dismissedRebuild: String?
+    /// launchd's view of the front door's agent; read every poll while the menu is open
+    private(set) var service: ServiceInfo?
+    /// the service.mjs command in flight (one at a time)
+    private(set) var serviceRunning: ServiceCommand?
+    /// the last service.mjs command's result, until the menu is next opened
+    private(set) var serviceOutcome: ServiceOutcome?
+    private(set) var loginStatus: SMAppService.Status?
+    private(set) var loginError: String?
 
     private(set) var menuOpen = false
     @ObservationIgnored private var loop: Task<Void, Never>?
@@ -82,7 +91,22 @@ final class Store {
         observers.append(nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.wake() }
         })
+        refreshLogin()
         restart()
+        verificationHooks()
+    }
+
+    /// Verification only (docs/menubar.md § Verifying): `TM_BAR_LOGIN=on|off`
+    /// and `TM_BAR_SERVICE_ACTION=install|start|restart|uninstall` run the same
+    /// calls the menu's controls make, once at launch, results in the unified log.
+    private func verificationHooks() {
+        let env = ProcessInfo.processInfo.environment
+        if let login = env["TM_BAR_LOGIN"], login == "on" || login == "off" {
+            setLogin(login == "on")
+        }
+        if let raw = env["TM_BAR_SERVICE_ACTION"], let cmd = ServiceCommand(rawValue: raw) {
+            Task { await runService(cmd) }
+        }
     }
 
     // MARK: lifecycle
@@ -94,6 +118,8 @@ final class Store {
             // an outcome or a Force offer from minutes ago is not news any more
             if let n = note, Date().timeIntervalSince(n.at) > 120, busy == nil { note = nil }
             if let p = pending, Date().timeIntervalSince(p.at) > 120 { pending = nil }
+            if serviceRunning == nil { serviceOutcome = nil }
+            refreshLogin()
         } else {
             pending = nil // a confirm is asked of someone looking at it
         }
@@ -129,6 +155,11 @@ final class Store {
     func poll() async {
         defer { logChange() }
         let open = menuOpen || alwaysOpen
+        if open {
+            let info = await Service.info()
+            if Task.isCancelled { return }
+            set(\.service, info)
+        }
         do {
             let h = try await client.get("/host/status", as: HostStatus.self)
             set(\.host, h)
@@ -179,6 +210,12 @@ final class Store {
     /// (`log stream --predicate 'subsystem == "com.taskmanager.bar"'`).
     private func logChange() {
         var line = "state=\(state) base=\(client.base.absoluteString)"
+        if let svc = service {
+            line += " svc=\(svc.label):\(svc.loaded ? (svc.state ?? "?") : svc.installed ? "not-loaded" : "not-installed")"
+            if let pid = svc.pid { line += "/pid\(pid)" }
+        }
+        if let h = host { line += " runs-as=\(runsAs(h))" }
+        if let st = loginStatus { line += " login=\(Self.loginWord(st))" }
         if let s = summary, summaryError == nil {
             let tasks = s.tasks.map { "\($0.status):\($0.id.prefix(8))" }.joined(separator: ",")
             line += " tasks=[\(tasks)] inbox=\(s.inbox.total)/q\(s.inbox.questions)/you\(s.inbox.needsYou)"
@@ -207,10 +244,65 @@ final class Store {
         return .running(orch?.running ?? 0)
     }
 
+    /// Where the front door writes its logs: what it says, else the checkout's
+    /// server/data/logs (it is down, or a terminal one that writes no files).
+    var logDir: String? { host?.host.logDir ?? Config.defaultLogDir }
+
+    /// How the answering front door was started: `launchd` (the service sets
+    /// TM_SERVICE=launchd), `dev` (npm run dev), else a terminal `npm start`.
+    func runsAs(_ h: HostStatus) -> String {
+        if h.host.service == "launchd" { return "launchd" }
+        return h.host.dev ? "dev" : "terminal"
+    }
+
     /// The page to open: Vite in dev (the front door serves no SPA there), else the front door.
     var pageBase: URL {
         if host?.host.dev == true { return URL(string: "http://localhost:5173")! }
         return client.base
+    }
+
+    /// Run scripts/service.mjs — install / uninstall / restart / start. The
+    /// script's own guards decide; `force` only after its restart guard refused
+    /// and the human pressed Force (two presses in the menu).
+    func runService(_ command: ServiceCommand, force: Bool = false) async {
+        guard serviceRunning == nil else { return }
+        serviceRunning = command
+        serviceOutcome = nil
+        log.notice("service \(command.rawValue, privacy: .public)\(force ? " --force" : "", privacy: .public) …")
+        let outcome = await Service.run(command, force: force)
+        log.notice("service \(command.rawValue, privacy: .public) exit=\(outcome.exitCode) \(outcome.summary, privacy: .public)")
+        serviceRunning = nil
+        serviceOutcome = outcome
+        set(\.service, await Service.info())
+        await poll()
+    }
+
+    // MARK: login item
+
+    func refreshLogin() {
+        guard LoginItem.available else { return }
+        set(\.loginStatus, LoginItem.status)
+    }
+
+    func setLogin(_ on: Bool) {
+        do {
+            try LoginItem.set(on)
+            loginError = nil
+        } catch {
+            loginError = error.localizedDescription
+        }
+        refreshLogin()
+        log.notice("login item \(on ? "register" : "unregister", privacy: .public) → \(Self.loginWord(LoginItem.status), privacy: .public)\(self.loginError.map { " error: \($0)" } ?? "", privacy: .public)")
+    }
+
+    static func loginWord(_ s: SMAppService.Status) -> String {
+        switch s {
+        case .enabled: "enabled"
+        case .requiresApproval: "requires-approval"
+        case .notRegistered: "not-registered"
+        case .notFound: "not-found"
+        @unknown default: "unknown"
+        }
     }
 
     static func describe(_ error: Error) -> String {
