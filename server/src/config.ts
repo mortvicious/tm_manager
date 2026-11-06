@@ -60,6 +60,24 @@ export interface BootConfig {
    * page's `PUT /api/sentry/token`), so neither a boot nor a restart is needed.
    */
   sentry: SentryFileConfig;
+  /**
+   * The API's own log (server/src/logging.ts, docs/host.md § Logging). Routine
+   * requests are NOT logged at `info` — only 4xx/5xx and slow ones — because a
+   * line per hook curl and SPA read was the bulk of the volume and every line
+   * was a write into the inherited TTY.
+   */
+  log: LogConfig;
+}
+
+/** pino's levels, plus `silent`. `debug` brings back one line per request. */
+export const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
+export type LogLevel = (typeof LOG_LEVELS)[number];
+
+export interface LogConfig {
+  /** Default `info`: boot lines, warnings, errors, failed and slow requests. */
+  level: LogLevel;
+  /** A request slower than this (ms) is logged even when it succeeded. Long polls (`waitMs`) are exempt. */
+  slowRequestMs: number;
 }
 
 export interface SentryFileConfig {
@@ -229,6 +247,7 @@ const DEFAULT_CONFIG: BootConfig = {
   },
   push: { enabled: true, subject: 'mailto:task-manager@example.com', vapidPublicKey: '', vapidPrivateKey: '' },
   sentry: { authToken: '' },
+  log: { level: 'info', slowRequestMs: 2000 },
 };
 
 export const serverRoot = path.resolve(fileURLToPath(import.meta.url), '../..');
@@ -378,7 +397,25 @@ export function loadBootConfig(): BootConfig {
     },
     push: parsePush(raw.push),
     sentry: parseSentry(raw.sentry),
+    log: parseLog(raw.log),
   };
+}
+
+export function parseLog(r: unknown): LogConfig {
+  if (r === undefined) return structuredClone(DEFAULT_CONFIG.log);
+  if (typeof r !== 'object' || r === null || Array.isArray(r)) {
+    throw new Error(`data/config.json: log must be an object`);
+  }
+  const o = r as Record<string, unknown>;
+  const level = o.level ?? DEFAULT_CONFIG.log.level;
+  if (typeof level !== 'string' || !(LOG_LEVELS as readonly string[]).includes(level)) {
+    throw new Error(`data/config.json: log.level must be one of ${LOG_LEVELS.join(', ')}, got ${JSON.stringify(level)}`);
+  }
+  const slow = o.slowRequestMs ?? DEFAULT_CONFIG.log.slowRequestMs;
+  if (!(Number.isInteger(slow) && (slow as number) >= 100 && (slow as number) <= 600_000)) {
+    throw new Error(`data/config.json: log.slowRequestMs must be an integer in 100..600000`);
+  }
+  return { level: level as LogLevel, slowRequestMs: slow as number };
 }
 
 function parseSentry(r: unknown): SentryFileConfig {

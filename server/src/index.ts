@@ -1,3 +1,5 @@
+// Must stay first: console.* becomes async before any other module runs.
+import './async-console.ts';
 import { ApprovalService } from './approvals.ts';
 import { registerApprovalRoutes } from './routes/approvals.ts';
 import { spawn } from 'node:child_process';
@@ -17,6 +19,7 @@ import { AgentCommandCleanup } from './commands/cleanup.ts';
 import { ShellRunner } from './shells/runner.ts';
 import { AuxRunner, aux, initAux } from './claude/aux.ts';
 import { loadBootConfig, serverRoot } from './config.ts';
+import { createLogger, registerRequestLog } from './logging.ts';
 import { isAllowedHost, isAllowedOriginHost, lanAddresses, setLanEnabled } from './net.ts';
 import { isHostToken } from './remote.ts';
 import { broadcast } from './events.ts';
@@ -270,17 +273,10 @@ const activity = new ActivityWatcher({
 });
 activity.start();
 
-const app = Fastify({
-  logger: {
-    level: 'info',
-    serializers: {
-      // never log the terminal token from WS attach URLs (review F12)
-      req(req: { method: string; url: string }) {
-        return { method: req.method, url: req.url.replace(/([?&]token=)[^&]+/, '$1***') };
-      },
-    },
-  },
-});
+// Logging (docs/host.md § Logging): no per-request lines at info — one line
+// only for a 4xx/5xx or slow request — through an async stdout destination.
+const app = Fastify({ loggerInstance: createLogger(cfg.log), disableRequestLogging: true });
+registerRequestLog(app, cfg.log);
 await app.register(fastifyWebsocket, { options: { maxPayload: 8 * 1024 * 1024 } });
 await app.register(fastifyMultipart, { limits: { fileSize: 25 * 1024 * 1024, files: 10 } });
 app.orchestrator = orchestrator;

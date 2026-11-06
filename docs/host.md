@@ -422,8 +422,8 @@ parent, for three measured reasons (2026-11-06, 8 GB MacBook):
   and 6.5 GB of server, workers, a `nest start --watch` dev server (2.6 GB)
   and a worker's `tsc` (1.7 GB). That hides who is using the machine, and it
   makes the terminal app the thing macOS wants to kill.
-- **Scrollback.** Fastify logs every request at `info`; days of that live in
-  the tab's memory.
+- **Scrollback.** Fastify logged every request at `info` (no longer — § Logging);
+  days of that lived in the tab's memory.
 - **Wedging.** A TTY write is synchronous on macOS, so a terminal that stops
   reading blocks the API inside a console write (it happened, 2026-10-29).
 
@@ -556,6 +556,94 @@ Supervision), and the orphan still has `TM_SUPERVISED=1`. A restart asked of it
 `timeout`, and **Start server** then spawns a managed API. The same happens
 after a terminal front door crashes, so this is not new with the service.
 `service:restart` does not help: the new front door adopts the same orphan.
+
+## Logging
+
+The API's log (`server/src/logging.ts`, decisions.md 2026-11-06) is quiet by
+default and never writes synchronously:
+
+- **No line per request.** Fastify's own request logging is off
+  (`disableRequestLogging: true`) — it wrote two `info` lines (`incoming
+  request` + `request completed`) for every hook curl, agent poll and SPA read,
+  which was nearly all the volume. One global `onResponse` hook
+  (`registerRequestLog`) writes ONE line instead, and only for a request worth
+  reading: `error` for a 5xx, `warn` for a 4xx (`request failed`) or for a
+  request slower than `log.slowRequestMs` (`slow request`). A long poll
+  (`?waitMs=` — agent task/approval polls, the question hook) is never "slow":
+  waiting is its job. A WebSocket upgrade writes nothing. Routine requests go
+  to `debug`, so `log.level: "debug"` brings back one line per request. URLs are
+  logged with `token=` redacted, as before.
+- **No blocking write — pino AND `console.*`.** Node writes to a TTY or a
+  file synchronously on macOS, and the 2026-10-29 wedge was a `console.*` call
+  blocked in `write`. So both writers of the API go through
+  `nonBlockingWriter` on fd 1/2: pino's destination, and every `console.log/
+  info/debug` (→ fd 1, the SAME writer as pino, so the order holds) and
+  `console.warn/error` (→ fd 2), re-pointed by `installAsyncConsole` —
+  `server/src/async-console.ts` is the FIRST import of `index.ts`, so no module
+  logs before it. Formatting is `util.format`, so the text is unchanged (the
+  boot lines `docs/telegram.md` quotes included).
+  - **TTY or pipe** (`npm start` in a terminal; the pipe to the front door's
+    log under the launchd service): a libuv stream in NON-blocking mode —
+    `tty.WriteStream` + `setBlocking(false)` (libuv reopens the tty for its own
+    handle, so the terminal's shared file description is untouched, measured)
+    or a `net.Socket` on the pipe. What the reader does not take is queued on
+    the event loop; past 16 MiB queued (`MAX_BUFFER`) lines are dropped; exit
+    leaves the queue behind and never waits on it.
+  - **Regular file** (`> file`, launchd `StandardOutPath`): pino's async
+    sonic-boom, flushed on exit — a file write does not stall on a reader.
+  - Rejected: sonic-boom for the TTY/pipe too. Its async write is a blocking
+    `write(2)` on libuv's threadpool, and Node joins that pool at exit, so a
+    stalled terminal hung every exit — and so every restart (measured with an
+    unread pty: the exit handlers ran, the process never ended).
+  - Measured (an unread pty as stdout+stderr, 15k console + pino lines in
+    bursts): the old sync console never reached its 2.5 s timer and was still
+    blocked at 15 s; the new writers kept the event loop within 267 ms of
+    formatting CPU on the loaded laptop and the process exited by itself.
+  - Not covered: in a terminal the front door (`host.ts`) still writes its own
+    rare `console.*` lines synchronously (under the service they go to
+    `host.log` through an async `WriteStream`, § Running as a service), and a
+    crash's stack trace is printed by Node itself. Neither is on the API's hot
+    path. The `EPIPE` guard on `process.stdout/stderr` in `index.ts` stays: it
+    is harmless beside these writers (measured: 4 MB of `console.log` into an
+    unread pipe still returns in 15 ms with it installed).
+- **Config** (`data/config.json`, read at boot):
+
+  ```json
+  "log": { "level": "info", "slowRequestMs": 2000 }
+  ```
+
+  `level` is one of `fatal error warn info debug trace silent` (default
+  `info`); `slowRequestMs` is 100…600000 (default 2000). A bad value refuses to
+  boot with the key named, like every other key in the file.
+
+### Measured volume
+
+Measured on the live install 2026-11-06 (8 GB MacBook, load average 78–108,
+`orchestrator.concurrency` 4), by sampling the write offset of the API's fd 1
+(`lsof -a -p <api pid> -d 1`, the TTY it inherits) once a minute:
+
+| window | bytes written | per hour | ≈ lines/hour |
+|---|---|---|---|
+| whole uptime, 10:54–13:41 (2 h 46 m) | 223,291 B | 80.5 KB | ≈ 410 |
+| 13:36–13:41 (5 min, 4 workers busy) | 12,996 B | 151 KB | ≈ 770 |
+
+Lines are counted at 197 B, the average of Fastify's `incoming request` /
+`request completed` pair for hook and SPA URLs. A second, independent count —
+distinct client connections to `:5175` in `netstat`, sampled every second
+13:24–13:40 — saw 219 connections, ≥ 876 requests/hour (each hook curl is
+its own connection; the front door's keep-alive requests are not counted),
+i.e. ≥ 1,750 request lines/hour. The two disagree by ~2× (the TTY offset is
+the lower one); either way the API's own non-request logging is two `app.log`
+calls (500s, restart) plus rare `console.*` lines, so request lines were
+essentially the whole volume.
+
+After: on the same workload every routine request writes nothing; in the
+`logging.test.ts` harness 40 hook + SPA requests and a 60 s long poll write 0
+lines, a 409, a 404, a 500 and a slow request one line each.
+Volume on a real day after the
+change is re-measured by the scheduled job filed with this change (lines/hour
+of the API's log, the same way, compared with the rows above); the target is
+≥ 90% fewer.
 
 ## Failure modes
 
