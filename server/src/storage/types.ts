@@ -313,6 +313,10 @@ export interface NewChatMessage {
   error?: string | null;
   costUsd?: number;
   durationMs?: number | null;
+  /** office chat: the addressed role (stakeholder message) or the speaking role (reply) */
+  roleId?: string | null;
+  /** office chat: the reply came from a tainted role context */
+  taintedAt?: string | null;
 }
 
 /** How a turn ended, applied to the chat row in one write. */
@@ -760,6 +764,13 @@ export interface Storage {
   /** Oldest first, newest `limit` rows when given (the page renders bottom-up). */
   listChatMessages(chatId: string, limit?: number): Promise<ChatMessage[]>;
   appendChatMessage(m: NewChatMessage): Promise<ChatMessage>;
+  getChatMessage(id: string): Promise<ChatMessage | null>;
+  /**
+   * Office group chat: record that the stakeholder's message was sent to the
+   * office channel. Conditional (`channel_message_id IS NULL`): null = it was
+   * already sent (or is gone), so a double click files one request.
+   */
+  setChatMessageChannel(id: string, channelMessageId: string): Promise<ChatMessage | null>;
   /**
    * The serialisation lock. Flips `idle`/`error` → `thinking` and clears the
    * previous error, in ONE conditional statement — a chat already `thinking`

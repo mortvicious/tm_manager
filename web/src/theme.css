@@ -14289,6 +14289,105 @@ button.explain-tap:active {
   min-height: 16rem;
 }
 
+/* The office group chat (docs/office.md § Group chat) — bubbles reuse .chat-msg/.chat-body */
+.office-chat-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2) var(--tm-space-4);
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.office-chat-head .office-hint {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.office-chat-log {
+  max-height: 32rem;
+  overflow-y: auto;
+  padding: var(--tm-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-4);
+}
+
+/* in a phone Sheet the sheet's own scroller scrolls (no nested scroller) */
+.office-chat.in-sheet .office-chat-log {
+  max-height: none;
+  overflow: visible;
+  padding: var(--tm-space-2) 0;
+}
+
+.office-chat-tainted .chat-body {
+  border-color: var(--tm-status-attention);
+}
+
+.office-chat-tainted .chip.office-taint {
+  margin-left: var(--tm-space-2);
+}
+
+.office-chat-actions {
+  margin-top: var(--tm-space-1);
+  display: flex;
+  justify-content: flex-end;
+  font-size: var(--tm-text-xs);
+}
+
+.btn.office-chat-send {
+  font-size: var(--tm-text-xs);
+  padding: 2px var(--tm-space-2);
+}
+
+.office-chat-compose {
+  border-top: 1px solid var(--tm-border);
+}
+
+.office-chat.in-sheet .office-chat-compose .chat-composer {
+  padding: var(--tm-space-3) 0;
+}
+
+.office-chat-target {
+  padding: var(--tm-space-2) var(--tm-space-4) 0;
+}
+
+.office-chat.in-sheet .office-chat-target {
+  padding: var(--tm-space-2) 0 0;
+}
+
+.office-chat-mentions {
+  display: flex;
+  flex-direction: column;
+  margin: var(--tm-space-2) var(--tm-space-4) 0;
+  border: 1px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-bg-inset);
+  overflow: hidden;
+}
+
+.office-chat.in-sheet .office-chat-mentions {
+  margin: var(--tm-space-2) 0 0;
+}
+
+.office-chat-mention {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--tm-space-3);
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 0;
+  background: none;
+  color: var(--tm-text);
+  font-size: var(--tm-text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.office-chat-mention.active,
+.office-chat-mention:hover {
+  background: var(--tm-accent-subtle);
+}
+
 /* The office channel (docs/office.md § Channel) */
 .office-msg {
   padding: var(--tm-space-2) var(--tm-space-4);

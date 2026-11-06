@@ -21,7 +21,7 @@ function when(iso: string): string {
  * breaks preserved. Deliberately NOT a markdown renderer: no HTML is ever
  * constructed from model output, so there is nothing here to inject into.
  */
-function Reply({ text }: { text: string }) {
+export function Reply({ text }: { text: string }) {
   const blocks = useMemo(() => text.split(/```/), [text]);
   return (
     <>
@@ -110,7 +110,9 @@ function NewChat({ onCreated }: { onCreated: (c: Chat) => void }) {
 }
 
 export function ChatPage() {
-  const { chats, chatMessages, loadChat, repos } = useApp();
+  const { chats: allChats, chatMessages, loadChat, repos } = useApp();
+  // an office group chat lives on /office (docs/office.md § Group chat), never here
+  const chats = useMemo(() => allChats.filter((c) => c.officeId === null), [allChats]);
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [text, setText] = useState('');

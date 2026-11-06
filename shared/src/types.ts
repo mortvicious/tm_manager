@@ -2588,6 +2588,8 @@ export type AuditKind =
   | 'office.feature'
   /** a stakeholder posted to the office channel (docs/office.md § Channel) */
   | 'office.message'
+  /** a stakeholder's office group chat message was sent to the channel as a request (docs/office.md § Group chat) */
+  | 'office.chat-to-channel'
   /** a Director shift was shown unrouted channel messages — the pass count (docs/office.md § Channel) */
   | 'office.channel-presented'
   /** a channel message was routed: task, note, huddle, forward, or a server delivery (docs/office.md § Channel) */
@@ -2774,6 +2776,16 @@ export interface ChatMessage {
   costUsd: number;
   durationMs: number | null;
   createdAt: string;
+  /**
+   * Office group chat only (docs/office.md § Group chat; null in an ordinary
+   * chat): on the stakeholder's message, the role it was routed to (its
+   * @mention, else the Director); on a reply, the role that wrote it.
+   */
+  roleId: string | null;
+  /** a reply written from a TAINTED role context — shown with a badge, never a shift input */
+  taintedAt: string | null;
+  /** the stakeholder's message was sent to the office channel as a request (that message's id) */
+  channelMessageId: string | null;
 }
 
 // ---- WebSocket protocol ----
@@ -3923,3 +3935,5 @@ import type { ProcMemorySnapshot } from './proc-memory.ts';
 import type { Office, OfficeBrief, OfficeHuddle, OfficeMessage, OfficeMessageRoute, OfficeProposal, OfficeRole, OfficeStates, OfficeWish } from './office.ts';
 // Virtual Office: types, cron, catch-up, guards, the hard gate, autonomy and taint (docs/office.md)
 export * from './office.ts';
+// Office group chat: @mention routing and what a turn / a shift may read of it (docs/office.md § Group chat)
+export * from './office-chat.ts';

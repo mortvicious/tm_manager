@@ -58,6 +58,7 @@ import type { Storage } from '../storage/types.ts';
 import { allowlistCheck, commandRunsBlock, type OfficeCommandRuns } from './commands.ts';
 import { fallbackBrief, standupInput, writeShiftBrief, type StandupInput } from './briefs.ts';
 import { channelPromptBlock, type ChannelPromptBlock } from './channel.ts';
+import { officeChatShiftBlock } from './chat.ts';
 import { huddleTurnPlan, type HuddleTurnPlan } from './huddles.ts';
 import { ROADMAP_REL, plannableWishes, replanReason } from './docs.ts';
 import './features.ts'; // registers the `feature` shift section (Director only)
@@ -551,6 +552,8 @@ export class ShiftRunner {
     const wishes = director ? await plannableWishes(this.deps.storage, office.id) : [];
     const replan = director && isReplanTrigger(trigger) ? replanReason(trigger.ref ?? '') : null;
     const allowed = huddle ? [] : await this.allowedCommands(office, role);
+    // the office group chat, ONLY as stakeholder messages + this role's untainted replies (docs/office.md § Group chat)
+    const chat = huddle ? [] : await officeChatShiftBlock(this.deps.storage, office, role, now);
     const why =
       huddle
         ? `your turn in a huddle (turn ${huddle.turn} of ${huddle.huddle.maxTurns}; see "Huddle")`
@@ -661,6 +664,7 @@ export class ShiftRunner {
       ...(plan.prevCommands ? commandRunsBlock(plan.prevCommands.shiftId, plan.prevCommands.runs) : []),
       ...(plan.standup ? plan.standup.block : []),
       ...plan.channel.lines,
+      ...chat,
       ...(huddle ? [] : ['## Saved commands you may request', '']),
       ...(huddle
         ? []

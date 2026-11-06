@@ -142,13 +142,15 @@ The agents' terminals are still not exposed. That has not changed.
 
 | route | |
 |---|---|
-| `GET /api/chats[?repoId=]` | newest activity first |
+| `GET /api/chats[?repoId=\|officeId=]` | newest activity first; ordinary chats only unless `officeId` is given |
 | `GET /api/chats/:id` | `{ chat, messages }` — the whole transcript |
 | `POST /api/chats` | `{ repoId, title?, model?, effort?, mode? }` |
 | `PATCH /api/chats/:id` | `{ title?, model?, effort?, mode? }` — 409 mid-turn for all but the title |
 | `DELETE /api/chats/:id` | the chat and its transcript, transactionally (there is no FK to cascade) |
 | `POST /api/chats/:id/messages` | `{ text }` → **202 on acceptance** |
 | `POST /api/chats/:id/stop` | cut the live turn short |
+| `POST /api/offices/:id/chats` | Origin — an office group chat (docs/office.md § Group chat) |
+| `POST /api/chats/:id/messages/:messageId/channel` | Origin — send an office chat message to the channel |
 
 `POST …/messages` answering 202 rather than the reply is the load-bearing choice. A turn runs for minutes, which is longer than any sane HTTP timeout — so `ChatService.send` is **two phases**: it resolves once the message is validated, the concurrency fence passed, the lock taken and the user's message stored, and hands back a `done` promise for the reply. Every refusal (404 gone, 409 already answering, 429 over the cap, 400 empty) is therefore a real status code, and the reply arrives over `/ws/events` as a `chat.message` — the same frame a turn started from the phone produces. Collapsing the two phases into one promise would have forced the route to *guess* when a refusal had stopped being possible, and that guess is different on SQLite and on Postgres.
 
@@ -189,6 +191,20 @@ The old `calc(100vh - tabbar - space-8)` ignored the header and the safe-area
 top, and in standalone it also ignored the keyboard (UX review #28). The phone
 floor is 200px rather than the desktop's 320px, so a keyboard never pushes the
 composer under itself.
+
+## Office group chats
+
+A chat with `office_id` set is an office **group chat** — docs/office.md §
+Group chat has the whole of it. In short: every role is a participant, a
+message goes to the role it @mentions or else to the Director, each turn is
+the answering role's persona in a FRESH read-only aux terminal in the office
+folder (no `--resume`, no write mode — create/PATCH/send all refuse it), the
+chat so far rides in the prompt, a reply from a tainted role context is marked
+(`tm_chat_messages.tainted_at`, migration 62) and is never a shift input, and
+the stakeholder's own message can be **sent to the channel** as a trusted
+request. Office chats live on /office only: `GET /api/chats` without
+`?officeId=` leaves them out, as do the Chat page, the palette and Telegram;
+their writes need `Origin`.
 
 ## What it is not
 

@@ -529,6 +529,19 @@ export class PushNotifier {
     // before this boot) counts as the browser.
     if (this.chatAsker.get(m.chatId) === 'telegram') return;
     const chat: Chat | null = await this.deps.storage.getChat(m.chatId);
+    if (chat?.officeId) {
+      // an office group chat lives on /office (docs/office.md § Group chat), and names who answered
+      const office = await this.deps.storage.getOffice(chat.officeId);
+      const ws = office ? await this.deps.storage.getWorkspace(office.workspaceId) : null;
+      const role = m.roleId ? await this.deps.storage.getOfficeRole(m.roleId) : null;
+      await this.deps.push.deliver('chat', {
+        title: `${m.error ? '⚠' : '💬'} ${role ? `${role.avatar} ${role.name}` : 'Office'} · ${chat.title}${m.taintedAt ? ' · tainted' : ''}`,
+        body: clip(m.error ?? (m.text || '(empty reply)'), SUMMARY_CLIP),
+        tag: `chat-${m.chatId}`,
+        url: ws ? `/office?ws=${encodeURIComponent(ws.slug)}` : '/office',
+      });
+      return;
+    }
     await this.deps.push.deliver('chat', {
       title: `${m.error ? '⚠' : '💬'} ${chat?.title ?? 'Chat'}`,
       body: clip(m.error ?? (m.text || '(empty reply)'), SUMMARY_CLIP),

@@ -444,8 +444,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
               // renders as if it were complete.
               if (!list) return cur;
               // The sender already has its own message from the POST's 202;
-              // the broadcast is the same row coming back.
-              if (list.some((m) => m.id === e.message.id)) return cur;
+              // the broadcast is the same row coming back — or the row
+              // UPDATED (an office chat message sent to the channel), which
+              // replaces the copy held here.
+              const at = list.findIndex((m) => m.id === e.message.id);
+              if (at !== -1) {
+                const next = list.slice();
+                next[at] = e.message;
+                return { ...cur, [e.message.chatId]: next };
+              }
               return { ...cur, [e.message.chatId]: [...list, e.message] };
             });
             break;

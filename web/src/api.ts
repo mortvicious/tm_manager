@@ -518,6 +518,11 @@ export const api = {
   sendChatMessage: (id: string, text: string) =>
     req<{ accepted: true; message: ChatMessage }>('POST', `/api/chats/${id}/messages`, { text }),
   stopChat: (id: string) => req<{ stopped: boolean }>('POST', `/api/chats/${id}/stop`),
+  // Office group chat (docs/office.md § Group chat): same chat routes, listed per office
+  listOfficeChats: (officeId: string) => req<Chat[]>('GET', `/api/chats?officeId=${encodeURIComponent(officeId)}`),
+  createOfficeChat: (officeId: string, title?: string) => req<Chat>('POST', `/api/offices/${officeId}/chats`, title ? { title } : {}),
+  sendChatToChannel: (chatId: string, messageId: string) =>
+    req<{ message: ChatMessage; officeMessage: OfficeMessage }>('POST', `/api/chats/${chatId}/messages/${messageId}/channel`),
 
   getConfig: () => req<AppSettings>('GET', '/api/config'),
   putConfig: (b: Partial<AppSettings>) => req<AppSettings>('PUT', '/api/config', b),

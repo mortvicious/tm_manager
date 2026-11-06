@@ -57,6 +57,7 @@ import { Sheet } from '../components/Sheet.tsx';
 import { Markdown } from '../components/Markdown.tsx';
 import { OfficeVision } from '../components/OfficeVision.tsx';
 import { OfficeChannel } from '../components/OfficeChannel.tsx';
+import { OfficeChat } from '../components/OfficeChat.tsx';
 import { OfficeHuddles } from '../components/OfficeHuddles.tsx';
 import { useNow } from '../components/TimeAgo.tsx';
 import { useArm } from '../arm.ts';
@@ -324,7 +325,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   const now = useNow();
   const { detail, states, error, reload } = useOfficeDetail(officeId);
   const [editing, setEditing] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | 'channel' | 'huddles' | null>(null);
+  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | 'channel' | 'huddles' | 'chat' | null>(null);
   const briefs = useOfficeBriefs(officeId);
   const [briefId, setBriefId] = useBriefParam();
 
@@ -349,6 +350,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   );
   const ask = <AskDirector office={office} director={director} onAsked={reload} />;
   const channel = <OfficeChannel office={office} roles={roles} inSheet={mobile} onOpenTask={onOpenTask} />;
+  const chat = <OfficeChat office={office} roles={roles} inSheet={mobile} />;
   const huddles = <OfficeHuddles office={office} roles={roles} inSheet={mobile} onOpenTask={onOpenTask} />;
   const briefList = (
     <BriefList office={office} roles={roles} briefs={briefs} selected={briefId} inSheet={mobile} onSelect={(id) => setBriefId(id === briefId ? null : id)} />
@@ -372,6 +374,9 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
           </button>
           <button className="btn" onClick={() => setSheet('ask')}>
             Ask the Director
+          </button>
+          <button className="btn" onClick={() => setSheet('chat')}>
+            Chat
           </button>
           <button className="btn" onClick={() => setSheet('channel')}>
             Channel
@@ -423,8 +428,14 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
           {ask}
         </div>
       )}
+      {!mobile && <div className="panel">{chat}</div>}
       {!mobile && <div className="panel">{channel}</div>}
       {!mobile && <div className="panel">{huddles}</div>}
+      {mobile && sheet === 'chat' && (
+        <Sheet label="Office group chat" title="Group chat" onClose={() => setSheet(null)} disableDrag tall>
+          {chat}
+        </Sheet>
+      )}
       {mobile && sheet === 'huddles' && (
         <Sheet label="Office huddles" title="Huddles" onClose={() => setSheet(null)} disableDrag tall>
           {huddles}

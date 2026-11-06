@@ -1694,13 +1694,25 @@ export class SqliteStorage implements Storage {
     return this.inTxn(() => {
       this.db
         .prepare(
-          `INSERT INTO tm_chat_messages (id, chat_id, role, text, actor, error, cost_usd, duration_ms, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO tm_chat_messages (id, chat_id, role, text, actor, error, cost_usd, duration_ms, created_at, role_id, tainted_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(id, m.chatId, m.role, m.text, m.actor, m.error ?? null, m.costUsd ?? 0, m.durationMs ?? null, at);
+        .run(id, m.chatId, m.role, m.text, m.actor, m.error ?? null, m.costUsd ?? 0, m.durationMs ?? null, at, m.roleId ?? null, m.taintedAt ?? null);
       this.db.prepare(`UPDATE tm_chats SET last_message_at = ?, updated_at = ? WHERE id = ?`).run(at, at, m.chatId);
       return rowToChatMessage(this.db.prepare(`SELECT * FROM tm_chat_messages WHERE id = ?`).get(id));
     });
+  }
+
+  async getChatMessage(id: string): Promise<ChatMessage | null> {
+    const r = this.db.prepare(`SELECT * FROM tm_chat_messages WHERE id = ?`).get(id);
+    return r ? rowToChatMessage(r) : null;
+  }
+
+  async setChatMessageChannel(id: string, channelMessageId: string): Promise<ChatMessage | null> {
+    const r = this.db
+      .prepare(`UPDATE tm_chat_messages SET channel_message_id = ? WHERE id = ? AND channel_message_id IS NULL RETURNING *`)
+      .get(channelMessageId, id);
+    return r ? rowToChatMessage(r) : null;
   }
 
   async beginChatTurn(id: string): Promise<Chat | null> {

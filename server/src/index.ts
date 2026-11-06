@@ -536,7 +536,7 @@ registerStatsRoutes(app, storage, sessions, orchestrator);
 registerProgressRoutes(app, storage);
 registerScheduleRoutes(app, storage);
 registerTimelineRoutes(app, storage);
-registerChatRoutes(app, chats);
+registerChatRoutes(app, chats, storage);
 registerQuestionRoutes(app, orchestrator.questions);
 registerApprovalRoutes(app, storage, approvals);
 registerReportRoutes(app, storage);

@@ -1168,6 +1168,20 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
     // than this, or one shorter than a sample).
     statements: [`ALTER TABLE tm_runs ADD COLUMN peak_mem_mb DOUBLE PRECISION`],
   },
+  {
+    id: 62,
+    // Office group chat (docs/office.md § Group chat). On a message of an
+    // office chat: `role_id` = the role the stakeholder's message was routed
+    // to (@mention, else the Director) or the role that wrote a reply;
+    // `tainted_at` = the reply came from a tainted role context (a shift
+    // never reads its text); `channel_message_id` = the stakeholder message
+    // was sent to the office channel as a request — set once, conditionally.
+    statements: [
+      `ALTER TABLE tm_chat_messages ADD COLUMN role_id TEXT`,
+      `ALTER TABLE tm_chat_messages ADD COLUMN tainted_at TEXT`,
+      `ALTER TABLE tm_chat_messages ADD COLUMN channel_message_id TEXT`,
+    ],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */

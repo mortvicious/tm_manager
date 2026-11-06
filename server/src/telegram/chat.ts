@@ -64,7 +64,8 @@ export async function activeChat(storage: Storage): Promise<Chat | null> {
   const id = await activeChatId(storage);
   if (!id) return null;
   const chat = await storage.getChat(id);
-  if (!chat) {
+  // an office group chat is never the phone's active chat (docs/office.md § Group chat)
+  if (!chat || chat.officeId) {
     await storage.setSetting(ACTIVE_KEY, '');
     return null;
   }
@@ -191,7 +192,8 @@ async function chatHeader(storage: Storage, c: Chat): Promise<string> {
 /** Open a chat in `repo` — reusing the newest one there rather than minting a
  *  second: on a phone "chat with the frontend repo" means one conversation. */
 export async function openChat(deps: ChatDeps, repo: Repo, actor: string): Promise<Reply> {
-  const all = await deps.storage.listChats(repo.id);
+  // office group chats are /office's alone (docs/office.md § Group chat)
+  const all = (await deps.storage.listChats(repo.id)).filter((c) => c.officeId === null);
   // When the phone may not run write turns, it does not silently land in a
   // write chat either: the newest chat it can actually USE is the one to
   // resume, and if there is none, a fresh (read) chat beats attaching to a
@@ -244,7 +246,7 @@ export async function chatCommand(deps: ChatDeps, args: string, actor: string): 
 /** `/chats` — every chat, with a button to switch to each. */
 export async function chatsCommand(deps: ChatDeps): Promise<ReplyLike> {
   if (!deps.cfg.enabled) return { html: OFF_REPLY, ok: false };
-  const all = await deps.storage.listChats();
+  const all = (await deps.storage.listChats()).filter((c) => c.officeId === null);
   if (all.length === 0) return '💬 No chats yet. /chat opens one.';
   const repos = new Map((await deps.storage.listRepos()).map((r) => [r.id, r.name]));
   const activeId = await activeChatId(deps.storage);
@@ -321,7 +323,7 @@ export async function handleChatButton(
     return { reply: await openChat(deps, found.value, actor), toast: 'Opened' };
   }
   // The remaining kinds all name a chat.
-  const all = await deps.storage.listChats();
+  const all = (await deps.storage.listChats()).filter((c) => c.officeId === null);
   const found = resolveIn(b.id, all, 'chat', (c) => c.title);
   if (!found.ok) return refuse(escapeHtml(found.error), 'Gone');
   const chat = found.value;

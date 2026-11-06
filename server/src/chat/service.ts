@@ -8,7 +8,9 @@ import {
   type ChatMode,
   type EffortLevel,
 } from '@tm/shared';
-import { READ_ONLY_DISALLOWED, aux } from '../claude/aux.ts';
+import { READ_ONLY_DISALLOWED, aux, type AuxRunner } from '../claude/aux.ts';
+import { planOfficeChatTurn, resolveOfficeChatRole, type OfficeChatTurnPlan } from '../office/chat.ts';
+import type { ShiftIsolation } from '../office/shift.ts';
 import { pidLooksLikeOurs } from '../pty/session-manager.ts';
 import { broadcast } from '../events.ts';
 import type { ChatPatch, Storage } from '../storage/types.ts';
@@ -43,6 +45,27 @@ const NEVER_IN_CHAT = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'];
 
 export interface ChatDeps {
   storage: Storage;
+  /** the aux runner (default: the process-wide one) — injected by tests */
+  aux?: () => Pick<AuxRunner, 'start'>;
+  /** office isolation resolvers (default: the card's) — injected by tests */
+  isolation?: ShiftIsolation;
+}
+
+export interface OfficeChatCreateInput {
+  officeId: string;
+  title?: string;
+}
+
+/** Office chats have one mode: read. Every write-mode path refuses with this. */
+export const OFFICE_CHAT_NO_WRITE = 'office chats have no write mode — a role answers read-only';
+
+/** An office chat turn: the persona that answers, and its pre-spawn plan (built after the lock). */
+interface OfficeTurn {
+  officeId: string;
+  roleId: string;
+  mentioned: boolean;
+  /** the chat's messages BEFORE this one (the transcript the persona reads) */
+  history: ChatMessage[];
 }
 
 export interface ChatCreateInput {
@@ -61,6 +84,21 @@ export interface ChatTurn {
   chat: Chat;
   user: ChatMessage;
   done: Promise<ChatResult<ChatMessage>>;
+}
+
+/** How a turn ended, before it is written down. */
+interface TurnResult {
+  text: string;
+  sessionId: string | null;
+  costUsd: number;
+  error: string | null;
+  /** office chat: the role that answered */
+  roleId?: string | null;
+  /** office chat: the role context was tainted — the reply is marked */
+  tainted?: boolean;
+  taintSources?: string[];
+  /** office chat: the role's model (the chat row's is not used) */
+  model?: string;
 }
 
 const fail = (code: number, error: string): ChatResult<never> => ({ ok: false, code, error });
@@ -93,8 +131,14 @@ export class ChatService {
 
   // ---- reads ----
 
-  list(repoId?: string): Promise<Chat[]> {
-    return this.storage.listChats(repoId);
+  /**
+   * Ordinary chats, or one office's group chats. An office chat is never in
+   * the ordinary list (the Chat page, the phone's /chats): it is the office's,
+   * and only /office sends into it.
+   */
+  async list(repoId?: string, officeId?: string): Promise<Chat[]> {
+    if (officeId) return (await this.storage.listChats(undefined, officeId)).filter((c) => c.officeId === officeId);
+    return (await this.storage.listChats(repoId)).filter((c) => c.officeId === null);
   }
 
   get(id: string): Promise<Chat | null> {
@@ -140,9 +184,50 @@ export class ChatService {
     return ok(chat);
   }
 
+  /**
+   * An office group chat (docs/office.md § Group chat): every role of the
+   * office is a participant, the mode is `read` and stays so. `repoId` is
+   * the workspace's first repo as a listing key only (the column is NOT
+   * NULL) — a turn runs in the office folder, never in that repo.
+   */
+  async createOffice(input: OfficeChatCreateInput, actor: string): Promise<ChatResult<Chat>> {
+    const office = await this.storage.getOffice(input.officeId);
+    if (!office) return fail(404, 'office not found');
+    if (!fs.statSync(office.folderPath, { throwIfNoEntry: false })?.isDirectory()) {
+      return fail(400, `office folder does not exist: ${office.folderPath}`);
+    }
+    const roles = await this.storage.listOfficeRoles(office.id);
+    const ws = await this.storage.getWorkspace(office.workspaceId);
+    const settings = await this.storage.getSettings();
+    const chat = await this.storage.createChat({
+      repoId: ws?.repoIds[0] ?? '',
+      title: (input.title?.trim() || 'Office chat').slice(0, TITLE_MAX),
+      model: settings['chat.model'],
+      effort: null,
+      mode: 'read',
+      officeId: office.id,
+      participants: roles.map((r) => r.id),
+    });
+    await this.storage.appendEvent({
+      kind: 'chat.created',
+      actor,
+      data: { chatId: chat.id, title: chat.title, officeId: office.id, workspaceId: office.workspaceId, mode: 'read' },
+    });
+    broadcast({ type: 'chat.updated', chat });
+    return ok(chat);
+  }
+
   async edit(id: string, patch: ChatPatch, actor: string): Promise<ChatResult<Chat>> {
     const cur = await this.storage.getChat(id);
     if (!cur) return fail(404, 'no such chat');
+    if (cur.officeId) {
+      // Each turn runs as the answering role (its model, effort, tools), and
+      // read-only: only the title is the chat's own.
+      if (patch.mode === 'write') return fail(400, OFFICE_CHAT_NO_WRITE);
+      if (patch.model !== undefined || patch.effort !== undefined) {
+        return fail(400, "an office chat has no model of its own — each turn runs on the answering role's");
+      }
+    }
     if (patch.model !== undefined && !MODEL_OPTIONS.includes(patch.model)) {
       return fail(400, `unknown model: ${patch.model}`);
     }
@@ -164,7 +249,7 @@ export class ChatService {
     await this.storage.appendEvent({
       kind: 'chat.edited',
       actor,
-      repoId: next.repoId,
+      repoId: next.officeId ? undefined : next.repoId,
       data: { chatId: id, keys: Object.keys(patch) },
     });
     broadcast({ type: 'chat.updated', chat: next });
@@ -179,7 +264,12 @@ export class ChatService {
     this.stop(id);
     const gone = await this.storage.deleteChat(id);
     if (!gone) return fail(404, 'no such chat');
-    await this.storage.appendEvent({ kind: 'chat.deleted', actor, repoId: cur.repoId, data: { chatId: id } });
+    await this.storage.appendEvent({
+      kind: 'chat.deleted',
+      actor,
+      repoId: cur.officeId ? undefined : cur.repoId,
+      data: { chatId: id, ...(cur.officeId ? { officeId: cur.officeId } : {}) },
+    });
     broadcast({ type: 'chat.deleted', chatId: id });
     return ok(true);
   }
@@ -282,9 +372,27 @@ export class ChatService {
       return fail(429, `${cap} chat turns already running — wait for one to finish`);
     }
 
-    const repo = await this.storage.getRepo(existing.repoId);
-    if (!repo) return fail(404, 'the repo this chat points at is gone');
-    if (!fs.existsSync(repo.path)) return fail(400, `repo path does not exist: ${repo.path}`);
+    // Where the turn runs: the repo, or — an office chat — the office folder,
+    // as the role the message routes to (@mention, else the Director).
+    let cwd: string;
+    let office: { officeId: string; roleId: string; mentioned: boolean } | null = null;
+    if (existing.officeId) {
+      if (existing.mode !== 'read') return fail(400, OFFICE_CHAT_NO_WRITE);
+      const o = await this.storage.getOffice(existing.officeId);
+      if (!o) return fail(404, 'the office this chat belongs to is gone');
+      if (!fs.statSync(o.folderPath, { throwIfNoEntry: false })?.isDirectory()) {
+        return fail(400, `office folder does not exist: ${o.folderPath}`);
+      }
+      const target = await resolveOfficeChatRole(this.storage, o, prompt);
+      if (!target.ok) return fail(target.code, target.error);
+      cwd = o.folderPath;
+      office = { officeId: o.id, roleId: target.role.id, mentioned: target.mentioned };
+    } else {
+      const repo = await this.storage.getRepo(existing.repoId);
+      if (!repo) return fail(404, 'the repo this chat points at is gone');
+      if (!fs.existsSync(repo.path)) return fail(400, `repo path does not exist: ${repo.path}`);
+      cwd = repo.path;
+    }
 
     // The lock. Everything after this point MUST reach finishChatTurn.
     const chat = await this.storage.beginChatTurn(id);
@@ -293,13 +401,18 @@ export class ChatService {
 
     const sent = prompt.slice(0, MAX_PROMPT_CHARS);
     let userMsg: ChatMessage;
+    let officeTurn: OfficeTurn | null = null;
     try {
+      // the transcript a persona reads is everything BEFORE this message
+      const history = office ? await this.storage.listChatMessages(id) : [];
       userMsg = await this.storage.appendChatMessage({
         chatId: id,
         role: 'user',
         text: sent,
         actor,
+        roleId: office?.roleId ?? null,
       });
+      if (office) officeTurn = { ...office, history };
       broadcast({ type: 'chat.message', message: userMsg });
 
       // First real message names the chat, unless a human already did.
@@ -327,7 +440,7 @@ export class ChatService {
     // Detached deliberately: the acceptance below returns while this runs.
     // It swallows nothing — `completeTurn` has its own try/catch and settles
     // the lock on every path, which is the one thing that must not be skipped.
-    const done = this.completeTurn(chat, repo.path, sent, actor);
+    const done = this.completeTurn(chat, cwd, sent, actor, officeTurn);
     // A caller that never touches `done` (the REST route) must not turn a
     // rejection into an unhandled promise; `completeTurn` resolves rather than
     // throws, and this is the belt to that suspenders.
@@ -341,16 +454,19 @@ export class ChatService {
     cwd: string,
     sent: string,
     actor: string,
+    officeTurn: OfficeTurn | null = null,
   ): Promise<ChatResult<ChatMessage>> {
     const id = chat.id;
     const started = Date.now();
-    let res: Awaited<ReturnType<ChatService['runTurn']>>;
+    let res: TurnResult;
     try {
-      res = await this.runTurn(chat, cwd, sent);
+      res = officeTurn ? await this.runOfficeTurn(chat, officeTurn, sent) : await this.runTurn(chat, cwd, sent);
     } catch (e) {
       // runTurn resolves rather than throws, but the lock is not allowed to
-      // depend on that staying true.
-      res = { text: '', sessionId: null, costUsd: 0, error: (e as Error).message };
+      // depend on that staying true. An office turn's PLAN throws on an
+      // isolation path no rule can match — it lands here, recorded as the
+      // turn's error, and the lock is released below like any failure.
+      res = { text: '', sessionId: null, costUsd: 0, error: (e as Error).message, roleId: officeTurn?.roleId ?? null };
     }
     const durationMs = Date.now() - started;
 
@@ -374,7 +490,7 @@ export class ChatService {
    *  release can be guaranteed around it. */
   private async recordTurn(
     chat: Chat,
-    res: { text: string; sessionId: string | null; costUsd: number; error: string | null },
+    res: TurnResult,
     durationMs: number,
     actor: string,
   ): Promise<ChatResult<ChatMessage>> {
@@ -391,6 +507,9 @@ export class ChatService {
       error: res.error,
       costUsd: res.costUsd,
       durationMs,
+      roleId: res.roleId ?? null,
+      // marked even on a failed turn: a tainted context's partial words are not trusted either
+      taintedAt: res.tainted ? new Date().toISOString() : null,
     });
     const finished = await this.storage.finishChatTurn(id, {
       sessionId: res.sessionId,
@@ -400,12 +519,15 @@ export class ChatService {
     await this.storage.appendEvent({
       kind: 'chat.turn',
       actor,
-      repoId: chat.repoId,
+      repoId: chat.officeId ? undefined : chat.repoId,
       data: {
         chatId: id,
-        model: chat.model,
+        model: res.model ?? chat.model,
         mode: chat.mode,
-        resumed: chat.sessionId !== null,
+        resumed: chat.officeId ? false : chat.sessionId !== null,
+        ...(chat.officeId
+          ? { officeId: chat.officeId, roleId: res.roleId ?? null, tainted: !!res.tainted, ...(res.taintSources?.length ? { taintSources: res.taintSources } : {}) }
+          : {}),
         durationMs,
         costUsd: res.costUsd,
         ...(res.error ? { ok: false, error: res.error } : { ok: true, chars: replyText.length }),
@@ -427,11 +549,7 @@ export class ChatService {
    * resolves only after it exited, so the next turn's `--resume` never shares
    * the session id with a live process.
    */
-  private async runTurn(
-    chat: Chat,
-    cwd: string,
-    prompt: string,
-  ): Promise<{ text: string; sessionId: string | null; costUsd: number; error: string | null }> {
+  private async runTurn(chat: Chat, cwd: string, prompt: string): Promise<TurnResult> {
     // Two honest permission settings, depending entirely on the mode, and
     // getting this wrong is silent:
     //
@@ -462,7 +580,7 @@ export class ChatService {
     const ctl = new AbortController();
     liveTurns.set(chat.id, ctl);
     try {
-      const { runId, done } = await aux().start<string>({
+      const { runId, done } = await this.auxRunner().start<string>({
         kind: 'chat',
         subjectId: chat.id,
         repoId: chat.repoId,
@@ -507,6 +625,73 @@ export class ChatService {
         costUsd: 0,
         error: stopRequested.has(chat.id) ? 'stopped' : (e as Error).message,
       };
+    } finally {
+      if (liveTurns.get(chat.id) === ctl) liveTurns.delete(chat.id);
+      stopRequested.delete(chat.id);
+    }
+  }
+
+  private auxRunner(): Pick<AuxRunner, 'start'> {
+    return this.deps.aux?.() ?? aux();
+  }
+
+  /**
+   * An office chat turn (docs/office.md § Group chat): the answering role's
+   * persona in a FRESH read-only aux terminal — never `--resume`, because
+   * consecutive turns are different personas; continuity is the transcript
+   * in the prompt. cwd = the office folder, `--add-dir` per workspace repo,
+   * the role's own read-only tools under `dontAsk` plus the read-only and
+   * never-in-chat denials, and for a trusted turn the isolation card's read
+   * denies. The plan (taint, prompt) is built here, after the lock, so a
+   * throw is a recorded failed turn, never a stranded lock.
+   */
+  private async runOfficeTurn(chat: Chat, t: OfficeTurn, message: string): Promise<TurnResult> {
+    const office = await this.storage.getOffice(t.officeId);
+    const role = await this.storage.getOfficeRole(t.roleId);
+    if (!office || !role || role.officeId !== office.id) {
+      return { text: '', sessionId: null, costUsd: 0, error: 'the office or the role this message went to is gone', roleId: t.roleId };
+    }
+    const plan: OfficeChatTurnPlan = await planOfficeChatTurn(this.storage, office, role, t.history, message, {
+      mentioned: t.mentioned,
+      isolation: this.deps.isolation,
+    });
+    const base = { roleId: role.id, tainted: plan.tainted, taintSources: plan.taintSources, model: role.model };
+    const ctl = new AbortController();
+    liveTurns.set(chat.id, ctl);
+    try {
+      const { runId, done } = await this.auxRunner().start<string>({
+        kind: 'chat',
+        subjectId: chat.id,
+        repoId: null,
+        label: `office chat: ${role.name}`,
+        cwd: plan.cwd,
+        model: role.model,
+        effort: role.effort,
+        prompt: plan.prompt,
+        resumeSessionId: null,
+        baselineTranscript: null,
+        tools: plan.tools,
+        disallowedTools: [...READ_ONLY_DISALLOWED, ...NEVER_IN_CHAT],
+        addDirs: plan.addDirs,
+        permissionsDeny: plan.denies ?? undefined,
+        permission: 'dontAsk',
+        lean: true,
+        timeoutMs: TURN_TIMEOUT_MS,
+        maxRetries: 0,
+        signal: ctl.signal,
+      });
+      void this.storage
+        .getRun(runId)
+        .then((r) => this.storage.setChatPid(chat.id, r?.pid ?? null))
+        .catch(() => {});
+      const o = await done;
+      const costUsd = Math.round((o.stats?.costUsd ?? 0) * 1000) / 1000;
+      // no session id is kept: the next turn may be another persona
+      if (o.status === 'ok') return { ...base, text: o.value ?? o.text ?? '', sessionId: null, costUsd, error: null };
+      const error = stopRequested.has(chat.id) ? 'stopped' : (o.error ?? 'claude returned no result').slice(0, 500);
+      return { ...base, text: '', sessionId: null, costUsd, error };
+    } catch (e) {
+      return { ...base, text: '', sessionId: null, costUsd: 0, error: stopRequested.has(chat.id) ? 'stopped' : (e as Error).message };
     } finally {
       if (liveTurns.get(chat.id) === ctl) liveTurns.delete(chat.id);
       stopRequested.delete(chat.id);

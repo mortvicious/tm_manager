@@ -1682,14 +1682,29 @@ export class PostgresStorage implements Storage {
     const at = now();
     return this.tx(async (c) => {
       await c.query(
-        toPg(`INSERT INTO tm_chat_messages (id, chat_id, role, text, actor, error, cost_usd, duration_ms, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-        [id, m.chatId, m.role, m.text, m.actor, m.error ?? null, m.costUsd ?? 0, m.durationMs ?? null, at],
+        toPg(`INSERT INTO tm_chat_messages (id, chat_id, role, text, actor, error, cost_usd, duration_ms, created_at, role_id, tainted_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+        [id, m.chatId, m.role, m.text, m.actor, m.error ?? null, m.costUsd ?? 0, m.durationMs ?? null, at, m.roleId ?? null, m.taintedAt ?? null],
       );
       await c.query(toPg(`UPDATE tm_chats SET last_message_at = ?, updated_at = ? WHERE id = ?`), [at, at, m.chatId]);
       const r = await c.query(toPg(`SELECT * FROM tm_chat_messages WHERE id = ?`), [id]);
       return rowToChatMessage(r.rows[0]);
     });
+  }
+
+  async getChatMessage(id: string): Promise<ChatMessage | null> {
+    const r = (await this.q(`SELECT * FROM tm_chat_messages WHERE id = ?`, [id]))[0];
+    return r ? rowToChatMessage(r) : null;
+  }
+
+  async setChatMessageChannel(id: string, channelMessageId: string): Promise<ChatMessage | null> {
+    const r = (
+      await this.q(`UPDATE tm_chat_messages SET channel_message_id = ? WHERE id = ? AND channel_message_id IS NULL RETURNING *`, [
+        channelMessageId,
+        id,
+      ])
+    )[0];
+    return r ? rowToChatMessage(r) : null;
   }
 
   async beginChatTurn(id: string): Promise<Chat | null> {

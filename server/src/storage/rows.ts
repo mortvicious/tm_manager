@@ -409,6 +409,9 @@ export function rowToChatMessage(r: any): ChatMessage {
     costUsd: Number(r.cost_usd ?? 0),
     durationMs: r.duration_ms === null || r.duration_ms === undefined ? null : Number(r.duration_ms),
     createdAt: r.created_at,
+    roleId: r.role_id ?? null,
+    taintedAt: r.tainted_at ?? null,
+    channelMessageId: r.channel_message_id ?? null,
   };
 }
 

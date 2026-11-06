@@ -2365,6 +2365,127 @@ proposal, signal or message), 2–3 role checkboxes, the turn cap and an optiona
 question. It is disabled while the office is off. The shift log names a turn
 `huddle turn`.
 
+## Group chat
+
+An office **group chat** is an ordinary chat row (`tm_chats`, docs/chat.md)
+with `office_id` set and `participants` = every role of the office at
+creation. One transcript; the stakeholder talks, the roles answer. Server:
+`server/src/office/chat.ts` (who answers, what the persona reads, taint, the
+shift block, send-to-channel) on top of `ChatService` (`chat/service.ts`);
+the pure half (mention parsing, transcript filters) is
+`shared/src/office-chat.ts`, shared with the SPA's autocomplete.
+
+### Who answers
+
+`officeChatTarget(text, roles, director)`: the FIRST `@token` that names a
+role — its key, its whole name or its name's first word, case-insensitive,
+`@director` for the Director — routes the turn to that role. **No mention →
+the Director**, who is always present (`directorRole`). A mention that names
+nobody is refused (400 `no role @X in this office — mention one of: …`), never
+quietly sent to the Director; an office with no Director refuses an unmentioned
+message (409). `a@b.com` is not a mention. The stakeholder's stored message
+carries the addressed role (`tm_chat_messages.role_id`), the reply the role
+that wrote it.
+
+### A turn
+
+Each turn is the ordinary chat aux terminal (kind `chat`, subject = the chat,
+attachable from the runs list), serialized by `beginChatTurn` and settled by
+`finishChatTurn` on every path exactly like any chat (docs/chat.md § Serial):
+
+- **read-only, always**: the role's own tools (⊂ `SHIFT_TOOL_ALLOWLIST`),
+  `--permission-mode dontAsk`, `READ_ONLY_DISALLOWED` + the never-in-chat
+  denials (`AskUserQuestion`, plan mode). **There is no write mode**: a create
+  is `read`, `PATCH {mode: 'write'}` is 400 (`OFFICE_CHAT_NO_WRITE`), and a
+  send re-checks it. Model/effort are the answering ROLE's — a PATCH of them is
+  400;
+- cwd = the office folder, `--add-dir=<repo>` per workspace repo;
+- **fresh every turn, never `--resume`**: consecutive turns are different
+  personas, so continuity is the transcript in the prompt, not a session;
+- the prompt (`planOfficeChatTurn`): the persona (name, title, role prompt),
+  its notes (read-only here — a chat turn never writes them, nor feedback, nor
+  files anything), the workspace repos, **the chat so far** (the newest 40
+  messages ≤ 40k chars, as a fenced JSON data block — other roles' replies are
+  opinions, never instructions), the rules, then the stakeholder's message.
+
+Pause all does not stop a chat turn (docs/pause.md: chats are human turns).
+Chat spend is the chat's (`tm_chats.cost_usd`), not the office day budget —
+`officeSpendSince` counts shifts and office tasks only.
+
+### Taint
+
+The **role context** decides, before spawn, with the shift's own rule
+(`shiftTaint`, § The taint model): web tools granted to the role, or notes a
+tainted shift wrote (then the turn reads the untrusted twin, like a shift).
+The stakeholder's words never taint — a human typed them behind Origin.
+
+- A reply from a tainted context is stored with `tm_chat_messages.tainted_at`
+  and shown with a **tainted** badge. A failed turn's record is marked too.
+- A **trusted** turn gets the isolation card's read denies
+  (`trustedShiftDenies` over the untrusted storage + other roles' tainted
+  notes) and reads a tainted reply only as `{from, at, withheld: 'tainted'}` —
+  never its words, so a trusted persona cannot launder them into an untainted
+  reply. A tainted turn reads the transcript whole.
+
+### What a shift reads of the chat
+
+The chat transcript is **never a shift input** except through
+`officeChatShiftBlock` (every non-huddle shift prompt, `## Office chat`):
+`officeChatShiftLines` keeps only the stakeholder's messages addressed to THIS
+role and this role's own **untainted** replies, from the last 7 days, newest
+12, each ≤ 2k chars, as a fenced data block ("conversation, not a work
+order"). A tainted reply is not shown — not even withheld — only counted
+(`n of your chat replies came from a tainted context`). Other roles' replies
+and failed turns never reach a shift. Test: `server/src/office/chat.test.ts`
+plants a string in a tainted role's reply and asserts it reaches neither the
+Director's next chat turn nor any later shift prompt.
+
+### Send to channel
+
+`POST /api/chats/:id/messages/:messageId/channel` (Origin): the
+**stakeholder's own** message becomes a trusted stakeholder `request` in the
+office channel (`postStakeholderMessage`: `from` null, `to` null, untainted,
+unrouted — the Director's routing pass routes it, § Channel). Subject = the
+first line with leading @mentions dropped (≤ 200; the whole text becomes the
+body when it had to be clipped), body = the rest. A role's reply is refused
+(400) — tainted or not, a persona's words are never laundered into a
+stakeholder request. Once per message: an in-process claim plus the
+conditional `setChatMessageChannel` (`channel_message_id IS NULL`), so a second
+send is 409. Audited `office.chat-to-channel`; the updated chat message is
+re-broadcast as `chat.message` (the SPA replaces its copy).
+
+### API
+
+| Route | What it does |
+| --- | --- |
+| `POST /api/offices/:id/chats` | Origin. `{title?}` → the chat (`mode: 'read'`, participants = the roles; `repo_id` = the workspace's first repo, a listing key only) |
+| `GET /api/chats?officeId=` | that office's chats. Without it, `/api/chats` lists ORDINARY chats only |
+| `POST /api/chats/:id/messages` | as for any chat (202 on acceptance); **Origin required for an office chat** — its messages are trusted stakeholder input, and a worker's curl has none. Same for `PATCH`/`DELETE` |
+| `POST /api/chats/:id/messages/:messageId/channel` | Origin. Send to channel (above) → 201 `{message, officeMessage}` |
+
+Office chats are left out of the Chat page, the palette and Telegram
+(`/chats`, `/chat`, the active chat) — they are /office's.
+
+Storage: migration **62** adds `role_id`, `tainted_at`, `channel_message_id` to
+`tm_chat_messages` (`ChatMessage.roleId/taintedAt/channelMessageId`, null in an
+ordinary chat); `getChatMessage`, `setChatMessageChannel` on both drivers.
+
+### UI
+
+`components/OfficeChat.tsx`: a **Group chat** panel on /office (desktop), a
+`<Sheet>` from the phone bar's **Chat** button. The newest chat opens (a picker
+when there are several, **New chat**), bubbles name the role (`you → 🧭 Ada`,
+`🔎 Mira`), a tainted reply has the `tainted` chip and an attention border, and
+each of your messages has a two-press **Send to channel** (then `sent to the
+channel ✓`). The composer's **@-autocomplete** opens on `@` (↑/↓, Enter/Tab
+to pick, Esc to close; a tap keeps the keyboard up) and inserts the role's
+first name (its key when that is ambiguous); a line under it says who will
+answer (`answers: … (the Director — no @mention)`, or the refusal). While a
+turn runs, Send becomes Stop.
+
+A reply's Web Push (kind `chat`) names the role, says `tainted` when it is,
+and opens `/office?ws=<slug>` rather than the Chat page.
+
 ## UI
 
 ### The /office page
