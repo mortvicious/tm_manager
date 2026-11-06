@@ -727,6 +727,24 @@ export interface CommandRun {
   /** true for an agent's ONE-SHOT run (POST /api/agent/commands/run): an
    *  unsaved command line, so `commandId` is null from the start */
   oneShot?: boolean;
+  /**
+   * An agent-started run nobody is using (docs/commands.md § Idle agent
+   * servers): ISO time the reaper first saw no running/waiting task among its
+   * users and no terminal attached. Absent/null while in use, on human runs
+   * and on finished runs.
+   */
+  idleSince?: string | null;
+  /** set when the server stopped it as an idle agent server (`command.reaped`) */
+  reaped?: CommandReap;
+}
+
+/** Why the idle-server reaper stopped an agent-started run (docs/commands.md § Idle agent servers). */
+export interface CommandReap {
+  at: string;
+  /** `idle` = past `commands.idleStopMinutes`; `cap` = evicted to make room under `commands.agentServersPerRepo` */
+  reason: 'idle' | 'cap';
+  /** whole minutes it had been idle when stopped */
+  idleMinutes: number;
 }
 
 /**
@@ -1939,6 +1957,19 @@ export interface AppSettings {
    */
   'commands.agentTtlDays': number;
   /**
+   * A command run an AGENT started (dev server, one-shot) is stopped once no
+   * running/waiting task has used it and no terminal is attached for this many
+   * minutes (docs/commands.md § Idle agent servers). Human runs are never
+   * touched. 0 = never.
+   */
+  'commands.idleStopMinutes': number;
+  /**
+   * Live agent-started SERVICE runs one repo may hold; a start past it evicts
+   * the longest-idle unused one, else is refused (docs/commands.md § Idle
+   * agent servers). 0 = no cap.
+   */
+  'commands.agentServersPerRepo': number;
+  /**
    * A worktree task idle this many days in review/failed/done has its
    * directory evicted (leftovers WIP-committed to its branch, re-created at
    * the same path on the next turn — docs/parallel.md § Cleanup). 0 = never.
@@ -2131,6 +2162,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'anomaly.staleReviewHours': 72,
   'inbox.staleDraftDays': 14,
   'commands.agentTtlDays': 7,
+  'commands.idleStopMinutes': 30,
+  'commands.agentServersPerRepo': 2,
   'worktrees.idleEvictDays': 3,
   'budget.taskUsd': 0,
   'budget.dayUsd': 0,
@@ -2421,6 +2454,8 @@ export type AuditKind =
   | 'repo.worktrees-pruned'
   | 'command.changed'
   | 'command.run'
+  /** an idle agent-started command run stopped by the server (docs/commands.md § Idle agent servers) */
+  | 'command.reaped'
   | 'shell.session'
   | 'shell.killed'
   | 'config.changed'

@@ -383,6 +383,16 @@ curl -s -X POST -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/commands/
   anything else is shared, and stopping it is refused. Leave a server running
   at the end of your turn unless you know nobody needs it. **Restart** works
   on your own repo's commands and on runs your task started.
+- **Idle servers are stopped for you.** A run an agent started is stopped by
+  the server once {{commandIdleMinutes}} minutes pass with no running task
+  that started, reused, restarted or read the logs of it (0 = never). A run a
+  human started is never touched. Need it again later? Start it again: the
+  start is start-or-reuse, so call it at the top of every turn that needs the
+  server rather than assuming it is still up.
+- **At most {{agentServersPerRepo}} agent-started servers live per repo**
+  (0 = no cap). Starting one more stops the longest-idle one nobody is using;
+  if every one is in use, the start answers 409 with the live runs — reuse
+  one of them.
 - **Commands run in their own repo only.** The command line runs as argv,
   never through a shell: no `&&`, `|`, `;` or redirects, no `bash -c`, no
   `cd`, and no option that moves it outside the repo (`env -C <elsewhere>`,

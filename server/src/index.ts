@@ -16,6 +16,7 @@ import { sessionToken } from './auth.ts';
 import { ActivityWatcher } from './claude/activity.ts';
 import { CommandRunner } from './commands/runner.ts';
 import { AgentCommandCleanup } from './commands/cleanup.ts';
+import { IdleServerReaper } from './commands/reaper.ts';
 import { ShellRunner } from './shells/runner.ts';
 import { AuxRunner, aux, initAux } from './claude/aux.ts';
 import { loadBootConfig, serverRoot } from './config.ts';
@@ -145,6 +146,7 @@ const shellSessions = new SessionManager(
 initAux(new AuxRunner(storage, auxSessions, `http://127.0.0.1:${cfg.port}`));
 const orchestrator = new Orchestrator(storage, sessions, `http://127.0.0.1:${cfg.port}`);
 const commandRunner = new CommandRunner(storage, commandSessions);
+const commandReaper = new IdleServerReaper(storage, commandRunner);
 // Repo checks (docs/checks.md) run as ordinary command runs in that pool.
 orchestrator.setCommandRunner(commandRunner);
 const shellRunner = new ShellRunner(storage, shellSessions);
@@ -233,6 +235,10 @@ if (strandedChats.cleared) {
 // unused (docs/commands.md § Agent-owned commands): at boot, every 10 min,
 // and a few seconds after a task reaches done/published/cancelled.
 new AgentCommandCleanup(storage, commandRunner).start();
+// Dev servers an AGENT started are stopped once nobody running uses them for
+// commands.idleStopMinutes, and capped per repo (docs/commands.md § Idle
+// agent servers). A human-started run is never touched.
+commandReaper.start();
 
 // A report's own row is not a run row, so a crash mid-write leaves it
 // `running` with nothing in existence to settle it (docs/reports.md).
@@ -504,7 +510,7 @@ registerSettingsRoutes(app, storage);
 registerRunRoutes(app, storage, orchestrator, activity);
 registerOrchestratorRoutes(app, storage, orchestrator);
 registerInternalRoutes(app, storage, sessions, orchestrator);
-registerAgentRoutes(app, storage, orchestrator, commandRunner);
+registerAgentRoutes(app, storage, orchestrator, commandRunner, commandReaper);
 registerCommandRoutes(app, storage, commandRunner);
 registerShellRoutes(app, storage, shellRunner);
 registerBackgroundShellRoutes(app, orchestrator);

@@ -98,12 +98,25 @@ function RunRow({
               : ''}
         </span>
       </span>
-      <span className="mono muted cmd-run-age">
+      <span
+        className="mono muted cmd-run-age"
+        title={
+          run.reaped
+            ? `Stopped by the server: ${run.reaped.reason === 'cap' ? 'evicted to make room under the per-repo cap of agent-started servers' : 'idle'} — no running task had used it for ${run.reaped.idleMinutes} min (docs/commands.md § Idle agent servers)`
+            : live && run.idleSince
+              ? 'An agent started it and no running task uses it now — the server stops it once the idle window passes (commands.idleStopMinutes)'
+              : undefined
+        }
+      >
         {live
-          ? `up ${fmtAgo(now - since)}`
-          : run.status === 'killed'
-            ? 'stopped'
-            : `exit ${run.exitCode ?? '?'}`}
+          ? `up ${fmtAgo(now - since)}${run.idleSince ? ` · idle ${fmtAgo(now - Date.parse(run.idleSince))}` : ''}`
+          : run.reaped
+            ? run.reaped.reason === 'cap'
+              ? 'reaped (cap)'
+              : `reaped · idle ${run.reaped.idleMinutes}m`
+            : run.status === 'killed'
+              ? 'stopped'
+              : `exit ${run.exitCode ?? '?'}`}
       </span>
       <button className="btn ghost" title="Open this command's terminal" onClick={() => onOpenTerminal(run.id)}>
         <IconTerminal />

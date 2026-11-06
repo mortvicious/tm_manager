@@ -851,6 +851,22 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     render: num('commands.agentTtlDays', { min: 0, max: 365, step: 1, label: 'Archive unused agent commands' }),
   },
   {
+    key: 'commands.idleStopMinutes',
+    section: 'board',
+    label: 'Agent dev servers: stop when idle (minutes)',
+    help: 'a command run an agent started is stopped once no running/waiting task has used it (started, reused, restarted, read its logs) and no terminal is attached for this long; a human-started run is never touched; 0 = never (docs/commands.md § Idle agent servers)',
+    advanced: true,
+    render: num('commands.idleStopMinutes', { min: 0, max: 10080, step: 5, label: 'Stop idle agent servers' }),
+  },
+  {
+    key: 'commands.agentServersPerRepo',
+    section: 'board',
+    label: 'Agent dev servers: live per repo',
+    help: 'at most this many agent-started servers run in one repo; one more stops the longest-idle unused one, or is refused while all are in use; 0 = no cap (docs/commands.md § Idle agent servers)',
+    advanced: true,
+    render: num('commands.agentServersPerRepo', { min: 0, max: 10, step: 1, label: 'Agent servers per repo' }),
+  },
+  {
     key: 'worktrees.idleEvictDays',
     section: 'board',
     label: 'Task worktrees: evict idle after (days)',

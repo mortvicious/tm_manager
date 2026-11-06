@@ -10,6 +10,7 @@ import { onEvent } from '../events.ts';
 import type { Storage } from '../storage/types.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import { spaceForRepo } from '../spaces/service.ts';
+import type { IdleServerReaper } from '../commands/reaper.ts';
 import type { CommandRunner } from '../commands/runner.ts';
 import { agentBrief, agentEnqueueGate, agentTitle, maxSpawnDepth, perRunCap } from './agent-caps.ts';
 import { AGENT_COMMAND_DEFINE_CAP, AGENT_ONE_SHOT_TASK_CAP, registerAgentCommandRoutes } from './agent-commands.ts';
@@ -72,6 +73,7 @@ export function registerAgentRoutes(
   storage: Storage,
   orchestrator: Orchestrator,
   commandRunner: CommandRunner,
+  reaper: IdleServerReaper | null = null,
 ) {
   const authRun = async (req: FastifyRequest): Promise<Run | null> => {
     const token = String(req.headers['x-tm-token'] ?? '');
@@ -149,6 +151,8 @@ export function registerAgentRoutes(
       .replaceAll('{{commandRepoCap}}', String(AGENT_COMMANDS_PER_REPO_CAP))
       .replaceAll('{{oneShotCap}}', String(AGENT_ONE_SHOT_TASK_CAP))
       .replaceAll('{{commandTtlDays}}', String(settings['commands.agentTtlDays']))
+      .replaceAll('{{commandIdleMinutes}}', String(settings['commands.idleStopMinutes']))
+      .replaceAll('{{agentServersPerRepo}}', String(settings['commands.agentServersPerRepo']))
       .replaceAll('{{titleMax}}', String(AGENT_TITLE_MAX))
       .replaceAll('{{briefMax}}', String(AGENT_BRIEF_MAX));
     return reply.type('text/markdown').send(md);
@@ -160,7 +164,7 @@ export function registerAgentRoutes(
   // Close and move (docs/agent-api-design.md § Close and move) — same prefix too.
   registerAgentTaskRoutes(app, storage, orchestrator, authRun);
   // Repo commands (docs/commands.md § Agent API) — shared dev servers.
-  registerAgentCommandRoutes(app, storage, commandRunner, authRun);
+  registerAgentCommandRoutes(app, storage, commandRunner, authRun, reaper);
   // Task waits + declared dependencies (docs/task-waits.md) — same prefix too.
   registerAgentWaitRoutes(app, storage, orchestrator, authRun);
 

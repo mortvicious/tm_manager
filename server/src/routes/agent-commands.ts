@@ -5,6 +5,7 @@ import type { CommandRun, Repo, RepoCommand, Run } from '@tm/shared';
 import { AGENT_COMMANDS_PER_REPO_CAP } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import { directoryEscape, parseCommandLine, resolveCommandCwd, tempPathIn } from '../commands/parse.ts';
+import { CapRefusal, type IdleServerReaper } from '../commands/reaper.ts';
 import type { CommandRunner } from '../commands/runner.ts';
 import type { Storage } from '../storage/types.ts';
 
@@ -91,7 +92,16 @@ export function registerAgentCommandRoutes(
   storage: Storage,
   runner: CommandRunner,
   authRun: (req: FastifyRequest) => Promise<Run | null>,
+  reaper: IdleServerReaper | null = null,
 ) {
+  /**
+   * A NEW agent-started run goes through the per-repo cap (docs/commands.md §
+   * Idle agent servers): the reaper may evict an unused server first, or
+   * refuse with CapRefusal. A reuse never comes here.
+   */
+  const admit = <T>(repoId: string, kind: RepoCommand['kind'], start: () => Promise<T>) =>
+    reaper ? reaper.admit(repoId, kind, start) : start();
+  const capReply = (e: CapRefusal) => ({ error: e.message, runs: e.live.map((r) => ({ name: r.name, ...runBrief(r) })) });
   /** Definitions added per worker run (in memory: a run does not outlive the process). */
   const defined = new Map<string, number>();
   const actorOf = (run: Run) => `agent:${run.id.slice(0, 8)}`;
@@ -108,6 +118,8 @@ export function registerAgentCommandRoutes(
           startedBy: r.startedBy,
           ownerTaskId: r.ownerTaskId,
           ...(r.oneShot ? { oneShot: true } : {}),
+          ...(r.idleSince ? { idleSince: r.idleSince } : {}),
+          ...(r.reaped ? { reaped: r.reaped } : {}),
         }
       : null;
 
@@ -307,19 +319,23 @@ export function registerAgentCommandRoutes(
       });
     }
     let live: CommandRun;
+    const kind = body.kind ?? 'service';
     try {
-      live = await runner.startOneShot(
-        {
-          name: body.name?.trim() || text.slice(0, 80),
-          command: text,
-          kind: body.kind ?? 'service',
-          cwd: cwdRaw === '' || cwdRaw === '.' ? null : cwdRaw,
-        },
-        repo,
-        actorOf(run),
-        run.taskId,
+      live = await admit(repo.id, kind, () =>
+        runner.startOneShot(
+          {
+            name: body.name?.trim() || text.slice(0, 80),
+            command: text,
+            kind,
+            cwd: cwdRaw === '' || cwdRaw === '.' ? null : cwdRaw,
+          },
+          repo,
+          actorOf(run),
+          run.taskId,
+        ),
       );
     } catch (e) {
+      if (e instanceof CapRefusal) return reply.code(409).send(capReply(e));
       const { code, error } = startError(e);
       return reply.code(code).send({ error });
     }
@@ -336,6 +352,7 @@ export function registerAgentCommandRoutes(
     if (!t.ok) return reply.code(t.code).send({ error: t.error });
     const { bytes } = req.query as { bytes?: string };
     const n = Math.min(LOGS_MAX_BYTES, Math.max(1, Number.parseInt(bytes ?? '', 10) || TAIL_BYTES * 2));
+    runner.noteUse(t.cmdRun.id, t.run.taskId);
     const tail = runner.tail(t.cmdRun.id, n);
     return { run: runBrief(t.cmdRun), tail: tail ?? '', note: tail === null ? 'the terminal of this run is gone' : undefined };
   });
@@ -371,9 +388,17 @@ export function registerAgentCommandRoutes(
     if (!live && t.command.archivedAt) return reply.code(409).send({ error: archivedRefusal(t.command) });
     if (!live) {
       try {
-        live = await runner.start(t.command, t.repo, actorOf(t.run), t.run.taskId);
-        started = true;
+        const command = t.command;
+        live = await admit(t.repo.id, command.kind, async () => {
+          // a twin start queued behind us on the cap may find ours running
+          const other = runner.runningFor(command.id);
+          if (other) return other;
+          started = true;
+          return runner.start(command, t.repo, actorOf(t.run), t.run.taskId);
+        });
       } catch (e) {
+        started = false;
+        if (e instanceof CapRefusal) return reply.code(409).send(capReply(e));
         // lost a same-tick race to another starter: that run is the shared one
         live = runner.runningFor(t.command.id);
         if (!live) {
@@ -382,6 +407,8 @@ export function registerAgentCommandRoutes(
         }
       }
     }
+    // start-or-reuse is USE: it keeps an agent-started server from being reaped
+    runner.noteUse(live.id, t.run.taskId);
     const out = await settle(live.id, opts);
     return {
       started,
@@ -428,6 +455,8 @@ export function registerAgentCommandRoutes(
       return reply.code(403).send({ error: `"${t.command.name}" belongs to another repo — you may start it, not restart it` });
     }
     let owner: string | null = t.run.taskId;
+    // the replaced run's users still use the new one (docs/commands.md § Idle agent servers)
+    const users = live ? runner.usersOf(live.id) : [];
     if (live) {
       owner = live.ownerTaskId;
       await storage.appendEvent({
@@ -444,8 +473,12 @@ export function registerAgentCommandRoutes(
     }
     let next: CommandRun;
     try {
-      next = await runner.start(t.command, t.repo, actorOf(t.run), owner);
+      // replacing a live run frees its own slot first, so only a cold
+      // restart of an agent-owned run can push the repo past the cap
+      const start = () => runner.start(t.command, t.repo, actorOf(t.run), owner);
+      next = owner && !live ? await admit(t.repo.id, t.command.kind, start) : await start();
     } catch (e) {
+      if (e instanceof CapRefusal) return reply.code(409).send(capReply(e));
       // someone else started it in the gap — that run is the shared one
       const other = runner.runningFor(t.command.id);
       if (!other) {
@@ -454,6 +487,8 @@ export function registerAgentCommandRoutes(
       }
       next = other;
     }
+    runner.carryUsers(next.id, users);
+    runner.noteUse(next.id, t.run.taskId);
     return { restarted: true, ...(await settle(next.id, opts)) };
   });
 
@@ -464,6 +499,7 @@ export function registerAgentCommandRoutes(
     const n = Math.min(LOGS_MAX_BYTES, Math.max(1, Number.parseInt(bytes ?? '', 10) || TAIL_BYTES * 2));
     const latest = runner.latestFor(t.command.id);
     if (!latest) return reply.code(404).send({ error: `"${t.command.name}" has not run since the server started` });
+    runner.noteUse(latest.id, t.run.taskId);
     const tail = runner.tail(latest.id, n);
     return { run: runBrief(latest), tail: tail ?? '', note: tail === null ? 'the terminal of this run is gone' : undefined };
   });

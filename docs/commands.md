@@ -176,8 +176,10 @@ definition, shared by everyone, in the commands pool, outliving the turn.
   frontend agent may need the backend's API up). Restart and define are the
   caller's own repo; stop is the caller's own runs.
 - **Lifetime**: an agent's server is NOT stopped when its task ends — it is
-  shared, and the next agent will want it. The commands pool's own cap
-  (`MAX_LIVE_SESSIONS`, 10) bounds the pile; the human sees it in the header.
+  shared, and the next agent will want it. It IS stopped once nobody running
+  has used it for `commands.idleStopMinutes`, and live agent servers are
+  capped per repo: see § Idle agent servers. The commands pool's own cap
+  (`MAX_LIVE_SESSIONS`, 10) bounds the rest; the human sees it in the header.
   Its DEFINITION is another matter: see § Agent-owned commands.
 - **Races**: `start()` checks and claims synchronously, so of two agents
   starting one command in the same tick one gets the run and the other reuses
@@ -237,6 +239,58 @@ the agent-saved ones under an `agent-saved · n` toggle (with a running count).
 The Repos command panel sorts human first, chips agent rows `agent · <task8>`,
 offers Archive on every non-check row, and lists archived rows under a fold
 with Restore. Config → Board has the TTL.
+
+## Idle agent servers
+
+Measured 2026-11-06 on an 8 GB MacBook: one agent-started neko-nest
+`nest start --watch` held 2.6 GB for hours after its task landed, with swap
+at 4.9/6 GB. Servers outlive their task on purpose (the next task reuses
+them), so the server now stops the ones nobody needs any more
+(`server/src/commands/reaper.ts`, `IdleServerReaper`, swept every 60 s).
+
+**Which runs**: only a run an AGENT started — `CommandRun.ownerTaskId` set
+(saved-command starts, restarts of an agent's run, one-shots). A run a human
+started (launcher, Repos page) has no owner and is never stopped, and
+`CommandRunner.reap` refuses one outright. Checks, check baselines and office
+command runs are exempt (they end by themselves).
+
+**In use** — any of:
+- a USER of the run is `running` or `waiting`, or in `review` with its verify
+  round open (`verifyOpen`: an e2e check may be hitting the server). Users
+  are the owner plus every task whose agent called start-or-reuse, restart or
+  logs on it (`CommandRunner.noteUse`, in memory per run; a restart carries
+  the old run's users over — `carryUsers`). A user in ANY repo counts (a
+  frontend task using the backend's API), which is a superset of "same repo";
+- a terminal is attached to it (`/ws/terminal/:id` — the human watching).
+
+**Idle** is the rest. The first sweep that sees a run idle stamps
+`CommandRun.idleSince` (broadcast; the launcher shows `up 2h · idle 12m`); a
+new use clears it. Once `now − max(idleSince, last use)` passes
+`commands.idleStopMinutes` (default **30**, 0 = never) the run is stopped
+(SIGHUP, SIGKILL after 5 s) with `CommandRun.reaped = {at, reason: 'idle',
+idleMinutes}`, and one `command.reaped` audit row (actor `system`, task = the
+owner, data `{runId, commandId, name, command, kind, reason, idleMinutes,
+ownerStatus, users, oneShot?}`); the exit's `command.run` row carries
+`reaped`. The launcher's history shows it as `reaped · idle 30m` with the
+reason in the tooltip. Nothing is persisted: command runs die with the
+server anyway.
+
+Blocked task waits, a Pause all marker and a rate-limit park are NOT in use:
+those sessions are idle for hours, and their next turn's start-or-reuse
+starts the server again (the agent instructions tell them to start it at the
+top of every turn that needs it).
+
+**Per-repo cap**: at most `commands.agentServersPerRepo` (default **2**,
+0 = none) live agent-started `service` runs per repo (task-kind scripts and
+human runs do not count). Every NEW agent start — `POST …/:id/start` when not
+already running, a cold `…/:id/restart` of an agent-owned run, and a
+`service` one-shot — goes through `IdleServerReaper.admit(repoId, kind, …)`,
+serialized per repo so two starts cannot both pass. At the cap it stops the
+longest-idle run nobody is using (`reason: 'cap'`, waits ≤ 8 s for the exit),
+and with every one in use it answers **409** with the live runs, telling the
+agent to reuse one. A reuse never comes here. The cap is judged on the
+COMMAND's repo (a frontend agent starting the backend's server counts
+against the backend).
 
 ## One-shot runs
 

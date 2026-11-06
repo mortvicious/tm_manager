@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { CHECK_DEFAULT_TIMEOUT_SEC } from '@tm/shared';
-import type { CommandRun, Repo, RepoCommand } from '@tm/shared';
+import type { CommandReap, CommandRun, Repo, RepoCommand } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 import type { Storage } from '../storage/types.ts';
@@ -24,6 +24,13 @@ export class CommandRunner {
   private stopping = new Set<string>();
   /** callers awaiting a run's exit (agent restart: stop, wait, start) */
   private exitWaiters = new Map<string, Array<() => void>>();
+  /**
+   * Who used an AGENT-started run, and when last (docs/commands.md § Idle
+   * agent servers): runId → taskId → ms. The owner counts from the start;
+   * every start-or-reuse, restart and logs read by another task's agent adds
+   * it. What the idle reaper (reaper.ts) judges "still needed" by.
+   */
+  private users = new Map<string, Map<string, number>>();
 
   constructor(
     private storage: Storage,
@@ -35,6 +42,10 @@ export class CommandRunner {
       run.status = this.stopping.delete(runId) ? 'killed' : 'exited';
       run.exitCode = exitCode;
       run.endedAt = new Date().toISOString();
+      // a reap that lost to a natural exit is no reap
+      if (run.reaped && run.status !== 'killed') delete run.reaped;
+      delete run.idleSince;
+      this.users.delete(runId);
       broadcast({ type: 'command.run', run: { ...run } });
       for (const resolve of this.exitWaiters.get(runId) ?? []) resolve();
       this.exitWaiters.delete(runId);
@@ -43,7 +54,13 @@ export class CommandRunner {
           kind: 'command.run',
           actor: 'system',
           repoId: run.repoId,
-          data: { action: run.status, name: run.name, command: run.command, exitCode },
+          data: {
+            action: run.status,
+            name: run.name,
+            command: run.command,
+            exitCode,
+            ...(run.reaped ? { reaped: run.reaped.reason } : {}),
+          },
         })
         .catch(() => {});
       this.trim();
@@ -99,6 +116,66 @@ export class CommandRunner {
     const buf = this.sessions.get(runId)?.buffer.snapshot();
     if (!buf) return null;
     return plainText(buf.subarray(Math.max(0, buf.length - bytes)).toString('utf8'));
+  }
+
+  /**
+   * A task's agent used this run (start, start-or-reuse, restart, logs). Only
+   * agent-started runs are tracked — a human's run is never reaped, so who
+   * uses it does not matter. Clears an idle mark at once.
+   */
+  noteUse(runId: string, taskId: string | null): void {
+    const run = this.runs.get(runId);
+    if (!run || run.status !== 'running' || !run.ownerTaskId || !taskId) return;
+    let m = this.users.get(runId);
+    if (!m) this.users.set(runId, (m = new Map()));
+    m.set(taskId, Date.now());
+    this.setIdleSince(runId, null);
+  }
+
+  /** A restart's new run keeps the old run's users (their last-use times too). */
+  carryUsers(runId: string, users: Array<{ taskId: string; at: number }>): void {
+    const run = this.runs.get(runId);
+    if (!run || run.status !== 'running' || !run.ownerTaskId) return;
+    let m = this.users.get(runId);
+    if (!m) this.users.set(runId, (m = new Map()));
+    for (const u of users) m.set(u.taskId, Math.max(m.get(u.taskId) ?? 0, u.at));
+  }
+
+  /** The tasks that used a run (owner included) and when last, ms. */
+  usersOf(runId: string): Array<{ taskId: string; at: number }> {
+    return [...(this.users.get(runId) ?? new Map<string, number>())].map(([taskId, at]) => ({ taskId, at }));
+  }
+
+  /** Terminals attached to a run right now — a human watching it. */
+  watchers(runId: string): number {
+    return this.sessions.get(runId)?.clients?.size ?? 0;
+  }
+
+  /** The reaper's idle mark on a live run; broadcast only when it changes. */
+  setIdleSince(runId: string, at: string | null): void {
+    const run = this.runs.get(runId);
+    if (!run || run.status !== 'running' || (run.idleSince ?? null) === at) return;
+    if (at) run.idleSince = at;
+    else delete run.idleSince;
+    broadcast({ type: 'command.run', run: { ...run } });
+  }
+
+  /**
+   * Stop an idle AGENT-started run (reaper.ts). Refuses a human's run outright
+   * — the one rule this path must never break. The exit handler flips it to
+   * `killed`, keeping `reaped` so the launcher can say why.
+   */
+  reap(runId: string, reap: CommandReap): boolean {
+    const run = this.runs.get(runId);
+    if (!run || run.status !== 'running' || !run.ownerTaskId) return false;
+    run.reaped = reap;
+    delete run.idleSince;
+    if (this.stop(runId)) {
+      broadcast({ type: 'command.run', run: { ...run } });
+      return true;
+    }
+    delete run.reaped;
+    return false;
   }
 
   /** Resolves true once the run is no longer `running`, false after `ms`. */
@@ -221,6 +298,7 @@ export class CommandRunner {
       ...(oneShot ? { oneShot: true } : {}),
     };
     this.runs.set(id, run);
+    if (ownerTaskId) this.users.set(id, new Map([[ownerTaskId, Date.now()]]));
     // what the agent-command cleanup's "unused for N days" reads; a synthetic
     // baseline id matches no row, so the write is a no-op there
     if (!oneShot) void this.storage.touchCommandRun(command.id, run.startedAt).catch(() => {});
@@ -358,6 +436,7 @@ export class CommandRunner {
     for (const [id, run] of this.runs) {
       if (run.status !== 'running') {
         this.runs.delete(id);
+        this.users.delete(id);
         n++;
       }
     }

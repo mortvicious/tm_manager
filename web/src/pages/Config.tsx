@@ -958,6 +958,45 @@ export function ConfigPage({ headSlot, topSlot }: { headSlot?: ReactNode; topSlo
         </div>
         <div className="cfg-row">
           <div>
+            <div>Agent dev servers: stop when idle (minutes)</div>
+            <div className="hint">
+              a command run an agent started is stopped once no running/waiting task has used it (started, reused,
+              restarted, read its logs) and no terminal is attached for this long; a human-started run is never
+              touched; 0 = never (docs/commands.md § Idle agent servers)
+            </div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={0}
+            max={10080}
+            step={5}
+            style={{ width: 90 }}
+            value={cfg['commands.idleStopMinutes'] ?? DEFAULT_SETTINGS['commands.idleStopMinutes']}
+            onChange={(e) => set('commands.idleStopMinutes', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Agent dev servers: live per repo</div>
+            <div className="hint">
+              at most this many agent-started servers run in one repo; one more stops the longest-idle unused one,
+              or is refused while all are in use; 0 = no cap (docs/commands.md § Idle agent servers)
+            </div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={0}
+            max={10}
+            step={1}
+            style={{ width: 90 }}
+            value={cfg['commands.agentServersPerRepo'] ?? DEFAULT_SETTINGS['commands.agentServersPerRepo']}
+            onChange={(e) => set('commands.agentServersPerRepo', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
             <div>Task worktrees: evict idle after (days)</div>
             <div className="hint">
               a PR-delivery task idle this long in review/failed/done has its worktree folder removed (leftovers committed
