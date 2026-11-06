@@ -9,6 +9,7 @@ import {
   MODEL_OPTIONS,
   OFFICE_AUTONOMY_LEVELS,
   OFFICE_DETAIL_SHIFTS,
+  OFFICE_FEED_EVENT_KINDS,
   OFFICE_EVENT_NAMES,
   OFFICE_SIGNAL_SOURCES,
   isOfficeSignalSource,
@@ -392,6 +393,18 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opt
     if (!q.success) return reply.code(400).send({ error: `briefs: ${q.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}` });
     if (!(await storage.getOffice(id))) return reply.code(404).send({ error: 'office not found' });
     return storage.listBriefs({ officeId: id, roleId: q.data.roleId, kind: q.data.kind, unreviewed: !!q.data.unreviewed, limit: q.data.limit ?? 100 });
+  });
+
+  // The office view's history feed (docs/office.md § The view): the
+  // `OFFICE_FEED_EVENT_KINDS` audit rows of THIS office, newest first. Filtered
+  // in JS on `data.officeId` (JSON in SQL is dialect-specific); the kinds are
+  // rare, so a bounded scan of the newest rows covers weeks.
+  app.get('/api/offices/:id/feed', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const limit = Math.min(Math.max(Number((req.query as { limit?: string } | undefined)?.limit) || 100, 1), 500);
+    if (!(await storage.getOffice(id))) return reply.code(404).send({ error: 'office not found' });
+    const rows = await storage.listEvents({ kinds: [...OFFICE_FEED_EVENT_KINDS], limit: 5000 });
+    return rows.filter((e) => (e.data as { officeId?: unknown } | null)?.officeId === id).slice(0, limit);
   });
 
   app.get('/api/office-briefs/:briefId', async (req, reply) => {

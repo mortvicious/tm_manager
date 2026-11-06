@@ -4,21 +4,17 @@
 // rename it afterwards — nothing re-derives a stored name.
 import { createHash } from 'node:crypto';
 
-export type OfficeTheme = 'pixel-office' | 'starship-bridge' | 'fantasy-guild' | 'space-colony';
-export const OFFICE_THEMES: readonly OfficeTheme[] = ['pixel-office', 'starship-bridge', 'fantasy-guild', 'space-colony'];
-export const DEFAULT_OFFICE_THEME: OfficeTheme = 'pixel-office';
+// The theme ids live in shared (the SPA's skin registry reads them too —
+// docs/office.md § The view); these are the server's names for them.
+import { DEFAULT_OFFICE_THEME_ID, OFFICE_THEME_IDS, OFFICE_THEME_LABELS as LABELS, officeThemeId, type OfficeThemeId } from '@tm/shared';
 
-export const OFFICE_THEME_LABELS: Readonly<Record<OfficeTheme, string>> = {
-  'pixel-office': 'Pixel office',
-  'starship-bridge': 'Starship bridge',
-  'fantasy-guild': 'Fantasy guild hall',
-  'space-colony': 'Space colony',
-};
+export type OfficeTheme = OfficeThemeId;
+export const OFFICE_THEMES: readonly OfficeTheme[] = OFFICE_THEME_IDS;
+export const DEFAULT_OFFICE_THEME: OfficeTheme = DEFAULT_OFFICE_THEME_ID;
+export const OFFICE_THEME_LABELS: Readonly<Record<OfficeTheme, string>> = LABELS;
 
 /** `Office.theme` is a free id: anything unknown reads as the default theme. */
-export function officeTheme(theme: string | null | undefined): OfficeTheme {
-  return OFFICE_THEMES.includes(theme as OfficeTheme) ? (theme as OfficeTheme) : DEFAULT_OFFICE_THEME;
-}
+export const officeTheme: (theme: string | null | undefined) => OfficeTheme = officeThemeId;
 
 interface ThemePool {
   /** given names; disjoint across themes so the same seed never names alike in two themes */

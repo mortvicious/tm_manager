@@ -2681,3 +2681,190 @@ guard skip's reason, a live shift's Terminal opening the drawer, the editor
 offering only the seven allowlisted tools and only the eligible command (a
 check was filtered out), no nested scroller inside the sheets, and every
 write carrying `Origin`.
+
+## The view
+
+Phase 5 (decisions.md 2026-11-06, *Office view*). The office as a **place**:
+a game-like floor plan where each role is a small avatar acting out its real
+state, hand-offs fly between desks, and a history feed runs beside it. It is
+the default on /office. The phase-2 **list** stays, one tap away on the
+**Office | List** switch (per device, `tm.officeView`). Adding, resetting and
+reviewing roles still happens in the list.
+
+### One pure layout
+
+`shared/src/office-view.ts` is `layoutOffice(office, roles, states, shifts,
+messages, huddles, opts)` → `OfficeLayout`. It has no I/O and no clock: `now`
+is an option. Coordinates are floor **tiles**.
+
+- **Rooms**: one per department with roles, in `OFFICE_DEPARTMENTS` order
+  (Director's office, Engineering, Operations, Growth, Commons), packed
+  `columns` to a row (rooms in a row share the tallest height). The department
+  comes from the preset (`officeDepartment`): director → leadership, developer
+  and qa → engineering, devops → operations, seo → growth, and a custom role
+  (no preset) → commons. Desks follow the role order, three to a row. Below the
+  desks each room has an open strip with a coffee corner and, when a huddle
+  meets there, a table. A **lobby** under the rooms holds the door (you, the
+  stakeholder) and the notice board (the channel).
+- **Avatars**: one per role. The pose comes from `OfficeRoleState`: on-shift →
+  working, in-huddle → huddling, waiting-for-you → waiting, paused and
+  over-budget → blocked, scheduled and guarded → idle. Off-duty is dozing only
+  when the role or the office is off; an enabled on-call role is idle. Members
+  of an open huddle sit at its table in the first participant's room, except a
+  blocked or dozing member, who stays at its desk. Each avatar also carries its
+  live and last ran shift (with the run id), its last brief, today's spend, its
+  next slot, a stable colour slot (`--tm-group-<n>`) and whether its notes are
+  tainted.
+- **Hand-off edges**: a message younger than `edgeWindowMs` (default 30 min)
+  draws an edge from the writer (the door for the stakeholder) to the addressee
+  (the board when it is an unrouted channel message). A `forward` route draws
+  an edge from the routing shift's role, else the Director. An open huddle is a
+  ring between its seated members, one edge for two. Huddle transcript
+  messages (subject `huddle`, no addressee) are not edges, and an edge to a
+  deleted role is dropped. Every edge carries its time and taint.
+- **Feed**: newest first, ties by id descending, capped at `feedLimit`
+  (default 120). It is built from:
+  - shift rows: start, end with cost and filed count (or the error), skip with
+    its reason
+  - briefs (summary)
+  - messages (the subject line only)
+  - routes (what became of a message)
+  - huddles opened and closed
+  - tm_events of `OFFICE_FEED_EVENT_KINDS`: paused, resumed, wake,
+    taint-cleared, proposals, proposal-decided, feature, wish, vision-changed,
+    filing, command, chat-to-channel. Each is a server-made line, never agent
+    text. Kinds that duplicate a row above (office.shift, office.brief,
+    office.message, office.message-routed, office.huddle) are left out.
+  - the office's tasks' steps from `buildTaskHistory`: claimed, run, review,
+    checks, question, publish, shipped, landed, failed, cancelled.
+
+  A tainted row is flagged `tainted` and shows an **untrusted** chip.
+- **Ambient life**: `officeWanderSpot(avatar, layout, tick)` gives where an idle
+  avatar is at an ambient tick: mostly its desk, sometimes coffee, a stroll
+  across its room's strip, or a chat beside another idle role of the same room.
+  It is deterministic in (role, tick), so every tab shows the same scene.
+  Any other pose stays where the layout put it.
+
+`server/src/office-view.test.ts` pins rooms (order, packing, the one-column
+stack, no overlap), poses, huddle seating, edges (window, door/board ends,
+forwards, rings, a deleted role), feed order, filtering and ties, purity, and
+ambient life (deterministic, inside the room, all four activities).
+
+The theme ids (`OFFICE_THEME_IDS`, `officeThemeId`) moved to shared too.
+`server/src/office/names.ts` re-exports them under its old names
+(`OFFICE_THEMES`, `officeTheme`).
+
+### Skins: a registry
+
+`web/src/officeThemes.ts` `OFFICE_THEMES` is `{id, label, component:
+lazy(...)}[]` and lists **only implemented skins**. The first entry is the
+default. The skin drawn is chosen by `resolveOfficeSkin`:
+
+1. the device's pick (`tm.officeTheme`, read like `tm.boardVersion`), when it
+   names a listed skin
+2. else the office's `Office.theme`, when listed
+3. else the default
+
+So an office themed `fantasy-guild` renders Pixel office until that skin
+ships, with no migration either way. The Skin picker shows only while more
+than one skin is listed; its first option, *Office default*, clears the device
+pick. A skin gets `OfficeSkinProps` (`layout`, `mobile`, `selectedRoleId`,
+`highlight`, `onAvatar`) and draws only the floor.
+
+Adding a skin is a component in `web/src/pages/office/` plus one registry
+entry. Its rules use a prefix of its own and go in theme.css's § Calm list for
+any infinite animation.
+
+### The seam and the frame
+
+`useOfficeView(officeId, columns)` (`web/src/officeView.ts`) is the one seam,
+like `useTimeline`. It loads:
+
+- the detail (roles + the newest 50 shifts)
+- `/states`
+- the channel (messages + routes)
+- huddles and briefs
+- **`GET /api/offices/:id/feed?limit=`**: this office's
+  `OFFICE_FEED_EVENT_KINDS` audit rows, newest first, filtered on
+  `data.officeId` (`routes/offices.ts`)
+- the history (`GET /api/tasks/:id/history` → `buildTaskHistory`) of the
+  office's ≤ 8 tasks updated in the last 48 h, re-read when a task's
+  `updatedAt` moves
+
+Every listener subscribes before the first fetch and buffers until it lands.
+Live updates:
+
+- `office.updated` merges the office, roles and states
+- `office-message.created|updated` upserts a message (plus its route)
+- `office-huddle.updated` and `office.brief` upsert their rows
+- `event.appended` prepends a feed row
+
+No event carries shift rows, so `office.updated`, an `office.shift`/wake/
+brief/filing row, or a shift run's start or exit re-reads the detail
+(debounced 400 ms). It is also re-read every 60 s, and everything is re-read
+on reconnect. `now` ticks every 30 s on the shared clock (edges age out).
+
+`OfficePlace` (`components/office/OfficePlace.tsx`) is the theme-agnostic
+frame:
+
+- **Floor**: the skin, with `columns` from the frame's width (1 below 560 px or
+  on a phone, 2 below 900 px, else 3).
+- **Side column**: the **avatar card** (desktop) and the **history feed**
+  (`components/office/OfficeFeed.tsx`). Selecting a feed row lights its roles
+  and edge on the floor and dims the rest. Its link opens the task, the brief
+  or the shift's terminal.
+- **The card**: role, title, state with its detail, today's spend, next slot,
+  in-huddle and untrusted-notes chips, and the last brief (opens the viewer).
+  It has a *Live/Last shift terminal* link, **Wake now** (`POST …/wake`,
+  disabled while the role is off or on shift) and *Edit role* (opens the
+  editor).
+
+### Pixel office
+
+`web/src/pages/office/PixelOffice.tsx`, the default skin. It is a top-down
+floor drawn on tiled rooms behind hard pixel walls. Desks have monitors that
+light while their owner works. There is a plant and a coffee corner per room,
+a huddle table, and the lobby's 🚪 *You* and 📌 *Channel*.
+
+Avatars are pixel sprites: the role's emoji as the head, a body in its group
+colour and a name plate. Bubbles act out the pose:
+
+- typing dots: working
+- `!` (hopping): waiting for you
+- `z`: dozing
+- `⏸`: paused, `$`: over budget
+- 💬: huddling or chatting
+
+Hand-offs are dashed lines (message = accent, forward = review, huddle =
+running, tainted = attention) with a ✉ flying along each message/forward.
+Movement is a stepped `transform` transition, so it reads as pixel walking.
+
+Ambient life advances one tick every 8 s on the shared clock, and **only while
+the page is not calm**. A calm page (unfocused, hidden, 60 s without input, or
+reduced motion) sees a still office and re-renders nothing. Every infinite
+animation (`po-envelope`, the working body, the waiting bubble, the typing
+dots) is stepped and listed in theme.css § Calm; at rest an envelope waits
+halfway along its edge.
+
+The skin uses tokens only (`ov-*`/`po-*` rules before § Calm). It needs no
+Glass rule of its own: rooms, desks and cards read the remapped tokens.
+
+**Phone** (docs/mobile.md § Office view): the rooms stack vertically (one
+column), and the feed follows the floor. Tapping an avatar opens its card in a
+`<Sheet>`. Leaving the card for the brief viewer, the editor or the terminal
+closes it first, so sheets never stack.
+
+Checked headless with Playwright (Chromium) on a scratch build. Live GETs were
+replayed, the office routes were overlaid with synthetic states, messages, a
+huddle and a live shift, and writes were aborted. The runs covered desktop and
+phone in Classic and Glass. Each confirmed:
+
+- `.app.mobile` on the phone, with no horizontal overflow
+- rooms stacked in one column on the phone
+- poses: working, huddling ×2, idle, waiting
+- 4 edges
+- the feed order
+- a message and an `office.paused` row pushed over a mocked `/ws/events`
+  showed up in the feed (and as a new edge) without a reload
+- an avatar tap opens the card on desktop and a `<Sheet>` on the phone
+- no page errors

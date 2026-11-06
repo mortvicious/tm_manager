@@ -3937,5 +3937,7 @@ import type { Office, OfficeBrief, OfficeHuddle, OfficeMessage, OfficeMessageRou
 export * from './office.ts';
 // Office group chat: @mention routing and what a turn / a shift may read of it (docs/office.md § Group chat)
 export * from './office-chat.ts';
+// The office view: one pure layout every skin draws (docs/office.md § The view)
+export * from './office-view.ts';
 // TM Bar's summary read (docs/menubar.md)
 export * from './menubar.ts';

@@ -60,6 +60,8 @@ import { OfficeVision } from '../components/OfficeVision.tsx';
 import { OfficeChannel } from '../components/OfficeChannel.tsx';
 import { OfficeChat } from '../components/OfficeChat.tsx';
 import { OfficeHuddles } from '../components/OfficeHuddles.tsx';
+import { OfficePlace } from '../components/office/OfficePlace.tsx';
+import { useOfficeViewMode, type OfficeViewMode } from '../officeThemes.ts';
 import { useNow } from '../components/TimeAgo.tsx';
 import { useArm } from '../arm.ts';
 import { toastError } from '../toast.ts';
@@ -330,6 +332,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | 'channel' | 'huddles' | 'chat' | null>(null);
   const briefs = useOfficeBriefs(officeId);
   const [briefId, setBriefId] = useBriefParam();
+  const [mode, setMode] = useOfficeViewMode();
 
   if (!detail) return error ? <div className="warn-text">{error}</div> : <div className="muted">Loading…</div>;
   const { office, roles, shifts } = detail;
@@ -393,30 +396,41 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
             Shift log <span className="muted">{shifts.length}</span>
           </button>
         </div>
+      ) : null}
+
+      <OfficeViewSwitch mode={mode} onChange={setMode} />
+      {mode === 'place' ? (
+        <OfficePlace
+          officeId={office.id}
+          mobile={mobile}
+          onOpenTask={onOpenTask}
+          onOpenTerminal={onOpenTerminal}
+          onOpenBrief={setBriefId}
+          onEditRole={(id) => setEditing(id)}
+        />
       ) : (
-        settings
+        <div className="panel office-roles">
+          <div className="office-section-title">
+            Roles <span className="muted">{roles.length}</span>
+          </div>
+          {roles.length === 0 && <div className="muted office-pad">No roles — add one from a preset below.</div>}
+          {roles.map((r) => (
+            <RoleRow
+              key={r.id}
+              office={office}
+              role={r}
+              state={stateOf(r.id)}
+              now={now}
+              editing={editing === r.id}
+              onEdit={() => setEditing(editing === r.id ? null : r.id)}
+            />
+          ))}
+          <AddRole office={office} />
+        </div>
       )}
 
-      <div className="panel office-roles">
-        <div className="office-section-title">
-          Roles <span className="muted">{roles.length}</span>
-        </div>
-        {roles.length === 0 && <div className="muted office-pad">No roles — add one from a preset below.</div>}
-        {roles.map((r) => (
-          <RoleRow
-            key={r.id}
-            office={office}
-            role={r}
-            state={stateOf(r.id)}
-            now={now}
-            editing={editing === r.id}
-            onEdit={() => setEditing(editing === r.id ? null : r.id)}
-          />
-        ))}
-        <AddRole office={office} />
-      </div>
-
       {editor && !mobile && <div className="panel office-editor-panel">{editor}</div>}
+      {!mobile && settings}
 
       {!mobile && (
         <div className="panel">
@@ -493,6 +507,21 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
       )}
       {error && <div className="warn-text">{error}</div>}
     </BriefOpen.Provider>
+  );
+}
+
+/** The office as a place (docs/office.md § The view) or the phase-2 role list; per device (`tm.officeView`). */
+function OfficeViewSwitch({ mode, onChange }: { mode: OfficeViewMode; onChange: (m: OfficeViewMode) => void }) {
+  return (
+    <div className="ov-switch">
+      <div className="rm-seg" role="radiogroup" aria-label="Office view">
+        {(['place', 'list'] as const).map((m) => (
+          <button key={m} type="button" role="radio" aria-checked={mode === m} className={mode === m ? 'on' : ''} onClick={() => onChange(m)}>
+            {m === 'place' ? 'Office' : 'List'}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -670,7 +699,7 @@ function OfficeSettings({ office, spentToday }: { office: Office; spentToday: nu
         <div>
           <label className="label">Theme</label>
           <div className="field office-readonly">{office.theme ?? 'pixel-office'}</div>
-          <div className="muted office-hint">the themed office view comes in a later phase</div>
+          <div className="muted office-hint">the Office view draws this skin when it is implemented, else the default; a device may pick its own</div>
         </div>
         <div>
           <label className="label">Folder</label>

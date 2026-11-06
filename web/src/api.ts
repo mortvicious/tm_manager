@@ -546,6 +546,8 @@ export const api = {
   // Virtual Office (docs/office.md § API, § The /office page). Every write is
   // Origin-gated on the server; the browser's fetch always sends one.
   officeStates: (id: string) => req<OfficeStates>('GET', `/api/offices/${id}/states`),
+  /** the office view's history feed: this office's `OFFICE_FEED_EVENT_KINDS` rows, newest first (docs/office.md § The view) */
+  officeFeed: (id: string, limit = 100) => req<AuditEvent[]>('GET', `/api/offices/${id}/feed?limit=${limit}`),
   createOffice: (b: OfficeCreateBody) => req<OfficeCreateResult>('POST', '/api/offices', b),
   updateOffice: (id: string, b: OfficePatchBody) => req<Office>('PATCH', `/api/offices/${id}`, b),
   createOfficeRole: (id: string, b: OfficeRoleCreateBody) => req<OfficeRoleWriteResult>('POST', `/api/offices/${id}/roles`, b),

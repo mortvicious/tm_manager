@@ -355,4 +355,22 @@ describe('office API', () => {
     assert.deepEqual(detail.shifts, []);
     assert.equal((await send('GET', '/api/offices/nope')).statusCode, 404);
   });
+
+  test('GET feed: this office’s feed-kind audit rows only, newest first, limited (docs/office.md § The view)', async () => {
+    const other = (await send('GET', '/api/offices', undefined, false)).json() as { id: string }[];
+    const otherId = other.find((o) => o.id !== officeId)!.id;
+    await storage.appendEvent({ kind: 'office.wake', actor: 'human', data: { officeId, roleId: qaRoleId } });
+    await storage.appendEvent({ kind: 'office.wake', actor: 'human', data: { officeId: otherId } });
+    await storage.appendEvent({ kind: 'office.paused', actor: 'human', data: { officeId } });
+    const res = await send('GET', `/api/offices/${officeId}/feed`, undefined, false);
+    assert.equal(res.statusCode, 200);
+    const rows = res.json() as { kind: string; data: { officeId: string } }[];
+    assert.ok(rows.length >= 2);
+    assert.ok(rows.every((e) => e.data.officeId === officeId), 'no other office');
+    assert.ok(!rows.some((e) => e.kind === 'office.changed'), 'bookkeeping kinds are not news');
+    assert.equal(rows[0].kind, 'office.paused', 'newest first');
+    const one = (await send('GET', `/api/offices/${officeId}/feed?limit=1`, undefined, false)).json() as unknown[];
+    assert.equal(one.length, 1);
+    assert.equal((await send('GET', '/api/offices/nope/feed')).statusCode, 404);
+  });
 });

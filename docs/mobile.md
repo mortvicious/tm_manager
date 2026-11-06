@@ -1014,6 +1014,25 @@ The sticky Ctrl itself is unchanged, and so is the single input path it rides:
 compact/breakpoint/run change. The reasoning is in `docs/decisions.md`,
 2026-08-27.
 
+## Office view
+
+The /office page's **Office** view (docs/office.md § The view) on a phone:
+
+- The **Office | List** switch sits under the phone bar. The choice is per
+  device (`tm.officeView`), and the place is the default.
+- The floor is laid out with **one column**, so the rooms (Director's office,
+  Engineering, …, then the lobby) stack vertically. The floor scales to the
+  width (one tile = width ÷ 16, between 12 and 34 px), with no horizontal
+  scroll.
+- The **history feed** follows the floor, in the page's own scroller (no
+  nested scroller).
+- **Tapping an avatar** opens its card in a `<Sheet>`: role, state, today's
+  spend, the last brief, the shift terminal link, Wake now and Edit role.
+  Opening the brief, the editor or the terminal closes the card first, so two
+  sheets never stack.
+- Ambient life and the stepped animations stop whenever the page is calm. That
+  covers a backgrounded PWA, a minute without touch, and Reduce Motion.
+
 ## Known limits
 
 - A phone in **landscape** is ≥768px wide and therefore gets the desktop layout.
