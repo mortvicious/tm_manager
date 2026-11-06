@@ -173,7 +173,7 @@ export type LoopStep = Partial<Pick<Task, 'loopState' | 'loopIteration' | 'loopH
 
 /** undefined = leave as-is; null clears the column. */
 export type RepoPatch = Partial<
-  Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes' | 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy' | 'baseBranch' | 'autoApprove'>
+  Pick<Repo, 'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes' | 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy' | 'baseBranch' | 'autoApprove' | 'officeAutonomyOptin'>
 >;
 
 export interface NewCommand {
@@ -980,6 +980,12 @@ export interface Storage {
   updateOffice(id: string, patch: OfficePatch): Promise<Office | null>;
   deleteOffice(id: string): Promise<boolean>;
   pauseOffice(id: string, reason: string | null, expectedPaused: boolean): Promise<Office | null>;
+  /**
+   * The kill switch (docs/office.md § Autonomous opt-in): sets `kill_switch`
+   * to `on` only while it is the other value, so two surfaces racing land
+   * once — null back = no such office or already in that state (re-read).
+   */
+  setOfficeKillSwitch(id: string, on: boolean): Promise<Office | null>;
   /** `officeId` omitted = every office's roles, oldest first. */
   listOfficeRoles(officeId?: string): Promise<OfficeRole[]>;
   getOfficeRole(id: string): Promise<OfficeRole | null>;

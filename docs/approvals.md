@@ -63,7 +63,8 @@ can never both approve. The second one gets 409 "already approved by …".
   **never re-run**, because it may have half-happened. `pending` rows survive a
   restart.
 - **Audit**: `approval.requested` (actor `agent:<run8>`), `approval.decided`
-  (`human` / `telegram` / `auto-approve`), and `approval.finished`.
+  (`human` / `telegram` / `auto-approve`), and `approval.finished`. An office
+  autonomy grant adds `approval.auto` before the decision (§ Office autonomy).
 - **WS**: `approval.updated` carries the row on every change. The SPA keeps the
   pending set. The outcome is a toast: sticky on `done`, an error toast on
   `failed`.
@@ -73,8 +74,9 @@ can never both approve. The second one gets 409 "already approved by …".
 `tm_repos.auto_approve` (JSON array, migration 48) lists the actions a repo
 runs on the agent's word alone. Only `APPROVAL_AUTO_ACTIONS` qualify:
 `mark-published` and `sync-branch`. Both re-read git and neither can ship code
-or stop the server. A push and a restart **always** wait for a tap; storage
-drops anything else on write and on read.
+or stop the server. A restart **always** waits for a tap; a push waits for one
+everywhere except the office autonomy exception below. Storage drops anything
+else on write and on read.
 
 A `mark-published` request is pre-approved only when every task names a repo
 and EVERY repo it touches pre-approves it. Turning an action on needs `Origin`
@@ -85,6 +87,66 @@ column with four choices: always ask, mark published, sync branch, or both.
 A pre-approved request is decided as soon as it is written. Telegram and Web
 Push wait 1.5 s and re-read the row, so the human gets the outcome instead of a
 card to ignore.
+
+## Office autonomy
+
+The one push that runs without a tap (decisions.md 2026-11-07,
+docs/office.md § Autonomous opt-in). It is phase 6 of the Virtual Office
+brief, and it amends "no auto-approving a push, ever".
+
+An office task's `push-ref` request is approved as soon as it is written
+(`ApprovalService.officePushGrant`) when **all** of these hold, read fresh at
+request time:
+
+- every condition of `officeAutonomyRefusal`:
+  - the office is `autonomous` (a role override counts);
+  - the repo opted in (`tm_repos.office_autonomy_optin`);
+  - the task and its feature are untainted;
+  - the shift it came from was neither tainted nor woken by a signal;
+  - the kill switch is off;
+  - the office is on, unpaused and within its day budget;
+- the push goes into the task's **own** repo;
+- the task's effective landing tier is **`auto-publish`**. The push power
+  never exceeds the landing power: an `on-green` office task lands locally and
+  pushes nothing, so its push-ref waits;
+- the push is exactly what that landing would ship:
+  - the repo is not `delivery = 'pr'` and the task has no worktree. Those
+    land through `landWorktree` (docs/parallel.md), never through a pushed
+    ref;
+  - the ref is the repo's **default branch** (`defaultBranch`: the
+    `base_branch` override, else `origin/HEAD`), and it already exists on
+    origin, so the push is a fast-forward of it. That is what the publish
+    turn ships. A tag, a new branch, or any other existing branch waits for a
+    tap, because it may be a release or production ref whose push is a
+    deploy (neko-frontend builds production from `release`);
+  - the verify round settled clean: `!verifyOpen(task)` and
+    `landingReason(task)`, with a review that **passed**. "Review off"
+    proves nothing about the commits, so it does not count;
+  - every commit the push puts on origin carries the task's own `Task:`
+    trailer, and the passing round saw it (`ReviewRound.commits`): every
+    commit in `expectedOld..sha`.
+
+  A request made mid-turn, before the checks and the review run (or while
+  they run), waits. So does a push that carries another task's commits, a
+  trailer-less commit, or a commit made after the review.
+
+The grant writes an `approval.auto` row before the decision. That row carries
+actor `auto-approve` and `{ approvalId, action, params, rule:
+'office-autonomy', officeId, roleId, landing: 'auto-publish' }`. Then come
+the usual `approval.decided` (`auto-approve`) and `approval.finished` rows.
+The executor is unchanged: it re-checks origin against `expectedOld` at run
+time, under push health.
+
+Only `push-ref` gets this:
+
+- `rebuild-restart` **never** auto-approves, whoever asks;
+- `mark-published` and `sync-branch` keep the repo `auto_approve` rule above,
+  unchanged;
+- a push from a task that fails any condition waits for a human as before,
+  and so does a push from any non-office task.
+
+The kill switch takes the grant away from the next request on. A row already
+approved runs.
 
 ## Surfaces
 
@@ -107,6 +169,8 @@ card to ignore.
 - No force push, no moving a pushed tag, no deleting a ref.
 - No pushing to a repo whose push health fails (the hold in
   docs/parallel.md § Push health applies to approved pushes too).
-- No auto-approving a push or a restart, ever.
+- No auto-approving a restart, ever. No auto-approving a push either, with
+  one exception: an autonomous office's trusted `auto-publish` task in an
+  opted-in repo (§ Office autonomy).
 - No generic "run this command" action. Each action is a fixed executor with
   its own validation.

@@ -165,6 +165,7 @@ initHeavy(
   }),
 );
 orchestrator.watchHeavy();
+orchestrator.watchAutonomy();
 // Repo checks (docs/checks.md) run as ordinary command runs in that pool.
 orchestrator.setCommandRunner(commandRunner);
 const shellRunner = new ShellRunner(storage, shellSessions);

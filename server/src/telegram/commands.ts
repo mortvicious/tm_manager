@@ -73,6 +73,7 @@ import { collectStatus, formatClock, renderStatus, type GateCounters } from './s
 import type { BotCommandSpec, TelegramMessage } from './types.ts';
 import type { JobService } from '../jobs.ts';
 import { jobsListMessage } from './jobs.ts';
+import { autonomyMessage } from './office-autonomy.ts';
 
 // The router. One table, one lookup, no HTTP: a handler calls the same service
 // functions the REST routes call (docs/telegram.md § In-process, never HTTP).
@@ -348,6 +349,15 @@ export const COMMANDS: BotCommand[] = [
       const names = new Map(repos.map((r) => [r.id, r.name]));
       const m = jobsListMessage(jobs, ctx.jobs.status(), (id) => names.get(id) ?? id.slice(0, 8));
       return { html: m.html, keyboard: m.keyboard };
+    },
+  },
+  {
+    command: 'autonomy',
+    description: '🤖 Office autonomy — level, kill switch, what lands on its own',
+    async handler(ctx) {
+      // docs/office.md § Autonomous opt-in: a read plus one kill-switch button per office (`ks:`)
+      const m = await autonomyMessage(ctx.storage);
+      return m.keyboard ? { html: m.html, keyboard: m.keyboard } : m.html;
     },
   },
   {

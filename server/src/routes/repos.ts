@@ -58,6 +58,8 @@ const repoBody = z
     baseBranch: z.string().max(200).nullish(),
     // approval actions this repo pre-approves (docs/approvals.md § Auto-approve); only the auto-approvable ones
     autoApprove: z.array(z.enum(APPROVAL_AUTO_ACTIONS as [ApprovalAction, ...ApprovalAction[]])).max(APPROVAL_AUTO_ACTIONS.length).optional(),
+    // the office autonomy opt-in (docs/office.md § Autonomous opt-in): PATCH only, Origin to turn on
+    officeAutonomyOptin: z.boolean().optional(),
   })
   .strict();
 
@@ -121,6 +123,17 @@ export function autoApproveNeedsBrowser(next: ApprovalAction[] | undefined, curr
 }
 export const AUTO_APPROVE_FROM_BROWSER = 'auto-approve is turned on from the dashboard';
 
+/**
+ * And for the office autonomy opt-in (docs/office.md § Autonomous opt-in):
+ * turning it on lets an autonomous office's trusted tasks land above
+ * supervised and have their pushes auto-approved, so only the dashboard turns
+ * it on. Turning it off is allowed from anywhere.
+ */
+export function officeAutonomyNeedsBrowser(next: boolean | undefined, current: boolean, origin: string | undefined): boolean {
+  return !origin && next === true && !current;
+}
+export const OFFICE_AUTONOMY_FROM_BROWSER = 'the office autonomy opt-in is turned on from the dashboard';
+
 /** The emulator puts this string straight into an iframe `src`, so the scheme
  *  is pinned to http/https here — the one place every write passes through. */
 function normalizePreviewUrl(raw: string | null | undefined): string | null {
@@ -154,6 +167,9 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
     const body = repoBody.parse(req.body);
     if (body.parallel !== undefined || body.delivery !== undefined || body.worktreeSetup != null || body.worktreeCopy != null || body.baseBranch != null) {
       return reply.code(400).send({ error: 'set parallel tasks and delivery on the Repos page once the repo is added' });
+    }
+    if (body.officeAutonomyOptin !== undefined) {
+      return reply.code(400).send({ error: 'set the office autonomy opt-in on the Repos page once the repo is added' });
     }
     if (landingNeedsBrowser(body.landing, req.headers.origin)) return reply.code(403).send({ error: LANDING_FROM_BROWSER });
     if (pushPolicyNeedsBrowser(body.pushPolicy, req.headers.origin)) return reply.code(403).send({ error: PUSH_POLICY_FROM_BROWSER });
@@ -221,6 +237,9 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
     if (autoApproveNeedsBrowser(body.autoApprove, current.autoApprove, req.headers.origin)) {
       return reply.code(403).send({ error: AUTO_APPROVE_FROM_BROWSER });
     }
+    if (officeAutonomyNeedsBrowser(body.officeAutonomyOptin, current.officeAutonomyOptin, req.headers.origin)) {
+      return reply.code(403).send({ error: OFFICE_AUTONOMY_FROM_BROWSER });
+    }
     // `direct` is always one task at a time; `pr` must be provable before it is written
     let parallel = body.parallel;
     const delivery = body.delivery ?? current.delivery;
@@ -287,6 +306,7 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
       worktreeCopy: 'worktreeCopy' in body ? (body.worktreeCopy ?? null) : undefined,
       baseBranch,
       autoApprove: body.autoApprove,
+      officeAutonomyOptin: body.officeAutonomyOptin,
     });
     if (!repo) return reply.code(404).send({ error: 'repo not found' });
     await storage.appendEvent({
@@ -306,6 +326,7 @@ export function registerRepoRoutes(app: FastifyInstance, storage: Storage) {
         ...(JSON.stringify(before.worktreeCopy) !== JSON.stringify(repo.worktreeCopy) ? { worktreeCopy: { from: before.worktreeCopy, to: repo.worktreeCopy } } : {}),
         ...(before.baseBranch !== repo.baseBranch ? { baseBranch: { from: before.baseBranch, to: repo.baseBranch } } : {}),
         ...(JSON.stringify(before.autoApprove) !== JSON.stringify(repo.autoApprove) ? { autoApprove: { from: before.autoApprove, to: repo.autoApprove } } : {}),
+        ...(before.officeAutonomyOptin !== repo.officeAutonomyOptin ? { officeAutonomyOptin: { from: before.officeAutonomyOptin, to: repo.officeAutonomyOptin } } : {}),
       },
     });
     return repo;

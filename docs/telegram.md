@@ -403,6 +403,17 @@ An office role's proposal (docs/office.md § Proposals) arrives as a 💡 card (
 
 The stakeholder's 👍/👎 on an office role's work (docs/office.md § Ratings) rides two notifications: the **briefing document** (`notify.briefing`, its keyboard under the upload) and the **office proposal card** (a third row under Accept/Reject). `callback_data` is `rt:<b|p|t|m>:<uuid>:<u|d>` (brief/proposal/task/message, up/down; ≤ 43 bytes) — its own namespace in `telegram/office-ratings.ts`, parsed before the action codec like `op:`. A press calls `rateOfficeSubject` in-process with actor `telegram` and no comment (a comment given on the dashboard is kept); the other thumb changes the rating, the same one again answers "already" and writes nothing. Every press is audited as `telegram.command` `button:office-rating.up|down` (`target` = `<kind>:<id>`, `ok`, `changed`); a change is also the service's `office.rated` row and one line in the role's feedback file. A deleted subject toasts "Gone". The message is not redrawn — the toast is the answer, and the dashboard shows the rating live.
 
+### Office kill switch
+
+The office kill switch (docs/office.md § Autonomous opt-in) is one button: **🛑 Kill switch — no autonomy** while it is off, **▶️ Release kill switch** while it is on. Its `callback_data` is `ks:<officeId>:1|0` (on/off). It lives in its own namespace in `telegram/office-autonomy.ts` and is parsed before the action codec, like `op:`/`rt:`.
+
+- **Where:** under `/autonomy` (one per office) and under every briefing document.
+- **What a press does:** it calls `setKillSwitch` in-process with actor `telegram`. That is the REST route's own function, so its `office.kill-switch` row is the audit, and every office task resolves `supervised` from the next read.
+- **Repeats:** pressing it again in the same state answers "Already on/off" and writes nothing.
+- **Audit:** every press is a `telegram.command` row `button:office.kill-switch.on|off` (`ok`, `changed`). A changed press then sends one line naming the office and how many tasks were dropped back.
+- **Asymmetry:** turning a repo's opt-in ON is dashboard-only, but the phone can engage the kill switch and release it.
+- **Task cards:** a card's landing line reads `<tier> (autonomous office)` while the opt-in raises the tier.
+
 ### Scheduled jobs
 
 A job run that ends `attention` or `error` (or `ok` with `jobs.notifyOk`) pings once per run (`jobRunMessage`): verdict, summary, the top findings and the number of follow-up drafts, with **🔁 Ещё раз · ⏸ Пауза / ⏯ Продолжить · 👌 Принято** (`j:<uuid>:r|p|s|a`, parsed before the action codec like `ap:`). Acknowledged runs and runs settled more than 10 minutes ago (a reconnect replaying events) are skipped; a `failed` run is one a human stopped and never pings. Presses are audited as `telegram.command` `button:job.<op>` and go through `JobService` in-process with `actor: 'telegram'`. See `docs/jobs.md` § Notifications.
@@ -522,6 +533,7 @@ Registered with `setMyCommands`, so they autocomplete in the client. The tables 
 | `/killall` | the red button — see § Emergency controls |
 | `/restart` | restart the server through the front door — see § Emergency controls |
 | `/jobs` | scheduled jobs (`docs/jobs.md`): the jobs switch, the busy threshold, what holds a due job, and the live jobs with ▶ run / ⏸ pause buttons; `/jobs on\|off` flips the jobs queue's own switch (`jobs.enabled`) |
+| `/autonomy` | the office autonomy opt-in (`docs/office.md` § Autonomous opt-in): per office its level, on/paused, the kill switch, the opted-in repos and how many tasks are landing autonomously now, with one kill-switch button each — see § Office kill switch |
 
 ### Bot
 

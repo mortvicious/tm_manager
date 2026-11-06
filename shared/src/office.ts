@@ -6,7 +6,7 @@
 // server's sweep, the SPA's role cards and the tests read ONE rule. No I/O:
 // facts come in precomputed, time comes in as epoch ms, zones go through Intl.
 
-import type { EffortLevel, Task } from './types.ts';
+import type { EffortLevel, Feature, LandingTier, Repo, Task } from './types.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,6 +53,12 @@ export interface Office {
   /** IANA zone the schedules, quiet hours and the budget day are read in */
   timezone: string;
   enabled: boolean;
+  /**
+   * The stakeholder's kill switch (docs/office.md § Autonomous opt-in,
+   * migration 66): on = none of this office's tasks lands above supervised or
+   * has a push auto-approved, whatever the opt-ins say. Origin / Telegram.
+   */
+  killSwitch: boolean;
 }
 
 /**
@@ -1056,6 +1062,85 @@ export function filingStatus(
   if (opts.queueStopped) return 'draft';
   if (autonomy === 'auto-run' || autonomy === 'autonomous') return 'queued';
   return 'draft';
+}
+
+// ---------------------------------------------------------------------------
+// The autonomous opt-in (docs/office.md § Autonomous opt-in, decisions.md 2026-11-07)
+// ---------------------------------------------------------------------------
+
+/** The shift a task traces back to: the one that filed it, else (a feature card) the one that filed its feature. */
+export interface OfficeAutonomyFiler {
+  tainted: boolean;
+  trigger: OfficeShiftTriggerKind;
+}
+
+/**
+ * What `officeAutonomyRefusal` reads, gathered from the rows by the server
+ * (server/src/office/autonomy.ts). Pure data. A null where a row was
+ * expected fails closed.
+ */
+export interface OfficeAutonomyFacts {
+  office: Pick<Office, 'id' | 'autonomy' | 'enabled' | 'pausedAt' | 'killSwitch' | 'dayBudgetUsd' | 'budgetTrippedOn' | 'timezone'> | null;
+  /** the task's role (`roleId`); null for a role-less task — a `roleId` whose role is gone fails closed */
+  role: Pick<OfficeRole, 'id' | 'autonomy'> | null;
+  /** the task's repo — its opt-in */
+  repo: Pick<Repo, 'id' | 'officeAutonomyOptin'> | null;
+  /** the task's feature, when it has one (`featureId`) */
+  feature: Pick<Feature, 'id' | 'taintedAt'> | null;
+  /** the shift the task came from; null = unknown, which fails closed */
+  filer: OfficeAutonomyFiler | null;
+  /** the office's spend since its local midnight (`officeSpendSince`); null = not read, the trip stamp alone decides */
+  spentTodayUsd: number | null;
+  now: number;
+}
+
+/** The task fields the rule reads. All are create-only on an office task, so none can be laundered. */
+export type OfficeAutonomyTask = Pick<Task, 'source' | 'officeId' | 'roleId' | 'taintedAt' | 'repoId' | 'featureId'>;
+
+/**
+ * Why the office task `t` may NOT use the opt-in's two powers — land above
+ * supervised (`effectiveLanding`) and have a push-ref auto-approved
+ * (server/src/approvals.ts) — or null when it may. Every condition must hold:
+ * the office is `autonomous` (the role's override included), its kill switch
+ * is off, it is on, not paused and within its day budget; the repo opted in;
+ * the task, its feature and the shift it came from are untainted, and that
+ * shift was not woken by a signal (an outside — or metric — signal never
+ * earns either power, even when it is trusted). Any missing fact refuses.
+ * Every other external task stays clamped: a task with no `officeId`, or one
+ * whose source is not an office filing, is refused here.
+ */
+export function officeAutonomyRefusal(t: OfficeAutonomyTask, f: OfficeAutonomyFacts | null | undefined): string | null {
+  if (t.officeId == null) return 'not an office task';
+  if (t.source !== 'office' && t.source !== 'feature') return `source '${t.source}' is not an office filing`;
+  // a partial row (a caller that did not read these) fails closed
+  if (t.taintedAt === undefined || t.roleId === undefined || t.featureId === undefined || t.repoId === undefined) return 'task row incomplete';
+  if (!f) return 'autonomy facts not read';
+  const o = f.office;
+  if (!o || o.id !== t.officeId) return 'office not found';
+  if (o.killSwitch) return 'the office kill switch is on';
+  if (!o.enabled) return 'the office is off';
+  if (o.pausedAt) return 'the office is paused';
+  if (!(o.dayBudgetUsd > 0)) return 'the office has no day budget';
+  if (officeBudgetTrippedToday(o, f.now) || (f.spentTodayUsd != null && f.spentTodayUsd >= o.dayBudgetUsd)) return 'the office is over its day budget';
+  if (t.roleId !== null && (!f.role || f.role.id !== t.roleId)) return 'its role is gone';
+  const autonomy = f.role ? effectiveAutonomy(o, f.role) : o.autonomy;
+  if (autonomy !== 'autonomous') return `autonomy is '${autonomy}', not 'autonomous'`;
+  if (!t.repoId || !f.repo || f.repo.id !== t.repoId) return 'no repo';
+  if (!f.repo.officeAutonomyOptin) return 'the repo has not opted in';
+  if (t.taintedAt !== null) return 'the task is tainted';
+  if (t.featureId !== null && (!f.feature || f.feature.id !== t.featureId)) return 'its feature is gone';
+  if (f.feature && f.feature.taintedAt !== null) return 'its feature is tainted';
+  if (!f.filer) return 'the shift it came from is unknown';
+  if (f.filer.tainted) return 'the shift it came from was tainted';
+  if (f.filer.trigger === 'signal') return 'the shift it came from was woken by a signal';
+  return null;
+}
+
+/** An office task whose effective landing tier the opt-in raised above supervised (`OrchestratorStatus.autonomous`). */
+export interface OfficeAutonomousTask {
+  taskId: string;
+  officeId: string;
+  landing: LandingTier;
 }
 
 // ---------------------------------------------------------------------------

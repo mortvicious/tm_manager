@@ -72,6 +72,9 @@ export function approvalExpireSql(from: ApprovalStatus[], note: string, at: stri
 
 export const REPO_AUTO_APPROVE_SQL = `UPDATE tm_repos SET auto_approve = ? WHERE id = ?`;
 
+/** The office autonomy opt-in (docs/office.md § Autonomous opt-in): 1 = on. */
+export const REPO_OFFICE_AUTONOMY_SQL = `UPDATE tm_repos SET office_autonomy_optin = ? WHERE id = ?`;
+
 /** The column value for a repo's pre-approved actions: only the auto-approvable ones, deduped; null = none. */
 export function autoApproveValue(list: readonly ApprovalAction[] | null | undefined): string | null {
   const keep = APPROVAL_AUTO_ACTIONS.filter((a) => list?.includes(a));

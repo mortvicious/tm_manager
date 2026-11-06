@@ -1,5 +1,44 @@
 # Decision log
 
+- **2026-11-07 — Fully autonomous opt-in: the one exception to the external-task landing clamp, and the one push that auto-approves (`docs/office.md` § Autonomous opt-in, `docs/approvals.md` § Office autonomy, `docs/design.md` § Landing tiers)**: task 8956f42a, phase 6/6 of the Virtual Office brief. It **amends** two rules. The first is 2026-11-04 "every office task is external, clamped to supervised"; the clamp stays the default. The second is docs/approvals.md "no auto-approving a push, ever"; a restart still never auto-approves.
+
+  **Chosen: one pure rule, `officeAutonomyRefusal(task, facts)` (shared), decides both powers.** It returns null only when all of these hold:
+  - the task has an `officeId` and source `office`/`feature`;
+  - its office exists, the kill switch is off, and the office is on and unpaused;
+  - the office has a day budget, has not tripped it today and is under it on the office-local day;
+  - its role exists and `effectiveAutonomy` is `autonomous` (a role override counts both ways);
+  - its repo opted in;
+  - the task has no `tainted_at`, and neither does its feature;
+  - the shift it came from is known, untainted and **not woken by a signal**.
+
+  The two powers:
+  - **Landing:** `effectiveLanding(task, repo, facts?)` resolves the real tier only when the rule passes. With no facts, or for any non-office external task, it clamps as before, so every reader without facts (SPA search, the frozen board, `predictSchedule`) shows the safe `supervised`.
+  - **Push-ref:** the push needs the rule AND the push into the task's own repo AND an effective tier of `auto-publish`. The push power never exceeds the landing power, so an `on-green` task, which pushes nothing when it lands, still has its push-ref wait. The push must also be exactly what that landing would ship (review round 1: a request made mid-turn skipped the verify gate). So it needs a repo that is not `delivery = 'pr'` (those land through `landWorktree`), a push that fast-forwards the repo's EXISTING default branch on origin (`defaultBranch`; review round 2: the grant never looked at the ref, so an agent could push its reviewed commits to `release`/`production` or create a release tag that fires a deploy, and neither is what the publish turn ships — a tag, a new branch or any other branch waits for a tap), a verify round settled clean with a review that PASSED (`!verifyOpen && landingReason`), and every pushed commit (`expectedOld..sha`) carrying the task's own `Task:` trailer and listed in that round's `commits`. The grant writes `approval.auto` (`rule: 'office-autonomy'`) before the decision. `rebuild-restart` never auto-approves, and `mark-published`/`sync-branch` keep the repo `auto_approve` rule.
+
+  **Chosen: read fresh, never cached, on every use of a power.** `resolveLanding` (`server/src/office/autonomy.ts`) is the tier at each `Orchestrator` landing site. `landingRefusal(task, landing, facts?)` reads the facts for a raise. `ApprovalService` reads them at request time. So the kill switch and a budget trip act on the very next read, a pending conflict re-land included (`landIfClean` re-reads the tier for a non-human asker and drops the re-land, audited `task.land { phase: 'retry-dropped' }`, unless it is still `auto-publish`), and **nothing is rewritten on the tasks**: a queued or review office task simply resolves `supervised` once the switch is on. The only cached reading is the SPA badge's `OrchestratorStatus.autonomous`: 10 s, cleared on any office, kill-switch, pause or opt-in change. It is a reading only, never a landing input.
+
+  **Chosen: the filing shift is identified, not trusted from the task.**
+  - A task whose `created_by_run` is a shift's aux run gets that shift: the run's `subject_id`, whose `run_id` must match. That covers a filing, an accepted proposal and a routed message.
+  - A feature card gets the shift on the feature's `office.feature` row.
+  - Anything else is unknown and refused.
+
+  A signal-woken shift is refused on its trigger kind, apart from taint, because a metric signal's shift is untainted by design (2026-11-05). An accepted proposal has no `tainted_at`, since the accept is the human review, but a tainted shift's proposal is still refused through its shift.
+
+  **Chosen: two switches with asymmetric guards.**
+  - `tm_repos.office_autonomy_optin` (migration 66) needs `Origin` to turn on and is audited in `repo.changed`. Turning it off works from anywhere. `POST /api/repos` refuses it (400), so a repo opts in only on the Repos page.
+  - `tm_offices.kill_switch` (migration 66) uses `POST /api/offices/:id/kill-switch`, which needs Origin both ways like every office write, plus the Telegram `ks:` button.
+  - Both switch changes go through `setKillSwitch`: a conditional write, one `office.kill-switch` row with the dropped task ids, and an `office.updated` broadcast.
+
+  **Stricter than the brief, on purpose:** a paused or disabled office, or one with no day budget, also refuses, and a partially read task row fails closed. The push policy clamp (`effectivePushPolicy`) is untouched, so a worker never pushes on its own word. Shipping is the `auto-publish` publish turn behind green checks and a clean review.
+
+  **Accepted limits:** the kill switch does not interrupt a publish turn already under way (its push may be half done); nothing new starts. The SPA's fact-less tier readers keep showing office tasks clamped, and only the badge knows.
+
+  **Rejected:**
+  - Writing `landing = 'supervised'` onto the tasks when the switch is engaged: it would be lost on release and could race a human's own choice.
+  - A per-office opt-in only: the repo owner must agree as well, because the repo is what ships.
+  - Auto-approving push-ref under `on-green`: it would push what the tier never lands.
+  - Letting the Telegram bot turn the opt-in ON: the phone can only take power away.
+
 - **2026-11-07 — Every non-human filing gets a group decision: join / new / ungrouped, never refused for omitting it (`docs/grouping.md` § Agent filings)**: task 0b710e6b. Agent-filed tasks landed as lone roots, so the Stacks view filled with unrelated single rows. `POST /api/agent/tasks` takes `group` (`{join}` | `{new, forceNew?}` | `{ungrouped: why}`), audited on `agent.create` and `task.created` (`data.group`); jobs, office filing, shared-note filing and feature approval decide server-side.
 
   **Chosen: no groups table.** A group stays a task tree: join = parent under the root, new = a root with `group_name`. **Omitted = a deterministic default** (previous grouped filing of this run in the repo → the caller's named group of ≥ 2 → ungrouped), audited `defaulted`, explained in `note`. A 400 burns a turn and breaks agents with stale instructions. **Name dedup in the create's transaction** (`createTaskInNamedGroup`; sqlite's one connection serialises it, pg takes an advisory lock on the normalised name), so racers converge on one group. Finished groups are never matched. **Trust never mixes in a group**: membership widens dispatch and `reachOf`, so an untrusted filing chain (tainted / Sentry / job, walked up `created_by_run` because taint is not copied onto agent filings) never joins a trusted group and vice versa. That case is downgraded to ungrouped, not refused, and the agent move route refuses the same mix. **Feature cards form one group under the first card**, and a split of that card counts only its split pieces, never its feature's own plan cards (`RESOLVING_CHILDREN_SQL`, twin `isSplitChild` for the Inbox count, `reparentRefusal` and `linkToParent`). Otherwise the split would wait on and fail with every other card (review round 1: excluding only later phases still held it on its own phase's cards). **Rejected**: keeping cards as lone roots with a name-only link (the group would not exist as a tree, so dispatch, reach and the board would not see it). **Sentry stays ungrouped** (independent issues).
@@ -196,7 +235,7 @@
 
   **Why a column, not only the source.** Office-filed tasks get the new source `'office'`, which is already external, because only `manual`/`feature` are not. But an office can also file a *feature* whose approved plan becomes ordinary cards with source `'feature'`. A source test alone would treat those cards as the human's, so `officeId` is the second belt, like `createdByRun`. The column is create-only (never written through `updateTask`), so a task cannot be laundered into a trusted one.
 
-  **The exception comes only with the phase-6 opt-in.** A per-office setting may later let a trusted (untainted) office land above supervised. Until that phase ships it, there is no way to do so, and the clamp stays the default even after it ships.
+  **The exception comes only with the phase-6 opt-in.** A per-office setting may later let a trusted (untainted) office land above supervised. Until that phase ships it, there is no way to do so, and the clamp stays the default even after it ships. *(Shipped 2026-11-07 as the autonomous opt-in, see that entry.)*
 
 - **2026-11-04 — Feature plans converge by fix rounds, not re-plans (`docs/features.md` § Fix rounds)**: the plan loop re-planned from scratch every round, showing the planner only the previous plan's titles, and reviewed each new plan from scratch. On the Virtual Office feature (0e323bef), every round fixed all the findings it was handed, and every review found a new set of majors: 4, then 3, then 6 across three rounds, at about $10 a round. After the first full round, a re-plan is now an EDIT of the stored plan for the numbered blocker/major findings only, applied by the server. The reviewer then marks each finding resolved or not and may add new findings only on what changed (≤ 3 minors, blockers anywhere). This is the diff review's converging fix rounds (2026-10-26) applied to plans. The user proposed the change after watching rounds 3–5. Also from the same day: a review round re-plans on any blocker/major FINDING, not only on a `blocker` verdict (`needsReplan`), because a reviewer had returned `minor` over four majors.
 

@@ -145,6 +145,7 @@ import {
   officeOpenTasksSql,
   officePatchSql,
   officePauseSql,
+  officeKillSwitchSql,
   officeRoleInsertParams,
   officeRoleListSql,
   officeRolePatchSql,
@@ -190,6 +191,7 @@ import {
   approvalListSql,
   approvalStepSql,
   autoApproveValue,
+  REPO_OFFICE_AUTONOMY_SQL,
   rowToApproval,
   type ApprovalFilter,
   type NewApproval,
@@ -492,6 +494,7 @@ export class PostgresStorage implements Storage {
       id,
     ]);
     if (patch.autoApprove !== undefined) await this.q(REPO_AUTO_APPROVE_SQL, [autoApproveValue(patch.autoApprove), id]);
+    if (patch.officeAutonomyOptin !== undefined) await this.q(REPO_OFFICE_AUTONOMY_SQL, [patch.officeAutonomyOptin ? 1 : 0, id]);
     return this.getRepo(id);
   }
 
@@ -2377,6 +2380,12 @@ export class PostgresStorage implements Storage {
 
   async pauseOffice(id: string, reason: string | null, expectedPaused: boolean): Promise<Office | null> {
     const q = officePauseSql(id, reason, expectedPaused, now());
+    const r = await this.q(q.sql, q.params);
+    return r[0] ? rowToOffice(r[0]) : null;
+  }
+
+  async setOfficeKillSwitch(id: string, on: boolean): Promise<Office | null> {
+    const q = officeKillSwitchSql(id, on, now());
     const r = await this.q(q.sql, q.params);
     return r[0] ? rowToOffice(r[0]) : null;
   }

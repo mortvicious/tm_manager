@@ -1258,6 +1258,11 @@ button.badge.badge-link:hover {
 }
 
 /* office role chip (RoleChip, docs/office.md § Role-tagged work): avatar + name */
+/* the office autonomy opt-in's badge (components/AutonomyChip.tsx, docs/office.md § Autonomous opt-in) */
+.chip.autonomy-chip {
+  color: var(--tm-status-published);
+  border-color: currentColor;
+}
 .chip.role-chip {
   gap: var(--tm-space-1);
   color: var(--tm-accent);

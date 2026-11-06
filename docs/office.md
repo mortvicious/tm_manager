@@ -283,6 +283,180 @@ minute sweep is also what holds an over-budget office's queued tasks.
 A tainted shift or a stopped queue **never** files `queued`. A human reads the
 draft before anything runs.
 
+`autonomous` files the same way as `auto-run`. What it adds is the
+**autonomous opt-in** below: the only way an office task lands above
+`supervised` or gets a push approved without a tap.
+
+## Autonomous opt-in
+
+Phase 6 of the Virtual Office brief (decisions.md 2026-11-07). It amends the
+2026-11-04 rule "every office task is external, clamped to supervised"
+(§ Data model): that rule stays the default, and this opt-in is its one
+exception. The opt-in grants two powers.
+
+1. **Landing.** The task resolves its repo's or its own landing tier
+   (`on-green`, `auto-publish`) instead of the clamp.
+2. **Push-ref approval.** Its `push-ref` approval requests run without a tap
+   (docs/approvals.md § Office autonomy), but only while its effective tier
+   is `auto-publish` and only for exactly what that landing would ship: the
+   repo is not `delivery = 'pr'`, the push is a fast-forward of the repo's
+   existing default branch (`defaultBranch`; never a tag, a new branch or
+   another branch such as `release`), the verify round settled clean with
+   a passing review, and every pushed commit carries the task's own `Task:`
+   trailer and was seen by that review. A request made mid-turn, before
+   the checks and the review, waits for a human.
+
+**Every one of these must hold** (`officeAutonomyRefusal` in
+`shared/src/office.ts`, pure). It returns null or the first failed condition
+as a readable reason:
+
+| # | condition | refusal |
+|---|---|---|
+| 1 | the task has an `officeId`, its source is `office` or `feature` | `not an office task` / `source '…' is not an office filing` |
+| 2 | the row was read whole (`taintedAt`, `roleId`, `featureId`, `repoId` present) | `task row incomplete` — a partial row fails closed |
+| 3 | its office exists | `office not found` |
+| 4 | the office **kill switch** is off | `the office kill switch is on` |
+| 5 | the office is enabled and not paused | `the office is off` / `the office is paused` |
+| 6 | the office has a day budget (> 0), is not tripped today and has spent less than it today (office-local day) | `the office has no day budget` / `the office is over its day budget` |
+| 7 | its role (if any) still exists, and `effectiveAutonomy(office, role)` is `autonomous`, so a role override counts both ways | `its role is gone` / `autonomy is 'auto-run', not 'autonomous'` |
+| 8 | its repo has **opted in** (`tm_repos.office_autonomy_optin`) | `no repo` / `the repo has not opted in` |
+| 9 | the task has no `tainted_at` | `the task is tainted` |
+| 10 | its feature (if any) exists and has no `tainted_at` | `its feature is gone` / `its feature is tainted` |
+| 11 | the shift it came from is known, was not tainted and was **not woken by a signal** | `the shift it came from is unknown` / `… was tainted` / `… was woken by a signal` |
+
+Condition 11 is the brief's rule that a tainted shift or a signal-woken shift
+never gets either power. A metric signal's shift is untainted
+(`officeSignalRefTrusted`), so the trigger kind is tested on its own, apart
+from taint. **The filing shift** is looked up by `officeTaskFiler`
+(`server/src/office/autonomy.ts`):
+
+- a task whose `created_by_run` is a shift's aux run: the run's `subject_id`,
+  which must be a shift of the same office whose `run_id` is that run. This
+  covers a shift's filing, an accepted proposal and a task routed from a
+  channel message; for the routed task it is the Director's routing shift;
+- a feature card: the shift named on the feature's `office.feature` audit row.
+
+Anything else is unknown and refused. An accepted proposal carries no
+`tainted_at`, because the accept is the human review. A tainted shift's
+proposal still never gets the powers, because condition 11 refuses it.
+
+**`effectiveLanding(task, repo, facts?)`** (shared) takes the facts as an
+optional third argument. Without them an office task is clamped as before, so
+every reader that has no facts (the SPA's board search, the frozen board's
+chips, `predictSchedule`) shows `supervised`. That is the safe reading, and the
+badge below is the exception. A **non-office** external task (Sentry, `auto`,
+anything `createdByRun` that is not an office's) is clamped whatever facts
+are passed, because the rule's first test is `officeId`.
+
+**Read fresh, every time a power is used.** `officeAutonomyFacts` reads the
+office, role, repo, feature, filing shift and today's spend (`officeSpendSince`
+from `officeDayOf`). The last three are read only when the cheap rows could
+still grant, which is exact because the rule refuses earlier otherwise.
+`resolveLanding(storage, task, repo)` is THE server-side tier for a landing
+about to happen. Every `Orchestrator` reader of the tier goes through it:
+`landIfClean`, `deferLanding`, the worker invocation's landing, the
+compaction rules' ship rule, `observeShipped` and a split parent's
+`resolveCompletion`. Nothing is cached on that path, so the kill switch or a
+budget trip takes effect on the very next read.
+
+**Writing a tier.** `landingRefusal(task, landing, facts?)`
+(`task-actions.ts`) refuses a raise above `supervised` on an office task
+unless the rule passes. The 409 reads `an office task lands above supervised
+only under the office autonomy opt-in (…): <reason>`. A raise still needs
+`Origin`. Lowering is always allowed.
+
+**What it does not widen.** The push policy is unchanged:
+`effectivePushPolicy` still clamps `agent-pushes` to `repo-rules`, so the
+worker never pushes on its own word. Shipping is the `auto-publish` tier's
+publish turn, behind the green checks and clean review that `landingReason`
+needs. The worktree rule and push health apply as to any task.
+
+**Audit.** An autonomous `on-green` landing's `task.transition` row and an
+`auto-publish` landing's `task.landing { phase: 'publish' }` row carry
+`autonomous: true, officeId`, so the log tells an office's autonomous landing
+from a human task's.
+
+### The repo opt-in
+
+`tm_repos.office_autonomy_optin` (migration 66, `Repo.officeAutonomyOptin`,
+default off) is set by `PATCH /api/repos/:id {officeAutonomyOptin}`.
+
+- **Turning it on needs `Origin`** (403 `the office autonomy opt-in is turned
+  on from the dashboard`). Turning it off works from anywhere.
+- The change is audited as `repo.changed { officeAutonomyOptin: {from, to} }`.
+- `POST /api/repos` refuses the field (400): a repo opts in on the Repos page
+  once it exists.
+
+The **Office** column of the Repos page has two choices, `clamped` and
+`autonomy opt-in`. Turning it on asks first, and the confirm restates the
+conditions.
+
+### The kill switch
+
+`tm_offices.kill_switch` (migration 66, `Office.killSwitch`) takes both powers
+away from every task of the office at once.
+
+- **REST:** `POST /api/offices/:id/kill-switch {on}`. Origin is required both
+  ways, like every office write, and the response is `{office, changed,
+  dropped}`.
+- **Telegram:** the `ks:<officeId>:1|0` button, actor `telegram`.
+- Both call `setKillSwitch` (`office/kill-switch.ts`). The write is
+  conditional (`kill_switch = ? … WHERE kill_switch = <the other state>`), so
+  a second press in the same state changes nothing.
+- Each change appends one `office.kill-switch { officeId, workspaceId, on,
+  dropped? }` row (`dropped` = the task ids that were landing autonomously)
+  and broadcasts `office.updated`.
+
+Nothing is rewritten on the tasks. Every landing and every push-ref resolves
+through the rule, which reads `kill_switch` fresh. So a queued or review
+office task resolves `supervised` from the moment the row is written, and a
+human must land it. Releasing the switch restores the opt-in where its
+conditions still hold. **Not interrupted:** a publish turn already under way,
+because its push may be half done. Nothing new starts.
+
+That includes a pending **conflict re-land** in a worktree repo. After a land
+conflict, `resolveLandConflict` remembers who asked to land
+(`landAfterConflict`). For an auto-publish task that is the orchestrator.
+Before `landIfClean` re-publishes for a non-human asker, it re-reads the tier
+through `resolveLanding`. Anything but `auto-publish` drops the entry and
+appends a `task.land { phase: 'retry-dropped', askedBy, landing }` row. The
+task then stays in `review` for a human. Causes include the kill switch, an
+office pause or budget trip, a lost opt-in or a lowered tier. A human's own
+Publish still re-lands as asked.
+
+### UI
+
+- **/office**: a **Kill switch** button in the status bar, before
+  Pause/Continue. It turns red while on, shows how many tasks are landing
+  autonomously, and asks before release. While the switch is on, the banner
+  leads with *Kill switch on*.
+- **Badge**: `AutonomyChip` on the board row (`TaskRow`) and in the task
+  panel. It reads *autonomous · on-green|auto-publish* while the task is in
+  `OrchestratorStatus.autonomous`, and *landed autonomously* on a done or
+  published office task with `autoLandedAt`.
+  - `OrchestratorStatus.autonomous` is computed by `autonomousOfficeTasks`:
+    open office tasks in opted-in repos whose tier the opt-in raises. It is a
+    reading, cached 10 s and cleared on `office.updated`, an
+    `office.kill-switch`, `office.paused` or `office.resumed` row, or an
+    opt-in change.
+  - Every landing re-resolves through `resolveLanding` regardless.
+  - The panel's `LandingPicker` stops showing the external clamp for such a
+    task.
+- **Telegram**: `/autonomy` lists each office's level, kill switch,
+  opted-in repos and how many tasks are landing autonomously, with one
+  kill-switch button each. Every briefing document carries the button too. A
+  task card's landing line reads `<tier> (autonomous office)`
+  (docs/telegram.md § Office kill switch).
+
+**Known limits.**
+
+- The SPA's other tier readers have no facts, so they still show office tasks
+  as clamped. These are the board search's `landing:` term, the frozen
+  board's chips, the Review deck card and the timeline's `predictSchedule`;
+  the badge is the one reading that does have them.
+- On a phone row the chip shows only in the row-meta line, which renders when
+  the row has a role chip or children.
+
 ## The taint model
 
 Text the server did not write can carry a prompt injection. A shift is
@@ -548,7 +722,7 @@ it is history. Money is `DOUBLE PRECISION` (pg `REAL` is float4). Flags are
 
 | Table | Columns (beyond the `Office` / `OfficeRole` / `OfficeShift` fields) | Indexes |
 |---|---|---|
-| `tm_offices` | `workspace_id`, `folder_path`, `autonomy` (default `proposals`), `day_budget_usd` (0), `max_slots` (1), `max_tasks_per_shift` (8), `max_open_tasks` (12) — the insert's defaults, migration 55 (§ Filing), `paused_at`, `paused_reason`, `budget_tripped_on`, `theme`, `timezone`, `enabled` (0), `created_at`, `updated_at` | **unique** `(workspace_id)`: one office per workspace |
+| `tm_offices` | `workspace_id`, `folder_path`, `autonomy` (default `proposals`), `day_budget_usd` (0), `max_slots` (1), `max_tasks_per_shift` (8), `max_open_tasks` (12) — the insert's defaults, migration 55 (§ Filing), `paused_at`, `paused_reason`, `budget_tripped_on`, `theme`, `timezone`, `enabled` (0), `kill_switch` (0, migration 66 — § Autonomous opt-in), `created_at`, `updated_at` | **unique** `(workspace_id)`: one office per workspace |
 | `tm_office_roles` | `office_id`, `preset`, `role_key` (the role's `key`), name/avatar/title/prompt/model/effort, `tools`/`schedules`/`triggers`/`guards` (JSON), `command_ids` (JSON `OfficeRoleCommand[]`, migration 56 — § Command runs), `autonomy`, `cap_usd`, `notes_path`, `notes_tainted_at`, `session_id`, `session_tainted` (0), `enabled` (1), `created_at`, `updated_at` | **unique** `(office_id, role_key)` |
 | `tm_office_shifts` | `office_id`, `role_id`, `trigger_kind`/`trigger_ref`/`trigger_at` (the `trigger` object), `verdict`, `skip_reason`, `run_id`, `cost_usd`, `tainted`, `taint_sources` (JSON), `brief_id`, `filed_task_ids` (JSON), `filing` (JSON `OfficeShiftFiling`, migration 55 — § Filing), `commands` (JSON `OfficeShiftCommands`, migration 56 — § Command runs), `started_at`, `ended_at`, `error` | `(office_id, started_at)`, `(role_id, started_at)`, `(run_id)` |
 
@@ -566,7 +740,10 @@ office task to `supervised`, `landingRefusal` refuses raising it, and
 `effectivePushPolicy` clamps `agent-pushes`. This holds even for a
 source-`'feature'` card. The board search reads such a task as provenance
 `office` (`web/src/boardSearch.ts`). decisions.md 2026-11-04 records the
-choice; the only exception is the phase-6 opt-in.
+choice. The only exception is the phase-6 opt-in (§ Autonomous opt-in,
+decisions.md 2026-11-07): a trusted task of an `autonomous` office in an
+opted-in repo, with the kill switch off and the office within budget. It
+never touches the push policy clamp.
 
 **Storage methods** (`Storage` in `server/src/storage/types.ts`, the same in
 both drivers):
@@ -680,6 +857,9 @@ be indexed:
 | `tm_office_huddles` | `office_id`, `subject_kind`/`subject_id` (required), `role_ids` (JSON), `turns` (0), `max_turns` (≥ 1, clamped on insert), `status` (`open` \| `decided` \| `expired`, default `open`), `decision`, `tainted_at`, `created_at`, `updated_at`, `closed_at` | `(office_id, status, created_at)`, `(subject_kind, subject_id)` |
 | `tm_office_signals` | `office_id`, `source` (`sentry` \| `github` \| `metric`), `external_id`, `title`, `raw_text`, `url`, `received_at`, `consumed_shift_id` | **unique** `(source, external_id)`, `(office_id, consumed_shift_id, received_at)` |
 | `tm_office_metrics` / `tm_office_metric_points` | migration 65 — see § Product metrics | `(office_id, created_at)` / `(metric_id, at)` |
+
+Migration 66 adds `tm_offices.kill_switch` and `tm_repos.office_autonomy_optin`
+(both INTEGER 0/1, default 0) — § Autonomous opt-in.
 
 `tm_chats` gains `office_id` and `participants` (JSON role ids) —
 `Chat.officeId` (null = an ordinary chat) and `Chat.participants` ([] for an
@@ -1147,7 +1327,8 @@ review, the checks and the landing tiers. The shift itself never executes.
 effort asked for, and `tainted_at` when the shift is tainted. The description
 gets a `Filed by <role> — office shift <id8>` line on top and the standing caps
 at the end (`withStandingCaps`). Every office task is external, so it lands
-supervised (§ Data model). The audit actor is `office:<role key>`.
+supervised (§ Data model), unless the autonomous opt-in grants it
+(§ Autonomous opt-in). The audit actor is `office:<role key>`.
 
 **Status.** `filingStatus(effectiveAutonomy(office, role), tainted,
 {queueStopped: !orchestrator.enabled})`, with the office and role RE-READ at
@@ -1244,7 +1425,9 @@ lists (newest first), `GET /api/office-proposals/:id` reads one.
   `office` with `office_id`, `role_id`, `created_by_run` = the shift's run,
   `spawn_depth` 1, the proposal's category/effort and **no `tainted_at`**:
   accepting IS the human review, even for a tainted proposal (the SPA asks
-  first). It stays external, so it lands supervised. Status:
+  first). It stays external, so it lands supervised unless the autonomous
+  opt-in grants it (§ Autonomous opt-in; never for a tainted shift's
+  proposal). Status:
   `proposalAcceptStatus(effectiveAutonomy(office, role), {queueStopped})` —
   `queued` under `auto-run`/`autonomous`, `draft` under `proposals` or a
   stopped queue. The office caps do not apply (a human chose it). The repo is
@@ -1965,7 +2148,8 @@ shows it as `(default)`.
 - `tainted_at` = the feature's, when it is tainted.
 
 So every card is external (`isExternalTask` is true on `officeId`) and lands
-`supervised`; the office's claim share (§ Claim share) and day budget apply to
+`supervised` (unless the autonomous opt-in grants it, never for a tainted
+feature, § Autonomous opt-in); the office's claim share (§ Claim share) and day budget apply to
 it like any office task; and a fresh worker prompt leads with the Director's
 role block (§ Role-tagged work).
 

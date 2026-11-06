@@ -298,6 +298,53 @@ function ParallelCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<vo
 const AUTOPILOT_CHOICES = [10, 15, 30, 60, 120, 240];
 
 /**
+ * The office autonomy opt-in (docs/office.md § Autonomous opt-in): lets a
+ * trusted task of an `autonomous` office land above supervised in this repo
+ * and have its push-ref auto-approved (when its tier is auto-publish) — only
+ * while the office's kill switch is off, it is within budget and nothing it
+ * read was tainted. Turning it on needs the dashboard and a confirm.
+ */
+function OfficeAutonomyCell({ repo, onSaved }: { repo: Repo; onSaved: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const save = async (on: boolean) => {
+    if (on === repo.officeAutonomyOptin) return;
+    if (
+      on &&
+      !window.confirm(
+        `Let an autonomous office's trusted tasks in ${repo.name} land on this repo's landing tier without you, and auto-approve their pushes when that tier is auto-publish?\n\nNever for a tainted or signal-woken task; the office's kill switch takes it back at once.`,
+      )
+    )
+      return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.updateRepo(repo.id, { officeAutonomyOptin: on });
+      await onSaved();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="repo-landing">
+      <select
+        className="field"
+        value={repo.officeAutonomyOptin ? 'on' : 'off'}
+        disabled={busy}
+        title="Office tasks are clamped to supervised. Opted in, an autonomous office's trusted tasks land on this repo's tier and their pushes auto-approve under auto-publish — the office's kill switch takes it back."
+        onChange={(e) => void save(e.target.value === 'on')}
+      >
+        <option value="off">clamped</option>
+        <option value="on">autonomy opt-in</option>
+      </select>
+      {err && <span className="warn-text">{err}</span>}
+    </span>
+  );
+}
+
+/**
  * Auto-approve (docs/approvals.md § Auto-approve): the approval actions this
  * repo runs on an agent's request without a tap. Only the two that re-read git
  * and can neither ship code nor stop the server; a push and a restart always
@@ -604,6 +651,7 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                 <th title="What agents are told about git push when no review holds the ship">Push</th>
                 <th title="Minutes a worker's question waits before its Recommended option is picked for you">Autopilot</th>
                 <th title="Agent requests (mark published, sync a local branch) this repo runs without asking you">Auto-approve</th>
+                <th title="Whether an autonomous office's trusted tasks may land here without you (docs/office.md § Autonomous opt-in)">Office</th>
                 <th title="How many of this repo's tasks may run at once, and how they ship (direct, or worktree + PR)">Parallel</th>
                 <th>Tasks</th>
                 <th>Git</th>
@@ -643,6 +691,9 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                       <td data-label="Auto-approve">
                         <AutoApproveCell repo={r} onSaved={refresh} />
                       </td>
+                      <td data-label="Office">
+                        <OfficeAutonomyCell repo={r} onSaved={refresh} />
+                      </td>
                       <td data-label="Parallel">
                         <ParallelCell repo={r} onSaved={refresh} />
                       </td>
@@ -672,7 +723,7 @@ export function ReposPage({ onOpenTerminal }: { onOpenTerminal?: (runId: string)
                     </tr>
                     {expanded && (
                       <tr className="repo-open">
-                        <td colSpan={10} className="repo-cmd-cell">
+                        <td colSpan={11} className="repo-cmd-cell">
                           <RepoCommandsPanel repoId={r.id} onOpenTerminal={onOpenTerminal} />
                         </td>
                       </tr>

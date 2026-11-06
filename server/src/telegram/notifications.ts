@@ -28,6 +28,7 @@ import type { InlineKeyboardMarkup } from './types.ts';
 import { jobRunMessage } from './jobs.ts';
 import { officeProposalMessage } from './office-proposals.ts';
 import { officeRatingRow } from './office-ratings.ts';
+import { killSwitchButton } from './office-autonomy.ts';
 import { questionMessages, settledNotice } from './questions.ts';
 
 // The push half of the bot (docs/telegram.md § Notifications): subscribes to
@@ -389,8 +390,12 @@ export class TelegramNotifier {
       if (!this.deps.notify.briefing) return;
       const doc = await buildBriefReport(this.deps.storage, b.id);
       if (!doc) return;
-      // 👍/👎 under the document (docs/office.md § Ratings)
-      await this.deps.sendDocument(doc, doc.summary, { inline_keyboard: [officeRatingRow('brief', b.id)] });
+      // 👍/👎 under the document (docs/office.md § Ratings), and the office's
+      // kill switch in its current state (docs/office.md § Autonomous opt-in)
+      const office = await this.deps.storage.getOffice(b.officeId).catch(() => null);
+      await this.deps.sendDocument(doc, doc.summary, {
+        inline_keyboard: [officeRatingRow('brief', b.id), ...(office ? [[killSwitchButton(office)]] : [])],
+      });
     });
   }
 

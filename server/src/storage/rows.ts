@@ -90,6 +90,8 @@ export function rowToRepo(r: any): Repo {
     worktreeCopy: stringList(r.worktree_copy),
     baseBranch: r.base_branch || null,
     autoApprove: autoApproveList(r.auto_approve),
+    // a missing column (a row read before migration 66) reads as OFF
+    officeAutonomyOptin: !!Number(r.office_autonomy_optin ?? 0),
     createdAt: r.created_at,
   };
 }

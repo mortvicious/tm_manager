@@ -9,7 +9,6 @@ import {
   repoHasRoom,
   repoParallelCap,
   LOOP_CONTINUABLE_STATES,
-  effectiveLanding,
   effectivePushPolicy,
   isCodexModel,
   landingReason,
@@ -24,6 +23,7 @@ import {
   type LoopIteration,
   type LoopState,
   type LandingTier,
+  type OfficeAutonomousTask,
   type PausedTurn,
   type Repo,
   type ReviewFinding,
@@ -113,7 +113,7 @@ import {
 } from './claude/limit.ts';
 import { needsFallbackModel, sessionUsagePct } from './claude/usage.ts';
 import { sharedPromptBlock, spaceForRepo, validateSpacePath, writeFolderDocs, writeSharedMemory } from './spaces/service.ts';
-import { broadcast } from './events.ts';
+import { broadcast, onEvent } from './events.ts';
 import { AnomalyAlerts, COST_LINE_WINDOW_MS, costLine, costVerdict, type CostLine } from './anomalies.ts';
 import { checkFixMessage, checksVerdict, definitionOfDone, runChecks, selectChecks } from './checks.ts';
 import type { CommandRunner } from './commands/runner.ts';
@@ -142,6 +142,7 @@ import {
 } from './budget.ts';
 import { settleAllOfficeBudgets } from './office/budget.ts';
 import { roleContextBlock } from './office/role-context.ts';
+import { autonomousOfficeTasks, resolveLanding } from './office/autonomy.ts';
 import { MAX_LIVE_SESSIONS, pidLooksLikeOurs, type SessionManager } from './pty/session-manager.ts';
 import { artifactsRoot } from './config.ts';
 import { attachedFilesNote, readAttachedFiles } from './attachments.ts';
@@ -2189,7 +2190,33 @@ export class Orchestrator implements OrchestratorApi {
       procMemory: procMemoryState(),
       ...(heavy() ? { heavy: heavy()!.status() } : {}),
       machine: machineInfo(),
+      autonomous: await this.autonomousTasks(),
     };
+  }
+
+  /** `autonomousOfficeTasks`, cached 10 s (status() runs on every broadcast); `autonomyChanged()` drops it. */
+  private autonomyCache: { at: number; value: Promise<OfficeAutonomousTask[]> } | null = null;
+
+  private autonomousTasks(): Promise<OfficeAutonomousTask[]> {
+    const now = Date.now();
+    if (!this.autonomyCache || now - this.autonomyCache.at > 10_000) {
+      const value = autonomousOfficeTasks(this.storage, now).catch((e) => {
+        console.error('office autonomy reading failed:', e);
+        return [] as OfficeAutonomousTask[];
+      });
+      this.autonomyCache = { at: now, value };
+    }
+    return this.autonomyCache.value;
+  }
+
+  /**
+   * A kill switch, an opt-in or an office's autonomy changed (docs/office.md §
+   * Autonomous opt-in): drop the badge reading and re-broadcast at once. The
+   * landing never read the cache, so the change already holds for it.
+   */
+  autonomyChanged(): void {
+    this.autonomyCache = null;
+    this.broadcastStatusSoon();
   }
 
   /**
@@ -2212,6 +2239,21 @@ export class Orchestrator implements OrchestratorApi {
   }
 
   /** Follow the heavy slots (index.ts): every change re-broadcasts the status. */
+  /**
+   * Follow what moves the autonomy badge (index.ts): a kill switch, an
+   * opt-in, an office edit, pause or budget trip. The landing re-reads its
+   * facts anyway; this only keeps `OrchestratorStatus.autonomous` honest.
+   */
+  watchAutonomy(): void {
+    onEvent((e) => {
+      if (e.type === 'office.updated') return this.autonomyChanged();
+      if (e.type !== 'event.appended') return;
+      const k = e.event.kind;
+      if (k === 'office.kill-switch' || k === 'office.paused' || k === 'office.resumed') return this.autonomyChanged();
+      if (k === 'repo.changed' && (e.event.data as { officeAutonomyOptin?: unknown } | null)?.officeAutonomyOptin !== undefined) this.autonomyChanged();
+    });
+  }
+
   watchHeavy(): void {
     heavy()?.onChange(() => this.broadcastStatusSoon());
   }
@@ -2720,7 +2762,7 @@ export class Orchestrator implements OrchestratorApi {
           ref: shipped.ref,
           commits: shipped.commits,
           attribution: shipped.attribution,
-          pushedBeforeReview: shipHeldForReview(task, settings, effectiveLanding(task, repo)),
+          pushedBeforeReview: shipHeldForReview(task, settings, await resolveLanding(this.storage, task, repo)),
           reviewState: task.reviewState,
         },
       });
@@ -3627,7 +3669,7 @@ export class Orchestrator implements OrchestratorApi {
     const done = publishTurn ? null : definitionOfDone(task.acceptance, checks);
     return {
       trailer: commitTrailerRule(task.id),
-      ship: shipRuleFor(task, settings, effectiveLanding(task, repo), effectivePushPolicy(task, repo), publishTurn),
+      ship: shipRuleFor(task, settings, await resolveLanding(this.storage, task, repo), effectivePushPolicy(task, repo), publishTurn),
       done,
       artifactsDir: path.join(artifactsRoot, task.id),
       // An iteration's session must still end with the json block the loop
@@ -4125,7 +4167,8 @@ export class Orchestrator implements OrchestratorApi {
         // what the human attached (docs/design.md § Attached files): a fresh prompt names it
         filesNote:
           resumeSessionId || purpose === 'publish' ? undefined : (attachedFilesNote(readAttachedFiles(artifactsDir)) ?? undefined),
-        landing: effectiveLanding(task, repo),
+        // the office opt-in's facts are read fresh (docs/office.md § Autonomous opt-in)
+        landing: await resolveLanding(this.storage, task, repo),
         pushPolicy: effectivePushPolicy(task, repo),
         resumeSessionId,
         previousSummary: handoff.previousSummary ?? retryContext,
@@ -5707,7 +5750,7 @@ export class Orchestrator implements OrchestratorApi {
     if (!repo) return;
     // recording what git shows starts nothing — it is not held by the pause
     await this.observeShipped(task, repo);
-    if (effectiveLanding(task, repo) === 'supervised' || !landingReason(task)) return;
+    if ((await resolveLanding(this.storage, task, repo)) === 'supervised' || !landingReason(task)) return;
     await this.markPaused(taskId, { kind: 'land' });
   }
 
@@ -5737,7 +5780,20 @@ export class Orchestrator implements OrchestratorApi {
       await this.syncTaskPr(taskId, !verifyOpen(task) && !!landingReason(task));
       // A land that hit a conflict lands again once the resolving turn's
       // verify round is clean — for whoever asked, whatever the tier.
-      const askedBy = this.landAfterConflict.get(taskId)?.actor;
+      let askedBy = this.landAfterConflict.get(taskId)?.actor;
+      // An automatic re-land is the auto-publish tier acting again, so it
+      // re-reads that tier first: the kill switch, an office pause or budget
+      // trip, a lost opt-in or a human lowering the tier since the conflict
+      // turn started must stop it like any other landing (docs/office.md §
+      // The kill switch). A human's own Publish re-lands as asked.
+      if (askedBy && !HUMAN_ACTORS.has(askedBy) && !verifyOpen(task) && landingReason(task)) {
+        const now = await resolveLanding(this.storage, task, repo);
+        if (now !== 'auto-publish') {
+          this.landAfterConflict.delete(taskId);
+          await this.storage.appendEvent({ kind: 'task.land', actor: LANDING_ACTOR, taskId, repoId: repo.id, data: { phase: 'retry-dropped', askedBy, landing: now } });
+          askedBy = undefined;
+        }
+      }
       if (askedBy && !verifyOpen(task) && landingReason(task) && !(await this.isPaused())) {
         this.landAfterConflict.delete(taskId);
         await this.storage.appendEvent({ kind: 'task.land', actor: LANDING_ACTOR, taskId, repoId: repo.id, data: { phase: 'retry-after-conflict', askedBy } });
@@ -5750,10 +5806,14 @@ export class Orchestrator implements OrchestratorApi {
     // Observed publish: did the agent already push? Recorded for every tier;
     // supervised stops there (the human approves with "Mark published").
     const shipped = await this.observeShipped(task, repo);
-    const tier: LandingTier = effectiveLanding(task, repo);
+    // An office task resolves above supervised only through the autonomy
+    // opt-in, its facts read fresh here — so a kill switch or a budget trip
+    // pressed a moment ago already holds (docs/office.md § Autonomous opt-in).
+    const tier: LandingTier = await resolveLanding(this.storage, task, repo);
     if (tier === 'supervised') return;
     const reason = landingReason(task);
     if (!reason) return;
+    const autonomy = task.officeId ? { autonomous: true, officeId: task.officeId } : {};
     if (tier === 'on-green') {
       // on-green never pushes; when the agent did, the honest status is `published`
       const sha = shipped?.ok ? shipped.sha : null;
@@ -5770,7 +5830,7 @@ export class Orchestrator implements OrchestratorApi {
         sha ? 'published' : 'done',
         LANDING_ACTOR,
         { autoLandedAt: new Date().toISOString(), ...(sha ? { shippedSha: sha } : {}) },
-        { landing: tier, reason, ...(sha ? { observed: true, sha } : {}) },
+        { landing: tier, reason, ...(sha ? { observed: true, sha } : {}), ...autonomy },
       );
       if (!done) return; // a human or a newer turn took it in between
       broadcast({ type: 'task.updated', task: done });
@@ -5804,7 +5864,7 @@ export class Orchestrator implements OrchestratorApi {
       actor: LANDING_ACTOR,
       taskId,
       repoId: repo.id,
-      data: { landing: tier, reason, phase: 'publish' },
+      data: { landing: tier, reason, phase: 'publish', ...autonomy },
     });
     const res = await this.publish(taskId, LANDING_ACTOR);
     if ('error' in res) {
@@ -7016,7 +7076,7 @@ export class Orchestrator implements OrchestratorApi {
       // publish — the children carry the commits).
       const parentRow = await this.storage.getTask(child.parentId);
       const parentRepo = parentRow?.repoId ? await this.storage.getRepo(parentRow.repoId) : null;
-      const parentDone = parentRow && effectiveLanding(parentRow, parentRepo) !== 'supervised' ? 'done' : 'review';
+      const parentDone = parentRow && (await resolveLanding(this.storage, parentRow, parentRepo)) !== 'supervised' ? 'done' : 'review';
       const parent = await this.storage.resolveChildCompletion(child.id, parentDone, actor);
       if (parent) broadcast({ type: 'task.updated', task: parent });
     }

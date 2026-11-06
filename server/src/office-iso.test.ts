@@ -38,6 +38,7 @@ const office = (extra: Partial<Office> = {}): Office => ({
   theme: null,
   timezone: 'UTC',
   enabled: true,
+  killSwitch: false,
   ...extra,
 });
 

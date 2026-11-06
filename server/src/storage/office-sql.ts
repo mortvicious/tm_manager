@@ -233,6 +233,19 @@ export function rowToOffice(r: any): Office {
     theme: r.theme ?? null,
     timezone: r.timezone,
     enabled: !!Number(r.enabled),
+    killSwitch: !!Number(r.kill_switch ?? 0),
+  };
+}
+
+/**
+ * The kill switch's write (docs/office.md § Autonomous opt-in): conditional on
+ * the state the caller saw, so a dashboard press and a Telegram press racing
+ * each other land once and the loser re-reads (null back).
+ */
+export function officeKillSwitchSql(id: string, on: boolean, at: string): { sql: string; params: unknown[] } {
+  return {
+    sql: `UPDATE tm_offices SET kill_switch = ?, updated_at = ? WHERE id = ? AND kill_switch = ? RETURNING *`,
+    params: [on ? 1 : 0, at, id, on ? 0 : 1],
   };
 }
 

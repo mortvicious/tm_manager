@@ -5,6 +5,10 @@ import {
   APPROVAL_MARK_MAX,
   APPROVAL_PENDING_CAP,
   AUTO_APPROVE_ACTOR,
+  effectiveLanding,
+  landingReason,
+  officeAutonomyRefusal,
+  verifyOpen,
   type Approval,
   type ApprovalAction,
   type ApprovalParams,
@@ -13,7 +17,8 @@ import {
   type Task,
 } from '@tm/shared';
 import { broadcast, onEvent } from './events.ts';
-import { run } from './git.ts';
+import { run, TRAILER_RE } from './git.ts';
+import { officeAutonomyFacts } from './office/autonomy.ts';
 import { gitNetEnv, pushHealth } from './push-health.ts';
 import type { Storage } from './storage/types.ts';
 import { defaultBranch, withRepoLock } from './worktrees.ts';
@@ -111,8 +116,76 @@ export class ApprovalService {
     if (autoRepos.length && autoRepos.every((r) => r.autoApprove.includes(action))) {
       const r = await this.decide(approval.id, true, AUTO_APPROVE_ACTOR);
       if (r.ok) approval = r.approval;
+    } else if (action === 'push-ref' && taskId && repo) {
+      // an autonomous office's trusted task (docs/approvals.md § Office autonomy)
+      const grant = await this.officePushGrant(taskId, repo, params);
+      if (grant.ok) {
+        await this.storage.appendEvent({
+          kind: 'approval.auto',
+          actor: AUTO_APPROVE_ACTOR,
+          taskId,
+          runId: runRow.id,
+          repoId: repo.id,
+          data: { approvalId: approval.id, action, params, rule: 'office-autonomy', officeId: grant.officeId, roleId: grant.roleId, landing: 'auto-publish' },
+        });
+        const r = await this.decide(approval.id, true, AUTO_APPROVE_ACTOR);
+        if (r.ok) approval = r.approval;
+      }
     }
     return { ok: true, approval };
+  }
+
+  /**
+   * Whether an office task's push-ref may run without a tap (docs/approvals.md
+   * § Office autonomy): every condition of `officeAutonomyRefusal`, read fresh
+   * — an `autonomous` office (role override included), the repo opted in,
+   * nothing tainted, not filed by a signal-woken shift, kill switch off,
+   * within budget — AND the push is into the task's OWN repo AND the task's
+   * effective tier is `auto-publish`, so the push power never exceeds the
+   * landing power (an on-green task lands locally and pushes nothing) — AND
+   * it is exactly what that landing would ship: never a `delivery = 'pr'`
+   * repo or a worktree task (those land through `landWorktree`), only a
+   * fast-forward of the repo's EXISTING default branch on origin
+   * (`defaultBranch` — never a tag, a new branch or any other branch, which
+   * may be a release/production ref whose push is a deploy), only once
+   * the verify round settled clean (`!verifyOpen && landingReason`, with a
+   * review that PASSED — "review off" proves nothing about these commits),
+   * and only commits that carry the task's own `Task:` trailer and that the
+   * passing round saw. A request made mid-turn, before the checks and the
+   * review, or one carrying another task's or unreviewed commits, waits for
+   * a human. Any other task, and every other action but the repo
+   * `auto_approve` pair, waits too; `rebuild-restart` never gets here.
+   */
+  private async officePushGrant(
+    taskId: string,
+    repo: Repo,
+    params: ApprovalParams,
+  ): Promise<{ ok: true; officeId: string; roleId: string | null } | { ok: false; why: string }> {
+    if (params.action !== 'push-ref') return { ok: false, why: 'not a push' };
+    const task = await this.storage.getTask(taskId);
+    if (!task?.officeId) return { ok: false, why: 'not an office task' };
+    if (task.repoId !== repo.id) return { ok: false, why: 'the push is not into the task’s own repo' };
+    if (repo.delivery === 'pr' || task.workdir) return { ok: false, why: 'a pull-request repo lands through its own land step, never a pushed ref' };
+    const base = (await defaultBranch(repo))?.branch;
+    if (!base || params.ref !== `refs/heads/${base}` || !params.expectedOld) {
+      return { ok: false, why: `only a fast-forward of ${base ? `origin's ${base}` : 'the repo’s default branch'} ships with the landing — a tag, a new branch or another branch waits for a tap` };
+    }
+    const facts = await officeAutonomyFacts(this.storage, task, Date.now(), { repo });
+    const why = officeAutonomyRefusal(task, facts);
+    if (why) return { ok: false, why };
+    const tier = effectiveLanding(task, repo, facts);
+    if (tier !== 'auto-publish') return { ok: false, why: `the task lands ${tier}, not auto-publish` };
+    if (verifyOpen(task) || !landingReason(task)) return { ok: false, why: 'the checks and the review have not settled clean' };
+    const reviewed = task.reviewState === 'passed' ? [...task.reviewRounds].reverse().find((r) => !r.error)?.commits : undefined;
+    if (!reviewed?.length) return { ok: false, why: 'no passing review of this task’s commits' };
+    const pushed = await pushedCommits(repo, params);
+    if (!pushed?.length) return { ok: false, why: 'no commits of this task in the push' };
+    const own = taskId.toLowerCase();
+    const stray = pushed.find((c) => !c.taskIds.includes(own) || !reviewed.includes(c.sha));
+    if (stray) {
+      return { ok: false, why: `${short(stray.sha)} ${stray.taskIds.includes(own) ? 'was not in the reviewed change' : 'does not carry this task’s trailer'}` };
+    }
+    return { ok: true, officeId: task.officeId, roleId: task.roleId };
   }
 
   private async resolveRepo(ref: unknown, runRow: Run): Promise<Repo | null> {
@@ -369,6 +442,24 @@ export async function describePush(
     : `new tag ${tag} (${short(sha)})`;
   const summary = `git push origin ${short(sha)}:${ref} in ${repo.name}\n${target}${log ? `\n${log.split('\n').map((l) => `  ${l}`).join('\n')}${commits > 8 ? `\n  … ${commits - 8} more` : ''}` : ''}`;
   return { ok: true, params: { action: 'push-ref', sha, ref, expectedOld: old, commits }, summary };
+}
+
+/**
+ * The commits a push-ref would put on origin: `expectedOld..sha` for a branch
+ * fast-forward, everything no remote has yet for a new branch or tag — each
+ * with the task ids of its `Task:` trailers. Null = git could not say.
+ */
+async function pushedCommits(repo: Repo, p: Extract<ApprovalParams, { action: 'push-ref' }>): Promise<{ sha: string; taskIds: string[] }[] | null> {
+  const range = p.expectedOld ? [`${p.expectedOld}..${p.sha}`] : [p.sha, '--not', '--remotes'];
+  const log = await run(repo.path, 'git', ['log', '--format=%H%x1f%B%x1e', ...range]);
+  if (log.code !== 0) return null;
+  const out: { sha: string; taskIds: string[] }[] = [];
+  for (const rec of log.out.split('\x1e')) {
+    const [sha, body = ''] = rec.split('\x1f');
+    if (!sha?.trim()) continue;
+    out.push({ sha: sha.trim(), taskIds: [...body.matchAll(TRAILER_RE)].map((m) => m[1].toLowerCase()) });
+  }
+  return out;
 }
 
 async function pushApproved(repo: Repo, p: Extract<ApprovalParams, { action: 'push-ref' }>): Promise<{ ok: boolean; result: string }> {

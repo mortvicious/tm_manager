@@ -31,6 +31,7 @@ import {
 import type { Orchestrator } from '../orchestrator.ts';
 import { loadInboxSources } from '../inbox-input.ts';
 import type { Storage } from '../storage/types.ts';
+import { resolveLanding } from '../office/autonomy.ts';
 import { encodeAction, type ButtonAction } from './actions.ts';
 import { MAX_MESSAGE_CHARS, escapeHtml, type Reply } from './api.ts';
 import { short } from './ids.ts';
@@ -858,6 +859,14 @@ export async function renderBoard(deps: BoardDeps, want: BoardState): Promise<Re
  * does not fit).
  */
 export async function renderCard(deps: BoardDeps, t: Task, back: BoardState): Promise<Reply> {
+  // an office task above supervised only under the autonomy opt-in (docs/office.md § Autonomous opt-in), read fresh
+  const autonomousTier = t.officeId && t.repoId ? await resolveLanding(deps.storage, t, await deps.storage.getRepo(t.repoId)).catch(() => 'supervised' as const) : 'supervised';
+  const landingLabel =
+    autonomousTier !== 'supervised'
+      ? `${escapeHtml(autonomousTier)} (autonomous office)`
+      : isExternalTask(t)
+        ? 'supervised (external)'
+        : escapeHtml(t.landing ?? 'repo default');
   const [repo, live, questions] = await Promise.all([
     t.repoId ? deps.storage.getRepo(t.repoId) : Promise.resolve(null),
     deps.storage.listRuns({ taskId: t.id, status: 'running' }),
@@ -903,7 +912,7 @@ export async function renderCard(deps: BoardDeps, t: Task, back: BoardState): Pr
         (t.review === false
           ? ''
           : `reviewer <code>${escapeHtml(t.reviewModel ?? 'default')}${t.reviewEffort ? ` ${escapeHtml(t.reviewEffort)}` : ''}</code> · `) +
-        `landing <code>${isExternalTask(t) ? 'supervised (external)' : escapeHtml(t.landing ?? 'repo default')}</code>` +
+        `landing <code>${landingLabel}</code>` +
         (t.autoLandedAt ? ' · <b>auto-landed</b>' : '') +
         (preset ? ` (${escapeHtml(preset.label)})` : ''),
     );

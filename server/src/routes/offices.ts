@@ -74,6 +74,7 @@ import { ScorecardCache, computeScorecard } from '../office/scorecard.ts';
 import { officeScheduler, officeStates, type OfficeScheduler } from '../office/scheduler.ts';
 import type { NewOfficeRole, OfficePatch, OfficeRolePatch } from '../storage/office-sql.ts';
 import type { Storage } from '../storage/types.ts';
+import { setKillSwitch } from '../office/kill-switch.ts';
 import { isUniqueViolation } from '../storage/workspace-sql.ts';
 
 // Virtual Office REST API (docs/office.md § API). Offices are created from the
@@ -112,6 +113,8 @@ const officePatchBody = z
     paused: z.boolean().optional(),
   })
   .strict();
+
+const killSwitchBody = z.object({ on: z.boolean() }).strict();
 
 /**
  * The SHAPE of a role's fields. Content rules (cron parses, guards and
@@ -780,6 +783,16 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opt
     const { id } = req.params as { id: string };
     const r = await writes.patchOffice(id, officePatchBody.parse(req.body));
     return reply.code(r.code).send(r.body);
+  });
+
+  // The kill switch (docs/office.md § Autonomous opt-in): Origin both ways —
+  // engaging it speaks for the stakeholder as much as releasing it does.
+  app.post('/api/offices/:id/kill-switch', { preHandler: fromBrowser }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const { on } = killSwitchBody.parse(req.body);
+    const r = await setKillSwitch(storage, id, on, 'human');
+    if (!r.ok) return reply.code(r.code).send({ error: r.error });
+    return { office: r.office, changed: r.changed, dropped: r.dropped };
   });
 
   /** The office and role behind `:id`/`:roleId`, or the reply already sent. */

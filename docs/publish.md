@@ -56,7 +56,7 @@ Without the ship gate a worker used to get NO push rule, so the repo's own CLAUD
 
 - **The ship gate wins.** When `shipHeldForReview` holds (review on, or the `auto-publish` tier), the gate is the rule whatever the policy; `shipRule()` in `claude/worker.ts` emits exactly one of them.
 - **The publish turn is unchanged**: it gets no policy rule (it is the turn that pushes).
-- **External tasks** (`isExternalTask`) never get `agent-pushes`: `effectivePushPolicy` resolves it to `repo-rules`, the way a landing tier clamps to `supervised`. `publish-turn` applies to them as to any task.
+- **External tasks** (`isExternalTask`) never get `agent-pushes`: `effectivePushPolicy` resolves it to `repo-rules`, the way a landing tier clamps to `supervised`. `publish-turn` applies to them as to any task. The office autonomy opt-in (docs/office.md § Autonomous opt-in) lifts the landing clamp for a trusted office task but NOT this one: such a task ships only through its `auto-publish` publish turn.
 - **Raising** to `agent-pushes` needs the dashboard (`Origin`, else 403 `push policies are set from the dashboard`), on POST and PATCH alike; `repo-rules` and `publish-turn` add no autonomy and are accepted from anywhere. A change is audited on `repo.changed { pushPolicy: { from, to } }`.
 - **Not built: a "may I push?" agent endpoint over `publishPlan`.** `publishPlan`'s `full` also passes commits of APPROVED peers (done/published tasks), which is a wider test than the rule's "only my own trailer"; exposing it would give the agent two answers to one question. The trailer test runs in the agent's own git, needs no round trip, and is what the reviewer already keys on.
 

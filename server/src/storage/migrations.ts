@@ -1259,6 +1259,20 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS tm_office_metric_points_idx ON tm_office_metric_points (metric_id, at)`,
     ],
   },
+  {
+    id: 66,
+    // The office autonomy opt-in (docs/office.md § Autonomous opt-in,
+    // decisions.md 2026-11-07): `office_autonomy_optin` = this repo lets a
+    // trusted office task of an `autonomous` office land above supervised and
+    // have its push-ref auto-approved (Origin to turn on, audited in
+    // `repo.changed`); `kill_switch` = the office's stakeholder took both
+    // powers away again, at once, for every one of its tasks. Both default
+    // off, so nothing changes until a human turns the opt-in on.
+    statements: [
+      `ALTER TABLE tm_repos ADD COLUMN office_autonomy_optin INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE tm_offices ADD COLUMN kill_switch INTEGER NOT NULL DEFAULT 0`,
+    ],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */

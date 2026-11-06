@@ -147,6 +147,7 @@ import {
   officeOpenTasksSql,
   officePatchSql,
   officePauseSql,
+  officeKillSwitchSql,
   officeRoleInsertParams,
   officeRoleListSql,
   officeRolePatchSql,
@@ -192,6 +193,7 @@ import {
   approvalListSql,
   approvalStepSql,
   autoApproveValue,
+  REPO_OFFICE_AUTONOMY_SQL,
   rowToApproval,
   type ApprovalFilter,
   type NewApproval,
@@ -488,6 +490,7 @@ export class SqliteStorage implements Storage {
       .prepare(REPO_PARALLEL_SQL)
       .run(...repoParallelParams(cur, patch), id);
     if (patch.autoApprove !== undefined) this.db.prepare(REPO_AUTO_APPROVE_SQL).run(autoApproveValue(patch.autoApprove), id);
+    if (patch.officeAutonomyOptin !== undefined) this.db.prepare(REPO_OFFICE_AUTONOMY_SQL).run(patch.officeAutonomyOptin ? 1 : 0, id);
     return this.getRepo(id);
   }
 
@@ -2386,6 +2389,12 @@ export class SqliteStorage implements Storage {
 
   async pauseOffice(id: string, reason: string | null, expectedPaused: boolean): Promise<Office | null> {
     const q = officePauseSql(id, reason, expectedPaused, now());
+    const r = this.db.prepare(q.sql).get(...(q.params as any[]));
+    return r ? rowToOffice(r) : null;
+  }
+
+  async setOfficeKillSwitch(id: string, on: boolean): Promise<Office | null> {
+    const q = officeKillSwitchSql(id, on, now());
     const r = this.db.prepare(q.sql).get(...(q.params as any[]));
     return r ? rowToOffice(r) : null;
   }

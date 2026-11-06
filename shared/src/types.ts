@@ -213,12 +213,21 @@ export function landingReason(
   return checks && review ? `${checks}, ${review}` : null;
 }
 
-/** The tier a task actually lands with: its override, else its repo's, clamped to `supervised` for an external task. */
+/**
+ * The tier a task actually lands with: its override, else its repo's, clamped
+ * to `supervised` for an external task. The ONE exception (docs/office.md §
+ * Autonomous opt-in, decisions.md 2026-11-07): an office task whose
+ * `autonomy` facts pass `officeAutonomyRefusal` — an `autonomous` office, the
+ * repo opted in, nothing tainted, no signal, the kill switch off, within
+ * budget — resolves like a human's task. Without facts (every SPA reader, and
+ * any server reader that did not gather them) it stays clamped.
+ */
 export function effectiveLanding(
-  t: Pick<Task, 'source' | 'createdByRun' | 'officeId' | 'landing'>,
+  t: Pick<Task, 'source' | 'createdByRun' | 'officeId' | 'landing'> & Partial<Pick<Task, 'roleId' | 'taintedAt' | 'repoId' | 'featureId'>>,
   repo: Pick<Repo, 'landing'> | null | undefined,
+  autonomy?: OfficeAutonomyFacts | null,
 ): LandingTier {
-  if (isExternalTask(t)) return 'supervised';
+  if (isExternalTask(t) && !(autonomy && officeAutonomyRefusal(t as OfficeAutonomyTask, autonomy) === null)) return 'supervised';
   return t.landing ?? repo?.landing ?? 'supervised';
 }
 
@@ -568,6 +577,13 @@ export interface Repo {
   baseBranch: string | null;
   /** approval actions this repo pre-approves — a subset of APPROVAL_AUTO_ACTIONS (docs/approvals.md § Auto-approve) */
   autoApprove: ApprovalAction[];
+  /**
+   * The office autonomy opt-in (docs/office.md § Autonomous opt-in, migration
+   * 66): a trusted task of an `autonomous` office may land above supervised
+   * here and have its push-ref auto-approved — only while every condition of
+   * `officeAutonomyRefusal` holds. Off by default; Origin to turn on.
+   */
+  officeAutonomyOptin: boolean;
   createdAt: string;
 }
 
@@ -2560,6 +2576,8 @@ export type AuditKind =
   | 'office.resumed'
   /** a human created / edited an office or one of its roles (docs/office.md § API) */
   | 'office.changed'
+  /** an office's kill switch was turned on/off (docs/office.md § Autonomous opt-in) */
+  | 'office.kill-switch'
   /** what a shift's `tasks` section became: filed / held / dropped (docs/office.md § Filing) */
   | 'office.filing'
   /** a role's shift finished: outcome, sections applied, taint (docs/office.md § Shifts at run time) */
@@ -2607,6 +2625,8 @@ export type AuditKind =
   | 'approval.requested'
   | 'approval.decided'
   | 'approval.finished'
+  /** an office task's push-ref was auto-approved under the autonomy opt-in (docs/approvals.md § Office autonomy) */
+  | 'approval.auto'
   /** an automatic turn was refused, or claiming stopped for the day, by a budget fuse (docs/token-budget.md § Fuses) */
   | 'task.budget'
   /** the memory fuse tripped (`tripped: true`, reason + reading) or cleared (docs/memory.md) */
@@ -2896,6 +2916,13 @@ export interface OrchestratorStatus {
    * Omitted by a server predating it.
    */
   procMemory?: ProcMemorySnapshot;
+  /**
+   * Open office tasks whose landing tier the autonomy opt-in raises above
+   * supervised right now (docs/office.md § Autonomous opt-in) — the
+   * "autonomous" badge. A reading refreshed at most every 10 s and at once on
+   * a kill switch or an opt-in change; the landing itself always re-reads.
+   */
+  autonomous?: OfficeAutonomousTask[];
 }
 
 /** What a failed git network command says about its cause (`classifyGitFailure`). */
@@ -3981,6 +4008,7 @@ import { jobRunNeedsHuman, type Job, type JobRun, type JobsHold } from './jobs.t
 import { isSplitChild } from './group-filing.ts';
 import type { MemoryFuseState } from './memory.ts';
 import type { ProcMemorySnapshot } from './proc-memory.ts';
+import { officeAutonomyRefusal, type OfficeAutonomyFacts, type OfficeAutonomyTask, type OfficeAutonomousTask } from './office.ts';
 import type { Office, OfficeBrief, OfficeHuddle, OfficeRating, OfficeMetricWithPoints, OfficeMessage, OfficeMessageRoute, OfficeProposal, OfficeRole, OfficeStates, OfficeWish } from './office.ts';
 // Virtual Office: types, cron, catch-up, guards, the hard gate, autonomy and taint (docs/office.md)
 export * from './office.ts';

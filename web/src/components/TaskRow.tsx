@@ -12,6 +12,7 @@ import { IconCheck, IconEye, IconGrip, IconMore, IconPlay, IconPublish, IconQueu
 import { useIsMobile } from './Layout.tsx';
 import { QueueMark } from './QueueMark.tsx';
 import { RoleChip, useTaskRole } from './RoleChip.tsx';
+import { AutonomyChip } from './AutonomyChip.tsx';
 import { Sheet, SheetAction } from './Sheet.tsx';
 import { ProgressBar } from './TaskProgress.tsx';
 import { useRowSwipe, type SwipeSide } from './RowSwipe.tsx';
@@ -445,6 +446,7 @@ export function TaskRow({
         {(children || hasRole) && (
           <span className="row-meta">
             <RoleChip task={task} />
+            <AutonomyChip task={task} />
             {children}
           </span>
         )}
@@ -576,6 +578,7 @@ export function TaskRow({
         )}
       </span>
       <RoleChip task={task} />
+      <AutonomyChip task={task} />
       {children}
       <span className="row-actions">
         {shellWait && (

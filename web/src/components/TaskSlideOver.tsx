@@ -34,6 +34,7 @@ import { ReviewerFields, reviewIsOn } from './ReviewerPicker.tsx';
 import { TaskStatsLine } from './RunMeta.tsx';
 import { BadgeStrip, StatusBadge } from './StatusBadge.tsx';
 import { RoleChip } from './RoleChip.tsx';
+import { AutonomyChip } from './AutonomyChip.tsx';
 import { RatingButtons, useOfficeRating } from './OfficeRating.tsx';
 import { KindBadge, liveReviewRun, runTaskId } from './RunKind.tsx';
 import { ReviewPanel } from './ReviewPanel.tsx';
@@ -796,6 +797,7 @@ export function TaskSlideOver({
           </span>
         )}
         <RoleChip task={task} />
+        <AutonomyChip task={task} />
         {task.officeId && task.roleId && <TaskRating taskId={task.id} />}
         {task.category && (
           <span className="so-meta-item so-cat" title="category">
@@ -1189,6 +1191,7 @@ export function TaskSlideOver({
             onChange={setLanding}
             repo={repos.find((r) => r.id === repoId)}
             external={isExternalTask(task)}
+            autonomous={!!orch?.autonomous?.some((a) => a.taskId === task.id)}
           />
           <div>
             <label className="label">Updated</label>

@@ -258,7 +258,7 @@ export const api = {
     b: Partial<
       Pick<
         Repo,
-        'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes' | 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy' | 'baseBranch' | 'autoApprove'
+        'name' | 'path' | 'role' | 'previewUrl' | 'landing' | 'pushPolicy' | 'questionAutopilotMinutes' | 'parallel' | 'delivery' | 'worktreeSetup' | 'worktreeCopy' | 'baseBranch' | 'autoApprove' | 'officeAutonomyOptin'
       >
     >,
   ) =>
@@ -564,6 +564,9 @@ export const api = {
   officeScorecard: (id: string, days: number) => req<OfficeScorecardResponse>('GET', `/api/offices/${id}/scorecard?days=${days}`),
   createOffice: (b: OfficeCreateBody) => req<OfficeCreateResult>('POST', '/api/offices', b),
   updateOffice: (id: string, b: OfficePatchBody) => req<Office>('PATCH', `/api/offices/${id}`, b),
+  /** the office kill switch (docs/office.md § Autonomous opt-in): on = every office task lands supervised, no push auto-approved */
+  setOfficeKillSwitch: (id: string, on: boolean) =>
+    req<{ office: Office; changed: boolean; dropped: string[] }>('POST', `/api/offices/${id}/kill-switch`, { on }),
   createOfficeRole: (id: string, b: OfficeRoleCreateBody) => req<OfficeRoleWriteResult>('POST', `/api/offices/${id}/roles`, b),
   updateOfficeRole: (id: string, roleId: string, b: OfficeRolePatchBody) =>
     req<OfficeRoleWriteResult>('PATCH', `/api/offices/${id}/roles/${roleId}`, b),

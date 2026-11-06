@@ -627,6 +627,13 @@ function OfficeViewSwitch({ mode, onChange }: { mode: OfficeViewMode; onChange: 
 
 /** "Office over budget until midnight", or why the office is paused. */
 function OfficeBanner({ office, spentToday, now }: { office: Office; spentToday: number | null; now: number }) {
+  if (office.killSwitch) {
+    return (
+      <div className="office-banner paused" role="status">
+        <strong>Kill switch on.</strong> Every task of this office lands supervised and no push of its is auto-approved, whatever the repos opted in to.
+      </div>
+    );
+  }
   if (officeBudgetTrippedToday(office, now)) {
     const midnight = nextOfficeDayStart(now, office.timezone);
     return (
@@ -689,11 +696,51 @@ function OfficeStatusBar({ office, spentToday }: { office: Office; spentToday: n
         {!(office.dayBudgetUsd > 0) ? ' · set a day budget to turn it on' : ''}
       </span>
       <span style={{ flex: 1 }} />
+      <KillSwitchButton office={office} />
       <button className="btn" disabled={busy} onClick={() => void patch({ paused: !office.pausedAt })}>
         {office.pausedAt ? 'Continue' : 'Pause'}
       </button>
       {err && <div className="warn-text office-status-err">{err}</div>}
     </div>
+  );
+}
+
+/**
+ * The office kill switch (docs/office.md § Autonomous opt-in): one press takes
+ * the autonomy opt-in's two powers — landing above supervised, auto-approved
+ * pushes — from every task of this office at once; releasing asks first. The
+ * count is the server's reading (`OrchestratorStatus.autonomous`).
+ */
+function KillSwitchButton({ office }: { office: Office }) {
+  const { orch } = useApp();
+  const [busy, setBusy] = useState(false);
+  const autonomous = (orch?.autonomous ?? []).filter((t) => t.officeId === office.id).length;
+  const press = async () => {
+    const on = !office.killSwitch;
+    if (!on && !window.confirm('Release the kill switch? Tasks of this office may land without you again where a repo opted in and nothing they read was tainted.')) return;
+    setBusy(true);
+    try {
+      await api.setOfficeKillSwitch(office.id, on);
+    } catch (e) {
+      toastError(e, on ? 'Kill switch' : 'Release kill switch');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      className={`btn${office.killSwitch ? ' danger' : ''}`}
+      disabled={busy}
+      aria-pressed={office.killSwitch}
+      title={
+        office.killSwitch
+          ? 'Kill switch on: every task of this office lands supervised and no push is auto-approved. Press to release.'
+          : `Take autonomy away from every task of this office at once${autonomous ? ` — ${autonomous} would land without you now` : ''}.`
+      }
+      onClick={() => void press()}
+    >
+      {office.killSwitch ? 'Kill switch on' : `Kill switch${autonomous ? ` · ${autonomous} autonomous` : ''}`}
+    </button>
   );
 }
 

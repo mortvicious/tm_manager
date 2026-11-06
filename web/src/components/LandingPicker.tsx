@@ -24,13 +24,18 @@ export function LandingPicker({
   value,
   onChange,
   repo,
-  external,
+  external: externalTask,
+  autonomous = false,
 }: {
   value: LandingTier | null;
   onChange: (v: LandingTier | null) => void;
   repo: Repo | undefined;
   external: boolean;
+  /** an office task the autonomy opt-in lets land on a tier (the server's reading; docs/office.md § Autonomous opt-in) */
+  autonomous?: boolean;
 }) {
+  // the opt-in's one exception to the clamp: the server re-checks every write and every landing
+  const external = externalTask && !autonomous;
   const inherited: LandingTier = repo?.landing ?? 'supervised';
   const effective: LandingTier = external ? 'supervised' : (value ?? inherited);
   return (
@@ -57,7 +62,9 @@ export function LandingPicker({
       <div className="hint">
         {external
           ? 'This task’s text came from outside your own words (an import, a proposal, an agent’s filing), so it always stops at review.'
-          : LANDING_HINT[effective]}
+          : autonomous
+            ? `${LANDING_HINT[effective]} An autonomous office's trusted task in an opted-in repo — the office's kill switch drops it back to supervised.`
+            : LANDING_HINT[effective]}
       </div>
     </div>
   );

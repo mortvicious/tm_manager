@@ -1,7 +1,8 @@
 import { DEPENDS_ON_EDITABLE, dependsOnRefusal, edgeIndex } from './task-wait.ts';
-import { GROUP_COLOR_COUNT, LOOP_DEFAULT_MAX_ITERATIONS, LOOP_MAX_ITERATIONS_LIMIT, TASK_MOVE_PLACES, isExternalTask, isSplitChild, isTaintedFeatureDraft, type EffortLevel, type LandingTier, type TaskMovePlace, type Task, type TaskStatus } from '@tm/shared';
+import { GROUP_COLOR_COUNT, LOOP_DEFAULT_MAX_ITERATIONS, LOOP_MAX_ITERATIONS_LIMIT, TASK_MOVE_PLACES, isExternalTask, isSplitChild, isTaintedFeatureDraft, officeAutonomyRefusal, type EffortLevel, type LandingTier, type OfficeAutonomyFacts, type OfficeAutonomyTask, type TaskMovePlace, type Task, type TaskStatus } from '@tm/shared';
 import type { ActionResult, OrchestratorApi } from './app-types.ts';
 import { broadcast } from './events.ts';
+import { officeAutonomyFacts } from './office/autonomy.ts';
 import type { MoveAnchor } from './storage/group.ts';
 import type { QueueMoveAnchor } from './storage/queue-sql.ts';
 import type { NamedGroupFiling, NewTask, Storage } from './storage/types.ts';
@@ -82,13 +83,22 @@ function normalizeDone<T extends { acceptance?: string | null; checks?: string[]
  * The hard rule of the landing tiers (docs/design.md § Landing tiers): an
  * external task never lands above `supervised`. `effectiveLanding` clamps it
  * whatever is stored; this refuses the write, so no surface shows a tier the
- * task will never get.
+ * task will never get. In step with `effectiveLanding`'s one exception: an
+ * office task whose `autonomy` facts pass `officeAutonomyRefusal` (docs/
+ * office.md § Autonomous opt-in) may be given a tier; without facts, or
+ * when they refuse, the write is refused with the reason.
  */
 export function landingRefusal(
-  t: Pick<Task, 'source' | 'createdByRun' | 'officeId'>,
+  t: Pick<Task, 'source' | 'createdByRun' | 'officeId'> & Partial<Pick<Task, 'roleId' | 'taintedAt' | 'repoId' | 'featureId'>>,
   landing: LandingTier | null | undefined,
+  autonomy?: OfficeAutonomyFacts | null,
 ): string | null {
   if (!landing || landing === 'supervised' || !isExternalTask(t)) return null;
+  if (t.officeId != null) {
+    const why = officeAutonomyRefusal(t as OfficeAutonomyTask, autonomy);
+    if (why === null) return null;
+    return `an office task lands above supervised only under the office autonomy opt-in (docs/office.md § Autonomous opt-in): ${why}`;
+  }
   return `an external task (source '${t.source}'${t.createdByRun ? ', filed by an agent' : ''}) never lands above supervised`;
 }
 
@@ -162,7 +172,10 @@ export async function editTask(
   }
   const cur = await storage.getTask(id);
   if (!cur) return err(404, 'task not found');
-  const landingRefused = landingRefusal(cur, patch.landing);
+  // the opt-in's facts for the repo the task will have after this edit
+  const target = { ...cur, repoId: patch.repoId === undefined ? cur.repoId : patch.repoId };
+  const autonomy = cur.officeId && patch.landing && patch.landing !== 'supervised' ? await officeAutonomyFacts(storage, target) : null;
+  const landingRefused = landingRefusal(target, patch.landing, autonomy);
   if (landingRefused) return err(409, landingRefused);
   const touchesLoop = patch.loopGoal !== undefined || patch.loopMaxIterations !== undefined || patch.loopBudgetUsd !== undefined;
   if (touchesLoop) {

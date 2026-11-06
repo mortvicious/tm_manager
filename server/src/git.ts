@@ -255,7 +255,7 @@ export async function publishRepo(
 
 /** Same exclusion as the review diff (claude/review.ts DIFF_EXCLUDES). */
 const TREE_PATHSPEC = ['--', '.', ':!.claude/worktrees', ':!.worktrees'];
-const TRAILER_RE = /^Task:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*$/gim;
+export const TRAILER_RE = /^Task:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*$/gim;
 
 export interface UnpushedCommit {
   sha: string;
