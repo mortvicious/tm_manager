@@ -30,6 +30,12 @@ struct HostStatus: Decodable, Equatable, Sendable {
         let service: String?
     }
     struct Rebuild: Decodable, Equatable, Sendable {
+        /// a drain's latest restart-check reading (`RebuildWaitingFor`)
+        struct WaitingFor: Decodable, Equatable, Sendable {
+            let running: Int
+            let aux: [String]
+            let notPauseAware: [String]
+        }
         let state: String
         let step: String?
         let error: String?
@@ -37,6 +43,12 @@ struct HostStatus: Decodable, Equatable, Sendable {
         let startedAt: String?
         let finishedAt: String?
         let drain: Bool?
+        let drainDeadline: String?
+        let waitingFor: WaitingFor?
+        let logTail: String?
+        let pausedByJob: Bool?
+        /// after the restart: true = the job pressed Continue, false = left paused
+        let continued: Bool?
 
         /// idle/done/failed are the resting states; anything else is a job in flight.
         var inProgress: Bool { !["idle", "done", "failed"].contains(state) }

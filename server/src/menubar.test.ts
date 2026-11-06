@@ -69,7 +69,7 @@ describe('GET /api/menubar', () => {
     assert.equal(res.statusCode, 200);
     const body = res.json() as MenubarSummary;
 
-    assert.deepEqual(body.queue, { enabled: true, paused: true, running: 1, concurrency: 2, aux: 0 });
+    assert.deepEqual(body.queue, { enabled: true, paused: true, pausedTasks: 0, running: 1, concurrency: 2, aux: 0 });
     assert.equal(body.tasks.length, 2);
     // a known start sorts before an unknown one
     assert.equal(body.tasks[0].id, a.id);

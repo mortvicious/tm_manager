@@ -11,15 +11,13 @@ struct MenuView: View {
             header
             Divider()
             serverSection
+            ControlsView(store: store)
             if store.host?.api.up == true {
                 Divider()
                 tasksSection
                 Divider()
                 inboxSection
                 memorySection
-            }
-            if let msg = store.actionMessage {
-                Text(msg).font(.caption).foregroundStyle(.secondary)
             }
             Divider()
             footer
@@ -59,9 +57,7 @@ struct MenuView: View {
                 }
                 if let err = h.api.lastError { secondary("Last error: \(err)", color: .red) }
                 if let r = h.rebuild, r.inProgress {
-                    row("arrow.triangle.2.circlepath", "Rebuild & restart: \(r.step ?? r.state)", color: .orange)
-                } else if let r = h.rebuild, r.state == "failed", let err = r.error {
-                    secondary("Last rebuild failed: \(err)", color: .red)
+                    row("arrow.triangle.2.circlepath", "Rebuild & restart running" + (r.drain == true ? " (drain)" : ""), color: .orange)
                 }
                 if h.host.stale == true {
                     secondary("Front door code changed — restart " + (h.host.service == "launchd" ? "with npm run service:restart" : "npm start"), color: .orange)
@@ -213,9 +209,6 @@ struct MenuView: View {
         HStack {
             Button("Open task manager") { Browser.open(store.pageBase) }
                 .keyboardShortcut("o")
-            if let h = store.host, !h.api.up {
-                Button("Start server") { Task { await store.startServer() } }
-            }
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }
                 .keyboardShortcut("q")

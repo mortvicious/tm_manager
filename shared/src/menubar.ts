@@ -34,6 +34,8 @@ export interface MenubarSummary {
     enabled: boolean;
     /** Pause all (docs/pause.md) */
     paused: boolean;
+    /** tasks Pause all suspended (`paused_turn` markers) — what Continue resumes */
+    pausedTasks: number;
     /** live non-idle worker PTYs (`OrchestratorStatus.running`) */
     running: number;
     concurrency: number;
@@ -132,6 +134,7 @@ export function buildMenubarSummary(input: MenubarInput): MenubarSummary {
     queue: {
       enabled: status.enabled,
       paused: !!status.paused,
+      pausedTasks: status.pausedTasks ?? 0,
       running: status.running,
       concurrency: status.concurrency,
       aux: status.aux,

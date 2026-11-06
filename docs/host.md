@@ -177,10 +177,13 @@ server blind. Reached through the remote name they pass the remote gate first
 (identity + exact Origin, which is then required on every POST), so the
 tailnet name never exposes them unauthenticated.
 
-A native client reads the same routes: **TM Bar**, the macOS menu-bar app
+A native client uses the same routes: **TM Bar**, the macOS menu-bar app
 (`macos/TMBar/`, [menubar.md](menubar.md)), polls `GET /host/status` plus one
-API read and its only write is `POST /host/start` with the front door's own
-loopback Origin — no route or guard was added or widened for it.
+API read, and its controls ([menubar.md § Controls](menubar.md#controls)) are
+the web buttons' own requests — `/host/start|stop|restart` (the 409 restart
+check shown verbatim, then an explicit Force), `/host/rebuild-restart {drain:
+true}` + `/cancel`, `/api/orchestrator/pause|continue` — with the front door's
+own loopback Origin. No route or guard was added or widened for it.
 
 ## What the UI does with it
 
@@ -402,7 +405,8 @@ Reloading…** and Restart server is disabled; while draining a **Waiting for…
 flag (**Waiting on n unpausable** when chats/reports/plans hold it) opens what
 it waits for and **Cancel drain**. The job presses Continue only for its own
 pause (decisions.md 2026-10-26 "Rebuild & restart drains"); a pause you pressed
-first stays yours.
+first stays yours. TM Bar's **Rebuild & restart** is the same request with the
+same progress, Cancel drain and outcome lines ([menubar.md § Controls](menubar.md#controls)).
 
 ## The handoff race (fixed here, and the reason any of this is load-bearing)
 

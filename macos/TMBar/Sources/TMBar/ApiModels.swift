@@ -6,6 +6,8 @@ struct MenubarSummary: Decodable, Equatable, Sendable {
     struct Queue: Decodable, Equatable, Sendable {
         let enabled: Bool
         let paused: Bool
+        /// what Continue resumes (absent on an API older than the controls)
+        let pausedTasks: Int?
         let running: Int
         let concurrency: Int
         let aux: Int
@@ -64,6 +66,7 @@ struct OrchestratorLite: Decodable, Equatable, Sendable {
     }
     let enabled: Bool
     let paused: Bool?
+    let pausedTasks: Int?
     let running: Int
     let concurrency: Int
     let memory: Memory?

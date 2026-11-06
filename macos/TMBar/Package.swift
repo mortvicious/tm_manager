@@ -12,5 +12,13 @@ let package = Package(
             path: "Sources/TMBar",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        // `swift test`: the controls against a stubbed front door (URLProtocol),
+        // never the live one (docs/menubar.md § Verifying)
+        .testTarget(
+            name: "TMBarTests",
+            dependencies: ["TMBar"],
+            path: "Tests/TMBarTests",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
     ]
 )

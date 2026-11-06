@@ -1,7 +1,9 @@
 # TM Bar — the menu-bar app
 
 A small native macOS menu-bar app that reads the task manager at a glance: is
-the server up, what is running, what waits on you, is memory tight. It sits ON
+the server up, what is running, what waits on you, is memory tight. It also
+holds the server controls: Start / Stop / Restart the API, Rebuild & restart,
+Pause all / Continue (§ Controls). It sits ON
 TOP of the Node front door (`server/src/host.ts`, [host.md](host.md)) and talks
 to nothing else. It is not a second server: no Swift proxy, no Swift remote
 gate; `tailscale serve` → the remote listener (5177) and the iPhone path are
@@ -104,28 +106,90 @@ API is up:
 ## The menu
 
 - **Server**: API up · booted N ago · restarts; last exit (code/signal, when),
-  last error; a running Rebuild & restart's step, or the last one's failure;
-  `host.stale` → "restart `npm start`" (or `npm run service:restart` under
-  launchd); dev mode.
+  last error; "Rebuild & restart running"; `host.stale` → "restart `npm
+  start`" (or `npm run service:restart` under launchd); dev mode.
+- **Controls** (§ Controls): Restart · Stop (Start while the API is down) ·
+  Rebuild & restart; the queue line (on/off, paused, suspended count) with
+  Pause all or Continue; the job's progress; a confirm box; the last outcome.
 - **Tasks**: running/waiting count and slots, then one row per task — title,
   repo, asks you / needs attention / waiting, elapsed (ticks every second while
   open). A click opens `/?task=<id>` (the SPA's deep link).
 - **Inbox** N — questions · need you; a click opens `/inbox`.
 - **Memory** free % · swap %, pressure word; the fuse's hold reason in red while
   tripped; heavy slots while any are held or queued.
-- **Open task manager** (⌘O), **Start server** (only when the API is stopped),
-  **Quit** (⌘Q).
+- **Open task manager** (⌘O), **Quit** (⌘Q).
 
 Pages open in the installed Brave (`com.brave.Browser`, through
 `NSWorkspace.open(_:withApplicationAt:)`) and otherwise in the default browser.
 In dev (`host.dev`) the page is Vite on `http://localhost:5173`, since the front
 door serves no SPA there.
 
-**Start server** is the app's only write: `POST /host/start` with
-`Origin: http://127.0.0.1:<port>` (the front door's own loopback origin,
-already allowed — the allowlist is not widened) and `{}`. There is no new
-unauthenticated surface: everything the app can do, a loopback `curl` could
-already do.
+## Controls
+
+Every control is the web page's own request — same route, same JSON body,
+same loopback `Origin: http://127.0.0.1:<port>` (`Client.post`, a separate
+URLSession with a 90 s timeout, since `/host/restart` waits for the new boot
+and a suspending pause waits for compaction gates). The allowlist in `net.ts`
+is not widened and no route was added: every guard and every refusal is the
+server's, and the app only shows it. Logic in `Controls.swift`, view in
+`ControlsView.swift`.
+
+| control | request | confirm |
+|---|---|---|
+| Start (API down) | `POST /host/start {}` | no — it stops nothing |
+| Stop | `POST /host/stop {force: false}` | yes, naming the repo commands / terminals that die with it (read from `GET /api/server/restart-check`) |
+| Restart | `POST /host/restart {force: false}` | yes, same |
+| Force stop / Force restart | the same with `{force: true}` | only offered after the refusal below, and confirmed again |
+| Rebuild & restart | `POST /host/rebuild-restart {drain: true}` (the web button's default) | yes — "Drain & rebuild?" while agents work |
+| Cancel drain | `POST /host/rebuild-restart/cancel {}` | no — it releases the job's pause and restarts nothing |
+| Pause all | `POST /api/orchestrator/pause {}` (suspending, like the header button) | yes, with the live turn count |
+| Continue | `POST /api/orchestrator/continue {}` | yes (the web button asks too: it spends money again), with the suspended count |
+
+**Agents working.** Stop and Restart are refused by the front door while the
+API's restart check is blocked (`409` with the check's body, `blocked: true`).
+The app shows that check's `error` VERBATIM ("4 agent session(s) still working —
+stop them first, or retry with force.") in red inside the confirm box, with an
+explicit **Force stop / Force restart** button and the advice to Pause all
+first. Any other refusal (`in_progress` while a rebuild runs, "this API was not
+started by the front door", `not_draining`) is shown verbatim as a note,
+without a Force offer — forcing would not help.
+
+**Rebuild & restart progress.** The 2 s open-menu poll of `/host/status`
+carries the job (`HostStatus.rebuild`): the step sentence with a spinner; while
+draining, what the pause does not stop (`waitingFor.notPauseAware`, orange), a
+"gives up in" countdown to `drainDeadline` and **Cancel drain**. When the job
+ends, the outcome stays in the menu: `drain_timeout` → the job's own "Drain
+timed out: … The API was NOT restarted." in red, `cancelled` in orange, any
+other failure as "Rebuild & restart failed (reason): error" — each until
+dismissed (×) or the next job; `done` → "Rebuilt & restarted at HH:MM" for 15
+minutes, plus "still paused: press Continue" when the job left the machine
+paused (`continued: false`). The icon shows `rebuilding` throughout. The app
+does not reload anything — it has no build to swap.
+
+**Queue line.** "Queue on/off" is `orchestrator.enabled` (the global queue
+switch, shown, not toggled here); "Paused · N suspended" is Pause all with
+`pausedTasks` (added to `/api/menubar`'s `queue`; the closed-menu
+`/api/orchestrator` read already had it).
+
+**Actor: `human`, no new `menubar` actor.** The API distinguishes only the
+front door's own job (`by: 'rebuild'`) from a person; a press in the menu bar
+is a person's click on loopback, exactly like the web button. So the app sends
+no `by`, and the audit rows are the web's: `orchestrator.pause`/`continue`
+with actor `human`, and for Stop/Restart the front door's stop intent →
+`server.stopping` / `server.started` with cause "front door stop|restart
+(forced)" (docs/host.md § Restart causes). A `menubar` actor would have meant
+widening `HUMAN_ACTORS` and the stop-cause vocabulary for a label nobody reads
+differently.
+
+**Confirms are inline** (a box in the menu window, Cancel = Esc), not an
+`NSAlert`: a modal from an `LSUIElement` menu-bar window steals focus and
+closes the window it was asked from. Closing the menu drops an unanswered
+confirm; a Force offer that arrives while the menu is closed waits for the
+next open (dropped after 2 minutes, like the last outcome note). While a
+request is in flight every control is disabled.
+
+There is no new unauthenticated surface: everything the app can do, a
+loopback `curl` with the same Origin could already do.
 
 ## Look
 
@@ -164,6 +228,17 @@ under 1 ms on a copy of the live DB (≈1,000 tasks). On the server side, a
 - `--env TM_BAR_URL=http://127.0.0.1:<port>` points an instance at a test
   harness or a closed port (→ `state=unreachable`).
 - The route itself: `server/src/menubar.test.ts` (`npm test`).
+- The controls: `cd macos/TMBar && swift test` — `Tests/TMBarTests/ControlsTests.swift`
+  runs the real `Store` against a front door stubbed in a `URLProtocol`
+  (Origin and body of every write, confirm → 409 → Force offer with the
+  refusal verbatim → forced request, rebuild as a drain, Cancel drain's
+  refusal, pause/continue bodies without `by`, the `drain_timeout` outcome, a
+  draining job's decode). Never the live server.
+- Against the live front door, only presses refused by construction:
+  `TM_BAR_LIVE=1 swift test --filter LiveRefusals` presses Restart only while
+  the restart check is blocked (→ the Force offer, never confirmed) and Cancel
+  drain only while no drain runs. 2026-11-06: refusal shown verbatim
+  ("4 agent session(s) still working — stop them first, or retry with force.").
 
 ## Files
 
@@ -173,7 +248,9 @@ under 1 ms on a copy of the live DB (≈1,000 tasks). On the server side, a
 | `Sources/TMBar/App.swift` | `MenuBarExtra` scene + the icon label |
 | `Sources/TMBar/Store.swift` | the poller, sleep/wake, `BarState` |
 | `Sources/TMBar/MenuView.swift` | the menu window |
-| `Sources/TMBar/Client.swift` | URLSession (ephemeral, 3 s timeout, no proxy), loopback Origin on the write |
+| `Sources/TMBar/Controls.swift`, `ControlsView.swift` | the server controls (§ Controls) |
+| `Tests/TMBarTests/` | `swift test`: controls against a stubbed front door; opt-in live refusals |
+| `Sources/TMBar/Client.swift` | URLSessions (ephemeral, no proxy; reads 3 s, writes 90 s), loopback Origin on every write |
 | `Sources/TMBar/Config.swift` | front door URL resolution |
 | `Sources/TMBar/HostModels.swift`, `ApiModels.swift` | decodable subsets of `HostStatus`, `OrchestratorStatus`, `MenubarSummary` |
 | `Sources/TMBar/Browser.swift` | Brave-or-default opener, deep links |

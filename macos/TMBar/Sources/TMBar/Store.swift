@@ -52,7 +52,16 @@ final class Store {
     /// set when /api/menubar is missing (an API older than TM Bar) or failing
     private(set) var summaryError: String?
     private(set) var lastPoll: Date?
-    private(set) var actionMessage: String?
+
+    // controls (Controls.swift) — set there, so not private(set)
+    /// the outcome of the last control press
+    var note: ControlNote?
+    /// a press waiting for its confirm (a refusal's Force offer included)
+    var pending: PendingControl?
+    /// the control whose request is in flight; every control is disabled meanwhile
+    var busy: Control?
+    /// the rebuild failure the human closed (its finishedAt), so it stays closed
+    var dismissedRebuild: String?
 
     private(set) var menuOpen = false
     @ObservationIgnored private var loop: Task<Void, Never>?
@@ -81,7 +90,13 @@ final class Store {
     func setMenuOpen(_ open: Bool) {
         guard open != menuOpen else { return }
         menuOpen = open
-        if open { actionMessage = nil }
+        if open {
+            // an outcome or a Force offer from minutes ago is not news any more
+            if let n = note, Date().timeIntervalSince(n.at) > 120, busy == nil { note = nil }
+            if let p = pending, Date().timeIntervalSince(p.at) > 120 { pending = nil }
+        } else {
+            pending = nil // a confirm is asked of someone looking at it
+        }
         restart() // poll at once on open; drop back to the slow pace on close
     }
 
@@ -147,7 +162,7 @@ final class Store {
         // the icon's read: the summary carries it when the menu is open
         if open, summaryError == nil, let s = summary {
             set(\.orch, OrchestratorLite(
-                enabled: s.queue.enabled, paused: s.queue.paused, running: s.queue.running,
+                enabled: s.queue.enabled, paused: s.queue.paused, pausedTasks: s.queue.pausedTasks, running: s.queue.running,
                 concurrency: s.queue.concurrency,
                 memory: s.memory.map { m in
                     .init(sample: .init(freePct: m.freePct, swapPct: m.swapPct), tripped: m.tripped, reason: m.reason, hold: m.hold)
@@ -196,18 +211,6 @@ final class Store {
     var pageBase: URL {
         if host?.host.dev == true { return URL(string: "http://localhost:5173")! }
         return client.base
-    }
-
-    // MARK: actions
-
-    func startServer() async {
-        do {
-            let code = try await client.post("/host/start")
-            actionMessage = (200..<300).contains(code) ? "Starting the API…" : "Start refused (HTTP \(code))"
-        } catch {
-            actionMessage = "Start failed: \(Self.describe(error))"
-        }
-        await poll()
     }
 
     static func describe(_ error: Error) -> String {
