@@ -1,3 +1,4 @@
+import type { GroupDecisionRecord, NamedGroupCandidate } from '@tm/shared';
 import type { WorktreePatch } from './worktree-sql.ts';
 import type { ApprovalFilter, NewApproval } from './approval-sql.ts';
 import type { JobFilter, JobPatch, JobRunFinish, NewJob } from './job-sql.ts';
@@ -231,6 +232,26 @@ export interface NewTask {
   officeId?: string | null;
   roleId?: string | null;
   taintedAt?: string | null;
+  /**
+   * A non-human filing's `new` group name (docs/grouping.md § Agent filings),
+   * written only when the row is a root. Deliberately not `groupName`: the
+   * human POST body carries that key and human creates stay unchanged.
+   */
+  rootGroupName?: string | null;
+  /** the filing's group decision, audited on `task.created` as `data.group` */
+  groupDecision?: GroupDecisionRecord | null;
+}
+
+/** `createTaskInNamedGroup`'s dedup scope (docs/grouping.md § Agent filings). */
+export interface NamedGroupFiling {
+  /** the group name to mint (≤ 80) */
+  name: string;
+  /** dedup looks at named roots in these repos only */
+  repoIds: string[];
+  /** the filer's trust — a join never mixes untrusted with trusted members */
+  filerUntrusted: boolean;
+  /** skip dedup: always mint a new group */
+  forceNew?: boolean;
 }
 
 export interface NewFeature {
@@ -530,6 +551,17 @@ export interface Storage {
    */
   getTask(id: string): Promise<Task | null>;
   createTask(t: NewTask, actor: string): Promise<Task>;
+  /**
+   * Create `t` as the root of a NEW group named `g.name` — unless an open
+   * group with that normalised name (case/whitespace/punctuation) exists in
+   * `g.repoIds` and `pickNamedGroup` accepts it, in which case `t` joins that
+   * group flat under its root. Decided inside the insert's transaction (pg:
+   * under an advisory lock on the name), so two filers racing on one name
+   * never mint two groups. docs/grouping.md § Agent filings.
+   */
+  createTaskInNamedGroup(t: NewTask, actor: string, g: NamedGroupFiling): Promise<{ task: Task; joined: NamedGroupCandidate | null }>;
+  /** The ids whose filing chain is tainted / Sentry / a job follow-up (`untrustedWalk`). */
+  untrustedTaskIds(ids: string[]): Promise<Set<string>>;
   updateTask(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Promise<Task | null>;
   /**
    * `attempts = attempts + 1` in one statement (docs/design.md § Retry with

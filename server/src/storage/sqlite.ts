@@ -226,6 +226,9 @@ import type { Job, JobRun, JobStatus, JobVerdict } from '@tm/shared';
 import type { Approval, ApprovalStatus } from '@tm/shared';
 import { PUSH_RESULT_FAIL_SQL, PUSH_RESULT_OK_SQL, PUSH_UPSERT_SQL, rowToPushDevice } from './push-sql.ts';
 import type { LoopStep, NewPushDevice, PushDeviceRecord } from './types.ts';
+import type { NamedGroupFiling } from './types.ts';
+import { normalizeGroupName, pickNamedGroup, type NamedGroupCandidate } from '@tm/shared';
+import { featureCardGroup, namedGroupCandidates, namedGroupInsert, RESOLVING_CHILDREN_SQL, runWalkSync, untrustedWalk } from './group-filing-sql.ts';
 import type { LoopState } from '@tm/shared';
 import type { PushKind } from '@tm/shared';
 import {
@@ -638,8 +641,8 @@ export class SqliteStorage implements Storage {
     const place = this.placeSync(id, t.parentId);
     this.db
       .prepare(
-        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, kind, loop_goal, loop_max_iterations, loop_budget_usd, brief, depends_on, office_id, role_id, tainted_at, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (${NEXT_SORT_ORDER_SQL}))`,
+        `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, kind, loop_goal, loop_max_iterations, loop_budget_usd, brief, depends_on, office_id, role_id, tainted_at, group_name, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (${NEXT_SORT_ORDER_SQL}))`,
       )
       .run(
         id,
@@ -677,6 +680,8 @@ export class SqliteStorage implements Storage {
         t.officeId ?? null,
         t.roleId ?? null,
         t.taintedAt ?? null,
+        // a non-human filing's `new` group (docs/grouping.md § Agent filings) — root rows only
+        t.parentId ? null : (t.rootGroupName ?? null),
       );
     const task = rowToTask(this.db.prepare(`SELECT * FROM tm_tasks WHERE id = ?`).get(id));
     this.appendEventSync({
@@ -690,6 +695,8 @@ export class SqliteStorage implements Storage {
         source: task.source,
         spawnDepth: task.spawnDepth,
         groupId: task.groupId,
+        // the filing's group decision (docs/grouping.md § Agent filings)
+        ...(t.groupDecision ? { group: { ...t.groupDecision, groupId: task.groupId } } : {}),
       },
     });
     return task;
@@ -697,6 +704,28 @@ export class SqliteStorage implements Storage {
 
   async createTask(t: NewTask, actor: string): Promise<Task> {
     return this.inTxn(() => this.insertTaskSync(t, actor));
+  }
+
+  async createTaskInNamedGroup(
+    t: NewTask,
+    actor: string,
+    g: NamedGroupFiling,
+  ): Promise<{ task: Task; joined: NamedGroupCandidate | null }> {
+    // better-sqlite3 runs one transaction at a time on its one connection, so
+    // the read and the insert below cannot interleave with a racing filer.
+    return this.inTxn(() => {
+      const all = (sql: string, params: unknown[]) => this.db.prepare(sql).all(...params) as Record<string, unknown>[];
+      const key = normalizeGroupName(g.name);
+      const joined = g.forceNew
+        ? null
+        : pickNamedGroup(runWalkSync(namedGroupCandidates(g.repoIds, key, normalizeGroupName), all), key, g.filerUntrusted);
+      const task = this.insertTaskSync(namedGroupInsert(t, g, joined), actor);
+      return { task, joined };
+    });
+  }
+
+  async untrustedTaskIds(ids: string[]): Promise<Set<string>> {
+    return runWalkSync(untrustedWalk(ids), (sql, params) => this.db.prepare(sql).all(...params) as Record<string, unknown>[]);
   }
 
   private updateTaskSync(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Task | null {
@@ -1146,7 +1175,7 @@ export class SqliteStorage implements Storage {
         | { parent_id: string | null }
         | undefined;
       if (!child?.parent_id) return null;
-      const rows = this.db.prepare(`SELECT status FROM tm_tasks WHERE parent_id = ?`).all(child.parent_id) as {
+      const rows = this.db.prepare(RESOLVING_CHILDREN_SQL).all(child.parent_id) as {
         status: string;
       }[];
       const unresolved = rows.filter((r) => !TERMINAL_TASK_STATUSES.includes(r.status as Task['status'])).length;
@@ -2123,6 +2152,8 @@ export class SqliteStorage implements Storage {
               // already inserted (docs/task-waits.md § Feature plans)
               dependsOn: c.dependsOnCards.map((id) => taskOfCard.get(id)).filter((id): id is string => !!id),
               ...(feature.officeId ? { officeId: feature.officeId, roleId, taintedAt: feature.taintedAt } : {}),
+              // one group named after the feature (docs/grouping.md § Agent filings)
+              ...featureCardGroup(feature, i, tasks[0]?.id ?? null),
             },
             actor,
           );

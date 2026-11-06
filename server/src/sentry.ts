@@ -159,6 +159,8 @@ export async function syncSentryIssues(storage: Storage): Promise<SyncResult> {
         source: 'sentry',
         sourceRef: issue.id,
         category,
+        // one task per issue, ungrouped on purpose (docs/grouping.md § Agent filings)
+        groupDecision: { decision: 'ungrouped', by: 'sentry', reason: 'one task per Sentry issue' },
       },
       'sentry',
     );

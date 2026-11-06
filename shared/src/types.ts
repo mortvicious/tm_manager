@@ -3781,7 +3781,7 @@ export function buildInbox(input: InboxInput): InboxItem[] {
     'blocked',
     (t) => t.status === 'blocked' && !t.waitFor,
     (t) => {
-      const kids = input.tasks.filter((c) => c.parentId === t.id);
+      const kids = input.tasks.filter((c) => c.parentId === t.id && isSplitChild(c, t));
       return {
         children: {
           total: kids.length,
@@ -3978,6 +3978,7 @@ import type { HeavyStatus } from './heavy.ts';
 export * from './capacity.ts';
 import type { MachineInfo } from './capacity.ts';
 import { jobRunNeedsHuman, type Job, type JobRun, type JobsHold } from './jobs.ts';
+import { isSplitChild } from './group-filing.ts';
 import type { MemoryFuseState } from './memory.ts';
 import type { ProcMemorySnapshot } from './proc-memory.ts';
 import type { Office, OfficeBrief, OfficeHuddle, OfficeRating, OfficeMetricWithPoints, OfficeMessage, OfficeMessageRoute, OfficeProposal, OfficeRole, OfficeStates, OfficeWish } from './office.ts';
@@ -3997,3 +3998,6 @@ export * from './office-scorecard.ts';
 import type { OfficePlannerProposal } from './office-planner.ts';
 // TM Bar's summary read (docs/menubar.md)
 export * from './menubar.ts';
+
+// docs/grouping.md § Agent filings
+export * from './group-filing.ts';

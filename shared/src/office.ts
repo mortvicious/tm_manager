@@ -1080,6 +1080,8 @@ export interface ShiftTaskRequest {
   description: string;
   category: string | null;
   effort: EffortLevel | null;
+  /** a task/group id to join instead of the shift's own group (docs/grouping.md § Agent filings) */
+  group?: string | null;
 }
 
 /**

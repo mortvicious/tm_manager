@@ -24,10 +24,12 @@ Through them you can file follow-up tasks and coordinate work in OTHER repos.
   another task) — your task parks without holding a slot and this session is
   resumed, with how to merge its change, once it lands.
 
-- Tasks you file for one change belong together: **group them** (see
-  Grouping tasks). A task that is already carried out or has been replaced:
-  **close it** (see Closing tasks) instead of writing "please mark done" in
-  your summary.
+- Every task you file gets a **group decision** — join an existing group,
+  start a new one, or say why it stands alone (see Grouping tasks). Tasks you
+  file for one change belong together.
+
+- A task that is already carried out or has been replaced: **close it** (see
+  Closing tasks) instead of writing "please mark done" in your summary.
 
 - A DECISION is not a task and not a dispatch. When a choice would materially
   change the outcome (architecture or library, an ambiguous or conflicting
@@ -77,8 +79,12 @@ curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
     "brief": "Switch the orders page to the v2 response (items[] + status). The old shape stops being served next release.",
     "description": "<the precise contract: endpoints, request/response examples, field semantics, what to verify>",
     "repo": "frontend",
-    "enqueue": true
+    "enqueue": true,
+    "group": {"join": "<your own task id>"}
   }'
+# → { "task": { "id", "status", "repo", "groupId" },
+#     "group": { "decision": "joined|new|ungrouped", "groupId", "name", "joinedExisting"?, "defaulted"? },
+#     "note" }
 ```
 
 - **`title`**: ONE short line, at most {{titleMax}} characters, no line breaks.
@@ -90,6 +96,9 @@ curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
   for a reader who will not open the description. No markdown headings, no
   file lists.
 - **`description`**: the full contract for the agent that does the work (rule 6).
+- **`group`** (required — see Grouping tasks): exactly one of
+  `{"join": "<task or group id>"}`, `{"new": "<group name>"}` or
+  `{"ungrouped": "<one-line why>"}`. Decide it for every task you file.
 
 Poll a task you created (long-poll up to 60s per request):
 
@@ -208,23 +217,68 @@ beside it.
 ## Grouping tasks
 
 A **group** is one task tree: a root task and everything under it, drawn as one
-block on the board. Grouping is not cosmetic. Tasks in one group **run in
-order** (the queue takes the group root first, then its members in board order),
-and **a group is a coordination channel**: any task may dispatch to a task in its
-own group. Group work that belongs together:
+block on the board (and as one stack in the Stacks view). Grouping is not
+cosmetic. Tasks in one group **run in order** (the queue takes the group in its
+ROOT's slot, root first, then its members in board order — so joining a group
+moves a task to that group's place in the queue), and **a group is a
+coordination channel**: any task may dispatch to a task in its own group.
 
-- the tasks you file for ONE change (a backend task and its frontend
-  follow-up, or the steps of one migration), together with your own task, so
-  each agent can dispatch to the others;
-- an existing task that your task replaces or continues, so the human reviews
-  them side by side.
+**Every task you file carries a group decision** — the `group` field on
+`POST /api/agent/tasks`, exactly one form:
 
-Do not group unrelated follow-ups just because you filed them, and never use
-grouping to jump the queue.
+| form | when | effect |
+|---|---|---|
+| `{"join": "<id>"}` | it belongs with existing work: your own task, a task you filed earlier, an open group that covers the same change | joins that group FLAT under its root, at the end of its run order. Any member's id or the group's id works. |
+| `{"new": "<name>"}` | the first of several tasks for ONE change (a backend task and its frontend follow-up, the steps of one migration) | this task becomes the root of a new group named `<name>` (≤ 80 chars). File the rest with `{"join": "<this task's id>"}`. |
+| `{"ungrouped": "<why>"}` | genuinely standalone (a typo elsewhere, an unrelated bug) | its own root, the one-line why audited. |
+
+Before a `new`, look for the group it may already be:
+
+```bash
+curl -s -H "x-tm-token: $TM_TOKEN" "$TM_CALLBACK_URL/api/agent/groups?q=checkout"
+# ?repo=<id|name> narrows to one repo of your reach
+# → { "groups": [{ "id", "name", "named", "repos", "members", "open", "rootStatus",
+#                  "lastActivity", "joinRefusal" }] }   joinRefusal null = you may join it
+```
+
+It lists OPEN groups (at least one unfinished member) in your repo, your shared
+space's and your workspaces' repos, most recently active first;
+`/api/agent/context` carries your own `group` and the top 10 `openGroups` of
+your repo. Fuzzy matching is yours: if "Checkout v2" is listed and you are
+about to file `new: "checkout redesign"`, join it instead. The server only
+catches the exact case: a `new` whose name matches an open group in your reach
+(ignoring case, spacing and punctuation) **joins that group instead** and says
+so (`"joinedExisting": true`); pass `{"new": "…", "forceNew": true}` when you
+really mean a second group of that name. A finished group (every member
+landed) is never matched — the follow-up starts a fresh one — but you may
+`join` a finished group by id for follow-up work on it.
+
+**Omitting `group`** is never refused, but you lose the choice: the server
+joins the group of your previous grouped filing in the same repo, else your
+own task's group when it has a name and at least 2 members, else files it
+ungrouped — and the `note` says which. A second `ungrouped` filing in one repo
+gets a note suggesting a group; it is not refused.
+
+Refusals and downgrades:
+
+- **403** — the group's root is outside your reach (your repo, shared space and
+  workspaces' repos; your own task's group is always in reach).
+- **409** — the root is a `blocked` split parent (it waits on every child; use
+  `linkToParent` for a split sibling, otherwise `new`), or the group already
+  has {{groupMaxMembers}} members (use `new`).
+- **Trust**: tasks filed from a tainted office shift, a Sentry issue or a job
+  (and anything those tasks' agents file) never share a group with trusted
+  tasks, and the reverse. Such a `join` is not refused: the task is filed
+  ungrouped and the `note` says why.
+- `linkToParent` already places the task under your split parent; a `group`
+  beside it may only name that same group.
+
+You can still regroup afterwards — e.g. the first filing went out ungrouped and
+the second shows they belong together — with the board's drag and drop:
 
 ```bash
 curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
-  "$TM_CALLBACK_URL/api/agent/tasks/<id>/move" -d '{"place": "into", "targetId": "<task id>"}'
+  "$TM_CALLBACK_URL/api/agent/tasks/<id>/move" -d '{"place": "group", "targetId": "<task id>"}'
 # → { "task": { "id", "parentId", "groupId", "groupPath" } }
 ```
 
@@ -232,20 +286,22 @@ curl -s -X POST -H "x-tm-token: $TM_TOKEN" -H "content-type: application/json" \
 
 | place | effect |
 |---|---|
-| `into` | join the target's group flat (right after the target; a lone target becomes the root of a new group). **The usual choice.** |
+| `into` | join the target's group flat (right after the target; a lone target becomes the root of a new group) |
 | `group` | append to the end of the target's group |
 | `child` | become the target's last child, nested under it |
 | `before` / `after` | sit beside the target as its sibling (reorders, and joins its group) |
 | `ungroup` | leave the group and become a root again (no `targetId`) |
 
-The subtree always moves with the task. Typical flow: file the follow-up with
-`POST /api/agent/tasks`, then move it `into` your own task (`taskId` from
-`/api/agent/context`). Both the moved task and the target must be **within
-your reach** (see Closing tasks). Refusals: 403 out of reach. 409 when the
-move would put a task under a `blocked` split parent, which waits on every
-child. Use `linkToParent` on create for a split sibling instead. Also 409 when
-it would pull a child out from under one. Names and colours of groups stay
-the human's.
+The subtree always moves with the task. Both the moved task and the target must
+be **within your reach** (see Closing tasks). Refusals: 403 out of reach. 409
+when the move would put a task under a `blocked` split parent, when it would
+pull a child out from under one, when it would mix trust, or when the group
+would pass {{groupMaxMembers}} members.
+
+Do not group unrelated follow-ups just because you filed them, and never use
+grouping to jump the queue. Only a root names a group: you name the groups you
+create with `new`; existing names are the human's, and a human rename always
+wins.
 
 ## Closing tasks that need no run
 

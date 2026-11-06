@@ -101,7 +101,8 @@ trees are 1–2 deep, so the sweep count is slack, not a limit on new rows.
 - `POST /api/agent/tasks/:id/move` — the same move for a worker agent
   (token auth, `docs/agent-api-design.md` § Close and move). Both ends must be
   within the agent's reach, and it additionally refuses to put a task under a
-  `blocked` split parent. How agents are told to group is in
+  `blocked` split parent, to mix trust in one group, or to grow a group past 40
+  members (§ Agent filings). How agents are told to group is in
   `docs/agent-instructions.md` § Grouping tasks.
 - A re-parent broadcasts `task.updated` for every row in the destination group
   (the moved subtree changed too), and a delete broadcasts the promoted
@@ -118,8 +119,9 @@ The producers are an accepted **split** proposal, an agent calling the task API
 with `linkToParent` (which the server only honours for a split sibling under a
 currently-blocked parent), the board's **drag and drop** and the **Group**
 picker in the UI (below), and a hand-written `parentId` on `POST/PATCH
-/api/tasks` or a `POST /api/tasks/:id/move`. Feature-generated tasks are
-phase-ordered, not parented. Nothing *implies* a group: on an install where none
+/api/tasks` or a `POST /api/tasks/:id/move`. Since 2026-11-07 every
+non-human filing carries a group decision too — see § Agent filings; a
+feature's cards form one group under its first card. Nothing *implies* a group: on an install where none
 of those has ever run, every task is its own root and the board correctly
 renders a flat list — the group blocks, breadcrumb, colours and `group: task
 group` mode all work, they simply have nothing to draw. That was the state of
@@ -202,6 +204,176 @@ look as though the feature were missing.
   - **The new-task form** sends the choice as `parentId` on `POST`. A new row
     takes the global max key, so append and under-the-root are the same write:
     the task lands at the end of that group.
+
+## Agent filings
+
+**Every task a non-human creator files has an explicit group decision**:
+joined, new, or ungrouped with a reason, audited on its create (decisions.md
+2026-11-07). Humans may still create ungrouped tasks; nothing changes for them
+(the human `POST /api/tasks` still ignores a `groupName`). The point is the
+Stacks view (`docs/board-versions.md` § Stacks), which works when work arrives
+in logical groups instead of a pile of unrelated single rows.
+
+No new table and no "Ungrouped" pseudo-task: **join** = parent under the
+group's ROOT (flat, at the end of its run order — a new row takes the global
+max key), **new** = the task becomes a root carrying `group_name`,
+**ungrouped** = its own root, on purpose. Code: `server/src/group-filing.ts`
+(the decisions), `shared/src/group-filing.ts` (vocabulary, `normalizeGroupName`,
+`pickNamedGroup`), `server/src/storage/group-filing-sql.ts` (shared verbatim by
+both drivers: the name-dedup read, the trust walk, `featureCardGroup`,
+`RESOLVING_CHILDREN_SQL` — JS twin `isSplitChild` in shared). `NewTask.rootGroupName` writes the name of a `new`
+group (deliberately not `groupName`, which the human body carries) and
+`NewTask.groupDecision` lands on the `task.created` row as `data.group`.
+
+### The agent API
+
+`POST /api/agent/tasks` takes `group`, exactly one form (a body with two is a
+400):
+
+- `{"join": "<task id or group id>"}` — the group of that task, flat under its
+  root. A finished group is allowed (follow-up work on landed work); Stacks then
+  lifts that stack out of Landed, which is correct.
+- `{"new": "<name ≤ 80>"}` — this task is the root of a new named group; later
+  filings join it by id. **Name dedup**: when an OPEN group (≥ 1 non-terminal
+  member) whose root is in the caller's reach (below, plus the target repo) has
+  the same name after normalising case, whitespace and punctuation, the task
+  JOINS it instead (`joinedExisting: true` in the response and the audit) —
+  unless `forceNew: true`. Finished groups are never matched, so a follow-up to
+  landed work starts fresh. Fuzzy matching is the agent's job: it sees
+  `GET /api/agent/groups`. The match runs INSIDE the create's transaction
+  (`Storage.createTaskInNamedGroup`): better-sqlite3 runs one transaction at a
+  time on its one connection, and the pg driver takes
+  `pg_advisory_xact_lock(hashtext('tm-group-name:<key>'))` first, so two agents
+  racing on one name never mint two groups. Among several matches the oldest
+  root wins, so racers converge.
+- `{"ungrouped": "<one-line why>"}` — standalone; the why is audited on
+  `agent.create`. A run filing a SECOND ungrouped task in the same repo gets a
+  note suggesting `new` + moving the first; never a refusal.
+- **Omitted** — the instructions say it is required, but the server never
+  refuses for it (a 400 burns a turn and breaks agents with stale
+  instructions). The deterministic default, audited as
+  `group: {defaulted: <rule>}` and explained in the response `note`:
+  1. `previous-filing` — the group of this run's previous filing in the same
+     repo, when that filing was grouped (a lone unnamed root was ungrouped on
+     purpose and is skipped);
+  2. `own-group` — the caller's own group, when it has ≥ 2 members and a name;
+  3. `ungrouped`.
+  Each candidate must pass the join checks below; one that fails falls through.
+- `linkToParent` is itself the decision (`joined`, `via: 'linkToParent'`); a
+  `group` beside it may only name that same group (400 otherwise).
+
+The response carries `task.groupId`, `group: {decision, groupId, name,
+joinedExisting?, defaulted?}` and the `note` (the enqueue note and the group
+note joined by ` · `). After the fact, `POST /api/agent/tasks/:id/move` still
+groups what an agent filed — e.g. the first was filed ungrouped and the second
+shows they belong together.
+
+**Discovery.** `GET /api/agent/groups?repo=&q=&limit=` lists OPEN groups (a
+tree of ≥ 2 tasks or a named root, with ≥ 1 non-terminal member) touching the
+caller's reach: `{id, name, named, repos, members, open, rootStatus,
+lastActivity, joinRefusal}`, most recently active first (`joinRefusal` null =
+joinable, else the reason a join would get). `?repo=` outside reach is 403.
+`/api/agent/context` carries the caller's own `group` (same shape) and the top
+10 `openGroups` in its repo.
+
+### Edge cases
+
+1. **Really one task** → `ungrouped` + why. Stacks shows it as a plain row, as
+   before.
+2. **The same logical group already exists** → discovery + name dedup above.
+3. **The matching group is finished** → dedup ignores it; an explicit `join`
+   by id is allowed.
+4. **The root is a `blocked` split parent** (no `waitFor`) → 409 suggesting
+   `new`, for a join and for every default rule (they fall through). A split
+   sibling goes under it only through the existing `linkToParent` rule; this
+   is the same refusal as the agent move route's.
+5. **Reach and taint.** Membership widens reach — dispatch accepts "own group"
+   (`routes/agent.ts`) and `reachOf` "your group" (close, move, wait,
+   depends-on in `agent-tasks.ts`/`agent-waits.ts`); those are the only two
+   places "same group" grants something (grep of `groupId ===`). So:
+   - a `join` targets only groups whose ROOT is in the caller's repo, its
+     shared space's repos or any of its workspaces' repos (`reachRepoIds`) —
+     plus the caller's own group, and a group holding a task this run filed;
+     else 403;
+   - **trust never mixes**. A task is untrusted when it, or any task up its
+     filing chain (`created_by_run → tm_runs.task_id`, walked by
+     `untrustedWalk`, bounded at 64 hops), has `tainted_at` (a tainted office
+     shift's, a signal-driven one's, a tainted feature's) or is `source`
+     `sentry`/`job`. Taint is NOT copied onto agent filings (`tainted_at`
+     keeps its office meaning), which is why the walk exists. An untrusted
+     filer never joins a group holding trusted tasks, and a trusted filer
+     never joins one holding untrusted tasks. Such a join is not refused: the
+     task is filed ungrouped and the response says why
+     (`downgraded` in the audit). Name dedup and the defaults skip such groups.
+   - `POST /api/agent/tasks/:id/move` enforces the same (409 "would mix
+     trust"), or an agent could file ungrouped and move it in afterwards.
+6. **Claim order.** Members sort under the group ROOT's key
+   (`MANUAL_CLAIM_ORDER`), so joining moves a task to its group's place in the
+   queue. Agent filings are drafts or priority 0 and same-repo filings always
+   drafts, so this matters only for an enqueued cross-repo filing — and that
+   is the intended order (the group runs together). Agent joins stop at
+   **40 members** (`AGENT_GROUP_MAX_MEMBERS`, the Stacks pip cap): 409
+   suggesting `new`; the agent move refuses past it too.
+7. **Naming.** Only a root names a group. An agent names a group only by
+   creating it with `new`; there is no agent rename, so a human-named group is
+   never renamed by an agent, and a human rename (PATCH `groupName`) always
+   wins — a later dedup reads the new name.
+8. **Root deleted** → the group splits (existing behaviour, § Invariants).
+   Root cancelled → still the root; nothing to do.
+9. **Cross-repo** → allowed (trees already span repos). A workspace-scoped
+   Stacks shows the in-scope members.
+
+### Other non-human creators
+
+The same rule, decided server-side (every one audited on `task.created` as
+`data.group`, with `by`):
+
+- **Split proposals** — already children of the parent; unchanged.
+- **Feature approval** — the cards form ONE group named after the feature: the
+  first card is the root and carries the feature's title as `group_name`,
+  every later card joins it flat in plan order (`featureCardGroup`, both
+  drivers' `approveFeature`). Claim order is unchanged (root first, members by
+  their increasing keys) and the phase gate still decides eligibility. One
+  consequence handled with it: the other cards are CHILDREN of the first one,
+  so a split of that card would wait on (and fail with) every one of them —
+  later-phase cards cannot even run until its phase closes, a deadlock. So a
+  plan card of the parent's own feature (`source = 'feature'`, same
+  `feature_id`) is a group member, never a split piece: `resolveChildCompletion`
+  (both drivers) counts only `RESOLVING_CHILDREN_SQL`, and its JS twin
+  `isSplitChild` (shared) is what the Inbox's blocked-kind child count,
+  `reparentRefusal` (a human may still move a card out of a blocked first
+  card) and `linkToParent` (a card's worker is no split sibling → 400) read.
+  Split pieces are `source: 'auto'` (`acceptProposal`) or an agent's
+  linkToParent sibling. Features approved before this change keep their lone
+  roots (no backfill).
+- **Job follow-ups** (`source: 'job'`, `fileJobFollowUp` in `jobs.ts`) — one
+  group per job: the group of the job's previous follow-up while it is open
+  (found by `source_ref`, so a human rename does not break it), else the open
+  `Job: <title>` group (name dedup, untrusted members only), else a new one.
+- **Office filing** (`fileShiftTasks`, also the Director's channel `task`
+  route) — one group per role per office day, `<role name>: <YYYY-MM-DD>` in
+  the office's timezone (name dedup joins a same-day shift's open group of the
+  same trust). A `tasks` item may name `group: "<task id>"` to join that group
+  instead, under the same reach (the office's workspace repos) and trust rules
+  (the shift's taint); a refused one files into the shift group with the
+  reason as `downgraded`. Proposals accepted by a human follow the human rule.
+- **Shared-note file** (`/api/agent/shared/notes/:id/file` → `fileRequest`) —
+  joins the REQUESTING task's group (`note.fromTaskId`) when reach and trust
+  allow, else ungrouped with `reason: 'shared request <id>'` and the refusal as
+  `downgraded`. The dashboard's human filing is unchanged. The custom-queue
+  hold keys off the filer (`created_by_run`), not the group, so it is
+  unaffected.
+- **Sentry** — ungrouped by default, `reason: 'one task per Sentry issue'`:
+  issues are independent and a `Sentry: <project>` group would gather
+  unrelated fixes into one run order.
+
+### Decided, not built
+
+- Stacks does **not** gather ungrouped rows into a folded "Ungrouped" stack:
+  they stay rows (`docs/board-versions.md` § Stacks unchanged).
+- No strict `agent.requireGroup` setting: an omission is defaulted and
+  explained, never refused. The audit's `defaulted` marks every such filing,
+  so a human can spot agents that skip the decision.
 
 ## Order
 

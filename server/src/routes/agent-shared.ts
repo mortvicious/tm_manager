@@ -13,6 +13,7 @@ import {
   spaceForRepo,
 } from '../spaces/service.ts';
 import type { Storage } from '../storage/types.ts';
+import { filerContext } from '../group-filing.ts';
 import { agentBrief, agentTitle, maxSpawnDepth, perRunCap, QUEUED_AGENT_CEILING } from './agent-caps.ts';
 
 // The agent side of shared spaces (docs/shared-spaces.md). Everything is scoped
@@ -262,6 +263,7 @@ export function registerAgentSharedRoutes(
       category: body.category ?? null,
       createdByRun: c.run.id,
       spawnDepth: depth,
+      groupFiler: await filerContext(storage, c.run, callerTask),
     });
     if ('error' in r) return reply.code(r.code).send({ error: r.error });
     await storage.appendEvent({
@@ -270,10 +272,11 @@ export function registerAgentSharedRoutes(
       taskId: r.task.id,
       runId: c.run.id,
       repoId: c.repoId,
-      data: { fromSharedRequest: n.id, effectiveStatus: r.task.status, customQueue: !!r.task.customQueueAt, note: r.placementNote },
+      data: { fromSharedRequest: n.id, effectiveStatus: r.task.status, customQueue: !!r.task.customQueueAt, note: r.placementNote, group: r.group },
     });
     return {
-      task: { id: r.task.id, status: r.task.status, customQueue: !!r.task.customQueueAt },
+      task: { id: r.task.id, status: r.task.status, customQueue: !!r.task.customQueueAt, groupId: r.task.groupId },
+      group: r.group ? { decision: r.group.decision, groupId: r.task.groupId, ...(r.group.downgraded ? { why: r.group.downgraded } : {}) } : null,
       request: brief(r.note, c.repos),
       note: r.placementNote,
     };

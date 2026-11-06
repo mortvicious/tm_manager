@@ -9,7 +9,8 @@ import type {
   SpaceFile,
   Task,
 } from '@tm/shared';
-import { oneLineTitle } from '@tm/shared';
+import { oneLineTitle, type GroupDecisionRecord } from '@tm/shared';
+import { serverJoin, type FilerContext } from '../group-filing.ts';
 import type { ActionResult, OrchestratorApi } from '../app-types.ts';
 import { broadcast } from '../events.ts';
 import { expandHome, isInside, validateDedicatedFolder } from '../folder-guard.ts';
@@ -457,8 +458,15 @@ export async function fileRequest(
     spawnDepth?: number;
     /** why the requested placement was downgraded (set by the caller's policy) */
     placementNote?: string | null;
+    /**
+     * The filing agent (docs/grouping.md § Agent filings → Shared-note file):
+     * the task joins the REQUESTING task's group when its reach and trust
+     * allow, else it is ungrouped with the note id as the reason. Absent for a
+     * human filing from the dashboard — human creates are unchanged.
+     */
+    groupFiler?: FilerContext | null;
   },
-): Promise<{ note: SharedNote; task: Task; placement: 'queue' | 'draft'; placementNote: string | null } | { code: number; error: string }> {
+): Promise<{ note: SharedNote; task: Task; placement: 'queue' | 'draft'; placementNote: string | null; group: GroupDecisionRecord | null } | { code: number; error: string }> {
   const { storage } = deps;
   const cur = await storage.getSharedNote(noteId);
   if (!cur) return err(404, 'request not found');
@@ -473,10 +481,24 @@ export async function fileRequest(
   const claimed = await storage.updateSharedNote(noteId, { status: 'filed' }, ['open']);
   if (!claimed) return err(409, 'someone filed or resolved it a moment ago — reload');
 
+  let parentId: string | null = null;
+  let group: GroupDecisionRecord | null = null;
+  if (opts.groupFiler) {
+    const j = cur.fromTaskId ? await serverJoin(storage, opts.groupFiler, cur.fromTaskId) : { reason: 'the request names no requesting task' };
+    if ('rootId' in j) {
+      parentId = j.rootId;
+      group = { decision: 'joined', groupId: j.rootId, by: 'shared-note' };
+    } else {
+      group = { decision: 'ungrouped', by: 'shared-note', reason: `shared request ${cur.id}`, downgraded: j.reason };
+    }
+  }
+
   let task: Task;
   try {
     task = await storage.createTask(
       {
+        parentId,
+        groupDecision: group,
         // the note's own title was written for the ledger, not the board: one short line
         title: opts.title?.trim() ? opts.title.trim().slice(0, 300) : oneLineTitle(cur.title),
         brief: opts.brief ?? null,
@@ -511,7 +533,7 @@ export async function fileRequest(
     audit: { action: 'filed', taskId: task.id, placement, placementNote },
   });
   const note = 'note' in linked ? linked.note : { ...claimed, taskId: task.id };
-  return { note, task, placement, placementNote };
+  return { note, task, placement, placementNote, group: group ? { ...group, groupId: task.groupId } : null };
 }
 
 async function filedDescription(storage: Storage, space: Space, n: SharedNote): Promise<string> {

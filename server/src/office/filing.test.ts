@@ -108,6 +108,27 @@ describe('office caps defaults', () => {
 });
 
 describe('fileShiftTasks', () => {
+  test('group decision (docs/grouping.md § Agent filings): one `<role>: <day>` group per shift, a named group id joins, taint never mixes', async () => {
+    const o = await office();
+    const r = await role(o.id);
+    const out = await file(o, r, [req(1), req(2)]);
+    const [a, b] = out.filed.map((t) => t.id);
+    const root = (await storage.getTask(a))!;
+    assert.equal(root.groupName, 'Quinn: 2026-11-05');
+    assert.equal((await storage.getTask(b))!.groupId, root.id);
+    // a request naming an existing (trusted, in-workspace) task joins THAT group
+    const human = await storage.createTask({ title: 'human work', repoId, status: 'queued' }, 'test');
+    const joined = await file(o, r, [req(3, { group: human.id })]);
+    assert.equal((await storage.getTask(joined.filed[0].id))!.groupId, human.id);
+    // a tainted shift may not: it lands in its own group, the reason audited
+    const tainted = await file(o, r, [req(4, { group: human.id })], true);
+    const t = (await storage.getTask(tainted.filed[0].id))!;
+    assert.notEqual(t.groupId, human.id);
+    assert.notEqual(t.groupId, root.id, 'the trusted same-day shift group is not deduped onto either');
+    const created = (await storage.listEvents({ kind: 'task.created', limit: 2000 })).find((e) => e.taskId === t.id);
+    assert.match(String((created?.data?.group as { downgraded?: string })?.downgraded), /different trust/);
+  });
+
   test('an untainted auto-run shift files queued, with provenance, supervised landing, allowEnqueue off', async () => {
     const o = await office();
     const r = await role(o.id);

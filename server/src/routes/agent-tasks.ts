@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Run, Task, TaskStatus } from '@tm/shared';
+import { AGENT_GROUP_MAX_MEMBERS, groupAncestors, trustCompatible } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import { spaceForRepo } from '../spaces/service.ts';
@@ -168,6 +169,26 @@ export function registerAgentTaskRoutes(
         if (parent?.status === 'blocked' && !parent.waitFor) {
           return reply.code(409).send({
             error: 'that would put it under a blocked split parent, which waits on every child — agents may not add to one',
+          });
+        }
+      }
+      // Joining another group widens reach (dispatch "own group", reachOf
+      // "your group"), so an agent move obeys the filing rules too
+      // (docs/grouping.md § Agent filings): never mix trust, never past the cap.
+      if (body.place !== 'ungroup' && target.groupId !== task.groupId) {
+        const dest = await storage.listTasks({ groupId: target.groupId });
+        const subtree = (await storage.listTasks({ groupId: task.groupId })).filter(
+          (t) => t.id === task.id || groupAncestors(t).includes(task.id),
+        );
+        if (dest.length + subtree.length > AGENT_GROUP_MAX_MEMBERS) {
+          return reply.code(409).send({ error: `that group would pass ${AGENT_GROUP_MAX_MEMBERS} members — agents may not grow it further` });
+        }
+        const all = [...dest, ...subtree];
+        const untrusted = await storage.untrustedTaskIds(all.map((t) => t.id));
+        if (!trustCompatible(untrusted.size > 0, all.length, untrusted.size)) {
+          return reply.code(409).send({
+            error:
+              'that would mix trust in one group — tasks filed from a tainted shift, a Sentry issue or a job never share a group with trusted tasks',
           });
         }
       }

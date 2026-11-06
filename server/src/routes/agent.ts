@@ -2,12 +2,14 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import type { Run } from '@tm/shared';
+import type { GroupDecisionRecord, Run, Task } from '@tm/shared';
+import { AGENT_GROUP_MAX_MEMBERS, GROUP_NAME_MAX, isSplitChild } from '@tm/shared';
+import { filerContext, listOpenGroups, planAgentGroup, summarizeGroup, type GroupPlan } from '../group-filing.ts';
 import { AGENT_BRIEF_MAX, APPROVAL_PENDING_CAP, AGENT_COMMANDS_PER_REPO_CAP, AGENT_TITLE_MAX } from '@tm/shared';
 import { serverRoot } from '../config.ts';
 import { broadcast } from '../events.ts';
 import { onEvent } from '../events.ts';
-import type { Storage } from '../storage/types.ts';
+import type { NewTask, Storage } from '../storage/types.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import { spaceForRepo } from '../spaces/service.ts';
 import type { IdleServerReaper } from '../commands/reaper.ts';
@@ -42,6 +44,24 @@ const createBody = z
     review: z.boolean().optional(),
     // task ids that must land first (docs/task-waits.md § Declared dependencies)
     dependsOn: z.array(z.string().min(1)).max(DEPENDS_ON_MAX).optional(),
+    // the group decision (docs/grouping.md § Agent filings) — exactly one
+    // form; required by the instructions, but an omission is defaulted, never refused
+    group: z
+      .union([
+        z.object({ join: z.string().trim().min(1) }).strict(),
+        z.object({ new: z.string().trim().min(1).max(GROUP_NAME_MAX), forceNew: z.boolean().optional() }).strict(),
+        z
+          .object({
+            ungrouped: z
+              .string()
+              .trim()
+              .min(1)
+              .max(300)
+              .refine((s) => !/[\r\n]/.test(s), 'one line'),
+          })
+          .strict(),
+      ])
+      .optional(),
   })
   .strict();
 
@@ -105,6 +125,17 @@ export function registerAgentRoutes(
     const creatorRun = task?.createdByRun ? await storage.getRun(task.createdByRun) : null;
     // archived ones (docs/commands.md § Agent-owned commands) are out of the agent's view
     const commands = run.repoId ? (await storage.listCommands(run.repoId)).filter((c) => !c.archivedAt) : [];
+    // the caller's own group + the top open groups in its repo (docs/grouping.md § Agent filings)
+    const filer = await filerContext(storage, run, task);
+    const openGroups = run.repoId ? await listOpenGroups(storage, filer, { repoIds: [run.repoId], limit: 10 }) : [];
+    let ownGroup = null;
+    if (task) {
+      const root = task.groupId === task.id ? task : await storage.getTask(task.groupId);
+      const members = await storage.listTasks({ groupId: task.groupId });
+      ownGroup = root
+        ? await summarizeGroup(storage, filer, root, members, new Map(repos.map((r) => [r.id, r.name])))
+        : null;
+    }
     return {
       taskId: run.taskId,
       repoId: run.repoId,
@@ -121,6 +152,9 @@ export function registerAgentRoutes(
       repos: repos.map((r) => ({ id: r.id, name: r.name, role: r.role })),
       // docs/shared-spaces.md — GET /api/agent/shared has the ledger
       sharedSpace: space ? { id: space.id, name: space.name, path: space.path, repoIds: space.repoIds } : null,
+      // docs/grouping.md § Agent filings — GET /api/agent/groups has the rest
+      group: ownGroup,
+      openGroups,
       // docs/commands.md § Agent API — GET /api/agent/commands has the detail
       commands: commands.map((c) => ({
         id: c.id,
@@ -129,6 +163,31 @@ export function registerAgentRoutes(
         running: !!commandRunner.runningFor(c.id),
       })),
     };
+  });
+
+  // Open groups an agent could join (docs/grouping.md § Agent filings): in the
+  // caller's repo, its shared space's and its workspaces' repos; ?repo= narrows
+  // to one of those, ?q= matches the name (normalised). Fuzzy matching is the
+  // agent's — it sees the list; the server only dedups exact normalised names.
+  app.get('/api/agent/groups', async (req, reply) => {
+    const run = await authRun(req);
+    if (!run) return reply.code(403).send({ error: 'forbidden' });
+    const query = z
+      .object({ repo: z.string().min(1).optional(), q: z.string().max(200).optional(), limit: z.coerce.number().int().min(1).max(100).optional() })
+      .parse(req.query);
+    const task = run.taskId ? await storage.getTask(run.taskId) : null;
+    const filer = await filerContext(storage, run, task);
+    let repoIds = filer.reach;
+    if (query.repo) {
+      const needle = query.repo.trim().toLowerCase();
+      const repo = (await storage.listRepos()).find((r) => r.id === query.repo || r.name.toLowerCase() === needle);
+      if (!repo) return reply.code(404).send({ error: `no repo matches "${query.repo}" — GET /api/agent/context lists repos` });
+      if (!filer.reach.includes(repo.id)) {
+        return reply.code(403).send({ error: 'that repo is outside your reach — your repo, your shared space and your workspaces only' });
+      }
+      repoIds = [repo.id];
+    }
+    return { groups: await listOpenGroups(storage, filer, { repoIds, q: query.q, limit: query.limit ?? 50 }) };
   });
 
   // The sheet is static markdown with one live value: the current cap. Keeping
@@ -155,7 +214,8 @@ export function registerAgentRoutes(
       .replaceAll('{{commandIdleMinutes}}', String(settings['commands.idleStopMinutes']))
       .replaceAll('{{agentServersPerRepo}}', String(settings['commands.agentServersPerRepo']))
       .replaceAll('{{titleMax}}', String(AGENT_TITLE_MAX))
-      .replaceAll('{{briefMax}}', String(AGENT_BRIEF_MAX));
+      .replaceAll('{{briefMax}}', String(AGENT_BRIEF_MAX))
+      .replaceAll('{{groupMaxMembers}}', String(AGENT_GROUP_MAX_MEMBERS));
     return reply.type('text/markdown').send(md);
   });
 
@@ -227,12 +287,17 @@ export function registerAgentRoutes(
 
     // linkToParent (R2): only for split-children adding a sibling under a
     // parent that is genuinely blocked, and only when the sibling will run.
+    // It IS the group decision (joined, via linkToParent); a `group` beside it
+    // may only name that same group.
     let parentId: string | null = null;
     if (body.linkToParent) {
       const resolvedParentId = callerTask?.parentId ?? callerTask?.id ?? null;
       const parent = resolvedParentId ? await storage.getTask(resolvedParentId) : null;
-      // a split parent — never a worker parked on another task (docs/task-waits.md)
-      if (!parent || parent.status !== 'blocked' || parent.waitFor) {
+      // a split parent — never a worker parked on another task (docs/task-waits.md),
+      // and only for a split PIECE: a feature's plan card under its first card
+      // is a group member, not a split sibling (isSplitChild)
+      const splitSibling = !callerTask?.parentId || (parent != null && isSplitChild(callerTask, parent));
+      if (!parent || parent.status !== 'blocked' || parent.waitFor || !splitSibling) {
         return reply
           .code(400)
           .send({ error: 'linkToParent requires a currently-blocked parent (split siblings only) — omit it' });
@@ -245,6 +310,27 @@ export function registerAgentRoutes(
       parentId = parent.id;
     }
 
+    // The group decision (docs/grouping.md § Agent filings).
+    const filer = await filerContext(storage, run, callerTask);
+    let plan: GroupPlan;
+    if (parentId) {
+      const parent = (await storage.getTask(parentId))!;
+      if (body.group && !('join' in body.group)) {
+        return reply.code(400).send({ error: 'linkToParent already places it in its split parent\'s group — omit "group"' });
+      }
+      if (body.group && 'join' in body.group) {
+        const named = await storage.getTask(body.group.join);
+        if (!named || named.groupId !== parent.groupId) {
+          return reply.code(400).send({ error: 'linkToParent places it under your split parent — "group" may only name that same group; omit it' });
+        }
+      }
+      plan = { kind: 'join', rootId: parent.groupId, record: { decision: 'joined', groupId: parent.groupId, via: 'linkToParent' }, note: null };
+    } else {
+      plan = await planAgentGroup(storage, filer, body.group, target.id);
+      if (plan.kind === 'refuse') return reply.code(plan.code).send({ error: plan.error });
+      if (plan.kind === 'join') parentId = plan.rootId;
+    }
+
     if (body.dependsOn?.length) {
       // a new task cannot close a cycle (nothing depends on it yet)
       const refusal = dependsOnRefusal(null, body.dependsOn, await edgeIndex(storage));
@@ -252,8 +338,7 @@ export function registerAgentRoutes(
     }
 
     const actor = `agent:${run.id.slice(0, 8)}`;
-    const task = await storage.createTask(
-      {
+    const input: NewTask = {
         title: body.title,
         brief: body.brief,
         description: body.description ?? null,
@@ -267,20 +352,51 @@ export function registerAgentRoutes(
         spawnDepth: depth,
         dependsOn: body.dependsOn ?? null,
         // priority deliberately not settable (R11): agent tasks are always 0
-      },
-      actor,
-    );
+        groupDecision: plan.record,
+    };
+    let task: Task;
+    let record: GroupDecisionRecord = plan.record;
+    let groupNote = plan.note;
+    if (plan.kind === 'new') {
+      // name dedup inside the insert's transaction: an OPEN group of the same
+      // normalised name in reach is joined instead (unless forceNew)
+      const r = await storage.createTaskInNamedGroup(input, actor, {
+        name: plan.name,
+        repoIds: [...new Set([...filer.reach, target.id])],
+        filerUntrusted: filer.untrusted,
+        forceNew: plan.forceNew,
+      });
+      task = r.task;
+      if (r.joined) {
+        record = { ...record, decision: 'joined', joinedExisting: true, name: r.joined.name };
+        groupNote = `an open group named "${r.joined.name}" (${r.joined.rootId}) already exists — joined it instead; pass {"new": "…", "forceNew": true} for a separate group`;
+      }
+    } else {
+      task = await storage.createTask(input, actor);
+    }
+    record = { ...record, groupId: task.groupId };
+    const fullNote = [note, groupNote].filter(Boolean).join(' · ') || null;
     await storage.appendEvent({
       kind: 'agent.create',
       actor,
       taskId: task.id,
       runId: run.id,
       repoId: target.id,
-      data: { requestedEnqueue: !!body.enqueue, effectiveStatus: status, note },
+      data: { requestedEnqueue: !!body.enqueue, effectiveStatus: status, note, group: record },
     });
     broadcast({ type: 'task.updated', task });
     if (status === 'queued') orchestrator.maybeSchedule(); // R9
-    return { task: { id: task.id, status: task.status, repo: target.name }, note };
+    return {
+      task: { id: task.id, status: task.status, repo: target.name, groupId: task.groupId },
+      group: {
+        decision: record.decision,
+        groupId: task.groupId,
+        name: record.name ?? null,
+        ...(record.joinedExisting ? { joinedExisting: true } : {}),
+        ...(record.defaulted ? { defaulted: record.defaulted } : {}),
+      },
+      note: fullNote,
+    };
   });
 
   // Categorize: agents invent and fill domain labels ("UI", "Estimator").

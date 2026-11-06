@@ -33,8 +33,10 @@ import { broadcast } from './events.ts';
 import { run as git } from './git.ts';
 import { redactSecrets } from './secrets.ts';
 import type { JobPatch } from './storage/job-sql.ts';
-import type { Storage } from './storage/types.ts';
-import { createTask } from './task-actions.ts';
+import type { NewTask, Storage } from './storage/types.ts';
+import { createTask, createTaskInNamedGroup } from './task-actions.ts';
+import { reachRepoIds, serverJoin, type FilerContext } from './group-filing.ts';
+import { GROUP_NAME_MAX, TERMINAL_TASK_STATUSES, type Task } from '@tm/shared';
 import type { BudgetVerdict } from './budget.ts';
 import { memoryHold } from './memory.ts';
 
@@ -652,19 +654,16 @@ export class JobService {
       const target = repo ?? repos.find((r) => r.id === job.repoId);
       if (!target) continue;
       try {
-        const task = await createTask(
-          { storage },
-          {
-            title: clip(oneLine(f.title), JOB_TITLE_MAX),
-            brief: f.brief || null,
-            description: `${f.description}\n\n---\nFiled by scheduled job “${job.title}” (run ${jr.runNumber}, /jobs?job=${job.id}).`,
-            repoId: target.id,
-            source: 'job',
-            sourceRef: job.id,
-            status: 'draft',
-          },
-          'job',
-        );
+        const input: NewTask = {
+          title: clip(oneLine(f.title), JOB_TITLE_MAX),
+          brief: f.brief || null,
+          description: `${f.description}\n\n---\nFiled by scheduled job “${job.title}” (run ${jr.runNumber}, /jobs?job=${job.id}).`,
+          repoId: target.id,
+          source: 'job',
+          sourceRef: job.id,
+          status: 'draft',
+        };
+        const task = await fileJobFollowUp(storage, job, input);
         ids.push(task.id);
       } catch (e) {
         console.error('[jobs] follow-up draft failed:', (e as Error).message);
@@ -792,4 +791,36 @@ function writeReport(
 export function jobReportFile(reportPath: string): string | null {
   const abs = path.resolve(path.dirname(artifactsRoot), reportPath);
   return abs.startsWith(path.join(artifactsRoot, 'jobs') + path.sep) ? abs : null;
+}
+
+/**
+ * One group per job (docs/grouping.md § Agent filings → Job follow-ups): a
+ * follow-up joins the group of this job's previous follow-up while that group
+ * is open (a human may have renamed it), else the open `Job: <title>` group,
+ * else starts it. Job follow-ups are untrusted (source `job`), so they only
+ * ever join groups of untrusted members.
+ */
+export async function fileJobFollowUp(storage: Storage, job: Job, input: NewTask): Promise<Task> {
+  const ctx: FilerContext = { runId: null, filer: null, reach: await reachRepoIds(storage, job.repoId), untrusted: true };
+  const prev = (await storage.listTasks({ repoIds: [...new Set([job.repoId, input.repoId ?? job.repoId])] }))
+    .filter((t) => t.source === 'job' && t.sourceRef === job.id)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  if (prev) {
+    const members = await storage.listTasks({ groupId: prev.groupId });
+    if (members.length >= 2 || members.find((m) => m.id === prev.groupId)?.groupName) {
+      if (members.some((m) => !TERMINAL_TASK_STATUSES.includes(m.status))) {
+        const j = await serverJoin(storage, ctx, prev.groupId);
+        if ('rootId' in j) {
+          return createTask({ storage }, { ...input, parentId: j.rootId, groupDecision: { decision: 'joined', by: 'job' } }, 'job');
+        }
+      }
+    }
+  }
+  const name = clip(`Job: ${oneLine(job.title)}`, GROUP_NAME_MAX);
+  const { task } = await createTaskInNamedGroup({ storage }, { ...input, groupDecision: { decision: 'new', by: 'job' } }, 'job', {
+    name,
+    repoIds: [...new Set([...ctx.reach, input.repoId ?? job.repoId])],
+    filerUntrusted: true,
+  });
+  return task;
 }

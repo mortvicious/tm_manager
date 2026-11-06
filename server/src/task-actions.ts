@@ -1,10 +1,11 @@
 import { DEPENDS_ON_EDITABLE, dependsOnRefusal, edgeIndex } from './task-wait.ts';
-import { GROUP_COLOR_COUNT, LOOP_DEFAULT_MAX_ITERATIONS, LOOP_MAX_ITERATIONS_LIMIT, TASK_MOVE_PLACES, isExternalTask, isTaintedFeatureDraft, type EffortLevel, type LandingTier, type TaskMovePlace, type Task, type TaskStatus } from '@tm/shared';
+import { GROUP_COLOR_COUNT, LOOP_DEFAULT_MAX_ITERATIONS, LOOP_MAX_ITERATIONS_LIMIT, TASK_MOVE_PLACES, isExternalTask, isSplitChild, isTaintedFeatureDraft, type EffortLevel, type LandingTier, type TaskMovePlace, type Task, type TaskStatus } from '@tm/shared';
 import type { ActionResult, OrchestratorApi } from './app-types.ts';
 import { broadcast } from './events.ts';
 import type { MoveAnchor } from './storage/group.ts';
 import type { QueueMoveAnchor } from './storage/queue-sql.ts';
-import type { NewTask, Storage } from './storage/types.ts';
+import type { NamedGroupFiling, NewTask, Storage } from './storage/types.ts';
+import type { NamedGroupCandidate } from '@tm/shared';
 
 // The task lifecycle moves, once. Every one of these used to live inline in
 // routes/tasks.ts with `actor: 'human'` welded in; the Telegram bot needs the
@@ -128,6 +129,22 @@ export async function createTask(deps: TaskActionDeps, input: NewTask, actor: st
 }
 
 /**
+ * A non-human filing into a NEW named group, or the open group of that name
+ * (`Storage.createTaskInNamedGroup`, docs/grouping.md § Agent filings) —
+ * create + broadcast, plus the joined root's group so a second tab regroups.
+ */
+export async function createTaskInNamedGroup(
+  deps: TaskActionDeps,
+  input: NewTask,
+  actor: string,
+  g: NamedGroupFiling,
+): Promise<{ task: Task; joined: NamedGroupCandidate | null }> {
+  const r = await deps.storage.createTaskInNamedGroup(normalizeLoop(normalizeDone(input)), actor, g);
+  broadcast({ type: 'task.updated', task: r.task });
+  return r;
+}
+
+/**
  * PATCH /api/tasks/:id — the content edit, with the group-identity and
  * re-parenting guards the route has always applied. A move re-groups the whole
  * subtree, so those rows are broadcast too.
@@ -224,7 +241,7 @@ async function reparentRefusal(storage: Storage, task: Task, parentId: string | 
   // out from under it could leave it waiting on nothing forever.
   if (task.parentId) {
     const from = await storage.getTask(task.parentId);
-    if (from?.status === 'blocked' && !from.waitFor) {
+    if (from?.status === 'blocked' && !from.waitFor && isSplitChild(task, from)) {
       return err(409, 'its parent is blocked waiting on its split children — unblock the parent first');
     }
   }

@@ -28,7 +28,7 @@ The items appear in this order. A task appears once, under its first kind.
 | 3 | `attention` | a `running` task whose live, non-idle run is flagged needs-attention (a dialog in a hidden terminal) | `t` terminal, `o` | ✖ Kill |
 | 4 | `review` | a task in `review` whose automatic verify round is **settled** (not `verifyOpen`) | `p` publish, `d` mark done, `f` send findings back (flagged only), `o` | ✅ Done · 🚀 Publish |
 | 5 | `failed` | a task that failed in the last `INBOX_FAILED_DAYS` (7) | `r` retry, `p` resume (limit-stopped only), `o` | 🔁 Retry |
-| 6 | `blocked` | a blocked split parent, with its subtasks settled / failed | `a` unblock, `o` | ⛔ Unblock |
+| 6 | `blocked` | a blocked split parent, with its split subtasks settled / failed (a feature's own plan cards under its first card do not count — `isSplitChild`, docs/grouping.md § Agent filings) | `a` unblock, `o` | ⛔ Unblock |
 | 6b | `job` | a scheduled job whose newest run ended `attention` or `error` and is not acknowledged (`docs/jobs.md`), one item per job | `a` acknowledge, `r` run again, `o` opens `/jobs?job=` | 👌 Ack · 🔁 Run again |
 | 7 | `proposal` | a pending analysis proposal (rewrite, split, new task, options) | `a` accept, `x` reject, `o` | ✅ Accept (only without options) · ✖ Reject |
 | 7b | `office-proposal` | a pending office role's proposal (`tm_office_proposals`, docs/office.md § Proposals), one item per proposal, oldest first; a tainted one shows the TAINT banner | `a` accept (a tainted one confirms first; a repo-less one in a multi-repo workspace is accepted from its detail's per-repo buttons), `x` reject, `o` opens `/office` | ✅ Accept (only with a repo — the 💡 card has the repo picker) · ✖ Reject |

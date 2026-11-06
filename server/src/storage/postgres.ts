@@ -224,6 +224,9 @@ import type { Job, JobRun, JobStatus, JobVerdict } from '@tm/shared';
 import type { Approval, ApprovalStatus } from '@tm/shared';
 import { PUSH_RESULT_FAIL_SQL, PUSH_RESULT_OK_SQL, PUSH_UPSERT_SQL, rowToPushDevice } from './push-sql.ts';
 import type { LoopStep, NewPushDevice, PushDeviceRecord } from './types.ts';
+import type { NamedGroupFiling } from './types.ts';
+import { normalizeGroupName, pickNamedGroup, type NamedGroupCandidate } from '@tm/shared';
+import { featureCardGroup, namedGroupCandidates, namedGroupInsert, RESOLVING_CHILDREN_SQL, runWalk, untrustedWalk } from './group-filing-sql.ts';
 import type { LoopState } from '@tm/shared';
 import type { PushKind } from '@tm/shared';
 import {
@@ -641,8 +644,8 @@ export class PostgresStorage implements Storage {
     const ts = now();
     const place = await this.placeWith(c, id, t.parentId);
     await c.query(
-      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, kind, loop_goal, loop_max_iterations, loop_budget_usd, brief, depends_on, office_id, role_id, tainted_at, sort_order)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, (${NEXT_SORT_ORDER_SQL}))`,
+      `INSERT INTO tm_tasks (id, title, description, repo_id, parent_id, group_id, group_path, status, source, source_ref, priority, model, effort, category, review, landing, created_by_run, spawn_depth, feature_id, feature_phase, created_at, updated_at, review_model, review_effort, acceptance, checks, kind, loop_goal, loop_max_iterations, loop_budget_usd, brief, depends_on, office_id, role_id, tainted_at, group_name, sort_order)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, (${NEXT_SORT_ORDER_SQL}))`,
       [
         id,
         t.title,
@@ -679,6 +682,8 @@ export class PostgresStorage implements Storage {
         t.officeId ?? null,
         t.roleId ?? null,
         t.taintedAt ?? null,
+        // a non-human filing's `new` group (docs/grouping.md § Agent filings) — root rows only
+        t.parentId ? null : (t.rootGroupName ?? null),
       ],
     );
     const r = await c.query(`SELECT * FROM tm_tasks WHERE id = $1`, [id]);
@@ -694,6 +699,8 @@ export class PostgresStorage implements Storage {
         source: task.source,
         spawnDepth: task.spawnDepth,
         groupId: task.groupId,
+        // the filing's group decision (docs/grouping.md § Agent filings)
+        ...(t.groupDecision ? { group: { ...t.groupDecision, groupId: task.groupId } } : {}),
       },
     }, sink);
     return task;
@@ -701,6 +708,29 @@ export class PostgresStorage implements Storage {
 
   async createTask(t: NewTask, actor: string): Promise<Task> {
     return this.tx((c, sink) => this.insertTaskWith(c, t, actor, sink));
+  }
+
+  async createTaskInNamedGroup(
+    t: NewTask,
+    actor: string,
+    g: NamedGroupFiling,
+  ): Promise<{ task: Task; joined: NamedGroupCandidate | null }> {
+    return this.tx(async (c, sink) => {
+      const key = normalizeGroupName(g.name);
+      // READ COMMITTED would let two racing filers both see "no such group":
+      // serialise filings of one normalised name for this transaction.
+      await c.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`tm-group-name:${key}`]);
+      const all = async (sql: string, params: unknown[]) => (await c.query(toPg(sql), params)).rows as Record<string, unknown>[];
+      const joined = g.forceNew
+        ? null
+        : pickNamedGroup(await runWalk(namedGroupCandidates(g.repoIds, key, normalizeGroupName), all), key, g.filerUntrusted);
+      const task = await this.insertTaskWith(c, namedGroupInsert(t, g, joined), actor, sink);
+      return { task, joined };
+    });
+  }
+
+  async untrustedTaskIds(ids: string[]): Promise<Set<string>> {
+    return runWalk(untrustedWalk(ids), async (sql, params) => (await this.pool.query(toPg(sql), params)).rows);
   }
 
   private async updateTaskWith(
@@ -1145,7 +1175,7 @@ export class PostgresStorage implements Storage {
       const childRes = await c.query(`SELECT parent_id FROM tm_tasks WHERE id = $1`, [childId]);
       const parentId: string | null = childRes.rows[0]?.parent_id ?? null;
       if (!parentId) return null;
-      const rows = (await c.query(`SELECT status FROM tm_tasks WHERE parent_id = $1`, [parentId])).rows as {
+      const rows = (await c.query(toPg(RESOLVING_CHILDREN_SQL), [parentId])).rows as {
         status: string;
       }[];
       const unresolved = rows.filter((r) => !TERMINAL_TASK_STATUSES.includes(r.status as Task['status'])).length;
@@ -2106,6 +2136,8 @@ export class PostgresStorage implements Storage {
               // see the sqlite driver: edges onto EARLIER cards only
               dependsOn: card.dependsOnCards.map((id) => taskOfCard.get(id)).filter((id): id is string => !!id),
               ...(feature.officeId ? { officeId: feature.officeId, roleId, taintedAt: feature.taintedAt } : {}),
+              // one group named after the feature (docs/grouping.md § Agent filings)
+              ...featureCardGroup(feature, i, tasks[0]?.id ?? null),
             },
             actor,
             sink,

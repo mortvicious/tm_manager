@@ -41,8 +41,12 @@ import {
 } from '@tm/shared';
 import type { OrchestratorApi } from '../app-types.ts';
 import { withStandingCaps } from '../claude/feature-plan.ts';
-import type { Storage } from '../storage/types.ts';
-import { createTask } from '../task-actions.ts';
+import type { NewTask, Storage } from '../storage/types.ts';
+import { createTask, createTaskInNamedGroup } from '../task-actions.ts';
+import { serverJoin, type FilerContext } from '../group-filing.ts';
+import { GROUP_NAME_MAX, officeDay } from '@tm/shared';
+
+const clipGroupName = (s: string) => (s.length > GROUP_NAME_MAX ? `${s.slice(0, GROUP_NAME_MAX - 1)}…` : s);
 import { createShiftProposals } from './proposals.ts';
 
 // ---------------------------------------------------------------------------
@@ -65,6 +69,8 @@ export const shiftTaskSchema = z
     description: z.string().trim().min(1).max(SHIFT_TASK_DESCRIPTION_MAX),
     category: z.string().trim().min(1).max(SHIFT_TASK_CATEGORY_MAX).nullish(),
     effort: z.enum(EFFORT_LEVELS as [EffortLevel, ...EffortLevel[]]).nullish(),
+    // join this task's group instead of the shift's own (docs/grouping.md § Agent filings)
+    group: z.string().trim().min(1).max(100).nullish(),
   })
   .strict();
 
@@ -86,6 +92,7 @@ export const SHIFT_TASKS_JSON_SCHEMA: Record<string, unknown> = {
       description: { type: 'string', minLength: 1, maxLength: SHIFT_TASK_DESCRIPTION_MAX },
       category: { type: ['string', 'null'], maxLength: SHIFT_TASK_CATEGORY_MAX },
       effort: { type: ['string', 'null'], enum: [...EFFORT_LEVELS, null] },
+      group: { type: ['string', 'null'], minLength: 1, maxLength: 100 },
     },
   },
 };
@@ -93,7 +100,8 @@ export const SHIFT_TASKS_JSON_SCHEMA: Record<string, unknown> = {
 export const SHIFT_TASKS_DESCRIBE =
   'work for a WORKER agent to do in one of your workspace repos (code, tests, a QA pass, a fix): ' +
   '{repoId (from the repo list above), title (one short line), description (what to do and how to tell it is done), ' +
-  'category (a short domain label, optional), effort (low|medium|high|xhigh|max, optional)}. ' +
+  'category (a short domain label, optional), effort (low|medium|high|xhigh|max, optional), ' +
+  'group (optional: the exact id of an open task whose group this belongs in; otherwise the shift\'s filings form one group)}. ' +
   'The server files them — queued, as drafts, or held as proposals, depending on the office — and caps how many ' +
   'one shift may file (8 by default); extras are dropped and listed on your shift. Never ask for work you could not ' +
   'describe precisely, and never file a duplicate of an open task.';
@@ -106,6 +114,7 @@ export function normalizeShiftTask(t: ShiftTaskInput): ShiftTaskRequest {
     description: t.description.trim(),
     category: t.category?.trim() || null,
     effort: t.effort ?? null,
+    ...(t.group ? { group: t.group.trim() } : {}),
   };
 }
 
@@ -306,12 +315,21 @@ export async function fileShiftTasks(
     const taintedAt = ctx.tainted ? ctx.now.toISOString() : null;
     const filed: Task[] = [];
     const dropped = [...plan.dropped];
+    // One group per shift filing (docs/grouping.md § Agent filings → Office
+    // filing): `<role>: <office day>`, or the group a request names by id —
+    // within the workspace's reach and the shift's trust.
+    const groupCtx: FilerContext = { runId, filer: null, reach: workspace?.repoIds ?? [], untrusted: ctx.tainted };
+    const shiftGroup = clipGroupName(`${role.name}: ${officeDay(ctx.now.getTime(), (office ?? ctx.office).timezone)}`);
     for (const r of plan.file) {
       try {
-        filed.push(
-          await createTask(
-            deps,
-            {
+        let joinRoot: string | null = null;
+        let downgraded: string | undefined;
+        if (r.group) {
+          const j = await serverJoin(storage, groupCtx, r.group);
+          if ('rootId' in j) joinRoot = j.rootId;
+          else downgraded = `group ${r.group} not joined: ${j.reason}`;
+        }
+        const base: NewTask = {
               title: r.title,
               description: officeTaskDescription(role, ctx.shiftId, r.description),
               repoId: r.repoId,
@@ -324,9 +342,18 @@ export async function fileShiftTasks(
               officeId: ctx.office.id,
               roleId: role.id,
               taintedAt,
-            },
-            actor,
-          ),
+        };
+        filed.push(
+          joinRoot
+            ? await createTask(deps, { ...base, parentId: joinRoot, groupDecision: { decision: 'joined', by: 'office' } }, actor)
+            : (
+                await createTaskInNamedGroup(
+                  deps,
+                  { ...base, groupDecision: { decision: 'new', by: 'office', ...(downgraded ? { downgraded } : {}) } },
+                  actor,
+                  { name: shiftGroup, repoIds: workspace?.repoIds ?? [r.repoId], filerUntrusted: ctx.tainted },
+                )
+              ).task,
         );
       } catch (e) {
         dropped.push({ ...r, reason: `could not be filed: ${(e as Error).message}` });
