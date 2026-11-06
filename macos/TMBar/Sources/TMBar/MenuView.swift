@@ -277,7 +277,7 @@ struct MenuView: View {
 
     private func taskRow(_ t: MenubarSummary.TaskRow, now: Date) -> some View {
         Button {
-            Browser.open(Browser.taskURL(base: store.pageBase, id: t.id))
+            store.openPage(Browser.taskURL(base: store.pageBase, id: t.id))
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: taskSymbol(t))
@@ -314,7 +314,7 @@ struct MenuView: View {
     @ViewBuilder private var inboxSection: some View {
         if let s = store.summary, store.summaryError == nil {
             Button {
-                Browser.open(Browser.pageURL(base: store.pageBase, path: "/inbox"))
+                store.openPage(Browser.pageURL(base: store.pageBase, path: "/inbox"))
             } label: {
                 HStack {
                     Image(systemName: s.inbox.total > 0 ? "tray.full.fill" : "tray")
@@ -369,8 +369,17 @@ struct MenuView: View {
 
     private var footer: some View {
         HStack {
-            Button("Open task manager") { Browser.open(store.pageBase) }
+            Button("Open task manager") { store.openPage(store.pageBase) }
                 .keyboardShortcut("o")
+            // § The window: TM Bar's own WebKit window, or the browser (Brave when installed)
+            Picker("Open in", selection: Binding(get: { store.openInWindow }, set: { store.openInWindow = $0 })) {
+                Text("Window").tag(true)
+                Text("Browser").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("Open pages in TM Bar's own window (system WebKit) or in the browser")
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }
                 .keyboardShortcut("q")

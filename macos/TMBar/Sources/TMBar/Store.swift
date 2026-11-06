@@ -257,8 +257,29 @@ final class Store {
 
     /// The page to open: Vite in dev (the front door serves no SPA there), else the front door.
     var pageBase: URL {
-        if host?.host.dev == true { return URL(string: "http://localhost:5173")! }
+        if host?.host.dev == true { return Store.devPage }
         return client.base
+    }
+
+    static let devPage = URL(string: "http://localhost:5173")!
+
+    /// Where "Open task manager", the task rows and Inbox open pages: TM Bar's
+    /// own window (docs/menubar.md § The window) or the browser (Brave when
+    /// installed). Per Mac, `defaults write com.taskmanager.bar openIn window|browser`.
+    var openInWindow: Bool = Store.storedOpenInWindow {
+        didSet { UserDefaults.standard.set(openInWindow ? "window" : "browser", forKey: Store.openInKey) }
+    }
+
+    static let openInKey = "openIn"
+    static var storedOpenInWindow: Bool {
+        UserDefaults.standard.string(forKey: openInKey) != "browser"
+    }
+
+    /// Every origin that belongs to the app — the front door, and Vite in dev.
+    var appOrigins: [URL] { [client.base, Store.devPage] }
+
+    func openPage(_ url: URL) {
+        if openInWindow { WebWindow.shared.open(url, origins: appOrigins) } else { Browser.open(url) }
     }
 
     /// Run scripts/service.mjs — install / uninstall / restart / start. The

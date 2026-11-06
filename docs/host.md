@@ -185,6 +185,11 @@ check shown verbatim, then an explicit Force), `/host/rebuild-restart {drain:
 true}` + `/cancel`, `/api/orchestrator/pause|continue` — with the front door's
 own loopback Origin. No route or guard was added or widened for it.
 
+TM Bar can also host the SPA itself, in a native WebKit window ([menubar.md §
+The window](menubar.md#the-window)). It is an ordinary loopback page on this
+front door's origin, with the same `/api/session` token and `Origin` rules as a
+browser tab, so the front door needs nothing for it.
+
 ## What the UI does with it
 
 The header's server pill now distinguishes two things it used to call `offline`:

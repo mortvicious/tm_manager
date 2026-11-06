@@ -3,7 +3,8 @@
 A small native macOS menu-bar app that reads the task manager at a glance: is
 the server up, what is running, what waits on you, is memory tight. It also
 holds the server controls: Start / Stop / Restart the API, Rebuild & restart,
-Pause all / Continue (§ Controls). It sits ON
+Pause all / Continue (§ Controls), and the dashboard itself in a native
+WebKit window, so Brave can be quit (§ The window). It sits ON
 TOP of the Node front door (`server/src/host.ts`, [host.md](host.md)) and talks
 to nothing else. It is not a second server: no Swift proxy, no Swift remote
 gate; `tailscale serve` → the remote listener (5177) and the iPhone path are
@@ -123,13 +124,88 @@ API is up:
   (running but not answering yet / stopped / installed but not loaded / not
   installed); the service actions and the logs (§ Service).
 - **Open TM Bar at login** (§ Open at login).
-- **Open task manager** (⌘O), **Quit** (⌘Q).
+- **Open task manager** (⌘O), **Open in: Window | Browser**, **Quit** (⌘Q).
 
-Pages open in the installed Brave (`com.brave.Browser`, through
-`NSWorkspace.open(_:withApplicationAt:)`) and otherwise in the default browser.
-In dev (`host.dev`) the page is Vite on `http://localhost:5173`, since the front
+Pages (Open task manager, a task row, Inbox) open in TM Bar's own window by
+default (§ The window). With **Browser** picked they open in the installed Brave
+(`com.brave.Browser`, through `NSWorkspace.open(_:withApplicationAt:)`) and
+otherwise in the default browser. The pick is per Mac:
+`defaults write com.taskmanager.bar openIn window|browser`. In dev
+(`host.dev`) the page is Vite on `http://localhost:5173`, since the front
 door serves no SPA there.
 
+## The window
+
+The SPA in a `WKWebView` window (`Sources/TMBar/WebWindow.swift`). It uses the
+system WebKit, so there is no second Chromium, and it was measured cheaper than
+the Brave app on the same board (§ Measurements). It is **just another loopback
+page**. It loads the front door's own origin (`http://127.0.0.1:<host port>`,
+or Vite in dev), fetches its WS token from `/api/session` like any tab, and
+sends its own `Origin` on writes. Nothing in `net.ts`, the session token or the
+remote gate knows it exists, and nothing was relaxed for it.
+
+- **One window.** Opening a page while it is open brings it forward;
+  **Open task manager** (the bare base) does only that. A deep
+  link to the page already showing (`/?task=<id>` from a task row) is routed
+  inside the running SPA (`history.pushState` + `popstate`) rather than
+  reloaded, which would refetch the whole state. A different origin, or a page
+  still loading, is a plain load.
+- **Closing it tears the page down.** The web view is released, so the
+  WebContent process exits and a closed window costs what TM Bar costs.
+  While the window is open TM Bar is a regular app: Dock icon (the `checklist`
+  symbol on the accent colour, since the bundle ships no icon file), Cmd+Tab,
+  and a main menu. Closed, it is a menu-bar app again. A window open at Quit
+  reopens at launch, on its last page (only one of the app's origins); the frame
+  and zoom are remembered.
+- **Main menu.** This is what makes the keyboard behave as in a browser. Edit
+  (Undo/Redo, Cut/Copy/Paste, Paste and Match Style, Select All, Find…/Next/
+  Previous/Use Selection) sends the standard actions to the web view, so Cmd+C/V
+  reach xterm and inputs. View: Reload ⌘R, Actual Size ⌘0, Zoom In ⌘=, Zoom
+  Out ⌘−, Full Screen ⌃⌘F. History: Back ⌘[, Forward ⌘]. File: Open in Browser
+  ⇧⌘O (the current page in Brave/the default browser), Close Window ⌘W.
+  ⌘Q quits TM Bar, menu-bar item included, like any app. Key equivalents go to
+  the page first, so the SPA's own shortcuts still work; the menu gets only
+  what the page leaves alone.
+- **Find** (⌘F): a find bar above the page (`WKWebView.find`). Return finds
+  the next match, ⇧Return the previous one, and Esc closes the bar. It
+  searches DOM text, so xterm's rendered rows are only searchable while it
+  uses the DOM renderer.
+- **Links.** The app's own origins (front door, Vite in dev) stay in the
+  window, and a `target=_blank` to one of them loads in place. Every other
+  http(s)/mailto/tel URL, top-level, `_blank` or `window.open`, goes to the
+  **default browser**. Other schemes are refused. `about:`/`blob:`/`data:` are
+  allowed, and so are iframes.
+- **Downloads** (`<a download>`, `Content-Disposition: attachment` — task
+  attachments, reports, space files) are saved to `~/Downloads` under a
+  unique name (`name (2).ext`). The percent-encoded `filename="…"` the routes send
+  is decoded, and the Dock's Downloads stack bounces as for Safari. A failure
+  shows a sheet.
+- **Uploads**: `<input type=file>` opens an `NSOpenPanel` sheet (multiple and
+  directories as the input asks); drag-and-drop and pasted images work as in
+  Safari.
+- **`alert`/`confirm`/`prompt`** (the SPA confirms publishes, approvals and
+  tainted proposals) are window sheets.
+- **Front door down**: a plain "not answering" page that retries every 3 s
+  (a HEAD through a no-proxy session) and loads the page once it answers. A
+  WebContent crash reloads the page.
+- **Inspectable**: Safari ▸ Develop ▸ TM Bar (`isInspectable`).
+- Back/forward swipes are off, because a two-finger swipe in the timeline/metro
+  scrollers would leave the page.
+
+**Caveats** (the price of a separate engine and storage):
+
+- **Separate storage.** The window's `localStorage` is TM Bar's own WebKit
+  data store (`~/Library/WebKit/com.taskmanager.bar`), not Brave's. The per-device
+  settings (design, board version, panel tab memory, workspace, `tm.*` floors)
+  start from the defaults once and must be set again. They persist after that.
+- **No Web Push.** WKWebView has no Push API (the page reads
+  `push: false`), so the SPA's push-capability check (`web/src/push.ts`) fails
+  and a device cannot subscribe from the window. The desktop's
+  notifications are TM Bar's own (the native-notifications task of this group);
+  the iPhone PWA keeps Web Push.
+- `navigator.clipboard` works: loopback is a secure context (`secure: true`).
+
+## Controls
 ## Controls
 
 Every control is the web page's own request — same route, same JSON body,
@@ -314,7 +390,35 @@ against the live front door (two agents running on the machine):
 | menu closed (5 s: `/host/status` + `/api/orchestrator`) | 60–70 ms | 0.1 % | ~60–70 MB |
 | menu open (`TM_BAR_ALWAYS_OPEN=1`, 2 s: `/host/status` + `/api/menubar`) | 170 ms | 0.3 % | ~70 MB |
 
-`top` read the closed-menu process at 0.1 %. `/api/menubar` answered in
+`top` read the closed-menu process at 0.1 %.
+
+**The window vs the Brave app** (2026-11-06, same board, Glass, 39 rows, two
+agents running; sequential so the two never overlapped; CPU = `ps` cputime
+delta over 60 s, memory = macOS footprint from `top`, summed over the whole
+process tree; harness `sample.mjs` in task b977a302's artifacts). Brave is an
+isolated instance (`--user-data-dir=<scratch> --app=…/board
+--disable-extensions`), which is the cost of keeping Brave open only for the
+dashboard. TM Bar = TMBar + its `com.apple.WebKit.{WebContent,GPU,Networking}`
+(new pids after launch). Every page was verified `hidden` + calm (CDP for Brave,
+the probe for WebKit): the display had slept and the screen was locked, so no
+window could be on screen.
+
+| | CPU (60 s samples) | memory |
+|---|---|---|
+| Brave `--app` (browser + GPU + network + 2 renderers) | 1.2 – 2.7 % | 420 – 570 MB |
+| TM Bar window (TMBar + WebContent + GPU + Networking) | 0.15 – 1.1 % | 230 – 300 MB |
+| TM Bar, window closed (TMBar + Networking) | 0.2 % | ≈ 57 MB |
+
+The window costs about half the memory of the Brave app, saving 150–330 MB,
+and no more CPU. The heavy lease reported macOS memory pressure (warn) for the
+session, so the CPU column is noisy. The footprints do not depend on timing.
+After the SPA's idle fixes (decisions.md 2026-11-06, `docs/spa-performance.md`)
+an idle board costs little in either engine. The 25–38 % renderer + 22–26 % GPU
+measured for Brave earlier the same day predates them. The VISIBLE, active state
+was not measurable here (locked screen). To re-measure it, run the same harness
+with the window on screen: `TM_BAR_WINDOW=1 TM_BAR_WINDOW_PATH=/board
+TM_BAR_WEB_PROBE=30`, then `node sample.mjs 60 <TMBar pid> <new WebKit pids>`,
+then the same for Brave. `/api/menubar` answered in
 under 1 ms on a copy of the live DB (≈1,000 tasks). On the server side, a
 `/host/status` costs the front door one `/api/health` probe.
 
@@ -359,6 +463,50 @@ under 1 ms on a copy of the live DB (≈1,000 tasks). On the server side, a
   door's restart-check (a GET). restart → `exit=3 ✗ 4 agent session(s) still
   working — …`, and the rehearsal agent's pid was unchanged.
 
+### Verifying the window
+
+`TM_BAR_WINDOW=1` (+ `TM_BAR_WINDOW_PATH=/board`) opens the window at launch
+without touching the reopen-at-launch state. `Sources/TMBar/WebProbe.swift`
+(env-only, like `TM_BAR_ALWAYS_OPEN`) logs the page's state
+(`TM_BAR_WEB_PROBE=<s>`) and runs a step file (`TM_BAR_WEB_STEPS=<file>`):
+`js <file>` (an async function body; WebKit runs it as a user gesture, so a
+`click <css>` step is a real click for popups, downloads and the file chooser),
+`keys <text>` (keys to the window's first responder; `⌘x` through the main
+menu's item, its action sent to the first responder), `paste`, `wait`, `open
+<path>`, `close`, `clipboard`, `state`. `TM_BAR_WEB_UPLOAD=<path>` answers the
+file chooser, `TM_BAR_WEB_DIALOG=ok|cancel` the JS dialogs and
+`TM_BAR_WEB_NO_EXTERNAL=1` logs instead of opening the browser.
+`TM_BAR_WEB_FORCE_VISIBLE=1`/`TM_BAR_WEB_ALL_SPACES=1` are measurement aids.
+Output: `log stream --predicate 'subsystem == "com.taskmanager.bar" AND
+category == "web"'`.
+
+2026-11-06, against the live front door (screen locked, so keys go to the
+window's first responder rather than through a key window):
+
+- **Terminal.** The page's **Open** button opened a login shell (`POST
+  /api/shells` with the page's own Origin → 200). The pane mounted after
+  ≈ 11 s (a hidden page flushes WS every 10 s). `echo … && touch m1⏎` typed
+  into xterm, and a ⌘V paste of `… && touch m2` plus ⏎, both RAN in the shell
+  (the files appeared). The shell then closed with `DELETE` → 200.
+- **Upload**: an `<input type=file multiple>` click → the open panel → the page
+  read `upload.txt:10`.
+- **Downloads**: a blob `<a download>` and a task attachment (`Content-Disposition:
+  attachment`) both landed in `~/Downloads`.
+- **Links**: external `target=_blank` and same-tab links went to the browser
+  path, and the page stayed put. An app `target=_blank` (`/inbox`) loaded in the
+  window. A `/?task=<id>` deep link routed in the same document and opened the
+  task panel.
+- `confirm()` → a sheet (answered by the probe) → `true`.
+- **Find**: ⌘F opened the bar, typing + ⏎ matched, and ⎋ closed it.
+- **Zoom** ⌘= → 1.1, ⌘0 → 1.0. ⌘C/⌘V/⌘F/⌘=/⌘0 resolve to the menu and the web
+  view handles them.
+- Close → the WebContent process exits. A closed port → the retry page.
+
+Not verified end to end: ⌘C copying a page selection onto the pasteboard. The
+action reached the web view, but with no key window (locked screen) the
+page's selection was not copied. Check it at the Mac: select text, press
+⌘C, paste elsewhere.
+
 ## Files
 
 | file | what |
@@ -373,6 +521,8 @@ under 1 ms on a copy of the live DB (≈1,000 tasks). On the server side, a
 | `Sources/TMBar/Config.swift` | front door URL resolution |
 | `Sources/TMBar/HostModels.swift`, `ApiModels.swift` | decodable subsets of `HostStatus`, `OrchestratorStatus`, `MenubarSummary` |
 | `Sources/TMBar/Browser.swift` | Brave-or-default opener, deep links |
+| `Sources/TMBar/WebWindow.swift` | the SPA window (§ The window): WKWebView, link/download/upload/dialog policy, find bar, zoom, main menu |
+| `Sources/TMBar/WebProbe.swift` | verification-only window probe (§ Verifying the window) |
 | `Sources/TMBar/Service.swift` | `launchctl print` reading, the service.mjs runner, Console.app logs |
 | `Sources/TMBar/LoginItem.swift` | `SMAppService.mainApp` |
 | `scripts/service.mjs` | the launchd agent (docs/host.md § Running as a service); `start`, exit 3 on a guard refusal |
