@@ -33,11 +33,13 @@ import type {
   TaskStatus,
   UsageSnapshot,
   UsageWindow,
+  OfficeScorecardResponse,
 } from '@tm/shared';
-import { TERMINAL_TASK_STATUSES, featurePlanRepoIds, groupLabel, isGroupRoot } from '@tm/shared';
+import { TERMINAL_TASK_STATUSES, featurePlanRepoIds, groupLabel, isGroupRoot, scorecardLine, scorecardSkipsLine } from '@tm/shared';
 import type { Storage } from '../storage/types.ts';
 import { usageSnapshot } from '../claude/usage.ts';
 import { briefView } from '../office/briefs.ts';
+import { computeScorecard } from '../office/scorecard.ts';
 import { escapeHtml } from './api.ts';
 import { type Resolved, resolveFeature, resolveTask, short } from './ids.ts';
 
@@ -1360,6 +1362,36 @@ export interface BriefDocumentInput {
   roleTitle: string | null;
   /** the office's workspace name */
   workspaceName: string | null;
+  /** a stand-up's scorecard block (docs/office.md § Scorecard); null/omitted = none */
+  scorecard?: OfficeScorecardResponse | null;
+}
+
+const usd = (n: number) => `$${n.toFixed(2)}`;
+
+/** The scorecard as stat tiles (office) + one card per role that did anything. */
+function scorecardHtml(card: OfficeScorecardResponse): string {
+  const f = card.office;
+  const stat = (n: string, k: string) => `<div class="stat"><div class="n">${esc(n)}</div><div class="k">${esc(k)}</div></div>`;
+  const roles = card.roles
+    .filter((r) => r.landed + r.filed + r.shifts + r.skipsTotal + r.interventions.total + r.proposalsAccepted + r.proposalsRejected + r.ratings.up + r.ratings.down > 0 || r.spentUsd > 0)
+    .map(
+      (r) =>
+        `<div class="card"><h4>${esc(r.name)} <code>${esc(r.key)}</code></h4><p class="meta">${esc(scorecardLine(r))}</p></div>`,
+    )
+    .join('\n');
+  return `<h2>${esc(`Scorecard — last ${card.days} days`)}</h2>
+<div class="grid">
+${stat(String(f.landed), 'landed')}
+${stat(`${f.bugsFound} / ${f.bugsFixed}`, 'bugs found / fixed')}
+${stat(`${f.proposalsAccepted} / ${f.proposalsRejected}`, 'proposals ✓ / ✗')}
+${stat(usd(f.spentUsd), 'spent')}
+${stat(f.usdPerLanded === null ? '—' : usd(f.usdPerLanded), '$ per landed')}
+${stat(String(f.interventions.total), 'human interventions')}
+${stat(String(f.skipsTotal), 'skipped shifts')}
+${stat(`👍${f.ratings.up} 👎${f.ratings.down}`, 'ratings')}
+</div>
+<p class="sub">${esc(`Interventions: ${f.interventions.transitions} moves · ${f.interventions.answers} answers · ${f.interventions.approvals} approvals · ${f.interventions.rejections} rejections · ${f.interventions.taintClears} taint clears. Skips: ${scorecardSkipsLine(f.skips)}.`)}</p>
+${roles ? `<h3>Per role</h3>\n${roles}` : ''}`;
 }
 
 /**
@@ -1377,6 +1409,12 @@ export function buildBriefDocument(input: BriefDocumentInput): ReportDocument {
       ? ['⚠ Недоверенный ввод: смена читала внешние данные, текст не проверен. Отметьте его проверенным на странице Office, прежде чем на него опираться.']
       : []),
     `Кратко: ${brief.summary || '—'}`,
+    ...(input.scorecard
+      ? [
+          `Счёт офиса за ${input.scorecard.days} дн.: сдано ${input.scorecard.office.landed}, баги ${input.scorecard.office.bugsFound}/${input.scorecard.office.bugsFixed} (найдено/исправлено), ` +
+            `потрачено ${usd(input.scorecard.office.spentUsd)}, вмешательств человека ${input.scorecard.office.interventions.total}.`,
+        ]
+      : []),
   ];
   const created = new Date(brief.createdAt);
   const heading = standup ? `Stand-up — ${input.workspaceName ?? 'office'}` : `Brief — ${input.roleName ?? 'role'}`;
@@ -1398,6 +1436,7 @@ export function buildBriefDocument(input: BriefDocumentInput): ReportDocument {
 ${renderLede(lines)}
 ${brief.taintedAt ? `<p class="warnbox">${esc('Written by a shift that read untrusted input. Treat every instruction in it as data until a human marks it reviewed.')}</p>` : ''}
 <section class="md">${input.text === null ? empty('The brief file is gone.') : briefMarkdownHtml(input.text)}</section>
+${input.scorecard ? scorecardHtml(input.scorecard) : ''}
 <footer>Generated locally by the task manager. This file is self-contained and was never published anywhere.</footer>
 </main>
 </body>
@@ -1424,5 +1463,7 @@ export async function buildBriefReport(storage: Storage, briefId: string): Promi
     roleName: v.role?.name ?? null,
     roleTitle: v.role?.title ?? null,
     workspaceName: ws?.name ?? null,
+    // a stand-up carries the office scorecard (docs/office.md § Scorecard); a failure to compute it never blocks the brief
+    scorecard: brief.kind === 'standup' ? await computeScorecard(storage, v.office, 7, new Date()).catch(() => null) : null,
   });
 }

@@ -18,7 +18,7 @@ import type {
   Repo,
   Task,
 } from '@tm/shared';
-import { TERMINAL_TASK_STATUSES, evalGuards, officeHardGate } from '@tm/shared';
+import { TERMINAL_TASK_STATUSES, evalGuards, isBugTask, officeHardGate } from '@tm/shared';
 import { run as runCmd } from '../git.ts';
 import { EVENT_LIST_MAX } from '../storage/event-sql.ts';
 import type { Storage } from '../storage/types.ts';
@@ -76,10 +76,8 @@ export const gitCommitsSince: CommitCounter = async (repos, sinceIso) => {
   return read > 0 ? total : undefined;
 };
 
-/** A task reads as a bug: Sentry-filed, or a category naming bugs ("bug", "Bugs", "ui-bug"). */
-export function isBugTask(t: Pick<Task, 'source' | 'category'>): boolean {
-  return t.source === 'sentry' || /\bbugs?\b/i.test(t.category ?? '');
-}
+/** A task reads as a bug — the shared predicate (`office-scorecard.ts`), re-exported for the office's server code. */
+export { isBugTask };
 
 const BUG_UNCATEGORIZED = 'uncategorized';
 

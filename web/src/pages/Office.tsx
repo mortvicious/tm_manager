@@ -59,6 +59,7 @@ import { Sheet } from '../components/Sheet.tsx';
 import { Markdown } from '../components/Markdown.tsx';
 import { OfficeVision } from '../components/OfficeVision.tsx';
 import { OfficeChannel } from '../components/OfficeChannel.tsx';
+import { OfficeScorecard } from '../components/OfficeScorecard.tsx';
 import { OfficeChat } from '../components/OfficeChat.tsx';
 import { OfficeHuddles } from '../components/OfficeHuddles.tsx';
 import { RatingButtons, ratingKey, useOfficeRatings } from '../components/OfficeRating.tsx';
@@ -369,7 +370,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   const now = useNow();
   const { detail, states, error, reload } = useOfficeDetail(officeId);
   const [editing, setEditing] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | 'channel' | 'huddles' | 'chat' | 'assistant' | 'work' | null>(null);
+  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | 'channel' | 'huddles' | 'chat' | 'assistant' | 'work' | 'scorecard' | null>(null);
   const briefs = useOfficeBriefs(officeId);
   const ratings = useOfficeRatings({ officeId });
   const [briefId, setBriefId] = useBriefParam();
@@ -441,6 +442,9 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
           <button className="btn" onClick={() => setSheet('work')}>
             Rate the work
           </button>
+          <button className="btn" onClick={() => setSheet('scorecard')}>
+            Scorecard
+          </button>
           <button className="btn" onClick={() => setSheet('log')}>
             Shift log <span className="muted">{shifts.length}</span>
           </button>
@@ -480,6 +484,11 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
 
       {editor && !mobile && <div className="panel office-editor-panel">{editor}</div>}
       {!mobile && settings}
+      {!mobile && (
+        <div className="panel">
+          <OfficeScorecard office={office} />
+        </div>
+      )}
 
       {!mobile && (
         <div className="panel">
@@ -559,6 +568,11 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
       {mobile && sheet === 'work' && (
         <Sheet label="Rate the work" title="Rate the work" onClose={() => setSheet(null)} tall>
           {work}
+        </Sheet>
+      )}
+      {mobile && sheet === 'scorecard' && (
+        <Sheet label="Office scorecard" title="Scorecard" onClose={() => setSheet(null)} tall>
+          <OfficeScorecard office={office} />
         </Sheet>
       )}
       {mobile && sheet === 'log' && (

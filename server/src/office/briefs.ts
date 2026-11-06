@@ -25,11 +25,13 @@ import {
   OFFICE_BRIEF_SUMMARY_MAX,
   isStandupRole,
   officeDay,
+  scorecardMarkdown,
   taintedDigest,
   type Office,
   type OfficeBrief,
   type OfficeBriefView,
   type OfficeRole,
+  type OfficeScorecard,
 } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import { isInside } from '../folder-guard.ts';
@@ -37,6 +39,7 @@ import { EVENT_LIST_MAX } from '../storage/event-sql.ts';
 import type { Storage } from '../storage/types.ts';
 import { officeZone } from './budget.ts';
 import { appendRoleFeedback } from './feedback.ts';
+import { scorecardSince } from './scorecard.ts';
 import { untrustedPath } from './isolation.ts';
 import { officeRel, registerShiftSection, writeOfficeFile } from './shift-result.ts';
 
@@ -264,6 +267,8 @@ export interface StandupScorecard {
   spentUsd: number;
   briefs: number;
   taintedBriefs: number;
+  /** the office scorecard over the same window (docs/office.md § Scorecard) */
+  office: OfficeScorecard;
 }
 
 export interface StandupInput {
@@ -333,6 +338,7 @@ export async function standupInput(storage: Storage, office: Office, role: Offic
     spentUsd: Math.round((await storage.officeSpendSince(office.id, since)) * 100) / 100,
     briefs: briefs.length,
     taintedBriefs: briefs.filter((b) => b.taintedAt !== null).length,
+    office: await scorecardSince(storage, office, since, now),
   };
 
   const entries: string[] = [];
@@ -367,7 +373,13 @@ export async function standupInput(storage: Storage, office: Office, role: Offic
     }
   }
 
-  const facts = { ...scorecard, note: 'server-computed; landed = tasks of the workspace that reached done/published; filed = tasks this office filed' };
+  const facts = {
+    ...scorecard,
+    note:
+      'server-computed; landed = tasks of the workspace that reached done/published; filed = tasks this office filed; ' +
+      'office = the office scorecard (its own tasks only): landed, bugs found/fixed, proposals, $ and $ per landed change, ' +
+      'human interventions, skipped shifts by reason, 👍/👎 — office-wide and per role',
+  };
   const block = [
     '## The stand-up',
     '',
@@ -385,7 +397,8 @@ export async function standupInput(storage: Storage, office: Office, role: Offic
     ...(entries.length ? entries : ['(no briefs since the last stand-up)', '']),
   ];
   const header = `> **Scorecard** since ${since} (server-computed): ${scorecard.landed} landed · ${scorecard.filed} filed · $${scorecard.spentUsd.toFixed(2)} spent · ${scorecard.briefs} brief(s) read${scorecard.taintedBriefs ? `, ${scorecard.taintedBriefs} tainted (withheld)` : ''}`;
-  return { scorecard, briefIds: briefs.map((b) => b.id), block, header };
+  const officeLines = scorecardMarkdown(scorecard.office);
+  return { scorecard, briefIds: briefs.map((b) => b.id), block, header: [header, '>', ...officeLines].join('\n') };
 }
 
 // ---------------------------------------------------------------------------

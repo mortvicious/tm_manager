@@ -585,6 +585,10 @@ export class PostgresStorage implements Storage {
       where.push(`feature_id = ?`);
       params.push(f.featureId);
     }
+    if (f?.officeId) {
+      where.push(`office_id = ?`);
+      params.push(f.officeId);
+    }
     if (f?.updatedSince) {
       where.push(`updated_at >= ?`);
       params.push(f.updatedSince);

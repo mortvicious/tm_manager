@@ -13677,6 +13677,69 @@ button.explain-tap:active {
   padding: var(--tm-space-3) var(--tm-space-4);
 }
 
+/* Office scorecard (docs/office.md § Scorecard) */
+.office-scorecard-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tm-space-2);
+}
+
+.office-scorecard-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--tm-space-3);
+  margin: 0;
+}
+
+.office-scorecard-figures dt {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.office-scorecard-figures dd {
+  margin: 0;
+  font-size: var(--tm-text-lg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.office-scorecard-table-wrap {
+  overflow-x: auto;
+  padding: 0 var(--tm-space-4);
+}
+
+.office-scorecard-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--tm-text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.office-scorecard-table th,
+.office-scorecard-table td {
+  padding: var(--tm-space-1) var(--tm-space-2);
+  border-bottom: 1px solid var(--tm-border);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.office-scorecard-table thead th {
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  color: var(--tm-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.office-scorecard-table th[scope='row'],
+.office-scorecard-table thead th:first-child {
+  text-align: left;
+  font-weight: 500;
+}
+
 .office-help,
 .office-hint {
   font-size: var(--tm-text-xs);

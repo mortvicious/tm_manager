@@ -1747,6 +1747,10 @@ Its prompt gets a `## The stand-up` block from `standupInput` (`ShiftPlan.standu
   `taintedBriefs`. The same numbers lead the stand-up file as a quoted
   `> **Scorecard** since …` line the server writes above the Director's
   markdown (`briefHeader`), so the scorecard is never the model's arithmetic.
+  The facts JSON also carries `office` — the office scorecard (§ Scorecard)
+  over the same window — and the file's head gets its `> **Office:** …` line
+  plus one `> - **<role>** …` line per role that did anything
+  (`scorecardMarkdown`).
 
 The stand-up's own output is its `brief` section, stored as kind `standup`.
 
@@ -2727,6 +2731,60 @@ role learns what was worth doing. `server/src/office/ratings.ts`
   and 20 role-tagged tasks; a `<Sheet>` from the phone bar), and in the task
   panel's meta row for a role-tagged task. Pressing the active thumb opens the
   comment editor.
+
+## Scorecard
+
+Phase 6 (measuring autonomy): how much the office got done, what it cost, and
+how often the human had to step in — office-wide and per role, over a window.
+Pure fold `officeScorecard(rows, window)` in `shared/src/office-scorecard.ts`
+(fixture-tested in `server/src/office/scorecard.test.ts`); the I/O half
+(`scorecardRows`, `computeScorecard`, `scorecardSince`, `ScorecardCache`) is
+`server/src/office/scorecard.ts`. Every figure is a count or sum over
+server-written rows — no agent text is read, so the scorecard is trusted.
+
+**Figures** (`OfficeScoreFigures`, window `[since, until)`):
+
+| figure | from |
+| --- | --- |
+| `landed` | office tasks (`tm_tasks.office_id`) with a `task.transition` to `done`/`published` in the window — distinct, so done then published is ONE |
+| `filed` | office tasks created in the window |
+| `bugsFound` / `bugsFixed` | office tasks reading as a bug (`isBugTask`: source `sentry` or a category naming bugs — now in shared, re-exported by `gate.ts`) created in the window / landed in it |
+| `proposalsAccepted` / `proposalsRejected` | `tm_office_proposals` decided (`decided_at`) in the window |
+| `shifts` | shifts that ran in the window |
+| `spentUsd`, `usdPerLanded` | `officeSpendSince(office, since[, role])` (shift runs + office tasks' worker/review/compact runs); `spent / landed`, null with nothing landed |
+| `interventions` | by a HUMAN actor (`human`, `telegram` — an autopilot pick is not): `task.transition` on an office task (`transitions`), `question.answered` on one (`answers`), `approval.decided` on one (`approvals` / `rejections`), and `office.taint-cleared` of this office (`taintClears` — brief, message or role notes marked reviewed); `total` |
+| `skips`, `skipsTotal` | skipped shifts in the window by `skip_code` (`guard`, a gate code, a runner refusal; `other` when none) |
+| `ratings` | 👍/👎 rows (§ Ratings) whose `updated_at` falls in the window |
+
+**Per role**: a task counts for its `role_id` (a Director feature card carries
+the Director's), a shift/proposal/rating for its role, a taint clear for its
+`data.roleId`; an event on a role-less task, or a deleted role's rows, count
+office-wide only — so the role rows need not sum to the office row. Proposal
+decisions are their own figure, not interventions (accepting work the office
+proposed is the expected path; a human stepping into the work is not).
+
+**Route**: `GET /api/offices/:id/scorecard?days=` (default 7, clamped to
+1..90 by `scorecardDays`) → `OfficeScorecardResponse` (`officeId`, `days`,
+`since`, `until`, `computedAt`, `office`, `roles[]`). Cached **10 minutes per
+(office, days)** with one computation in flight (`ScorecardCache`; a failure
+is not cached; a 404 drops the office's entries) — a fresh landing shows within
+ten minutes. Read-only, no Origin needed. The office's tasks come from the new
+`TaskFilter.officeId` (both drivers); events are read per 500 task ids.
+
+**Where it shows**:
+
+- **/office** — the *Scorecard* panel (`components/OfficeScorecard.tsx`) under
+  Settings on desktop, a `<Sheet>` from the phone bar: a 7/30-day switch, the
+  office's figures as tiles, a per-role table (interventions and skips
+  broken down in the tooltip and the line under the tiles).
+- **The Director's stand-up** (§ Briefings → The stand-up): over the
+  stand-up's own window, in the facts JSON (`office`) and as the
+  `> **Office:** …` head lines of the stand-up file — so the /office brief
+  viewer shows it too.
+- **The Telegram stand-up document** (`buildBriefDocument`): a stand-up's
+  document gets a *Scorecard — last 7 days* section (tiles + one card per
+  active role) and a Russian lede line (`Счёт офиса за 7 дн.: …`), computed at
+  send time; a failure to compute leaves the document without it.
 
 ## UI
 

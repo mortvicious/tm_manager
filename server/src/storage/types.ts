@@ -125,6 +125,8 @@ export interface TaskFilter {
   /** every task in one tree — the root's id (docs/grouping.md) */
   groupId?: string;
   featureId?: string;
+  /** tasks a Virtual Office filed (`tm_tasks.office_id`; docs/office.md § Scorecard) */
+  officeId?: string;
   /**
    * ISO lower bound on `updated_at`, inclusive — "what did this period touch"
    * (docs/telegram.md § Reports). A period report asks the DB for its window

@@ -3981,6 +3981,8 @@ export * from './office-view.ts';
 export * from './office-iso.ts';
 // The office planner: wizard, blueprint, blueprint diff (docs/office.md § Office planner)
 export * from './office-planner.ts';
+// The office scorecard: landed, bugs, proposals, $, interventions, skips, ratings (docs/office.md § Scorecard)
+export * from './office-scorecard.ts';
 import type { OfficePlannerProposal } from './office-planner.ts';
 // TM Bar's summary read (docs/menubar.md)
 export * from './menubar.ts';

@@ -226,6 +226,13 @@ describe('the stand-up', () => {
     const text = fs.readFileSync(path.join(o.folderPath, sb.path), 'utf8');
     assert.match(text, /^> \*\*Scorecard\*\* since .*: 0 landed · 0 filed · \$0\.00 spent · 2 brief\(s\) read, 1 tainted \(withheld\)/);
     assert.ok(!text.includes(PLANTED));
+    // the office scorecard (docs/office.md § Scorecard) heads the file and rides in the document
+    assert.match(text, /^> \*\*Office:\*\* 0 landed · bugs 0 found \/ 0 fixed · proposals 0✓ 0✗ · \$[\d.]+ spent/m);
+    assert.match(st.prompt, /"office": \{/);
+    const doc = (await buildBriefReport(storage, sb.id))!;
+    assert.match(doc.html, /Scorecard — last 7 days/);
+    assert.match(doc.lines.join('\n'), /Счёт офиса за 7 дн\./);
+    assert.ok(!doc.html.includes(PLANTED));
   });
 
   test('Mark reviewed: Origin-gated, version-checked; moves the file, clears the taint, audits; a later stand-up gets the text', async () => {

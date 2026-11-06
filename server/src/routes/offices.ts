@@ -55,6 +55,7 @@ import {
   type OfficeSubject,
   OFFICE_HUDDLE_QUESTION_MAX,
   type OfficeMessageKind,
+  scorecardDays,
 } from '@tm/shared';
 import { broadcast } from '../events.ts';
 import { archiveRoleNotes, defaultOfficeFolder, resetRoleNotes, scaffoldOfficeFolder, validateOfficeFolder } from '../office/folder.ts';
@@ -69,6 +70,7 @@ import { OfficeDocConflict, OfficeWishRefused, createOfficeWish, directorRole, r
 import { officeFeatureCapRefusal } from '../office/features.ts';
 import { SHIFT_NOTES_MAX_CHARS, officeRel, roleNotesRel, writeOfficeFile } from '../office/shift-result.ts';
 import { roleFromPreset } from '../office/presets.ts';
+import { ScorecardCache, computeScorecard } from '../office/scorecard.ts';
 import { officeScheduler, officeStates, type OfficeScheduler } from '../office/scheduler.ts';
 import type { NewOfficeRole, OfficePatch, OfficeRolePatch } from '../storage/office-sql.ts';
 import type { Storage } from '../storage/types.ts';
@@ -674,6 +676,7 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opt
   const scheduler = opts.scheduler ?? officeScheduler;
   const writes = officeWrites(storage);
   const { audit, announce, rescaffold } = writes;
+  const scorecards = new ScorecardCache();
 
   app.get('/api/offices', async () => storage.listOffices());
 
@@ -751,6 +754,19 @@ export function registerOfficeRoutes(app: FastifyInstance, storage: Storage, opt
     const states = await officeStates(storage, id);
     if (!states) return reply.code(404).send({ error: 'office not found' });
     return states;
+  });
+
+  // The scorecard (docs/office.md § Scorecard): office + per-role figures over
+  // the last `days` days (default 7, 1..90), cached 10 min per (office, days).
+  app.get('/api/offices/:id/scorecard', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const days = scorecardDays((req.query as { days?: string } | undefined)?.days);
+    const office = await storage.getOffice(id);
+    if (!office) {
+      scorecards.forget(id);
+      return reply.code(404).send({ error: 'office not found' });
+    }
+    return scorecards.get(`${id}:${days}`, () => computeScorecard(storage, office, days, new Date()));
   });
 
   app.post('/api/offices', { preHandler: fromBrowser }, async (req, reply) => {
