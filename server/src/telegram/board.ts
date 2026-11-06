@@ -29,6 +29,7 @@ import {
   type JobRun,
 } from '@tm/shared';
 import type { Orchestrator } from '../orchestrator.ts';
+import { loadInboxSources } from '../inbox-input.ts';
 import type { Storage } from '../storage/types.ts';
 import { encodeAction, type ButtonAction } from './actions.ts';
 import { MAX_MESSAGE_CHARS, escapeHtml, type Reply } from './api.ts';
@@ -401,22 +402,8 @@ interface Snapshot {
 }
 
 async function load(deps: BoardDeps): Promise<Snapshot> {
-  const [tasks, repos, live, questions, approvals, proposals, features, settings] = await Promise.all([
-    deps.storage.listTasks(),
-    deps.storage.listRepos(),
-    deps.storage.listRuns({ status: 'running' }),
-    deps.storage.listQuestions({ status: 'pending' }),
-    deps.storage.listApprovals({ status: 'pending' }),
-    deps.storage.listProposals({ status: 'pending' }),
-    deps.storage.listFeatures({ status: 'proposed' }),
-    deps.storage.getSettings(),
-  ]);
-  const [jobs, jobRuns, officeProposals, officeRoles] = await Promise.all([
-    deps.storage.listJobs(),
-    deps.storage.listOpenJobRuns(),
-    deps.storage.listOfficeProposals({ status: 'pending' }),
-    deps.storage.listOfficeRoles(),
-  ]);
+  const src = await loadInboxSources(deps.storage);
+  const { tasks, live, questions } = src;
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const liveByTask = new Map<string, Run>();
   for (const r of live) {
@@ -443,22 +430,11 @@ async function load(deps: BoardDeps): Promise<Snapshot> {
     // a watcher hiccup costs the narration line, never the board
   }
   return {
-    tasks,
-    repos,
-    live,
-    questions,
-    approvals,
-    proposals,
-    features,
-    jobs,
-    jobRuns,
-    officeProposals,
-    officeRoles,
+    ...src,
     asking: new Set(questions.map((q) => q.taskId)),
     attention,
     liveByTask,
     activity,
-    staleDraftDays: settings['inbox.staleDraftDays'],
   };
 }
 

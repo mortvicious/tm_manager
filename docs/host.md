@@ -177,6 +177,11 @@ server blind. Reached through the remote name they pass the remote gate first
 (identity + exact Origin, which is then required on every POST), so the
 tailnet name never exposes them unauthenticated.
 
+A native client reads the same routes: **TM Bar**, the macOS menu-bar app
+(`macos/TMBar/`, [menubar.md](menubar.md)), polls `GET /host/status` plus one
+API read and its only write is `POST /host/start` with the front door's own
+loopback Origin — no route or guard was added or widened for it.
+
 ## What the UI does with it
 
 The header's server pill now distinguishes two things it used to call `offline`:

@@ -42,6 +42,8 @@
     "service:restart": "tsx scripts/service.mjs restart",
     "service:status": "tsx scripts/service.mjs status",
     "service:logs": "tsx scripts/service.mjs logs",
+    "menubar:build": "node scripts/menubar.mjs build",
+    "menubar:open": "node scripts/menubar.mjs open",
     "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
     "test": "tsx --test 'server/src/**/*.test.ts'"
   },
