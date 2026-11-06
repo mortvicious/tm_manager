@@ -1524,6 +1524,12 @@ export interface Run {
   /** cumulative transcript totals at the moment this run resumed — subtracted
    *  from the raw transcript sums so a resumed run reports only its OWN usage */
   statsBaseline: RunStats | null;
+  /**
+   * the most this run's process tree (claude + every descendant) measured,
+   * MiB — macOS footprint, RSS elsewhere; sampled every 30 s
+   * (docs/memory.md § Memory per run). null = never sampled.
+   */
+  peakMemMb?: number | null;
   startedAt: string;
   endedAt: string | null;
 }
@@ -1951,6 +1957,15 @@ export interface AppSettings {
   /** a task sitting in review this long is an anomaly: Dashboard + one notification per stay in review */
   'anomaly.staleReviewHours': number;
   /**
+   * one live process tree (a worker's claude + what it started, an aux run, a
+   * repo command, a terminal) above this many GB is a `memory-high` anomaly —
+   * one notification per episode (docs/memory.md § Memory per run). 0 = that
+   * half is off.
+   */
+  'anomaly.memoryTreeGb': number;
+  /** system memory pressure (macOS kernel level warn or worse) is a `memory-high` anomaly too */
+  'anomaly.memoryPressure': boolean;
+  /**
    * An agent-filed draft older than this many days is listed last in the
    * Inbox as a stale draft (keep / hide / cancel), and a Keep takes it out
    * of that list for this many days again (docs/inbox.md § Stale drafts).
@@ -2173,6 +2188,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   'anomaly.costUsd': 10,
   'anomaly.taskCostUsd': 0,
   'anomaly.staleReviewHours': 72,
+  'anomaly.memoryTreeGb': 2,
+  'anomaly.memoryPressure': true,
   'inbox.staleDraftDays': 14,
   'commands.agentTtlDays': 7,
   'commands.idleStopMinutes': 30,
@@ -2652,7 +2669,7 @@ export interface Anomaly {
  * The anomalies that are NOTIFIED (push kind `anomaly`, Telegram class
  * `anomaly`), one per task per type per episode — docs/push.md § What pings.
  */
-export type AnomalyAlertType = 'long-run' | 'cost-high' | 'stale-review' | 'task-budget' | 'day-budget' | 'push-failed' | 'memory-pressure';
+export type AnomalyAlertType = 'long-run' | 'cost-high' | 'stale-review' | 'task-budget' | 'day-budget' | 'push-failed' | 'memory-pressure' | 'memory-high';
 
 /** How every surface (push, Telegram) names an alert type — one record so they cannot drift. */
 export const ANOMALY_ALERT_LABELS: Record<AnomalyAlertType, { icon: string; label: string }> = {
@@ -2663,6 +2680,7 @@ export const ANOMALY_ALERT_LABELS: Record<AnomalyAlertType, { icon: string; labe
   'day-budget': { icon: '🧯', label: 'Day budget reached' },
   'push-failed': { icon: '⛔', label: 'Push to origin fails' },
   'memory-pressure': { icon: '🧠', label: 'Memory fuse tripped' },
+  'memory-high': { icon: '🐘', label: 'Memory high' },
 };
 
 export interface AnomalyAlert {
@@ -2841,6 +2859,13 @@ export interface OrchestratorStatus {
    * predating it omits it.
    */
   machine?: MachineInfo;
+  /**
+   * Memory per run (docs/memory.md § Memory per run): the latest 30 s sample
+   * of every live process tree (worker and aux runs, repo commands, terminals,
+   * the API) plus the machine's free % / swap, and the `memory-high` episode.
+   * Omitted by a server predating it.
+   */
+  procMemory?: ProcMemorySnapshot;
 }
 
 /** What a failed git network command says about its cause (`classifyGitFailure`). */
@@ -3858,6 +3883,7 @@ export function taskTemplateProblem(list: TaskTemplate[], presets: TaskPreset[] 
 
 // Approximate progress % of a live task (docs/task-progress.md)
 export * from './progress.ts';
+export * from './proc-memory.ts';
 export * from './schedule.ts';
 // Schedule prediction accuracy replay (docs/timeline.md § Prediction accuracy)
 export * from './schedule-accuracy.ts';
@@ -3893,6 +3919,7 @@ export * from './capacity.ts';
 import type { MachineInfo } from './capacity.ts';
 import { jobRunNeedsHuman, type Job, type JobRun, type JobsHold } from './jobs.ts';
 import type { MemoryFuseState } from './memory.ts';
+import type { ProcMemorySnapshot } from './proc-memory.ts';
 import type { Office, OfficeBrief, OfficeHuddle, OfficeMessage, OfficeMessageRoute, OfficeProposal, OfficeRole, OfficeStates, OfficeWish } from './office.ts';
 // Virtual Office: types, cron, catch-up, guards, the hard gate, autonomy and taint (docs/office.md)
 export * from './office.ts';

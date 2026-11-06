@@ -1312,6 +1312,12 @@ export class SqliteStorage implements Storage {
     return this.getRun(id);
   }
 
+  async bumpRunPeakMem(id: string, mb: number): Promise<Run | null> {
+    if (!(mb > 0)) return null;
+    const r = this.db.prepare(`UPDATE tm_runs SET peak_mem_mb = ? WHERE id = ? AND (peak_mem_mb IS NULL OR peak_mem_mb < ?)`).run(mb, id, mb);
+    return r.changes > 0 ? this.getRun(id) : null;
+  }
+
   // ---- dispatches (docs/dispatch.md) ----
 
   async listDispatches(f?: DispatchFilter): Promise<Dispatch[]> {

@@ -34,6 +34,9 @@ import {
   type TaskStatus,
   type TaskWait,
   MEMORY_SAMPLE_MS,
+  PROC_MEMORY_SAMPLE_MS,
+  formatMb,
+  type MemTreeRoot,
 } from '@tm/shared';
 import type { ActionResult, OrchestratorApi, TaskChangeResult } from './app-types.ts';
 
@@ -92,7 +95,7 @@ import {
   type PublishCheck,
   type ShippedCheck,
 } from './git.ts';
-import { aux } from './claude/aux.ts';
+import { aux, type AuxRunner } from './claude/aux.ts';
 import { fileDigests, headAt, readHeadBase, reviewWorkerChange, taskChangeRead, workerDiff, type ChangeScope } from './claude/review.ts';
 import { summarizeRun, summarizeTranscript, type TranscriptSummary } from './claude/stats.ts';
 import { killBackgroundShells, shellEntries } from './claude/shells.ts';
@@ -113,6 +116,8 @@ import { broadcast } from './events.ts';
 import { AnomalyAlerts, COST_LINE_WINDOW_MS, costLine, costVerdict, type CostLine } from './anomalies.ts';
 import { checkFixMessage, checksVerdict, definitionOfDone, runChecks, selectChecks } from './checks.ts';
 import type { CommandRunner } from './commands/runner.ts';
+import type { ShellRunner } from './shells/runner.ts';
+import { procMemoryState, sampleProcMemory } from './proc-memory.ts';
 import {
   loopMetric,
   loopNote,
@@ -412,6 +417,11 @@ export class Orchestrator implements OrchestratorApi {
   private checkLoops = new Map<string, { round: number; hash: string }>();
   /** The commands pool's runner — checks run there (docs/checks.md). Wired by index.ts. */
   private commandRunner: CommandRunner | null = null;
+  /** The terminals pool's runner — measured by memory per run only (docs/memory.md § Memory per run). Wired by index.ts. */
+  private shellRunner: ShellRunner | null = null;
+  /** memory per run: who a live root is (title, task, repo), read once per run id */
+  private memRootInfo = new Map<string, { label: string; taskId: string | null; repoId: string | null }>();
+  private procMemorySweeping = false;
   /** scheduled jobs (docs/jobs.md): swept at the top of every scheduling pass, suspended by Pause all */
   private jobs: JobService | null = null;
   /** Virtual Office shifts (docs/office.md § Shifts at run time): suspended by Pause all */
@@ -734,6 +744,128 @@ export class Orchestrator implements OrchestratorApi {
       void this.memorySweep();
     }, MEMORY_SAMPLE_MS).unref();
     void this.memorySweep();
+    // Memory per run (docs/memory.md § Memory per run): every live process
+    // tree's footprint, peaks on tm_runs, the `memory-high` alert.
+    setInterval(() => {
+      void this.procMemorySweep();
+    }, PROC_MEMORY_SAMPLE_MS).unref();
+  }
+
+  // ---- memory per run (docs/memory.md § Memory per run) ----------------------
+
+  /** Every live session root of every pool, plus the API (and the front door when supervised). */
+  private async memoryRoots(): Promise<MemTreeRoot[]> {
+    const roots: MemTreeRoot[] = [];
+    const seen = new Set<string>();
+    const info = async (runId: string, fallback: string, subjectTask: string | null) => {
+      const hit = this.memRootInfo.get(runId);
+      if (hit) return hit;
+      let label = fallback;
+      let taskId: string | null = null;
+      let repoId: string | null = null;
+      try {
+        const run = await this.storage.getRun(runId);
+        taskId = run?.taskId ?? subjectTask;
+        repoId = run?.repoId ?? null;
+        const task = taskId ? await this.storage.getTask(taskId) : null;
+        if (task) {
+          repoId = repoId ?? task.repoId;
+          label = fallback ? `${fallback} · ${task.title}` : task.title;
+        } else if (subjectTask) {
+          taskId = null; // the subject was not a task after all
+        }
+      } catch {
+        /* label stays the fallback */
+      }
+      const v = { label: label || runId.slice(0, 8), taskId, repoId };
+      this.memRootInfo.set(runId, v);
+      return v;
+    };
+    for (const s of this.sessions.livePids()) {
+      seen.add(s.runId);
+      const i = await info(s.runId, '', null);
+      roots.push({ id: s.runId, kind: 'worker', pid: s.pid, label: i.label, taskId: i.taskId, repoId: i.repoId, runId: s.runId, sub: null });
+    }
+    let auxLive: ReturnType<AuxRunner['livePids']> = [];
+    try {
+      auxLive = aux().livePids();
+    } catch {
+      /* no aux runner (tests) */
+    }
+    for (const a of auxLive) {
+      seen.add(a.runId);
+      const subjectTask = a.kind === 'review' || a.kind === 'compact' || a.kind === 'analysis' || a.kind === 'commit' ? a.subjectId : null;
+      const i = await info(a.runId, subjectTask ? a.kind : a.label || a.kind, subjectTask);
+      roots.push({ id: a.runId, kind: 'aux', pid: a.pid, label: i.label, taskId: i.taskId, repoId: i.repoId ?? a.repoId, runId: a.runId, sub: a.kind });
+    }
+    for (const c of this.commandRunner?.running() ?? []) {
+      if (!(c.pid && c.pid > 0)) continue;
+      roots.push({
+        id: c.id,
+        kind: 'command',
+        pid: c.pid,
+        label: `${c.name}${c.repoName ? ` · ${c.repoName}` : ''}`,
+        taskId: c.checkTaskId ?? c.ownerTaskId ?? null,
+        repoId: c.repoId ?? null,
+        runId: null,
+        sub: c.checkTaskId || c.checkBaseline ? 'check' : null,
+      });
+    }
+    for (const sh of this.shellRunner?.running() ?? []) {
+      if (!(sh.pid && sh.pid > 0)) continue;
+      roots.push({ id: sh.id, kind: 'shell', pid: sh.pid, label: `${sh.title || 'shell'} · ${sh.repoName}`, taskId: null, repoId: sh.repoId, runId: null, sub: null });
+    }
+    roots.push({ id: 'api', kind: 'server', pid: process.pid, label: 'task manager API', taskId: null, repoId: null, runId: null, sub: null });
+    if (process.env.TM_SUPERVISED === '1' && process.env.TM_WATCH !== '1' && process.ppid > 1) {
+      roots.push({ id: 'host', kind: 'server', pid: process.ppid, label: 'front door', taskId: null, repoId: null, runId: null, sub: null });
+    }
+    for (const id of [...this.memRootInfo.keys()]) if (!seen.has(id)) this.memRootInfo.delete(id);
+    return roots;
+  }
+
+  /**
+   * One memory-per-run sample: store grown peaks on tm_runs (broadcast as
+   * run.updated so the task panel follows), alert once per `memory-high`
+   * episode (key = its start), broadcast the status. Never throws.
+   */
+  async procMemorySweep(): Promise<void> {
+    if (this.procMemorySweeping) return;
+    this.procMemorySweeping = true;
+    try {
+      const settings = await this.storage.getSettings();
+      const { snapshot, change, writes } = await sampleProcMemory(await this.memoryRoots(), settings);
+      for (const w of writes) {
+        const run = await this.storage.bumpRunPeakMem(w.runId, Math.round(w.peakMb)).catch(() => null);
+        if (run) broadcast({ type: 'run.updated', run });
+      }
+      const mh = snapshot.memoryHigh;
+      if (change === 'opened' && mh.since) {
+        const top = snapshot.trees
+          .filter((t) => t.kind !== 'server')
+          .slice(0, 3)
+          .map((t) => `${t.label} ${formatMb(t.mb)}`);
+        const sys = snapshot.system;
+        const reading = sys ? { freePct: Math.round(sys.freePct), swapUsedMb: Math.round(sys.swapUsedMb), swapTotalMb: Math.round(sys.swapTotalMb), pressureLevel: sys.pressureLevel } : {};
+        console.log(`memory high: ${mh.reason}`);
+        const biggest = snapshot.trees.find((t) => t.kind !== 'server');
+        await this.alerts.emit({
+          type: 'memory-high',
+          severity: mh.severity,
+          message: `${mh.reason}.${top.length ? ` Biggest: ${top.join(', ')}.` : ''} The task manager's tree: ${formatMb(snapshot.totalMb)}.`,
+          key: `memory-high:${mh.since}`,
+          taskId: biggest?.taskId ?? null,
+          runId: biggest?.runId ?? null,
+          data: { ...reading, totalMb: Math.round(snapshot.totalMb), trees: snapshot.trees.slice(0, 5).map((t) => ({ id: t.id, kind: t.kind, label: t.label, mb: Math.round(t.mb) })) },
+        });
+      } else if (change === 'closed') {
+        console.log('memory high: cleared');
+      }
+      this.broadcastStatusSoon();
+    } catch (err) {
+      console.error('memory per run sweep error:', err);
+    } finally {
+      this.procMemorySweeping = false;
+    }
   }
 
   // ---- memory fuse (docs/memory.md) -----------------------------------------
@@ -947,6 +1079,10 @@ export class Orchestrator implements OrchestratorApi {
 
   setCommandRunner(runner: CommandRunner): void {
     this.commandRunner = runner;
+  }
+
+  setShellRunner(runner: ShellRunner): void {
+    this.shellRunner = runner;
   }
 
   /**
@@ -2049,6 +2185,7 @@ export class Orchestrator implements OrchestratorApi {
       landing: [...this.landing],
       ...(this.jobs ? { jobs: this.jobs.status() } : {}),
       memory: { ...memoryState(), hold: memoryHold(settings) },
+      procMemory: procMemoryState(),
       ...(heavy() ? { heavy: heavy()!.status() } : {}),
       machine: machineInfo(),
     };

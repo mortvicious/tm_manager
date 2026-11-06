@@ -922,6 +922,31 @@ export function ConfigPage({ headSlot, topSlot }: { headSlot?: ReactNode; topSlo
             onChange={(e) => set('anomaly.staleReviewHours', Number(e.target.value))}
           />
         </div>
+        <div className="cfg-row">
+          <div>
+            <div>Memory-high alert (GB per tree)</div>
+            <div className="hint">ping once per episode when one run's or command's process tree passes this. 0 = off (docs/memory.md § Memory per run)</div>
+          </div>
+          <input
+            className="field"
+            type="number"
+            min={0}
+            step={0.5}
+            style={{ width: 90 }}
+            value={cfg['anomaly.memoryTreeGb'] ?? DEFAULT_SETTINGS['anomaly.memoryTreeGb']}
+            onChange={(e) => set('anomaly.memoryTreeGb', Number(e.target.value))}
+          />
+        </div>
+        <div className="cfg-row">
+          <div>
+            <div>Memory-high alert on system pressure</div>
+            <div className="hint">also ping once per episode when macOS reports memory pressure warn or worse</div>
+          </div>
+          <Toggle
+            on={cfg['anomaly.memoryPressure'] ?? DEFAULT_SETTINGS['anomaly.memoryPressure']}
+            onChange={(v) => set('anomaly.memoryPressure', v)}
+          />
+        </div>
       </div>
 
       <div className="panel cfg-group">

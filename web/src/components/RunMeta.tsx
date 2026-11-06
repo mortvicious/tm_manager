@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { contextPctOf, type Run } from '@tm/shared';
+import { contextPctOf, formatMb, type Run } from '@tm/shared';
+import { useApp } from '../state.tsx';
 
 export function Elapsed({ since, until }: { since: string; until?: string | null }) {
   const [, tick] = useState(0);
@@ -53,8 +54,23 @@ export function TaskAttemptsChip({ attempts, quiet = false }: { attempts: number
  * task panel (docs/design.md § Task panel head) — read, never acted on, so they
  * are text with separators rather than more chips beside the action buttons.
  */
+/**
+ * The run's memory (docs/memory.md § Memory per run): its process tree now
+ * (live runs, from the 30 s sample in OrchestratorStatus.procMemory) and the
+ * peak stored on the run row. Null when never sampled.
+ */
+export function useRunMemory(run: Run | null): { mb: number | null; peakMb: number } | null {
+  const { orch } = useApp();
+  if (!run) return null;
+  const live = orch.procMemory?.trees.find((t) => t.runId === run.id) ?? null;
+  const peak = Math.max(run.peakMemMb ?? 0, live?.peakMb ?? 0);
+  if (!live && !(peak > 0)) return null;
+  return { mb: live ? live.mb : null, peakMb: peak };
+}
+
 export function TaskStatsLine({ costUsd, attempts, run }: { costUsd: number; attempts: number; run: Run | null }) {
   const s = run?.stats;
+  const mem = useRunMemory(run);
   const task = [
     costUsd >= 0.01 && (
       <span key="cost" className="so-stat" title="this task so far: every agent turn, plus its reviews and compactions">
@@ -93,6 +109,14 @@ export function TaskStatsLine({ costUsd, attempts, run }: { costUsd: number; att
                 ctx {Math.round(contextPctOf(s, run.model))}%
               </span>
             </>
+          )}
+          {mem && (
+            <span
+              className="so-stat"
+              title="memory of the run's process tree — claude plus everything it started (tsc, dev servers, browsers); sampled every 30 s"
+            >
+              {mem.mb != null ? `mem ${formatMb(mem.mb)} · peak ${formatMb(mem.peakMb)}` : `peak mem ${formatMb(mem.peakMb)}`}
+            </span>
           )}
         </span>
       )}

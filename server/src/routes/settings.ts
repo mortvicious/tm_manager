@@ -90,6 +90,8 @@ const settingsSchema = z
     // 0 = adaptive (the repo's 30-day p90, floor $10); a fixed line keeps the per-run floor.
     'anomaly.taskCostUsd': z.number().max(100_000).refine((v) => v === 0 || v >= 0.5, 'must be 0 (adaptive) or at least 0.5'),
     'anomaly.staleReviewHours': z.number().int().min(1),
+    'anomaly.memoryTreeGb': z.number().min(0).max(256).nullable().transform((v) => v ?? 0),
+    'anomaly.memoryPressure': z.boolean(),
     'inbox.staleDraftDays': z.number().int().min(1).max(365),
     'commands.agentTtlDays': z.number().int().min(0).max(365),
     'commands.idleStopMinutes': z.number().int().min(0).max(7 * 24 * 60),

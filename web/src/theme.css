@@ -4436,6 +4436,43 @@ html.term-resizing-x * {
 .sev-warn { color: var(--tm-status-review); }
 .sev-info { color: var(--tm-text-muted); }
 
+/* Dashboard Memory card (MemoryCard.tsx, docs/memory.md § Memory per run) */
+.mem-system {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-4);
+  padding-bottom: var(--tm-space-3);
+  border-bottom: 1px solid var(--tm-border);
+}
+.mem-fig { display: flex; flex-direction: column; min-width: 0; }
+.mem-fig-value { font-family: var(--tm-font-mono); font-size: var(--tm-text-lg); font-weight: 600; }
+.mem-fig-label { font-size: var(--tm-text-xs); color: var(--tm-text-faint); }
+.mem-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--tm-space-3);
+  padding: var(--tm-space-2) 0;
+  border-bottom: 1px solid var(--tm-border);
+}
+.mem-row:last-child { border-bottom: none; }
+.mem-row:hover { background: var(--tm-bg-overlay); }
+.mem-kind {
+  flex: none;
+  width: 56px;
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--tm-text-muted);
+  padding-top: 2px;
+}
+.mem-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mem-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-detail { font-size: var(--tm-text-xs); color: var(--tm-text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-bar { display: block; height: 3px; border-radius: var(--tm-radius-pill); background: var(--tm-bg-inset); overflow: hidden; }
+.mem-bar-fill { display: block; height: 100%; background: var(--tm-accent); }
+.mem-value { flex: none; font-family: var(--tm-font-mono); font-size: var(--tm-text-sm); }
+
 .feed-row {
   display: flex;
   gap: var(--tm-space-3);

@@ -1159,6 +1159,15 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS tm_chats_office_idx ON tm_chats (office_id)`,
     ],
   },
+  {
+    id: 61,
+    // Memory per run (docs/memory.md § Memory per run): the most the run's
+    // process tree (claude + everything it started) measured, MiB — macOS
+    // physical footprint, RSS elsewhere. Written by the 30 s sampler only
+    // when it grows (`bumpRunPeakMem`); null = never sampled (a run older
+    // than this, or one shorter than a sample).
+    statements: [`ALTER TABLE tm_runs ADD COLUMN peak_mem_mb DOUBLE PRECISION`],
+  },
 ];
 
 /** The migration after which each driver seeds one workspace per shared space, in JS, once. */

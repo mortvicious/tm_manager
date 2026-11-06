@@ -1304,6 +1304,12 @@ export class PostgresStorage implements Storage {
     return this.getRun(id);
   }
 
+  async bumpRunPeakMem(id: string, mb: number): Promise<Run | null> {
+    if (!(mb > 0)) return null;
+    const rows = await this.q(`UPDATE tm_runs SET peak_mem_mb = ? WHERE id = ? AND (peak_mem_mb IS NULL OR peak_mem_mb < ?) RETURNING id`, [mb, id, mb]);
+    return rows.length > 0 ? this.getRun(id) : null;
+  }
+
   // ---- dispatches (docs/dispatch.md) ----
 
   async listDispatches(f?: DispatchFilter): Promise<Dispatch[]> {

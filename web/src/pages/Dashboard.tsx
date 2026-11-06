@@ -4,6 +4,7 @@ import { api } from '../api.ts';
 import { useApp } from '../state.tsx';
 import { errorText } from '../toast.ts';
 import { useWorkspace } from '../workspace.ts';
+import { MemoryCard } from '../components/MemoryCard.tsx';
 
 const fmtDuration = (ms: number) => {
   const h = Math.floor(ms / 3600_000);
@@ -327,6 +328,8 @@ export function DashboardPage({ onOpenTask }: { onOpenTask: (id: string) => void
             </div>
           ))}
         </div>
+
+        <MemoryCard onOpenTask={onOpenTask} />
 
         <div className="chart-card">
           <h3>Provenance & depth</h3>

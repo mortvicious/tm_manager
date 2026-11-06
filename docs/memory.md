@@ -248,6 +248,101 @@ Mac ran `orchestrator.concurrency` 4.
   arrives as `OrchestratorStatus.machine` (`{ totalMemBytes, suggestedConcurrency }`).
   Telegram `/status` lists the same warnings under the queue line.
 
+## Memory per run
+
+Task 622ddc5e (2026-11-06). The fuse says *that* the machine is short; this says
+*what* is eating it, so the limits, `orchestrator.concurrency` and the heavy slots
+can be tuned from numbers instead of from the Activity Monitor guess ("Warp 13 GB"
+was the task manager's tree, billed to the terminal that ran `npm start`).
+
+### The sampler (`server/src/proc-memory.ts`, pure half `shared/src/proc-memory.ts`)
+
+Every 30 s (`PROC_MEMORY_SAMPLE_MS`, an orchestrator timer; single-flight,
+`Orchestrator.procMemorySweep`) the server reads the process table ONCE and folds it
+into one **tree** per live session root:
+
+| root | kind | the row's label |
+| --- | --- | --- |
+| a worker run's claude PTY (idle ones too — an idle claude still holds its memory) | `worker` | the task title |
+| an aux run's PTY (review, plan, chat, job, shift, …) | `aux` + its kind | kind · task title, or the aux label |
+| a repo command run (dev servers, checks, one-shots) | `command` (`check` for a check) | command · repo |
+| a terminal shell | `shell` | title · repo |
+| the API process ALONE | `server` | task manager API |
+| the front door (`TM_SUPERVISED`, not under `tsx watch`) | `server` | front door |
+
+- **What is measured.** macOS: `top -l 1 -stats pid,ppid,mem,command`. MEM is the
+  *physical footprint* — compressed and swapped pages included — the number the memory
+  dialog and Activity Monitor show. `ps` RSS undercounts a tree that is swapping and
+  double-counts shared libraries, so it is only the fallback (non-macOS, or `top`
+  failing). One `top` call costs ≈ 0.25 s wall / 0.2 s system CPU (measured,
+  ≈ 400–540 processes), async — never on a request or claim path.
+- **The fold** (`foldTrees`, pure): each root plus every descendant, stopping at
+  another root, so every process is billed once. The `server` rows count their own
+  process only — the API's children ARE the other roots, and an unattributed child
+  is not "the server". A root whose pid has gone by the time `top` runs is left out.
+  Each tree carries `mb`, `procs`, and its `biggest` process (`tsc 1.7 GB` inside a
+  worker), which is what tells a fat claude from a fat `tsc`.
+- **System reading.** Every sample also takes one `sampleSystemMemory()` (free %,
+  swap, macOS pressure level) — independently of the fuse, whose "off reads nothing"
+  contract stays as it was.
+- **Peaks.** Each root's peak is kept in memory for its lifetime. For worker and aux
+  runs it is stored on **`tm_runs.peak_mem_mb`** (migration 61, `Run.peakMemMb`, MiB)
+  by the conditional `bumpRunPeakMem` (`… WHERE peak_mem_mb IS NULL OR peak_mem_mb < ?`,
+  both drivers — it never lowers a peak): on the first sample, whenever the peak grew
+  by ≥ `PEAK_WRITE_STEP_MB` (32), and once more when the root disappears, so the
+  stored figure is exact to the last sample without a write every 30 s. Each write
+  broadcasts `run.updated`. Repo commands and shells have no `tm_runs` row; their peak
+  lives in the snapshot while they run. A run shorter than one sample has no peak
+  (null).
+- **Unreadable table.** The previous trees stay with `error` set; the episode is not
+  stepped (no reading is not a calm reading).
+
+`OrchestratorStatus.procMemory` (`ProcMemorySnapshot`: `at`, `method`, `system`,
+`physMb`, `trees` biggest first, `totalMb`, `memoryHigh`, `error`) is the latest
+sample; the status is re-broadcast after every sample.
+
+### Surfaces
+
+- **Dashboard → Memory** (`components/MemoryCard.tsx`): free %, swap used of
+  allocated, the macOS pressure level, the task manager's total of physical memory;
+  the open `memory-high` episode; then one row per tree — kind, label, peak, process
+  count, biggest process, a bar against physical memory, the size now. A row with a
+  task opens it. Workspace-scoped like the rest of the page (repo-less rows — the API,
+  a chat — always show). A one-column grid on a phone, like every other card.
+- **Task panel**: the *last run* stats line gets `mem 1.2 GB · peak 2.1 GB` while the
+  run is live, `peak mem 2.1 GB` after (`useRunMemory` in `RunMeta.tsx`).
+- **Anomalies list** (`GET /api/stats/anomalies`): an open episode is a `memory-high`
+  row.
+
+### The `memory-high` alert
+
+One `memory-high` anomaly (🐘 *Memory high*) per **episode** to Telegram
+(`notify.anomaly`) and to devices with the Anomalies push kind, key
+`memory-high:<episode start>` — never a ping per sample. An episode is high when
+either half holds (`memoryHighBreach`):
+
+| half | setting | default | high when |
+| --- | --- | --- | --- |
+| one tree | `anomaly.memoryTreeGb` | 2 (0 = off) | any tree is above the line (the 2.6 GB `nest start --watch` would ping; one 1.7 GB `tsc` would not) |
+| system | `anomaly.memoryPressure` | true | macOS `kern.memorystatus_vm_pressure_level` ≥ 2 (warn); with no kernel level (Linux) free < 10 % |
+
+- **Hysteresis** (`stepMemoryHigh`, pure): opens after 2 consecutive high samples
+  (30–60 s — a 15 s build spike to *warn*, measured during `vite build`, does not),
+  closes after 3 consecutive calm samples, where calm = every tree under 90 % of the
+  line and pressure back to normal; a sample in between neither closes nor counts.
+  Both halves off → closed at once.
+- **Severity** `warn`, `critical` when macOS reports critical pressure (4).
+- **The message** names the cause, the three biggest trees and the task manager's
+  total ("big tsc 2.9 GB above 2.0 GB. Biggest: … The task manager's tree: 4.1 GB.");
+  the `anomaly.notified` row carries the reading and the top five trees, and the
+  alert's task/run is the biggest non-server tree's, so a tap opens it.
+- It is an **alert, not a control** — the fuse (`memory.minFreePct` /
+  `memory.maxSwapPct`) is the control, with its own `memory-pressure` alert; both can
+  fire in one bad minute, on purpose: one says what is big, the other that work is
+  held.
+- Settings: Config → *Budget & alerts* (both settings versions); `PATCH /api/settings`
+  takes `null` as 0 for the GB line.
+
 ## Verification
 
 `server/src/memory.test.ts` (`npm test`) covers:
@@ -280,3 +375,14 @@ size, the over/stacked warnings (none for the defaults on 8 GB; both for a saved
 an unsaved key reading 2/3/4 on 8/16/32 GB through `getSettings` and GET
 `/api/config`, a saved 4 kept on any machine, and PUT `/api/config` refusing an
 Origin-less change.
+
+`server/src/proc-memory.test.ts` covers memory per run:
+- the `top`/`ps` parsers (units, `+`/`-` suffixes, a command with spaces);
+- the fold: each process billed once, the server row alone, a nested root;
+- the `memory-high` hysteresis: 2 to open, the 90 % band, critical escalation,
+  3 to close, a single spike, both halves off;
+- the sampler with a simulated table: the first write, the 32 MB step, a peak that
+  never drops, the flush when the root goes, an unreadable table;
+- an Orchestrator over a temp SQLite DB with a REAL PTY (`sleep`) whose tree is
+  simulated around its pid: the worker row (task title, biggest `tsc`), the API row,
+  `tm_runs.peak_mem_mb`, and exactly one alert per episode, a second after a calm.

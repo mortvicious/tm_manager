@@ -163,6 +163,8 @@ orchestrator.watchHeavy();
 // Repo checks (docs/checks.md) run as ordinary command runs in that pool.
 orchestrator.setCommandRunner(commandRunner);
 const shellRunner = new ShellRunner(storage, shellSessions);
+// memory per run measures the terminals too (docs/memory.md § Memory per run)
+orchestrator.setShellRunner(shellRunner);
 // Chat (docs/chat.md): a free-form conversation with claude in a repo, shared
 // by the SPA and the phone. Every turn is an aux terminal (kind `chat`,
 // `claude --resume`), so the restart guard and /killall already cover it.

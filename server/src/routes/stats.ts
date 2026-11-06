@@ -6,6 +6,7 @@ import type { SessionManager } from '../pty/session-manager.ts';
 import type { Storage } from '../storage/types.ts';
 import { maxSpawnDepth } from './agent-caps.ts';
 import { memoryHold } from '../memory.ts';
+import { procMemoryState } from '../proc-memory.ts';
 
 /**
  * Does this `task.transition` row count as a completion on the Dashboard?
@@ -306,6 +307,9 @@ export function registerStatsRoutes(
     // the memory fuse (docs/memory.md)
     const memHold = memoryHold(settings);
     if (memHold) anomalies.push({ severity: 'warn', kind: 'memory-pressure', message: memHold });
+    // memory per run (docs/memory.md § Memory per run): an open `memory-high` episode
+    const memHigh = procMemoryState().memoryHigh;
+    if (memHigh.high && memHigh.reason) anomalies.push({ severity: memHigh.severity, kind: 'memory-high', message: memHigh.reason, at: memHigh.since ?? undefined });
     for (const t of tasks) {
       if (t.status === 'review' && nowMs - Date.parse(t.updatedAt) > staleReviewMs) {
         anomalies.push({

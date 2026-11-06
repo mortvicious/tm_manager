@@ -96,6 +96,13 @@ export class SessionManager {
     return n;
   }
 
+  /** Every alive PTY's id and pid, idle included — memory per run (docs/memory.md § Memory per run). */
+  livePids(): { runId: string; pid: number; idle: boolean }[] {
+    const out: { runId: string; pid: number; idle: boolean }[] = [];
+    for (const s of this.sessions.values()) if (s.exit === null && s.pty.pid > 0) out.push({ runId: s.runId, pid: s.pty.pid, idle: s.idle });
+    return out;
+  }
+
   /** Sessions occupying a concurrency slot: alive and not yet idle. */
   liveCount(): number {
     let n = 0;

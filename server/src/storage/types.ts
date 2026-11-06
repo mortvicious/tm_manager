@@ -632,6 +632,12 @@ export interface Storage {
       Pick<Run, 'status' | 'pid' | 'exitCode' | 'needsAttention' | 'idle' | 'sessionId' | 'transcriptPath' | 'stats' | 'endedAt'>
     >,
   ): Promise<Run | null>;
+  /**
+   * Raise `tm_runs.peak_mem_mb` to `mb` — conditional, never lowers it
+   * (docs/memory.md § Memory per run). The updated row, or null when the
+   * stored peak was already as high (or the run is gone).
+   */
+  bumpRunPeakMem(id: string, mb: number): Promise<Run | null>;
 
   // ---- dispatches (docs/dispatch.md) ----
 

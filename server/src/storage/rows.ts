@@ -218,6 +218,7 @@ export function rowToRun(r: any): Run {
     stats: safeParse(r.stats, null),
     resumedFrom: r.resumed_from ?? null,
     statsBaseline: safeParse(r.stats_baseline, null),
+    peakMemMb: r.peak_mem_mb == null ? null : Number(r.peak_mem_mb),
     startedAt: r.started_at,
     endedAt: r.ended_at ?? null,
   };

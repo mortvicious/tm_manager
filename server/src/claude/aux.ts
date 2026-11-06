@@ -202,6 +202,18 @@ export class AuxRunner {
     return [...this.live.values()].filter((l) => !l.exited).map((l) => ({ kind: l.spec.kind, label: l.spec.label }));
   }
 
+  /** Live sessions with their pid, for memory per run (docs/memory.md § Memory per run). */
+  livePids(): { runId: string; pid: number; kind: AuxKind; label: string; subjectId: string | null; repoId: string | null }[] {
+    const out: { runId: string; pid: number; kind: AuxKind; label: string; subjectId: string | null; repoId: string | null }[] = [];
+    for (const l of this.live.values()) {
+      if (l.exited) continue;
+      const s = this.sessions.get(l.runId);
+      if (!s || s.exit !== null || !(s.pty.pid > 0)) continue;
+      out.push({ runId: l.runId, pid: s.pty.pid, kind: l.spec.kind, label: l.spec.label, subjectId: l.spec.subjectId ?? null, repoId: l.spec.repoId ?? null });
+    }
+    return out;
+  }
+
   isLive(runId: string): boolean {
     const l = this.live.get(runId);
     return !!l && !l.exited;

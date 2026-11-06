@@ -796,6 +796,24 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     intent: 'alerts',
     render: num('anomaly.staleReviewHours', { min: 1, step: 1, label: 'Stale review alert' }),
   },
+  {
+    key: 'anomaly.memoryTreeGb',
+    section: 'budget',
+    label: 'Memory-high alert (GB per tree)',
+    help: "ping once per episode when one run's or command's process tree passes this. 0 = off",
+    advanced: true,
+    intent: 'alerts',
+    render: num('anomaly.memoryTreeGb', { min: 0, step: 0.5, label: 'Memory-high alert' }),
+  },
+  {
+    key: 'anomaly.memoryPressure',
+    section: 'budget',
+    label: 'Memory-high alert on system pressure',
+    help: 'also ping once per episode when macOS reports memory pressure warn or worse',
+    advanced: true,
+    intent: 'alerts',
+    render: toggle('anomaly.memoryPressure', 'Memory-high alert on system pressure'),
+  },
 
   // Per-repo settings (links, never a copy of the Repos page's controls)
   {
