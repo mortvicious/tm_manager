@@ -67,6 +67,17 @@ import { describeStopCause, recordStopCause, signalCause, takeStopCause, type St
 import { registerEventsWs } from './ws/events.ts';
 import { registerTerminalWs } from './ws/terminal.ts';
 
+// Under the front door's file logs (docs/host.md § Running as a service) our
+// stdout/stderr are a pipe the front door drains. If it dies without stopping
+// us, the pipe breaks and the next console write would EPIPE — an unhandled
+// 'error' on process.stdout, which kills the process (measured; pino's own
+// writer just drops the line). An orphan keeps running instead, exactly as it
+// does on an inherited terminal.
+for (const s of [process.stdout, process.stderr]) {
+  if (!s.isTTY) s.on('error', (e: NodeJS.ErrnoException) => {
+    if (e.code !== 'EPIPE') throw e;
+  });
+}
 const cfg = loadBootConfig();
 // Must be set before any route or WS upgrade can be served: every Host/Origin
 // decision in net.ts reads it.

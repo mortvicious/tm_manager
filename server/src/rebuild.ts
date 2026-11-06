@@ -165,7 +165,7 @@ export async function typecheck(onChild?: (c: ChildProcess | null) => void): Pro
  * a restart of the API cannot reload it; a fingerprint taken at its boot and
  * compared later is how the job knows to say so.
  */
-const HOST_MODULES = ['host.ts', 'config.ts', 'net.ts', 'remote.ts', 'rebuild.ts'];
+const HOST_MODULES = ['host.ts', 'host-log.ts', 'config.ts', 'net.ts', 'remote.ts', 'rebuild.ts', 'stop-cause.ts'];
 export function hostFingerprint(): string {
   const h = createHash('sha256');
   for (const f of HOST_MODULES) {

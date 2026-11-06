@@ -29,6 +29,7 @@ import path from 'node:path';
 import type { HostStatus, RebuildJob, RebuildWaitingFor } from '@tm/shared';
 import { loadBootConfig, serverRoot } from './config.ts';
 import { isAllowedHost, isAllowedOriginHost, lanAddresses, setLanEnabled } from './net.ts';
+import { logToFiles, redirectConsole, RotatingLog } from './host-log.ts';
 import { buildSpa, hostFingerprint, readBuildId, swapDist, typecheck, webDist } from './rebuild.ts';
 import { checkRemote, looksProxied, mintHostToken, stripTailscaleHeaders } from './remote.ts';
 import { clearStopIntent, writeStopIntent, type StopCause } from './stop-cause.ts';
@@ -44,6 +45,34 @@ const LOOPBACK_ORIGIN = `http://127.0.0.1:${HOST_PORT}`;
 const serverEntry = path.join(serverRoot, 'src/index.ts');
 /** `npm run dev` — the child is `tsx watch`, so a server edit still hot-reloads. */
 const dev = process.env.TM_DEV === '1';
+
+// ------------------------------------------------------------------- logs
+
+/**
+ * docs/host.md § Running as a service. In a terminal nothing changes: the API
+ * inherits this terminal and our console lines go to it. Off a terminal (the
+ * launchd agent) both go to size-rotated files under data/logs, so no TTY write
+ * can wedge the API and no scrollback grows for days.
+ */
+const logDir = path.join(serverRoot, 'data', 'logs');
+const fileLogs = logToFiles({ configured: cfg.host.logFiles, dev });
+const hostLog = fileLogs ? new RotatingLog(path.join(logDir, 'host.log')) : null;
+const apiLog = fileLogs ? new RotatingLog(path.join(logDir, 'api.log')) : null;
+if (hostLog) redirectConsole(hostLog);
+/** Set by the launchd plist (scripts/service.mjs): how this front door is restarted. */
+const service = process.env.TM_SERVICE === 'launchd' ? ('launchd' as const) : null;
+const restartHostHint = service === 'launchd' ? '`npm run service:restart`' : '`npm start`';
+
+/**
+ * Keeps the Mac awake while this process lives (`caffeinate -w` exits with
+ * us). Done here rather than by wrapping the command in the plist: launchd
+ * signals the job's main pid, and a wrapper that dies on SIGTERM without passing
+ * it on would leave this process to a SIGKILL and its detached API orphaned.
+ */
+if (process.env.TM_CAFFEINATE === '1' && process.platform === 'darwin') {
+  const c = spawn('/usr/bin/caffeinate', ['-i', '-w', String(process.pid)], { stdio: 'ignore' });
+  c.on('error', (e) => console.warn(`[host] caffeinate failed: ${e.message}`));
+}
 
 // ---------------------------------------------------------------- supervisor
 
@@ -156,7 +185,9 @@ function spawnApi(): void {
   const child = spawn(cmd, args, {
     cwd: path.resolve(serverRoot, '..'),
     detached: true,
-    stdio: 'inherit',
+    // Files mode: piped and drained asynchronously into api.log (see Logs
+    // above). stdin is never read by the API; a closed one cannot be a TTY.
+    stdio: apiLog ? ['ignore', 'pipe', 'pipe'] : 'inherit',
     // TM_SUPERVISED tells the API that POST /api/server/restart should EXIT
     // rather than detach a replacement of its own: two supervisors racing for
     // one port is the failure this flag exists to prevent.
@@ -164,6 +195,10 @@ function spawnApi(): void {
     // `tsx watch` reloading on a file change (docs/host.md § Restart causes).
     env: { ...process.env, TM_SUPERVISED: '1', ...(useWatch ? { TM_WATCH: '1' } : {}) },
   });
+  if (apiLog) {
+    child.stdout?.on('data', (c: Buffer) => apiLog.write(c));
+    child.stderr?.on('data', (c: Buffer) => apiLog.write(c));
+  }
   api.child = child;
   api.managed = true;
   api.lastError = null;
@@ -459,7 +494,7 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse): void 
 /** host.ts and its imports as this process booted them (see hostFingerprint). */
 const bootFingerprint = hostFingerprint();
 let staleSeen = false;
-/** Re-hashed per status read (five small files), and sticky once true. */
+/** Re-hashed per status read (a handful of small files), and sticky once true. */
 function hostStale(): boolean {
   if (!staleSeen && hostFingerprint() !== bootFingerprint) staleSeen = true;
   return staleSeen;
@@ -515,7 +550,7 @@ function jobStep(state: RebuildJob['state'], step: string): void {
 function jobEnd(state: 'done' | 'failed', patch: Partial<RebuildJob>): void {
   job = { ...job, ...patch, state, finishedAt: new Date().toISOString(), hostStale: hostStale() };
   console.log(`[host] rebuild ${state}${job.error ? `: ${job.error}` : ''}`);
-  if (job.hostStale) console.log('[host] host.ts changed since this front door booted — restart `npm start` to load it');
+  if (job.hostStale) console.log(`[host] host.ts changed since this front door booted — restart ${restartHostHint} to load it`);
 }
 
 /** Poll until the API answers with a bootedAt that is not `before`. */
@@ -778,11 +813,11 @@ async function runRebuild(opts: RebuildOptions): Promise<void> {
     if (!after) {
       return jobEnd('failed', {
         error:
-          'the API did not come back within 60 s — the front door keeps respawning it with backoff; check its terminal output (a broken server file is the usual cause)' +
+          `the API did not come back within 60 s — the front door keeps respawning it with backoff; check ${apiLog ? apiLog.file : 'its terminal output'} (a broken server file is the usual cause)` +
           (job.pausedByJob ? '. The orchestrator is still paused by this job — press Continue once it is up.' : ''),
         reason: 'timeout',
         // the build's log says nothing about this; the API's own output is in
-        // this process's terminal (stdio is inherited)
+        // this process's terminal (stdio inherited) or api.log (files mode)
         logTail: '',
       });
     }
@@ -858,6 +893,8 @@ function status(): HostStatus {
       // dev: the page is Vite's, whatever an old `npm run build` left in dist
       buildId: dev ? null : readBuildId(),
       stale: hostStale(),
+      service,
+      logDir: fileLogs ? logDir : null,
     },
     rebuild: { ...job, hostStale: job.hostStale || hostStale() },
   };
@@ -998,7 +1035,7 @@ async function control(req: http.IncomingMessage, res: http.ServerResponse, rout
     const ok = await startAndWait();
     return json(res, ok ? 200 : 500, {
       ok,
-      error: ok ? undefined : 'the API did not come up — check this terminal for its output',
+      error: ok ? undefined : `the API did not come up — check ${apiLog ? apiLog.file : 'this terminal'} for its output`,
       ...status(),
     });
   }
@@ -1032,7 +1069,7 @@ async function control(req: http.IncomingMessage, res: http.ServerResponse, rout
     const ok = await startAndWait();
     return json(res, ok ? 200 : 500, {
       ok,
-      error: ok ? undefined : 'the API did not come back — check this terminal for its output',
+      error: ok ? undefined : `the API did not come back — check ${apiLog ? apiLog.file : 'this terminal'} for its output`,
       ...status(),
     });
   }
@@ -1141,6 +1178,8 @@ const shutdown = async () => {
   await stopApi({ action: 'shutdown' });
   server.close();
   remoteServer?.close();
+  // the API's last lines (it was just stopped) and ours, flushed before exit
+  await Promise.all([apiLog?.close(), hostLog?.close()]);
   process.exit(0);
 };
 process.on('SIGINT', () => void shutdown());

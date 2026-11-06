@@ -9,8 +9,11 @@ export interface BootConfig {
    * SPA and reverse-proxies /api and /ws to `port`, so the page outlives the
    * API it talks to. Distinct from `port` on purpose — the API keeps the port
    * every hook, worker env and `TM_CALLBACK_URL` already points at.
+   * `logFiles` (docs/host.md § Running as a service): true/false forces the
+   * API's and the front door's output into `data/logs/*.log` or the terminal;
+   * absent = files only when not on a terminal. `TM_LOG_FILES=1|0` outranks it.
    */
-  host: { port: number };
+  host: { port: number; logFiles?: boolean };
   /**
    * LAN mode: bind every interface so a phone on the same Wi-Fi can open the
    * board (docs/mobile.md). OFF by default — the terminal WS is a
@@ -259,6 +262,9 @@ export function loadBootConfig(): BootConfig {
   if (raw.host?.port !== undefined && !(Number.isInteger(raw.host.port) && raw.host.port > 0 && raw.host.port < 65536)) {
     throw new Error(`data/config.json: host.port must be an integer in 1..65535`);
   }
+  if (raw.host?.logFiles !== undefined && typeof raw.host.logFiles !== 'boolean') {
+    throw new Error(`data/config.json: host.logFiles must be a boolean`);
+  }
   if (raw.telegram !== undefined && (typeof raw.telegram !== 'object' || raw.telegram === null || Array.isArray(raw.telegram))) {
     throw new Error(`data/config.json: telegram must be an object`);
   }
@@ -349,7 +355,7 @@ export function loadBootConfig(): BootConfig {
   return {
     ...structuredClone(DEFAULT_CONFIG),
     ...raw,
-    host: { port: hostPort },
+    host: { port: hostPort, ...(raw.host?.logFiles !== undefined ? { logFiles: raw.host.logFiles } : {}) },
     lan: { enabled: lanEnabled },
     remote,
     storage: {

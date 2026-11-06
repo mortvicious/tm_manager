@@ -63,7 +63,7 @@ function fail(msg, tail) {
 
 function report(job) {
   if (job.hostStale) {
-    console.log('⚠ server/src/host.ts changed since the front door booted — restart `npm start` to load it.');
+    console.log('⚠ server/src/host.ts changed since the front door booted — restart `npm start` (or `npm run service:restart` under launchd) to load it.');
   }
   if (job.state === 'failed') fail(`${job.reason ? `[${job.reason}] ` : ''}${job.error}`, job.logTail);
   console.log(`✓ done${job.buildId ? ` — build ${job.buildId}` : ''}${job.bootedAfter ? `, API booted ${job.bootedAfter}` : ''}`);

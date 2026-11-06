@@ -116,7 +116,7 @@ Nothing is reachable after phase 0 alone. The app still 403s the tailnet name, w
 
 #### Going live
 
-1. **Leave LAN mode.** The live install was started with `npm run start:lan` (`TM_LAN=1`). With `remote.enabled` that combination refuses to boot. Start with `npm start`, and make sure `lan.enabled` is absent or false (and that any launchd agent runs `npm start`, not `start:lan`).
+1. **Leave LAN mode.** The live install was started with `npm run start:lan` (`TM_LAN=1`). With `remote.enabled` that combination refuses to boot. Start with `npm start`, and make sure `lan.enabled` is absent or false (the launchd agent from `npm run service:install` runs host.ts without `TM_LAN`, so only `lan.enabled` in `data/config.json` matters there).
 2. Add to `server/data/config.json`:
    `"remote": { "enabled": true, "hostname": "tm-m.tail04c8fe.ts.net", "port": 5177, "allowedLogins": ["shindo.shitai@gmail.com"] }`
 3. Restart the **front door** (Ctrl-C the `npm start` terminal, then `npm start` again) while no agent is working. The front door's own restart button restarts only the API, and the gate lives in the front door. The boot banner should print ``remote: https://tm-m.tail04c8fe.ts.net → 127.0.0.1:5177 (`tailscale serve --bg --https=443 http://127.0.0.1:5177`) for shindo.shitai@gmail.com only``.

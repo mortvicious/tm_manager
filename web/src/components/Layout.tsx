@@ -621,7 +621,17 @@ function RebuildButton({ blocked, busyAgents, inline = false }: { blocked: boole
       {stale && (
         <p className="rebuild-note">
           The front door (server/src/host.ts) changed since it started. Rebuild & restart cannot reload the process
-          running it — stop and re-run <span className="mono">npm start</span> to load those changes.
+          running it —{' '}
+          {host.host.service === 'launchd' ? (
+            <>
+              run <span className="mono">npm run service:restart</span>
+            </>
+          ) : (
+            <>
+              stop and re-run <span className="mono">npm start</span>
+            </>
+          )}{' '}
+          to load those changes.
         </p>
       )}
       <div className="rebuild-acts">

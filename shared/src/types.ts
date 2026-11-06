@@ -3230,6 +3230,12 @@ export interface HostStatus {
     /** host.ts (or a module it imports) changed since this front door booted:
      *  Rebuild & restart cannot reload it, a full `npm start` restart can. */
     stale?: boolean;
+    /** 'launchd' when the front door runs as the per-user launchd agent
+     *  (docs/host.md § Running as a service) — restarted with
+     *  `npm run service:restart`, not by re-running `npm start`. */
+    service?: 'launchd' | null;
+    /** where api.log/host.log are written; null when output goes to a terminal. */
+    logDir?: string | null;
   };
   /** The Rebuild & restart job (absent on a front door that predates it). */
   rebuild?: RebuildJob;

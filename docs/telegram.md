@@ -161,70 +161,23 @@ The bot removes the reachability problem. It does not remove the fact that a Mac
 - **`sudo pmset -c sleep 0`** is the durable version for AC power: never idle-sleep while plugged in, with no wrapper process to keep alive. Check with `pmset -g custom`.
 - **Lid closed is a separate question.** Clamshell with no external display sleeps regardless of either of the above. `sudo pmset -a disablesleep 1` is the usual answer, with two caveats worth knowing before you rely on it: it is a blunt instrument (sleep off entirely, including the low-battery kind), and **it is undocumented** — `disablesleep` is not in `man pmset` on macOS 26, so check it actually took with `pmset -g | grep -i SleepDisabled` rather than assuming. The arrangement that needs no undocumented flag is **lid open, on the charger**, which is what this document recommends. Add heat and battery wear to the ledger either way if an Air runs 24/7.
 
-**Keep it running: a `launchd` agent.** Nothing supervises the front door — `host.ts` supervises the API child, but a dead front door, a crash, or a reboot brings nothing back. `KeepAlive` fixes both. Save as `~/Library/LaunchAgents/com.taskmanager.server.plist`, replacing `YOU`, the repo path, and the node path:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.taskmanager.server</string>
-
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/bin/caffeinate</string>
-    <string>-i</string>
-    <string>/Users/YOU/.nvm/versions/node/v24.15.0/bin/npm</string>
-    <string>start</string>
-  </array>
-
-  <key>WorkingDirectory</key>
-  <string>/Users/YOU/Development/17 - task-manager</string>
-
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key>
-    <string>/Users/YOU/.nvm/versions/node/v24.15.0/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-    <key>HOME</key>
-    <string>/Users/YOU</string>
-  </dict>
-
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-  <key>ThrottleInterval</key>
-  <integer>30</integer>
-
-  <key>StandardOutPath</key>
-  <string>/Users/YOU/Library/Logs/task-manager.out.log</string>
-  <key>StandardErrorPath</key>
-  <string>/Users/YOU/Library/Logs/task-manager.err.log</string>
-
-  <key>ProcessType</key>
-  <string>Interactive</string>
-</dict>
-</plist>
-```
+**Keep it running: a `launchd` agent.** Nothing supervises the front door. `host.ts` supervises the API child, but a dead front door, a crash or a reboot brings nothing back, and a terminal tab is the wrong parent anyway (`docs/host.md` § Running as a service: Activity Monitor bills the whole tree to the terminal app, scrollback grows for days, and a terminal that stops reading wedges the API). The installer writes, lints and loads the agent:
 
 ```bash
-plutil -lint ~/Library/LaunchAgents/com.taskmanager.server.plist   # catches typos before launchd does
-launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.taskmanager.server.plist
-launchctl print gui/$UID/com.taskmanager.server | head -20         # state, runs, last exit code
-launchctl bootout gui/$UID/com.taskmanager.server                  # stop and unload
+nvm use 24                    # the node the service will run
+npm run service:install       # ~/Library/LaunchAgents/com.taskmanager.server.plist → launchctl bootstrap gui/$UID
+npm run service:status        # launchd state, pid, runs, last exit code + /host/status
+npm run service:logs          # server/data/logs/{host,api}.log, rotated 10 MB × 5
+npm run service:uninstall     # launchctl bootout + remove the plist
 ```
 
-Four details that are not decoration:
+Stop a terminal `npm start` first (the installer refuses while the port is taken). The plist it generates, and why each key is there, is in `docs/host.md` § Running as a service. The details that matter here:
 
-- **`caffeinate -i` wraps `npm`, not the other way round.** The assertion lasts exactly as long as the server process, so a stopped server stops holding the machine awake.
-- **The absolute node path is mandatory.** `launchd` does not read your shell profile, so an nvm-managed `npm` is simply not on the default `PATH`; `which npm` gives you the right string. It goes in `ProgramArguments` *and* in `PATH`, because the server spawns `claude` and `git` as children.
-- **`KeepAlive: { SuccessfulExit: false }`**, not `KeepAlive: true` — restart after a crash, stay down after a clean exit — so a deliberate shutdown is not immediately undone by the thing that is supposed to be keeping the server up. `ThrottleInterval` 30 keeps a boot-loop from spinning.
-- **`ProcessType: Interactive`** keeps macOS from throttling it as a background batch job.
+- **Sleep: `caffeinate -i` is spawned by the front door** (`caffeinate -i -w <its pid>`, `TM_CAFFEINATE=1` in the plist). It is not a wrapper around the command, as the hand-written plist this section used to show had it. The assertion still lasts exactly as long as the server process. But launchd signals the job's main pid, and a wrapper that died on SIGTERM would leave the server to a SIGKILL. `-- --no-caffeinate` turns it off.
+- **The absolute node path is mandatory.** `launchd` does not read your shell profile, so an nvm-managed node is simply not on the default `PATH`. The installer uses the node it runs under (`-- --node <path>` for another) and builds `PATH` from that node's dir, your login shell's `PATH` and the system dirs, because the server spawns `claude`, `git` and `gh` as children. Re-run the install when one of them moves.
+- **`KeepAlive: { SuccessfulExit: false }`**, not `KeepAlive: true`: restart after a crash, stay down after a clean exit. A deliberate shutdown is then not immediately undone by the thing that is supposed to keep the server up. `ThrottleInterval` 10 keeps a boot loop from spinning.
+- **`ProcessType: Standard`** (measured, `docs/host.md`). This section used to recommend `Interactive`, which runs the whole tree at the same priority as the apps you are using. On an 8 GB laptop that freezes the UI under the task manager's own load. `Standard` yields to them. `-- --process-type Interactive` brings back the old behaviour on a machine that is only a server.
+- **Logs are files, not launchd's.** `server/data/logs/api.log` and `host.log` are rotated. `launchd.log` only catches boot errors and crash traces. The old `~/Library/Logs/task-manager.*.log` paths are gone.
 
 **Turn off automatic macOS updates.** System Settings → General → Software Update → the ⓘ next to Automatic Updates → turn off *Install macOS updates* (and *Install Security Responses* if you want no surprise reboots at all). Verify with `defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates` — you want `0`. This machine reads `1` at the time of writing, which is exactly the configuration that produces the next item.
 
@@ -990,7 +943,7 @@ Task 6 (the workbook) verifies the § Connect chapter itself, because a setup do
 - step 5, the whole loop in order: `/new` → repo picker → title → skip description → preset → auto-publish → **▶️ Run now**; the task exists, sits in the repo that was picked, reached the orchestrator as `runNow` with `actor: 'telegram'`, and is audited `task.created` / `telegram`. The worker's landing is then simulated by transitioning it to `review` and broadcasting on the **real** event bus: the review ping arrives past the 5s coalescing window carrying **✅ Mark done / 🚀 Publish / 💬 Proceed**, the Mark-done payload parses back through `parseActionData` to *this* task's id, pressing it moves the task to `done`, and that is audited `task.transition → done` with `actor: 'telegram'`. The audit check is not tautological: the same task's event list also holds non-telegram rows;
 - every one of the 33 commands the § Connect chapter and the § Commands tables name is checked to exist in `commandSpecs()` — the check that catches a documented command that was renamed or never shipped.
 
-**The Mac-as-a-server checklist was executed, not recited.** `caffeinate`'s flags are quoted from its own man page on this machine (`-i` = idle only; `-s` "valid only when system is running on AC power"; a wrapped utility holds the assertion for the utility's lifetime); a live assertion was read back with `pmset -g assertions` (`pid N(caffeinate): … PreventUserIdleSystemSleep`); the AC/battery split in § 6 matches this machine's actual `pmset -g custom` (`sleep 0` on AC, `sleep 1` on battery). The launchd plist was **linted, loaded, run and unloaded**: `plutil -lint` passes, `launchctl bootstrap gui/$UID` starts it, `launchctl print` shows `runs = 1` / `last exit code = 0`, `caffeinate -i` really did exec the wrapped program, `KeepAlive: { SuccessfulExit: false }` correctly did **not** respawn it after a clean exit, and `launchctl bootout` removed it (a throwaway `Label` was used and the agent is gone — nothing was installed on this machine). `fdesetup status` reports `FileVault is On.` and `defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates` reports `1`, which is precisely the reboot-into-the-FileVault-screen configuration § 6 warns about — the caveat is live here, not hypothetical. That `server/data/` is git-ignored and `config.json` untracked was checked with `git check-ignore` and `git ls-files`.
+**The Mac-as-a-server checklist was executed, not recited.** `caffeinate`'s flags are quoted from its own man page on this machine (`-i` = idle only; `-s` "valid only when system is running on AC power"; a wrapped utility holds the assertion for the utility's lifetime); a live assertion was read back with `pmset -g assertions` (`pid N(caffeinate): … PreventUserIdleSystemSleep`); the AC/battery split in § 6 matches this machine's actual `pmset -g custom` (`sleep 0` on AC, `sleep 1` on battery). The launchd plist was **linted, loaded, run and unloaded**: `plutil -lint` passes, `launchctl bootstrap gui/$UID` starts it, `launchctl print` shows `runs = 1` / `last exit code = 0`, `caffeinate -i` really did exec the wrapped program, `KeepAlive: { SuccessfulExit: false }` correctly did **not** respawn it after a clean exit, and `launchctl bootout` removed it (a throwaway `Label` was used and the agent is gone — nothing was installed on this machine). (2026-11-06: that hand-written plist was replaced by `npm run service:install`. Its `caffeinate` wrapper, `npm start` program and `Interactive` type changed for the reasons in `docs/host.md` § Running as a service, where the generated plist's own rehearsal is recorded.) `fdesetup status` reports `FileVault is On.` and `defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates` reports `1`, which is precisely the reboot-into-the-FileVault-screen configuration § 6 warns about — the caveat is live here, not hypothetical. That `server/data/` is git-ignored and `config.json` untracked was checked with `git check-ignore` and `git ls-files`.
 
 
 The board (§ The board) is verified by `telegram-board-harness.mts` (**97 assertions**, attached to its task), driving the real `TelegramBot` against a stubbed `fetch` that records `sendMessage`, `editMessageText`, `editMessageReplyMarkup` and `sendDocument`, a real SQLite database, a stub orchestrator and a stub activity snapshot:

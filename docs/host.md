@@ -38,6 +38,7 @@ that owns the API child.
 | `npm run dev:server` | API alone, `tsx watch` | — |
 | `npm run dev:web` | Vite alone | :5173 |
 | `npm run start:api` | API alone, serving `web/dist` itself | :5175 |
+| `npm run service:install` | front door as a launchd agent, logs to files (§ Running as a service) | **:5176** |
 
 `start:api` is the old single-process behaviour, kept because it is the smallest
 thing that runs and the right answer when the front door is what you suspect.
@@ -253,7 +254,8 @@ cannot both start a build.
    `failed`, `reason: 'timeout'`. The front door keeps respawning a crashing
    child with its usual backoff (500 ms doubling to 15 s), so the UI shows the
    server offline/stopped with **Start server**, and the API's own output (a
-   broken server file's stack trace) is in the front door's terminal.
+   broken server file's stack trace) is in the front door's terminal — or in
+   `server/data/logs/api.log` under the service (§ Running as a service).
 6. **Continue** (drain only, and only the job's own pause) — § Drain.
 
 Steps are run with `process.execPath` (vite's and tsc's JS entry, argv, never a
@@ -265,10 +267,12 @@ hot-reloads — so typecheck → restart → reload. The page's build id is `dev
 the build-id comparison is off.
 
 **The front door is not reloaded.** It is the process running the job. At boot
-it hashes `host.ts`, `config.ts`, `net.ts`, `remote.ts` and `rebuild.ts`;
-`/host/status` reports `host.stale: true` once they differ (sticky), and the job
-carries `hostStale`. The header then shows **Front door stale**: stop and re-run
-`npm start` to load those changes. The very first deploy of this feature is
+it hashes `host.ts`, `host-log.ts`, `config.ts`, `net.ts`, `remote.ts`,
+`rebuild.ts` and `stop-cause.ts`; `/host/status` reports `host.stale: true` once
+they differ (sticky), and the job carries `hostStale`. The header then shows
+**Front door stale**: stop and re-run `npm start` to load those changes — or,
+under the launchd agent (`host.service: 'launchd'`, and the note says so),
+`npm run service:restart`. The very first deploy of this feature is
 such a case — a front door that predates the route has no `rebuild` in its
 status, so the button is simply absent until `npm start` is restarted once (the
 CLI falls back to running the steps itself).
@@ -408,6 +412,151 @@ not turn a restart into a permanent stop), *then* spawn, then exit. Belt and
 braces, boot retries `EADDRINUSE` for up to 8s before giving up; every other
 listen error is still fatal on the first try.
 
+## Running as a service
+
+`npm start` in a terminal tab works, but on a laptop the terminal is the wrong
+parent, for three measured reasons (2026-11-06, 8 GB MacBook):
+
+- **Attribution.** macOS bills every descendant of a terminal app to that app.
+  "Warp 13 GB" in the memory dialog was the task-manager tree: 0.7 GB of Warp
+  and 6.5 GB of server, workers, a `nest start --watch` dev server (2.6 GB)
+  and a worker's `tsc` (1.7 GB). That hides who is using the machine, and it
+  makes the terminal app the thing macOS wants to kill.
+- **Scrollback.** Fastify logs every request at `info`; days of that live in
+  the tab's memory.
+- **Wedging.** A TTY write is synchronous on macOS, so a terminal that stops
+  reading blocks the API inside a console write (it happened, 2026-10-29).
+
+So the front door can run as a **per-user launchd agent** with its output in
+files:
+
+```bash
+npm run service:install     # writes ~/Library/LaunchAgents/com.taskmanager.server.plist, bootstraps it, waits for the API
+npm run service:status      # launchd state + /host/status + where the logs are
+npm run service:logs        # tail -F host.log api.log
+npm run service:restart     # restart the FRONT DOOR (loads host.ts changes); refuses while agents work, -- --force
+npm run service:uninstall   # stop it and remove the plist; `npm start` works as before
+```
+
+Stop a terminal `npm start` first: the installer refuses while something holds
+the front door's port, or the API's (the agent would crash-loop on
+`EADDRINUSE`, or adopt an API it cannot respawn). Run it with the node you
+want the service to use, v24 (`nvm use 24`). `-- --node <path>` picks another.
+
+`service:restart`, `service:uninstall` and a reinstall over a loaded agent stop
+the front door, and with it the API and every worker PTY. So they read
+`GET /api/server/restart-check` first, and the check **fails closed**. They
+proceed only on a 200 with `blocked: false`, a 503 `apiDown` (no API, so no
+agents), or nothing listening on the front door's port. A blocked guard, a
+timeout (20 s), an error or an unreadable answer refuses with the reason;
+`-- --force` overrides.
+
+**The plist** (`scripts/service.mjs`, regenerated on every install, linted
+with `plutil -lint` before it replaces the old one):
+
+| key | value | why |
+|---|---|---|
+| `ProgramArguments` | `<abs node> --import tsx server/src/host.ts` | host.ts is the job's main pid, so launchd's SIGTERM reaches it and it stops the API before exiting. `npm start` would put npm and tsx's CLI in between. The API child gets the same `--import tsx` through `execArgv`. |
+| `WorkingDirectory` | the checkout | |
+| `EnvironmentVariables` | `PATH`, `HOME`, `SHELL`, `LANG`, `TM_LOG_FILES=1`, `TM_SERVICE=launchd`, `TM_CAFFEINATE=1` | launchd reads no shell profile. `PATH` = node's own dir, then the installer's, then the login shell's (`$SHELL -l`), then the system dirs, with `node_modules/.bin` dropped. Workers spawn `claude`, `git` and `gh`, and Terminals spawn `$SHELL -l`. The installer warns when `claude` or `git` is missing from it. |
+| `RunAtLoad` + `KeepAlive {SuccessfulExit: false}` | | Restarted after a crash, left down after a clean exit. host.ts exits 0 only on SIGTERM/SIGINT, so a deliberate stop is not undone. `ThrottleInterval` 10 s bounds a boot loop. |
+| `ExitTimeOut` | 30 | host.ts gives the API 8 s before SIGKILL, then exits. launchd's default of 20 s was too close. |
+| `ProcessType` | `Standard` (`-- --process-type Interactive\|Background`) | Measured below. |
+| `SoftResourceLimits.NumberOfFiles` | 65536 | A launchd job's default soft limit is **256** open files (`launchctl limit maxfiles`). The Warp shell had 1048576, and every PTY, socket and watched file counts. |
+| `StandardOutPath` / `StandardErrorPath` | `server/data/logs/launchd.log` | Only what escapes the file logs: a boot error before they open, an uncaught exception's trace. |
+
+**`ProcessType`, measured.** Four throwaway agents, each timing the same 1.7 s
+CPU shell loop under that day's load:
+
+| `ProcessType` | priority (`ps -o pri`) | wall time |
+|---|---|---|
+| unset / `Standard` | 20 | 7.9 s |
+| `Interactive` | 31 (same as a child of a terminal tab) | 2.7 s |
+| `Background` | 4 | not finished after 15 s |
+
+The default is `Standard`. The goal is a laptop that stays responsive under the
+task manager's own load, and at priority 20 the whole tree (API, workers, dev
+servers, `tsc`) yields to the apps the user is in. The cost: under heavy
+contention the API and workers are slower. The rehearsal API took ~4 min to boot
+at load average 118, competing with a live terminal-run instance at 31.
+`Interactive` is exactly today's priority. `Background` is too slow for an
+attached terminal.
+
+**Sleep.** `TM_CAFFEINATE=1` makes host.ts spawn `caffeinate -i -w <its pid>`,
+which holds the idle-sleep assertion exactly as long as the front door lives.
+It is spawned instead of wrapping the command because launchd signals the main
+pid only: a `caffeinate` wrapper dying on SIGTERM would leave host.ts to the
+SIGKILL, and its detached API orphaned. `-- --no-caffeinate` drops it. The
+lid-closed and reboot caveats are `docs/telegram.md` § 6.
+
+**Logs** (`server/src/host-log.ts`). The front door logs to files when
+`TM_LOG_FILES=1` (the plist sets it), or `host.logFiles: true` in
+`data/config.json`, or automatically when neither stdout nor stderr is a
+terminal. Dev is the exception to the automatic rule: `npm run dev` runs under
+`concurrently`, whose pipes are not a TTY. `TM_LOG_FILES=0` or
+`host.logFiles: false` forces the terminal. In files mode:
+
+- The API child is spawned with `stdio: ['ignore', 'pipe', 'pipe']`. The front
+  door drains both pipes into `server/data/logs/api.log`. A pipe on macOS is
+  asynchronous for the writer, so nothing can wedge the API in a write.
+- The front door's own `console.*` goes to `host.log` with an ISO timestamp per
+  line. The API's lines carry pino's `time` or are plain boot text.
+- Each file rotates at **10 MB**, keeping **5** (`api.log.1` … `.5`, oldest
+  dropped). Writes are async through one `WriteStream`. The fd is opened
+  synchronously so a rotation never renames a file that does not exist yet.
+  If the disk falls 8 MB behind, chunks are dropped and a
+  `[log] N bytes dropped` line says so: the front door cannot be taken down by
+  its own logging. Both files are flushed on shutdown.
+- If the front door dies without stopping the API, the API's pipe breaks. An
+  unhandled `EPIPE` on `process.stdout` would kill the API at its next
+  `console.log` (measured; pino's writer just drops the line). So `index.ts`
+  ignores `EPIPE` on non-TTY stdout/stderr, and an orphan keeps running as it
+  would on an inherited terminal. The relaunched front door adopts it (§ Supervision).
+
+In a terminal nothing changes: `npm start` still inherits the TTY, and the
+plain Ctrl-C shutdown is the same.
+
+**What keeps working, and how it was checked** (2026-11-06). A throwaway agent
+(label `com.taskmanager.rehearsal-78cc`, its own `data/` and ports
+5299/5298/5297) was installed by `npm run service:install`, with
+`TM_SERVICE_LABEL` and `TM_LAUNCH_AGENTS_DIR` pointing at a scratch folder,
+then exercised:
+
+- **Attribution.** `responsibility_get_pid_responsible_for_pid` is what Activity
+  Monitor groups by. It returns the agent's node for the API, its esbuild, a PTY
+  `zsh` opened from `/api/shells` and `caffeinate`. The live terminal-run API
+  returns Warp.
+- **Logs.** `host.log` (timestamped) and `api.log` filled. `launchd.log` stayed
+  empty. A job with the plist's `SoftResourceLimits` got `ulimit -n` 65536.
+- **`/host/restart`** returned a new `bootedAt`. The next boot logged
+  `previous stop: front door restart`, so the stop-cause records are unchanged.
+- **Rebuild & restart** with drain went build → restart → Continue, with a new
+  build id and a new `bootedAt` (`previous stop: front door rebuild-restart by
+  rebuild`). A first press with typecheck failed at the typecheck step:
+  `timed out after 300 s`, at load average 118–203 on 8 GB with a live instance
+  beside it. The job did what it should: no restart, the new build served, its
+  pause released. The second press was `typecheck: false`, to spare the
+  machine another 1.7 GB `tsc`. Under `Standard` a heavily loaded machine makes
+  that step slower; if it times out regularly, press again when the load drops,
+  or install with `-- --process-type Interactive`.
+- **`host.stale`.** Editing `host-log.ts` flipped it true with
+  `service: 'launchd'`. `npm run service:restart` reloaded the front door
+  (`previous stop: front door shutdown`), and it read false again.
+- **Remote listener.** 403 without a tailnet identity, 200 with an allowlisted
+  `Tailscale-User-Login`.
+- **Crash.** `kill -9` of the front door: launchd relaunched it in ~2 s. The
+  orphaned API (ppid 1, broken pipe) kept answering and was adopted.
+- **The terminal path.** Afterwards, `npm start` on a TTY (`script`) had host and
+  API fds 1/2 on `/dev/ttys…`, `service`/`logDir` null and the log files
+  untouched. Ctrl-C (SIGINT) stopped both in 2 s.
+
+**Known limit: an orphan after a crash.** Adopted means unmanaged (§
+Supervision), and the orphan still has `TM_SUPERVISED=1`. A restart asked of it
+(the button, Rebuild & restart) EXITS and nothing respawns it. The job reports
+`timeout`, and **Start server** then spawns a managed API. The same happens
+after a terminal front door crashes, so this is not new with the service.
+`service:restart` does not help: the new front door adopts the same orphan.
+
 ## Failure modes
 
 | symptom | cause | fix |
@@ -419,10 +568,13 @@ listen error is still fatal on the first try.
 | `409` naming agent sessions | the API's restart guard | stop the agents, or `{"force": true}` |
 | Rebuild & restart: `failed`, `reason: build` | the SPA does not build | fix it; the old page is still served. The log tail is under **Rebuild failed** |
 | Rebuild & restart: `failed`, `reason: typecheck` | `npm run typecheck` fails | fix it and press again; the API was not restarted (the new SPA is already served) |
-| Rebuild & restart: `failed`, `reason: timeout` | the new server does not boot | read the front door's terminal; the supervisor keeps respawning with backoff, and **Start server** works once it is fixed |
+| Rebuild & restart: `failed`, `reason: timeout` | the new server does not boot | read the front door's terminal (`server/data/logs/api.log` under the service — the error names the file); the supervisor keeps respawning with backoff, and **Start server** works once it is fixed |
 | Rebuild & restart: `failed`, `reason: drain_timeout` | live work did not finish within `drainMinutes` — often a chat, report or plan the pause does not stop (named in the error and the job's `waitingFor`) | finish or stop them and press again; or press with force to suspend the rest at the deadline. The job's pause was released |
 | the machine stays paused after a drain | the pause was yours before the job (`continued: false`), the front door restarted mid-drain, or Continue failed (`error` on a `done` job) | press **Continue** |
-| no Rebuild & restart button / **Front door stale** | the front door predates the route, or `host.ts` changed since it booted | stop and re-run `npm start` |
+| no Rebuild & restart button / **Front door stale** | the front door predates the route, or `host.ts` changed since it booted | stop and re-run `npm start`; under the service `npm run service:restart` |
+| service: `npm run service:install` refuses, `port 5176 is in use` | a terminal `npm start` is still running | Ctrl-C it, then install |
+| service: `running` but nothing answers, `launchd.log` shows a stack trace | the front door crashed at boot (bad `config.json`, port taken) — launchd retries every 10 s | fix it; `npm run service:status` |
+| service: workers fail with `claude: command not found` | the plist's `PATH` predates where `claude` lives | re-run `npm run service:install` (it re-reads your login shell's `PATH`) |
 | `403 forbidden: no tailnet identity` on the `ts.net` name | the request came from a tagged node (the Mac itself) or through Funnel — no `Tailscale-User-Login` | expected; open it from the phone |
 | `403 forbidden: remote access is disabled` | `remote.enabled` is false | set it in `data/config.json`, restart the front door |
 | `403 forbidden: proxied requests are not served on the local port` over the `ts.net` name | serve points at `host.port` (5176) | `tailscale serve --bg --https=443 http://127.0.0.1:<remote.port>` (5177) |

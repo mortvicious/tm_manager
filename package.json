@@ -37,6 +37,11 @@
     "start:api": "tsx server/src/index.ts",
     "start:lan": "TM_LAN=1 tsx server/src/host.ts",
     "rebuild:restart": "tsx scripts/rebuild-restart.mjs",
+    "service:install": "tsx scripts/service.mjs install",
+    "service:uninstall": "tsx scripts/service.mjs uninstall",
+    "service:restart": "tsx scripts/service.mjs restart",
+    "service:status": "tsx scripts/service.mjs status",
+    "service:logs": "tsx scripts/service.mjs logs",
     "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
     "test": "tsx --test 'server/src/**/*.test.ts'"
   },

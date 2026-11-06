@@ -13,6 +13,7 @@ A local web app ("task manager") that collects tasks for registered repos and au
 - `npm run build` — builds the SPA (`web/dist`); the server has no build step
 - `npm start` — production mode: the front door serves `web/dist` at http://localhost:5176 and proxies to the API it supervises on 5175
 - `npm run dev:server` / `npm run dev:web` / `npm run start:api` — each half alone; `start:api` is the old single-process behaviour
+- `npm run service:install|status|restart|logs|uninstall` — the front door as a per-user launchd agent (`scripts/service.mjs`, docs/host.md § Running as a service): off the terminal, so Activity Monitor no longer bills the tree to it; output in `server/data/logs/{api,host}.log` (`host-log.ts`, 10 MB × 5, also whenever not on a TTY outside dev; `TM_LOG_FILES=1|0` / `host.logFiles` force it); `ProcessType` Standard (measured: priority 20 vs a terminal's 31)
 - `npm run typecheck` — tsc --noEmit over both server and web (CI runs this plus `npm run build`)
 - `npm run rebuild:restart` — Rebuild & restart from a terminal: build the SPA (staged + swapped), typecheck, restart the API (`-- --force`, `-- --no-typecheck`); through the front door's job when one runs
 - `npm test` — node:test through tsx over `server/src/**/*.test.ts` (real git in temp dirs, a temp SQLite DB; CI runs it). Few tests so far (`push-health.test.ts`); otherwise verify with curl against the REST API and the flows in `docs/design.md` § Verification.
