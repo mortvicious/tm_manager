@@ -1873,6 +1873,12 @@ export interface AppSettings {
    * changed only through /api/orchestrator/pause|continue, never PUT /api/config.
    */
   'orchestrator.paused': boolean;
+  /**
+   * Worker sessions at once (1..CONCURRENCY_MAX). Unsaved, the server serves
+   * the machine's suggestion (`suggestedConcurrency` of its RAM — 2 up to
+   * 8 GB, 3 up to 24 GB, 4 above; docs/memory.md § Concurrency from RAM) in
+   * place of the 2 below; a saved value always wins and is never rewritten.
+   */
   'orchestrator.concurrency': number;
   /** WORKER model — the heavy implementation work (user policy 2026-08-24: opus) */
   'agent.model': string;
@@ -2828,6 +2834,13 @@ export interface OrchestratorStatus {
    * predating it omits it.
    */
   heavy?: HeavyStatus;
+  /**
+   * The machine's RAM and the worker concurrency it suggests (docs/memory.md
+   * § Concurrency from RAM): the default an unsaved `orchestrator.concurrency`
+   * takes, and the line the Config page and Telegram warn above. A server
+   * predating it omits it.
+   */
+  machine?: MachineInfo;
 }
 
 /** What a failed git network command says about its cause (`classifyGitFailure`). */
@@ -3875,6 +3888,9 @@ export * from './memory.ts';
 // Heavy work: one global set of slots for checks and browser automation (docs/memory.md § Heavy work)
 export * from './heavy.ts';
 import type { HeavyStatus } from './heavy.ts';
+// Worker concurrency vs RAM: the suggested default and its warnings (docs/memory.md § Concurrency from RAM)
+export * from './capacity.ts';
+import type { MachineInfo } from './capacity.ts';
 import { jobRunNeedsHuman, type Job, type JobRun, type JobsHold } from './jobs.ts';
 import type { MemoryFuseState } from './memory.ts';
 import type { Office, OfficeBrief, OfficeHuddle, OfficeMessage, OfficeMessageRoute, OfficeProposal, OfficeRole, OfficeStates, OfficeWish } from './office.ts';

@@ -216,6 +216,38 @@ from a noisy one.
   `reasons`. Agent leases write the grant and the end; a check writes its end
   only when it had to queue, so the log is not one row per check run.
 
+## Concurrency from RAM
+
+Task a136dff6 (2026-11-06). The fuse and the heavy slots hold work once the
+machine is in trouble; the worker count decides how often it gets there. The 8 GB
+Mac ran `orchestrator.concurrency` 4.
+
+- **The default comes from the RAM.** `suggestedConcurrency(totalMem)`
+  (`shared/src/capacity.ts`): **2** up to 8 GB, **3** up to 24 GB, **4** above
+  (half a GiB of slack for a Mac that reports a little over its size). Both storage
+  drivers lay `machineDefaults()` (`server/src/machine.ts`) over `DEFAULT_SETTINGS`
+  in `getSettings()`, so an unsaved `orchestrator.concurrency` reads as the
+  suggestion everywhere it is read. A fresh config on an 8 GB Mac runs 2 workers.
+- **The saved value always wins.** Nothing writes the suggestion: a value saved on
+  the Config page is kept on any machine, including one above the suggestion. The
+  server never lowers it; it warns. An agent cannot change it at all: PUT
+  `/api/config` without `Origin` answers 403 for any change of the key (like
+  `heavy.maxParallel`).
+- **The warning** (`concurrencyAdvice`):
+  - *over* — workers above the suggestion: "4 workers is above the 2 this Mac's
+    8 GB suggests…";
+  - *stacked* — workers + `chat.concurrency` + `jobs.concurrency` (jobs only while
+    the jobs queue is on) above the suggestion plus the default chat (2) and job (1)
+    caps. Chat turns and job runs are claude sessions that take no worker slot, so
+    they stack on top. The defaults on an 8 GB Mac (2 + 2 + 1) warn about nothing.
+- **Where it shows.** Config → Orchestrator → Concurrency shows "suggested for this
+  Mac (8 GB RAM): 2" and the warnings; the chat and job concurrency rows show the
+  stacked warning. Both settings versions read the form's unsaved values, so the
+  warning appears before Save. The "changed from default" marker and Reset compare
+  against the machine's default (`defaultOf`, `web/src/settingsForm.ts`), which
+  arrives as `OrchestratorStatus.machine` (`{ totalMemBytes, suggestedConcurrency }`).
+  Telegram `/status` lists the same warnings under the queue line.
+
 ## Verification
 
 `server/src/memory.test.ts` (`npm test`) covers:
@@ -242,3 +274,9 @@ keeps running.
 - the lease routes over `app.inject`: granted, then waiting, then granted
   after the release, one lease per run, aux refused, not-yours 404, and the
   saturated-machine pressure report.
+
+`server/src/capacity.test.ts` covers concurrency from RAM: the suggestion per RAM
+size, the over/stacked warnings (none for the defaults on 8 GB; both for a saved 4),
+an unsaved key reading 2/3/4 on 8/16/32 GB through `getSettings` and GET
+`/api/config`, a saved 4 kept on any machine, and PUT `/api/config` refusing an
+Origin-less change.

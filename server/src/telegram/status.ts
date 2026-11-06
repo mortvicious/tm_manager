@@ -1,5 +1,6 @@
 import { usageSnapshot } from '../claude/usage.ts';
-import type { UsageWindow } from '@tm/shared';
+import { concurrencyAdvice, type UsageWindow } from '@tm/shared';
+import { totalMemBytes } from '../machine.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import type { Storage } from '../storage/types.ts';
 import { escapeHtml } from './api.ts';
@@ -36,6 +37,8 @@ export interface BotStatusData {
   customQueued: number;
   review: number;
   needsAttentionRuns: number;
+  /** worker / chat / job concurrency above what this Mac's RAM suggests (docs/memory.md § Concurrency from RAM) */
+  capacityWarnings: string[];
   usage: { fiveHour: UsageWindow; week: UsageWindow; weekFable: UsageWindow };
   counters: GateCounters;
   bootedAt: string;
@@ -47,12 +50,13 @@ export async function collectStatus(
   counters: GateCounters,
   bootedAt: string,
 ): Promise<BotStatusData> {
-  const [orch, usage, queuedTasks, reviewTasks, runs] = await Promise.all([
+  const [orch, usage, queuedTasks, reviewTasks, runs, settings] = await Promise.all([
     orchestrator.status(),
     usageSnapshot(storage),
     storage.listTasks({ status: 'queued' }),
     storage.listTasks({ status: 'review' }),
     storage.listRuns({ status: 'running' }),
+    storage.getSettings(),
   ]);
   return {
     enabled: orch.enabled,
@@ -65,6 +69,7 @@ export async function collectStatus(
     customQueued: queuedTasks.filter((t) => t.customQueueAt).length,
     review: reviewTasks.length,
     needsAttentionRuns: runs.filter((r) => r.needsAttention).length,
+    capacityWarnings: concurrencyAdvice(settings, totalMemBytes()).warnings,
     usage: { fiveHour: usage.fiveHour, week: usage.week, weekFable: usage.weekFable },
     counters,
     bootedAt,
@@ -93,6 +98,8 @@ export function renderStatus(s: BotStatusData): string {
     ``,
     `Queue: <b>${s.enabled ? 'running' : 'stopped'}</b> · agents ${s.running}/${s.concurrency}` +
       (s.aux > 0 ? ` · ${s.aux} aux` : ''),
+    ...s.capacityWarnings.map((w) => `⚠️ ${escapeHtml(w)}`),
+    ...(s.capacityWarnings.length ? ['Lower it on the Config page (Orchestrator / Chat / Jobs).'] : []),
     `Usage: ${renderWindow('5h', s.usage.fiveHour)} | ${renderWindow('week', s.usage.week)} | ${renderWindow('fable', s.usage.weekFable)}`,
     ``,
     `Queued: <b>${s.queued}</b>` + (s.customQueued > 0 ? ` (+${s.customQueued} in the custom queue)` : ''),

@@ -200,6 +200,13 @@ export function registerSettingsRoutes(app: FastifyInstance, storage: Storage) {
       const current = (await storage.getSettings())['heavy.maxParallel'];
       if (body['heavy.maxParallel'] !== current) return reply.code(403).send({ error: 'heavy.maxParallel is set from the dashboard' });
     }
+    // Worker concurrency is the user's setting (CLAUDE.md, docs/memory.md §
+    // Concurrency from RAM): an agent's curl has no Origin and may not move it,
+    // up or down; the dashboard is the only writer.
+    if (body['orchestrator.concurrency'] !== undefined && !req.headers.origin) {
+      const current = (await storage.getSettings())['orchestrator.concurrency'];
+      if (body['orchestrator.concurrency'] !== current) return reply.code(403).send({ error: 'orchestrator.concurrency is set from the dashboard' });
+    }
     if (body['task.templates']) {
       const custom = body['presets.custom'] ?? (await storage.getSettings())['presets.custom'];
       const problem = taskTemplateProblem(body['task.templates'], taskPresets({ 'presets.custom': custom }));

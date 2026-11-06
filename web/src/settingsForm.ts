@@ -4,7 +4,7 @@
 // changed" is written once.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { DEFAULT_SETTINGS, type AppSettings, type SentryTokenStatus } from '@tm/shared';
+import { DEFAULT_SETTINGS, type AppSettings, type MachineInfo, type SentryTokenStatus } from '@tm/shared';
 import { api } from './api.ts';
 import { useApp } from './state.tsx';
 
@@ -18,14 +18,30 @@ const RECENT_MAX = 8;
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
-/** The value a key shows: a server that predates the key reads as its default. */
-export function valueOf<K extends SettingKey>(cfg: AppSettings, k: K): AppSettings[K] {
-  return (cfg[k] ?? DEFAULT_SETTINGS[k]) as AppSettings[K];
+// Defaults that depend on the machine the server runs on (docs/memory.md §
+// Concurrency from RAM): an unsaved `orchestrator.concurrency` is served as the
+// RAM suggestion, so the "changed from default" marker and Reset compare
+// against that, not against the 2 in DEFAULT_SETTINGS. Set from
+// `OrchestratorStatus.machine` by `useSettingsForm`; empty until it arrives.
+let machineDefaults: Partial<AppSettings> = {};
+
+export function setMachineDefaults(machine: MachineInfo | undefined): void {
+  machineDefaults = machine ? { 'orchestrator.concurrency': machine.suggestedConcurrency } : {};
 }
 
-/** Whether a key differs from `DEFAULT_SETTINGS` (the "changed from default" marker). */
+/** A key's default on this machine: the RAM suggestion for concurrency, else DEFAULT_SETTINGS. */
+export function defaultOf<K extends SettingKey>(k: K): AppSettings[K] {
+  return (k in machineDefaults ? machineDefaults[k] : DEFAULT_SETTINGS[k]) as AppSettings[K];
+}
+
+/** The value a key shows: a server that predates the key reads as its default. */
+export function valueOf<K extends SettingKey>(cfg: AppSettings, k: K): AppSettings[K] {
+  return (cfg[k] ?? defaultOf(k)) as AppSettings[K];
+}
+
+/** Whether a key differs from its default (the "changed from default" marker). */
 export function changedFromDefault(cfg: AppSettings, k: SettingKey): boolean {
-  return k in DEFAULT_SETTINGS && !same(valueOf(cfg, k), DEFAULT_SETTINGS[k]);
+  return k in DEFAULT_SETTINGS && !same(valueOf(cfg, k), defaultOf(k));
 }
 
 function readRecent(): SettingKey[] {
@@ -53,7 +69,7 @@ export interface SettingsForm {
   /** true for ~1.6 s after a save */
   saved: boolean;
   set: <K extends SettingKey>(k: K, v: AppSettings[K]) => void;
-  /** set a key back to DEFAULT_SETTINGS (still needs Save, like any edit) */
+  /** set a key back to its default — `defaultOf` (still needs Save, like any edit) */
   reset: (k: SettingKey) => void;
   /** keys edited since the last load/save — exactly what Save will send */
   dirty: ReadonlySet<SettingKey>;
@@ -82,7 +98,8 @@ export function useSettingsForm(): SettingsForm {
   const [snapshot, setSnapshot] = useState<AppSettings | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
-  const { refresh } = useApp();
+  const { refresh, orch } = useApp();
+  setMachineDefaults(orch.machine);
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [recent, setRecent] = useState<SettingKey[]>(readRecent);
@@ -111,7 +128,7 @@ export function useSettingsForm(): SettingsForm {
 
   const reset = useCallback(
     (k: SettingKey) => {
-      set(k, DEFAULT_SETTINGS[k]);
+      set(k, defaultOf(k));
     },
     [set],
   );

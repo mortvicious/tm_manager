@@ -5,9 +5,8 @@
 // these and the registry, never a copy of a control.
 
 import { Fragment, type ReactNode } from 'react';
-import { DEFAULT_SETTINGS } from '@tm/shared';
 import { useLook } from '../appearance.ts';
-import { changedFromDefault, type SettingKey, type SettingsForm } from '../settingsForm.ts';
+import { changedFromDefault, defaultOf, type SettingKey, type SettingsForm } from '../settingsForm.ts';
 import {
   SETTINGS,
   SETTINGS_SECTIONS,
@@ -126,7 +125,7 @@ export function SettingsSearch({
 // ---------- one control ----------
 
 function fmtDefault(k: SettingKey): string {
-  const v = DEFAULT_SETTINGS[k];
+  const v = defaultOf(k);
   if (typeof v === 'boolean') return v ? 'on' : 'off';
   if (Array.isArray(v)) return v.length ? `${v.length} item(s)` : 'none';
   if (v === '') return 'blank';

@@ -26,6 +26,7 @@ import {
 } from '@tm/shared';
 import { approvalCardRepos, planCards, planFeatureProgress } from '../claude/feature-plan.ts';
 import { broadcast } from '../events.ts';
+import { machineDefaults } from '../machine.ts';
 import { FEATURE_CLAIM_GATE, FEATURE_OVERFLOW_GATE } from './feature-sql.ts';
 import { CUSTOM_QUEUE_HEAD_ORDER, CUSTOM_QUEUE_HEAD_WHERE, CUSTOM_QUEUE_SAME_REPO, CUSTOM_QUEUE_WAITING_SQL, OFFICE_CLAIM_GATE, OFFICE_TRIPPED_SQL, REPO_EXCLUSIVE_GATE, planQueueReorder, reorderAudit, skipRepos, type QueueMoveAnchor } from './queue-sql.ts';
 import { runCost, taskCostSql } from './cost-sql.ts';
@@ -2640,7 +2641,8 @@ export class PostgresStorage implements Storage {
 
   async getSettings(): Promise<AppSettings> {
     const rows = (await this.q(`SELECT key, value FROM tm_config`)) as { key: string; value: string }[];
-    const out: Record<string, unknown> = { ...DEFAULT_SETTINGS };
+    // machine-dependent defaults (the RAM-suggested concurrency) under any saved row
+    const out: Record<string, unknown> = { ...DEFAULT_SETTINGS, ...machineDefaults() };
     for (const r of rows) {
       try {
         out[r.key] = JSON.parse(r.value);

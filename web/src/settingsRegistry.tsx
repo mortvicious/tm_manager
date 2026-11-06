@@ -20,6 +20,7 @@ import {
   HEAVY_MAX_PARALLEL,
 } from '@tm/shared';
 import { AppearanceSettings } from './components/AppearanceSettings.tsx';
+import { ConcurrencyNote } from './components/ConcurrencyNote.tsx';
 import { PresetEditor } from './components/PresetEditor.tsx';
 import { PushSettings } from './components/PushSettings.tsx';
 import { TemplateEditor } from './components/TemplateEditor.tsx';
@@ -368,7 +369,8 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     key: 'orchestrator.concurrency',
     section: 'orchestrator',
     label: 'Concurrency',
-    help: `max simultaneous worker sessions across all repos (default 2, up to ${CONCURRENCY_MAX}); a repo's own Parallel cap on the Repos page says how many of them may share one repo (docs/parallel.md)`,
+    help: `max simultaneous worker sessions across all repos (default: what this Mac's RAM suggests — 2 up to 8 GB, 3 up to 24 GB, 4 above; up to ${CONCURRENCY_MAX}); a repo's own Parallel cap on the Repos page says how many of them may share one repo (docs/parallel.md)`,
+    note: ({ cfg, orch }) => <ConcurrencyNote cfg={cfg} machine={orch.machine} />,
     render: num('orchestrator.concurrency', { min: 1, max: CONCURRENCY_MAX, width: 80, label: 'Concurrency' }),
   },
 
@@ -652,6 +654,7 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     label: 'Concurrent chat turns',
     help: 'across all chats — a chat is serial on its own; this is the fence against opening several and sending to all of them. Separate from the worker concurrency: a chat turn owns no task and must not take a worker slot',
     advanced: true,
+    note: ({ cfg, orch }) => <ConcurrencyNote cfg={cfg} machine={orch.machine} only="stack" />,
     render: num('chat.concurrency', { min: 1, max: 5, label: 'Concurrent chat turns' }),
   },
 
@@ -676,6 +679,7 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     label: 'Job runs at once',
     help: `aux terminals, never a worker slot (default 1, up to ${JOB_CONCURRENCY_MAX})`,
     advanced: true,
+    note: ({ cfg, orch }) => <ConcurrencyNote cfg={cfg} machine={orch.machine} only="stack" />,
     render: num('jobs.concurrency', { min: 1, max: JOB_CONCURRENCY_MAX, width: 80, label: 'Job runs at once' }),
   },
   {

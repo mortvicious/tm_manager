@@ -161,6 +161,7 @@ import { closePr, confirmMerged, fastForwardCheckout, integratedIn, landedCheck,
 import { probePush, pushHealth } from './push-health.ts';
 import { memoryHold, memoryState, sampleMemory } from './memory.ts';
 import { heavy } from './heavy.ts';
+import { machineInfo } from './machine.ts';
 import type { RepoPushHealth } from '@tm/shared';
 
 /** Upper bound on how long a custom-queue hold may outlive its follow-on (docs/queue.md). */
@@ -2049,6 +2050,7 @@ export class Orchestrator implements OrchestratorApi {
       ...(this.jobs ? { jobs: this.jobs.status() } : {}),
       memory: { ...memoryState(), hold: memoryHold(settings) },
       ...(heavy() ? { heavy: heavy()!.status() } : {}),
+      machine: machineInfo(),
     };
   }
 

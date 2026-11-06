@@ -4,6 +4,7 @@ import { AppearanceSettings } from '../components/AppearanceSettings.tsx';
 import { PresetEditor } from '../components/PresetEditor.tsx';
 import { TemplateEditor } from '../components/TemplateEditor.tsx';
 import { PushSettings } from '../components/PushSettings.tsx';
+import { ConcurrencyNote } from '../components/ConcurrencyNote.tsx';
 import { useSettingsForm } from '../settingsForm.ts';
 import { useApp } from '../state.tsx';
 
@@ -27,7 +28,7 @@ export function ConfigPage({ headSlot, topSlot }: { headSlot?: ReactNode; topSlo
   const form = useSettingsForm();
   const { cfg, set, save, saved, err } = form;
   const { status: tokenStatus, draft: tokenDraft, setDraft: setTokenDraft, syncing, syncMsg } = form.sentry;
-  const { repos } = useApp();
+  const { repos, orch } = useApp();
 
   // The look is this device's own: reachable even while the API is down.
   if (!cfg)
@@ -67,9 +68,11 @@ export function ConfigPage({ headSlot, topSlot }: { headSlot?: ReactNode; topSlo
           <div>
             <div>Concurrency</div>
             <div className="hint">
-              max simultaneous worker sessions across all repos (default 2, up to {CONCURRENCY_MAX}); a repo's own
-              Parallel cap on the Repos page says how many of them may share one repo (docs/parallel.md)
+              max simultaneous worker sessions across all repos (default: what this Mac's RAM suggests — 2 up to 8 GB,
+              3 up to 24 GB, 4 above; up to {CONCURRENCY_MAX}); a repo's own Parallel cap on the Repos page says how
+              many of them may share one repo (docs/parallel.md)
             </div>
+            <ConcurrencyNote cfg={cfg} machine={orch.machine} />
           </div>
           <input
             className="field"
@@ -122,6 +125,7 @@ export function ConfigPage({ headSlot, topSlot }: { headSlot?: ReactNode; topSlo
           <div>
             <div>Job runs at once</div>
             <div className="hint">aux terminals, never a worker slot (default 1, up to {JOB_CONCURRENCY_MAX})</div>
+            <ConcurrencyNote cfg={cfg} machine={orch.machine} only="stack" />
           </div>
           <input
             className="field"
@@ -742,6 +746,7 @@ export function ConfigPage({ headSlot, topSlot }: { headSlot?: ReactNode; topSlo
               several and sending to all of them. Separate from the worker concurrency: a chat turn
               owns no task and must not take a worker slot
             </div>
+            <ConcurrencyNote cfg={cfg} machine={orch.machine} only="stack" />
           </div>
           <input
             className="field"
