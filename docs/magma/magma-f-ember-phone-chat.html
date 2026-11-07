@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Gor · Ember phone chat</title>
+<style>:root{
+  --bg:#0a0605;--bg-raised:#160d0a;--bg-overlay:#22140f;--bg-inset:#070403;
+  --border:#3a2219;--border-strong:#8f5a44;
+  --text:#fbefe6;--text-muted:#c9ab9b;--text-faint:#8a6c5e;
+  --accent:#ff7a2e;--accent-strong:#ff5a14;--accent-subtle:rgba(255,106,26,.18);--accent-contrast:#1a0802;
+  --accent-rgb:255,122,46;--glow-rgb:255,90,20;
+  --link:#ffa05c;--focus:#ffc93d;
+  --st-queued:#b39d92;--st-running:#ff7a2e;--st-review:#ffc93d;--st-done:#6fe39a;--st-published:#3fcf73;--st-failed:#ff5468;--st-ask:#c4a1ff;
+  --primary:linear-gradient(135deg,#ffc93d 0%,#ff7a2e 55%,#ff5a14 100%);
+  --wall:radial-gradient(70% 50% at 10% 0%, rgba(255,90,20,.20), transparent 60%), radial-gradient(60% 45% at 100% 100%, rgba(229,49,43,.16), transparent 62%), radial-gradient(40% 30% at 85% 8%, rgba(255,201,61,.08), transparent 60%), linear-gradient(180deg,#120806 0%,#0a0605 55%,#070403 100%);
+  --sans:-apple-system,"SF Pro Text",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:var(--sans);color:var(--text);background:var(--wall);background-color:var(--bg);-webkit-font-smoothing:antialiased;font-size:13px;line-height:1.4;overflow:hidden;position:relative}
+.num{font-variant-numeric:tabular-nums}
+.ic{flex:none;display:block}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.rise{animation:rise .42s cubic-bezier(.2,.7,.2,1) both}
+
+/* status badge */
+.badge{--c:var(--st-queued);justify-self:start;display:inline-flex;align-items:center;gap:6px;font:600 11px/1 var(--mono);letter-spacing:.01em;padding:4px 7px 4px 6px;border-radius:6px;color:var(--c);background:color-mix(in srgb,var(--c) 13%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 30%,transparent);white-space:nowrap}
+.badge::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--c)}
+.badge.running{--c:var(--st-running)}
+.badge.running::before{box-shadow:0 0 0 2px color-mix(in srgb,var(--c) 22%,transparent),0 0 8px var(--c)}
+.badge.review{--c:var(--st-review)}
+.badge.failed{--c:var(--st-failed)}
+.badge.ask{--c:var(--st-ask)}
+.badge.draft{--c:var(--st-queued)}
+.badge.draft::before{background:transparent;box-shadow:inset 0 0 0 1.2px var(--c)}
+
+.repo{font:500 11px/1 var(--mono);color:var(--text-muted);padding:3px 6px;border-radius:5px;background:var(--bg-inset);box-shadow:inset 0 0 0 1px var(--border);white-space:nowrap}
+.time{font-size:11.5px;color:var(--text-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+
+.prog{display:flex;align-items:center;gap:8px;margin-top:7px}
+.prog .track{flex:1;max-width:220px;height:2px;border-radius:2px;background:rgba(255,239,230,.08);overflow:hidden}
+.prog .fill{height:100%;border-radius:2px;background:linear-gradient(90deg,var(--accent-strong),var(--accent) 70%,#ffc93d);box-shadow:0 0 8px rgba(var(--glow-rgb),.7)}
+.prog .pct{font:500 11px/1 var(--mono);color:var(--text-muted)}
+
+/* buttons */
+.btn{font:600 12.5px/1 var(--sans);height:30px;padding:0 12px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;border:0;color:var(--text);background:var(--bg-overlay);box-shadow:inset 0 0 0 1px var(--border-strong)}
+.btn.primary{background:var(--primary);color:var(--accent-contrast);box-shadow:inset 0 1px 0 rgba(255,236,200,.45),inset 0 0 12px rgba(255,201,61,.25),0 0 18px rgba(var(--glow-rgb),.35)}
+
+/* chat */
+.avatar{--c:var(--accent);width:28px;height:28px;border-radius:50%;flex:none;display:grid;place-items:center;font:700 10.5px/1 var(--sans);letter-spacing:.02em;color:var(--c);background:color-mix(in srgb,var(--c) 20%,var(--bg-raised));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 45%,transparent)}
+.av-stack{display:flex}
+.av-stack .avatar{width:26px;height:26px;font-size:9px;margin-left:-5px;position:relative}
+.av-stack .avatar:nth-child(1){z-index:4}.av-stack .avatar:nth-child(2){z-index:3}.av-stack .avatar:nth-child(3){z-index:2}.av-stack .avatar:nth-child(4){z-index:1}
+.avatar.qa{--c:#ffc93d}.avatar.fe{--c:#c4a1ff}.avatar.pm{--c:#6fe39a}
+.daysep{display:flex;align-items:center;gap:10px;color:var(--text-muted);font:600 10.5px/1 var(--sans);letter-spacing:.08em;text-transform:uppercase;margin:6px 0 2px}
+.daysep::before,.daysep::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,transparent,var(--border))}
+.daysep::after{background:linear-gradient(90deg,var(--border),transparent)}
+.msg{display:flex;gap:8px;align-items:flex-end}
+.msg .stack{display:flex;flex-direction:column;gap:3px;max-width:82%}
+.msg .who{font-size:11.5px;color:var(--text-muted);margin:0 0 2px 10px}
+.msg .who b{color:var(--text);font-weight:600}
+.bubble{padding:8px 11px;font-size:13px;line-height:1.42;border-radius:16px;background:var(--bg-overlay);box-shadow:inset 0 0 0 1px var(--border);color:var(--text)}
+.role .bubble:not(:last-child){border-bottom-left-radius:6px}
+.role .bubble + .bubble{border-top-left-radius:6px}
+.own{justify-content:flex-end}
+.own .stack{align-items:flex-end}
+.own .bubble{background:linear-gradient(180deg,rgba(var(--accent-rgb),.26),rgba(var(--glow-rgb),.16));box-shadow:inset 0 0 0 1px rgba(var(--accent-rgb),.40),inset 0 1px 0 rgba(255,220,190,.10)}
+.own .bubble:not(:last-child){border-bottom-right-radius:6px}
+.own .bubble + .bubble{border-top-right-radius:6px}
+.mention{color:var(--link);font-weight:600}
+.meta{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--text-muted);font-variant-numeric:tabular-nums;margin:1px 10px 0}
+.taint{font:600 10px/1 var(--mono);color:var(--st-review);padding:3px 5px;border-radius:4px;background:rgba(255,201,61,.10);box-shadow:inset 0 0 0 1px rgba(255,201,61,.32);letter-spacing:.02em}
+.tcard{margin-top:7px;padding:8px 10px;border-radius:10px;background:var(--bg-inset);box-shadow:inset 0 0 0 1px var(--border);display:flex;flex-direction:column;gap:6px}
+.tcard .tt{font-weight:600;font-size:12.5px;line-height:1.3}
+.tcard .tr{display:flex;align-items:center;gap:6px}
+.tcard .tid{font:500 10.5px/1 var(--mono);color:var(--text-muted);margin-left:auto}
+.typing{display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:12px;margin-left:36px}
+.dots{display:inline-flex;gap:3px;padding:7px 9px;border-radius:12px;background:var(--bg-overlay);box-shadow:inset 0 0 0 1px var(--border)}
+.dots i{width:5px;height:5px;border-radius:50%;background:var(--accent)}
+.dots i:nth-child(1){opacity:.95}.dots i:nth-child(2){opacity:.6}.dots i:nth-child(3){opacity:.3}
+.jump{position:absolute;left:50%;transform:translateX(-50%);display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 12px;border-radius:999px;font:600 12px/1 var(--sans);color:var(--link);background:rgba(34,20,15,.82);-webkit-backdrop-filter:blur(16px) saturate(140%);backdrop-filter:blur(16px) saturate(140%);box-shadow:inset 0 0 0 1px rgba(var(--accent-rgb),.42),0 6px 20px rgba(0,0,0,.55),0 0 16px rgba(var(--glow-rgb),.20)}
+.composer{display:flex;align-items:flex-end;gap:8px;padding:10px 12px}
+.composer .field{flex:1;min-height:38px;border-radius:19px;padding:10px 14px;font-size:13px;color:var(--text-muted);background:var(--bg-inset);box-shadow:inset 0 0 0 1px var(--border-strong)}
+.composer .send{width:38px;height:38px;border-radius:50%;flex:none;display:grid;place-items:center;color:var(--accent-contrast);background:var(--primary);box-shadow:inset 0 1px 0 rgba(255,236,200,.45),0 0 14px rgba(var(--glow-rgb),.40)}
+
+body{width:390px;height:844px}
+body::before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(1.6px 1.6px at 7% 12%, rgba(255,201,61,.70), transparent),
+    radial-gradient(1px 1px at 18% 64%, rgba(255,160,92,.55), transparent),
+    radial-gradient(1.4px 1.4px at 27% 31%, rgba(255,122,46,.60), transparent),
+    radial-gradient(1px 1px at 34% 86%, rgba(255,201,61,.45), transparent),
+    radial-gradient(2px 2px at 43% 9%, rgba(255,122,46,.55), transparent),
+    radial-gradient(1px 1px at 51% 47%, rgba(255,201,61,.40), transparent),
+    radial-gradient(1.4px 1.4px at 58% 78%, rgba(255,90,20,.60), transparent),
+    radial-gradient(1px 1px at 64% 22%, rgba(255,201,61,.50), transparent),
+    radial-gradient(1.8px 1.8px at 71% 58%, rgba(255,160,92,.45), transparent),
+    radial-gradient(1px 1px at 77% 5%, rgba(255,201,61,.65), transparent),
+    radial-gradient(1.4px 1.4px at 83% 38%, rgba(255,122,46,.50), transparent),
+    radial-gradient(1px 1px at 89% 91%, rgba(255,201,61,.45), transparent),
+    radial-gradient(1.6px 1.6px at 94% 17%, rgba(255,90,20,.55), transparent),
+    radial-gradient(1px 1px at 12% 93%, rgba(255,122,46,.45), transparent),
+    radial-gradient(1.2px 1.2px at 3% 44%, rgba(255,201,61,.50), transparent),
+    radial-gradient(1px 1px at 47% 66%, rgba(255,160,92,.40), transparent),
+    radial-gradient(1.2px 1.2px at 68% 95%, rgba(255,201,61,.45), transparent),
+    radial-gradient(1px 1px at 98% 70%, rgba(255,122,46,.50), transparent);z-index:0}
+.scr{position:relative;z-index:1;height:844px;display:flex;flex-direction:column}
+.status{height:50px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:6px 30px 0 34px;font:600 16px/1 var(--sans);letter-spacing:-.01em}
+.sicons{display:flex;gap:6px;align-items:center}
+.sicons .bars{display:flex;gap:2px;align-items:flex-end;height:11px}
+.sicons .bars i{width:3px;background:var(--text);border-radius:1px}
+.sicons .batt{width:25px;height:12px;border-radius:4px;box-shadow:inset 0 0 0 1px rgba(251,239,230,.5);padding:2px;position:relative}
+.sicons .batt::after{content:"";position:absolute;right:-3px;top:4px;width:1.5px;height:4px;border-radius:1px;background:rgba(251,239,230,.5)}
+.sicons .batt i{display:block;height:100%;width:72%;border-radius:2px;background:var(--text)}
+.homeind{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);width:134px;height:5px;border-radius:3px;background:var(--text);opacity:.9;z-index:10}
+
+.nav{height:54px;flex:none;display:grid;grid-template-columns:96px 1fr 96px;align-items:center;padding:0 10px;position:relative;background:rgba(22,12,9,.55);-webkit-backdrop-filter:blur(24px) saturate(160%);backdrop-filter:blur(24px) saturate(160%);z-index:3}
+.nav::after{content:"";position:absolute;left:0;right:0;bottom:0;height:1px;background:linear-gradient(90deg,transparent,rgba(255,90,20,.7) 25%,rgba(255,201,61,.55) 55%,transparent)}
+.backb{display:flex;align-items:center;gap:2px;color:var(--link);font-size:16px}
+.ntitle{text-align:center}
+.ntitle b{display:block;font:600 16px/1.2 var(--sans)}
+.ntitle span{font-size:11.5px;color:var(--text-muted)}
+.navavs{display:flex;justify-content:flex-end}
+.navavs .avatar{outline:2px solid #160c09}
+.thread{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end;gap:11px;padding:12px 12px 54px;position:relative}
+.bubble{font-size:15px;line-height:1.38;padding:8px 12px;border-radius:18px}
+.msg .stack{max-width:80%}
+.msg .who{font-size:12px}
+.tcard .tt{font-size:13.5px}
+.typing{font-size:13px}
+.chatwrap{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
+.composer{flex:none;background:rgba(22,12,9,.72);-webkit-backdrop-filter:blur(24px);backdrop-filter:blur(24px);box-shadow:inset 0 1px 0 rgba(255,160,92,.14);padding:8px 10px}
+.composer .field{font-size:15px;min-height:38px;padding:9px 14px}
+.composer .plus{width:34px;height:34px;border-radius:50%;flex:none;display:grid;place-items:center;color:var(--text-muted);font:400 22px/1 var(--sans);box-shadow:inset 0 0 0 1px var(--border-strong);margin-bottom:2px}
+.kb{flex:none;height:291px;background:linear-gradient(180deg,#1d1411,#150e0b);padding:8px 3px 0;display:flex;flex-direction:column;gap:11px;box-shadow:inset 0 1px 0 rgba(255,160,92,.10)}
+.sugg{height:36px;display:grid;grid-template-columns:1fr 1fr 1fr;align-items:center;text-align:center;font-size:15px;color:var(--text);margin-top:-4px}
+.sugg span + span{box-shadow:-1px 0 0 rgba(251,239,230,.12)}
+.kr{display:flex;justify-content:center;gap:6px}
+.k{width:32px;height:42px;border-radius:5px;background:#433530;color:var(--text);display:grid;place-items:center;font:400 21px/1 var(--sans);box-shadow:0 1px 0 rgba(0,0,0,.6)}
+.k.w{width:44px;background:#2c211d;font-size:15px}
+.k.sp{width:180px;font-size:15px}
+.k.ret{width:86px;background:#2c211d;font-size:15px}
+.kb .homeind{position:static;transform:none;margin:auto auto 8px}
+body{background:var(--wall)}</style></head><body><div class="scr" style="background:rgba(10,6,5,.0)"><div class="status"><span class="num">9:41</span><span class="sicons"><span class="bars"><i style="height:4px"></i><i style="height:6px"></i><i style="height:8px"></i><i style="height:11px"></i></span><svg width="16" height="12" viewBox="0 0 16 12"><path d="M8 11.2 5.6 8.6a3.4 3.4 0 0 1 4.8 0zM3.4 6.4a6.5 6.5 0 0 1 9.2 0l-1.3 1.3a4.7 4.7 0 0 0-6.6 0zM1.2 4.2a9.6 9.6 0 0 1 13.6 0l-1.3 1.3a7.8 7.8 0 0 0-11 0z" fill="#fbefe6"/></svg><span class="batt"><i></i></span></span></div>
+  <div class="nav"><span class="backb"><svg class="ic" width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 2.5 4.5 8l5.5 5.5"/></svg>Chats</span><span class="ntitle"><b>Group chat</b><span>Office · 4 roles</span></span><span class="navavs av-stack"><span class="avatar">BK</span><span class="avatar qa">QM</span><span class="avatar fe">FE</span><span class="avatar pm">PM</span></span></div>
+  <div class="chatwrap"><div class="thread">
+  <div class="daysep">Today</div>
+  <div class="msg role"><span class="avatar">BK</span><div class="stack">
+    <div class="who"><b>Boss Kit</b> · Director</div>
+    <div class="bubble">Morning. Two runs are hot on nest, and QA flagged the Sentry poll overnight.</div>
+    <div class="bubble">I want the 429 handled before anyone touches the planner.</div>
+    <div class="meta">09:12</div>
+  </div></div>
+  <div class="msg own"><div class="stack">
+    <div class="bubble">Agreed. Why did it fail?</div>
+    <div class="meta">09:14</div>
+  </div></div>
+  <div class="msg role"><span class="avatar qa">QM</span><div class="stack">
+    <div class="who"><b>QA Mira</b> · QA</div>
+    <div class="bubble">The poll retries at once on a 429, no backoff. Filed it:
+      <div class="tcard"><div class="tt">Sentry signal poll: back off on a 429 from the issues API</div>
+      <div class="tr"><span class="badge failed">failed</span><span class="repo">nest</span><span class="tid">#3f9a21c0</span></div></div>
+    </div>
+    <div class="meta">09:16 <span class="taint">tainted</span></div>
+  </div></div>
+  <div class="msg own"><div class="stack">
+    <div class="bubble"><span class="mention">@qa</span> check the Retry-After header too.</div>
+    <div class="bubble">Ship it today if it's small.</div>
+    <div class="meta">09:18 · read</div>
+  </div></div>
+  <div class="typing"><span class="dots"><i></i><i></i><i></i></span>QA is answering…</div></div>
+    <div class="jump" style="bottom:12px">Jump to latest ↓</div></div>
+  <div class="composer"><span class="plus">+</span><div class="field">Message… @mention a role</div><span class="send"><svg class="ic" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></svg></span></div>
+  <div class="kb">
+    <div class="sugg"><span>Ship</span><span>“it”</span><span>Thanks</span></div>
+    <div class="kr"><span class="k">q</span><span class="k">w</span><span class="k">e</span><span class="k">r</span><span class="k">t</span><span class="k">y</span><span class="k">u</span><span class="k">i</span><span class="k">o</span><span class="k">p</span></div>
+    <div class="kr"><span class="k">a</span><span class="k">s</span><span class="k">d</span><span class="k">f</span><span class="k">g</span><span class="k">h</span><span class="k">j</span><span class="k">k</span><span class="k">l</span></div>
+    <div class="kr"><span class="k w">⇧</span><span class="k">z</span><span class="k">x</span><span class="k">c</span><span class="k">v</span><span class="k">b</span><span class="k">n</span><span class="k">m</span><span class="k w">⌫</span></div>
+    <div class="kr"><span class="k w">123</span><span class="k w">☺</span><span class="k sp">space</span><span class="k ret">return</span></div>
+    <div class="homeind"></div>
+  </div></div></body></html>
