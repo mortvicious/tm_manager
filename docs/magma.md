@@ -1,6 +1,6 @@
 # Magma: a third design, and the Gor brand
 
-**Status: design spec, awaiting the owner's sign-off** (feature *Gor: Magma theme,
+**Status: signed off by the owner with changes on 2026-11-07** (feature *Gor: Magma theme,
 rebrand, grouped side-nav with live counters, messenger-style office chats*,
 phase 1/4). Nothing here is built yet. No app code changes until this document
 is signed off in the next card; phases 2–4 implement it. Every "will" below is
@@ -21,6 +21,31 @@ least 5 mockups before proceeding — add minimal pure design parts, like this
 background sparkles in glass design. Magma's dominant color should be red or
 orange, propose." The mockups are in § Mockups. The proposal is **orange**,
 argued in § 1.
+
+## Owner decisions
+
+Date: **2026-11-07**. Every answer came from the owner directly through the
+worker question tool (the question modal), with no autopilot pick and no
+expired question. Where an answer conflicts with a later section, **this
+section wins**. The changes the owner asked for are already applied in
+§ 1, § 3, § 4 and § 12.
+
+| # | Question | Owner's answer (verbatim) | Rule the build cards follow |
+|---|---|---|---|
+| Q1 / (a) | Should Magma replace Glass as the default design for a device with no saved design? | "Yes, Magma default" | **The default design becomes `magma`.** An unset `tm.design` resolves to Magma in `appearance.ts` `resolve()` and in the `index.html` twin. A stored `'glass'` or `'classic'` is kept as is. This overrides § 15.1's proposal. |
+| Q2 / (b) | Rename only the visible brand, or the repo, packages and CLI too? | "Visible brand only (Recommended)" | **Rename the visible brand only**: the wordmark, `<title>`, the manifest `name`/`short_name`, the Home Screen label and the Telegram/HTML report headers. The repo, the workspace package names, the CLI scripts, `tm_` tables, `TM_*` env vars, `tm.*` keys and `--tm-*` tokens all stay. |
+| Q3 / (c) | Is Magma dark-only, or does a light Magma ship? | "Dark-only (Recommended)" | **Magma is dark-only.** Under Magma, Light and System both resolve to dark. The scheme control is shown disabled, the stored `tm.theme` is left untouched and `ThemeToggle` is not rendered (§ 2). |
+| Q4 / (d) | Should Magma on a phone hide Features and Chat like Glass (`GLASS_HIDDEN`)? | "Show them. Also for which variant I picked - do you need to know which mockup I picked?" | **`GLASS_HIDDEN` applies to Glass only.** The `useNav()` gate stays `design === 'glass' && mobile`, so Magma shows Features and Chat on the phone. |
+| Q5 / (e) | Rename `TM Bar.app`? | "Display name only (Recommended)" | **Only the display name becomes "Gor Bar"** (`APP_NAME` / `CFBundleName` / `CFBundleDisplayName`). The bundle id `com.taskmanager.bar` stays, so the login item, the notification permission and the Keychain carry over. |
+| Q6 | Which mockup and dominant colour? | "B Molten, red" | **Red is the dominant colour (Direction B, Molten).** The accent, running and send are all `#ff4a3d`, and `failed` moves to magenta `#ff4fa3`. The ember gradient runs yellow `#ffc93d` → orange `#ff8a3d` → red `#ff4a3d`, so orange is its middle stop and red its end. Accent TEXT on the two lightest surfaces (button hover, tab lens) uses the new `--tm-accent-text` `#ff7a5c`, because `#ff4a3d` falls below 4.5:1 there. § 1, § 4, § 5 and § 10 are rewritten to match, and § 5 is recomputed on these values. |
+| Q7 | Which extra counters (§ 12) get built? | "Office group chat, Jobs running / needs-you, Inbox urgent as a number, Chat unread, Office proposals / Terminals live" | **All of § 12's extras are built**, plus an **Office group chat · unread** counter. Office chats are not in the store today, so that counter needs a store slice fed by WS events. No polling, same as every other counter. |
+| Sign-off | Approve, approve with changes, or rework? | "Approve with changes - I actually want a bit of designs of shapes changes too, It should feel like game, now there's too much from Glass" | **Approved with changes.** On the clarifying question the owner picked "Keep behaviour, game look (Recommended)". Magma keeps Glass's **behaviour**: sheets, motion, exit ghosts, view transitions, the row cascade and the tab-bar lens. It drops Glass's **look**: no frosted blur, no round capsules, no specular rims. In its place come game-like shapes: chamfered/bevelled panels with hard edges, chunky outlined buttons, HUD-style counter badges and lava-glow frames on active items (§ 3 § Game look). |
+
+The § 3 structural base and the § 12 core counter definitions were quoted to
+the owner in the sign-off question and are approved, subject to the game-look
+change above.
+
+Signed off by the owner: 2026-11-07
 
 ## Contents
 
@@ -88,13 +113,15 @@ are illustrations:
   The light comes from a few places, the way magma shows through cracks in
   dark rock.
 - **Red, yellow, black, magma.** One dominant hue, one hot highlight, black.
-  - **Orange `#ff7a2e` is the accent** (proposed dominant). It marks running,
-    links, the switch, the active tab and the Board disc.
+  - **Red `#ff4a3d` is the accent** (owner decision Q6, Direction B). It marks
+    running, links, the switch, the active tab, send and the Board disc.
   - **Yellow `#ffc93d` is the highlight**: the focus ring, the brand spark,
     review/auto-review, and the hot end of the ember gradient.
-  - **Red** is reserved for `failed`/danger (`#ff5468`) and for the cool
-    end of the ember gradient (`#ff5a14`).
-- **Why orange and not red is dominant.** The app's single most important
+  - **Magenta `#ff4fa3`** is `failed`/danger, and **orange `#ff8a3d`** is the
+    warm start of the ember gradient.
+- **Superseded: the owner picked red (Q6).** The argument below was the
+  proposal. It stays as the record of the cost the build must manage: failed
+  is magenta, and the red accent is used sparingly. Why orange was proposed: The app's single most important
   colour signal is *failed* / destructive, and it is red in every design and
   in the user's habits (Telegram, push, the TM Bar). A red accent would sit on
   every running row and every primary button, so "this broke" would stop
@@ -159,6 +186,30 @@ and a Classic-tuned glass would be work for a design with no future" (l.706-709)
 And the brief's `docs/roadmap.md` does not exist yet, so the only written plan
 for Classic's retirement is that decisions entry.
 
+### Game look (owner change, 2026-11-07)
+
+The table below decides **behaviour and placement**. Those are widened from
+Glass as written. The owner's change takes away Glass's **look**. In
+`magma.css`, scoped to `[data-design='magma']`, and with tokens only:
+
+- **No frosted blur.** Magma's materials are opaque or near-opaque warm black.
+  Its `--tm-glass-*` blur values are `0`, so the widened rules place a panel
+  and draw no frost.
+- **Chamfered panels.** Cards, sheets, the task panel, header capsules and
+  the tab bar get cut corners (`clip-path` polygon, chamfer from a new token
+  `--tm-magma-chamfer`) and a 1 px hard bevel (a lighter top-left edge and a
+  darker bottom-right edge) in place of round radii and specular rims.
+- **Chunky outlined buttons.** 2 px outline, chamfered, with a pressed
+  "push-down" offset. The primary button is the ember fill.
+- **HUD counters.** Nav and tab counters are small chamfered badges with a
+  tabular mono numeral, styled like a game HUD.
+- **Lava-glow frames.** The active nav item, the selected row and the
+  focused control get a glowing frame. The glow is static (§ 8 limits still
+  apply).
+
+Tokens: new `--tm-magma-*` rows join § 4's Magma-only table. Glass's computed
+styles must stay unchanged (phase 2's snapshot test still applies).
+
 ### The decision, per feature
 
 | Feature | Magma uses | Mechanism |
@@ -169,7 +220,7 @@ for Classic's retirement is that decisions entry.
 | Appearance view transition | **Glass** | JS gate `appearance.ts:95`: animate when `look.design !== 'classic' \|\| next.design !== 'classic'`, so Glass↔Magma and Classic↔Magma cross-fade. A Classic-only flip stays instant. The `::view-transition` duration rule (`glass.css` l.1311) is unscoped already. |
 | `data-entering` row cascade, page rise | **Glass** | Widen `glass.css` l.1232-1265. `Layout.tsx:1170-1177` already sets `.main[data-entering]` in every design. |
 | Header and shell (floating transparent header, `.edge-top`, sidebar pane, wallpaper, capsules) | **Glass** | Widen `glass.css` l.20-212 and l.487-560, including the "shown only in Glass" half of `.edge-top, .glass-only` (the unscoped hide at l.20 stays). Magma's own `--tm-wallpaper` value replaces the Glass glows. **Magma only** (in `magma.css`): the ember dot field on `body::before`, and the lava hairline under the sidebar brand. |
-| `GLASS_HIDDEN` on phone (Features and Chat left out of the More sheet) | **Not hidden** (proposed; owner question Q4) | JS gate `Layout.tsx:843-847` `useNav()`. It stays `design === 'glass' && mobile`, so Magma shows both. This feature makes Chat a centrepiece (§ 13), and hiding its nav entry on the phone would contradict that. If the owner wants Glass's behaviour, the gate becomes `design !== 'classic' && mobile`. |
+| `GLASS_HIDDEN` on phone (Features and Chat left out of the More sheet) | **Not hidden** (owner decision Q4) | JS gate `Layout.tsx:843-847` `useNav()`. It stays `design === 'glass' && mobile`, so Magma shows both. This feature makes Chat a centrepiece (§ 13), and hiding its nav entry on the phone would contradict that. If the owner wants Glass's behaviour, the gate becomes `design !== 'classic' && mobile`. |
 
 **Recommendation: Magma uses Glass's structure everywhere, by widening
 selectors.** Every structural rule in `glass.css` and every scheme-independent
@@ -264,18 +315,26 @@ the outline of every input and select, and a component boundary needs 3:1
 
 ### Accent and status
 
+Values per owner decision Q6 (Direction B, from `magma-b-molten.html`).
+Every accent-role and failed-role value in this document follows them. That
+covers § 4, the Magma-only gradients, the nav rail, § 5, the xterm theme and
+the mark's SVG. Fills, outlines and non-text marks use `--tm-accent`. Accent text
+uses `--tm-accent` on every surface except button hover and the tab lens,
+where it uses `--tm-accent-text` (§ 5).
+
 | Token | Magma | oklch | Role |
 |---|---|---|---|
-| `--tm-accent` | `#ff7a2e` | 0.72 0.19 45 | running, links, switch, active nav, disc |
-| `--tm-accent-strong` | `#ff5a14` | 0.67 0.22 38 | pressed/fill end of the ember gradient |
-| `--tm-accent-subtle` | `rgba(255,106,26,.18)` | — | own bubbles, active nav fill, selection |
+| `--tm-accent` | `#ff4a3d` | — | running, links, switch, active nav, send, disc (Q6) |
+| `--tm-accent-strong` | `#ff4a3d` | — | pressed fill and the red end of the ember gradient (`#e5312b` fails the dark label at 4.45:1, § 5) |
+| `--tm-accent-text` | `#ff7a5c` | — | NEW. Accent text on button hover and the tab lens, where `#ff4a3d` is 4.32:1 / 3.54:1 |
+| `--tm-accent-subtle` | `rgba(255,74,61,.18)` | — | own bubbles, active nav fill, selection |
 | `--tm-accent-contrast` | `#1a0802` | 0.16 0.04 40 | label on any accent/ember fill (never white) |
 | `--tm-status-queued` | `#b39d92` | 0.71 0.03 45 | |
-| `--tm-status-running` | `#ff7a2e` | = accent | |
+| `--tm-status-running` | `#ff4a3d` | = accent | |
 | `--tm-status-review` | `#ffc93d` | 0.86 0.16 85 | review, auto-review, checking |
 | `--tm-status-done` | `#6fe39a` | 0.83 0.15 150 | |
 | `--tm-status-published` | `#3fcf73` | 0.76 0.17 150 | |
-| `--tm-status-failed` | `#ff5468` | 0.67 0.21 15 | failed, `.btn.danger`, `.warn-text` |
+| `--tm-status-failed` | `#ff4fa3` | — | failed, `.btn.danger`, `.warn-text` |
 | `--tm-status-attention` | `#c4a1ff` | 0.76 0.13 300 | asks you, needs attention |
 
 ### Groups, presets, charts, diff, terminal
@@ -286,12 +345,12 @@ the outline of every input and select, and a component boundary needs 3:1
 | `--tm-group-2` | `#7ab8ff` | `--tm-preset-routine` | `#7ab8ff` |
 | `--tm-group-3` | `#ffd23f` | `--tm-preset-complex` | `#c4a1ff` |
 | `--tm-group-4` | `#ff6fa8` | `--tm-preset-codexFree` | `#ff9a4d` |
-| `--tm-group-5` | `#6fe39a` | `--tm-chart-worker` | `#ff7a2e` |
+| `--tm-group-5` | `#6fe39a` | `--tm-chart-worker` | `#ff4a3d` |
 | `--tm-group-6` | `#ff9a4d` | `--tm-chart-analyze` | `#c4a1ff` |
 | `--tm-group-7` | `#5fd8e0` | `--tm-tl-checks` | `#ffc93d` |
 | `--tm-group-tint` | `16%` | `--tm-tl-fixing` | `#ff6fa8` |
 | `--tm-diff-add-fg` | `#6fe39a` | `--tm-diff-add-bg` | `rgba(111,227,154,.12)` |
-| `--tm-diff-del-fg` | `#ff5468` | `--tm-diff-del-bg` | `rgba(255,84,104,.14)` |
+| `--tm-diff-del-fg` | `#ff4fa3` | `--tm-diff-del-bg` | `rgba(255,79,163,.14)` |
 | `--tm-diff-hunk-fg` | `#7ab8ff` | `--tm-diff-hunk-bg` | `rgba(122,184,255,.10)` |
 | `--tm-terminal-bg` | `#0a0605` | `--tm-terminal-text` | `#f3e6dc` |
 | `--tm-grid-dot` | `transparent` | | |
@@ -349,12 +408,12 @@ a possible later card, not this feature.)
 
 | Token | Value |
 |---|---|
-| `--tm-link` | `#ffa05c` (inline links in prose; lighter than the accent, so a link inside accent-coloured text stays distinct) |
+| `--tm-link` | `#ff8a7a` (inline links in prose; lighter than the accent, so a link inside accent-coloured text stays distinct) |
 | `--tm-focus` | `#ffc93d` (§ 6) |
-| `--tm-ember` | `linear-gradient(135deg, #ffc93d 0%, #ff7a2e 55%, #ff5a14 100%)`: primary buttons, the Board disc, the brand mark. Stops at `#ff5a14` on purpose: the darker `#e5312b` fails a black label (4.45:1, § 5). |
-| `--tm-ember-text` | `linear-gradient(90deg, #ffc93d, #ff7a2e)`: the wordmark only, via `background-clip: text` with `--tm-text` as the fallback colour |
+| `--tm-ember` | `linear-gradient(135deg, #ffc93d 0%, #ff8a3d 55%, #ff4a3d 100%)`: primary buttons, the Board disc, the brand mark. Stops at `#ff4a3d` on purpose (5.83:1 under the label): the darker `#e5312b` fails a black label (4.45:1, § 5). |
+| `--tm-ember-text` | `linear-gradient(90deg, #ffc93d, #ff4a3d)`: the wordmark only, via `background-clip: text` with `--tm-text` as the fallback colour |
 | `--tm-ember-glow` | `0 0 0 1px rgba(255,122,46,.35), 0 0 18px rgba(255,90,20,.28)` |
-| `--tm-lava-line` | `linear-gradient(90deg, transparent, #ff5a14 20%, #ffc93d 50%, #ff5a14 80%, transparent)` (1px hairlines) |
+| `--tm-lava-line` | `linear-gradient(90deg, transparent, #ff4a3d 20%, #ffc93d 50%, #ff4a3d 80%, transparent)` (1px hairlines) |
 | `--tm-wallpaper` | see below |
 | `--tm-sparks` | see below |
 
@@ -411,7 +470,7 @@ what is behind them (graded at the wallpaper's brightest point, § 5). Under
   of `.header` or `.main` (both hold fixed overlays).
 - *Active nav item:* `background: linear-gradient(90deg, rgba(255,122,46,.20), rgba(255,122,46,.05));
   box-shadow: inset 0 0 0 1px rgba(255,122,46,.26), inset 0 0 14px rgba(255,90,20,.16)`,
-  and a 2px rail `linear-gradient(180deg, #ffc93d, #ff7a2e 50%, #ff5a14)` with
+  and a 2px rail `linear-gradient(180deg, #ffc93d, #ff8a3d 50%, #ff4a3d)` with
   `box-shadow: 0 0 8px rgba(255,90,20,.9)` (this is the nav's one glow).
 - *Primary button:* `background: var(--tm-ember); color: var(--tm-accent-contrast);
   box-shadow: inset 0 1px 0 rgba(255,236,200,.45), inset 0 0 12px rgba(255,201,61,.25), 0 0 18px rgba(255,90,20,.35)`.
@@ -458,46 +517,46 @@ const ratio = (fg,bg) => { const B = hex(bg), F = blend(hex(fg),B);
 | Faint (decoration/disabled only) on bg | `faint #8a6c5e` | `bg #0a0605` | 4.21 | 3:1 | pass |
 | Faint (decoration/disabled only) on raised | `faint #8a6c5e` | `raised #160d0a` | 4.00 | 3:1 | pass |
 | Faint (decoration/disabled only) on overlay | `faint #8a6c5e` | `overlay #22140f` | 3.73 | 3:1 | pass |
-| Accent text on bg | `accent #ff7a2e` | `bg #0a0605` | 7.76 | 4.5:1 | pass |
-| Accent text on raised | `accent #ff7a2e` | `raised #160d0a` | 7.37 | 4.5:1 | pass |
-| Accent text on overlay | `accent #ff7a2e` | `overlay #22140f` | 6.87 | 4.5:1 | pass |
-| Link on bg | `link #ffa05c` | `bg #0a0605` | 10.02 | 4.5:1 | pass |
-| Link on raised | `link #ffa05c` | `raised #160d0a` | 9.52 | 4.5:1 | pass |
-| Link on overlay | `link #ffa05c` | `overlay #22140f` | 8.88 | 4.5:1 | pass |
+| Accent text on bg | `accent #ff4a3d` | `bg #0a0605` | 6.05 | 4.5:1 | pass |
+| Accent text on raised | `accent #ff4a3d` | `raised #160d0a` | 5.75 | 4.5:1 | pass |
+| Accent text on overlay | `accent #ff4a3d` | `overlay #22140f` | 5.36 | 4.5:1 | pass |
+| Link on bg | `link #ff8a7a` | `bg #0a0605` | 8.81 | 4.5:1 | pass |
+| Link on raised | `link #ff8a7a` | `raised #160d0a` | 8.36 | 4.5:1 | pass |
+| Link on overlay | `link #ff8a7a` | `overlay #22140f` | 7.80 | 4.5:1 | pass |
 | Status queued text on raised | `queued #b39d92` | `raised #160d0a` | 7.44 | 4.5:1 | pass |
 | Badge queued: text on its 16% tint | `queued #b39d92` | `tint #2f2420` | 5.85 | 4.5:1 | pass |
-| Status running text on raised | `running #ff7a2e` | `raised #160d0a` | 7.37 | 4.5:1 | pass |
-| Badge running: text on its 16% tint | `running #ff7a2e` | `tint #3b1e10` | 5.86 | 4.5:1 | pass |
+| Status running text on raised | `running #ff4a3d` | `raised #160d0a` | 5.75 | 4.5:1 | pass |
+| Badge running: text on its 16% tint | `running #ff4a3d` | `tint #3b1712` | 4.78 | 4.5:1 | pass |
 | Status review text on raised | `review #ffc93d` | `raised #160d0a` | 12.48 | 4.5:1 | pass |
 | Badge review: text on its 16% tint | `review #ffc93d` | `tint #3b2b12` | 8.88 | 4.5:1 | pass |
 | Status done text on raised | `done #6fe39a` | `raised #160d0a` | 11.98 | 4.5:1 | pass |
 | Badge done: text on its 16% tint | `done #6fe39a` | `tint #242f21` | 8.73 | 4.5:1 | pass |
 | Status published text on raised | `published #3fcf73` | `raised #160d0a` | 9.47 | 4.5:1 | pass |
 | Badge published: text on its 16% tint | `published #3fcf73` | `tint #1d2c1b` | 7.27 | 4.5:1 | pass |
-| Status failed text on raised | `failed #ff5468` | `raised #160d0a` | 6.13 | 4.5:1 | pass |
-| Badge failed: text on its 16% tint | `failed #ff5468` | `tint #3b1819` | 5.05 | 4.5:1 | pass |
+| Status failed text on raised | `failed #ff4fa3` | `raised #160d0a` | 6.29 | 4.5:1 | pass |
+| Badge failed: text on its 16% tint | `failed #ff4fa3` | `tint #3b1822` | 5.15 | 4.5:1 | pass |
 | Status attention text on raised | `attention #c4a1ff` | `raised #160d0a` | 9.02 | 4.5:1 | pass |
 | Badge attention: text on its 16% tint | `attention #c4a1ff` | `tint #322531` | 6.85 | 4.5:1 | pass |
 | Primary button label on ember fill stop | `contrast #1a0802` | `fill #ffc93d` | 12.67 | 4.5:1 | pass |
-| Primary button label on ember fill stop | `contrast #1a0802` | `fill #ff7a2e` | 7.48 | 4.5:1 | pass |
-| Primary button label on ember fill stop | `contrast #1a0802` | `fill #ff5a14` | 6.23 | 4.5:1 | pass |
+| Primary button label on ember fill stop | `contrast #1a0802` | `fill #ff8a3d` | 8.30 | 4.5:1 | pass |
+| Primary button label on ember fill stop | `contrast #1a0802` | `fill #ff4a3d` | 5.83 | 4.5:1 | pass |
 | Ghost button label on overlay | `text #fbefe6` | `overlay #22140f` | 15.82 | 4.5:1 | pass |
-| Danger button label on failed fill | `contrast #1a0802` | `failed #ff5468` | 6.22 | 4.5:1 | pass |
+| Danger button label on failed fill | `contrast #1a0802` | `failed #ff4fa3` | 6.39 | 4.5:1 | pass |
 | Own bubble text on accent-subtle | `text #fbefe6` | `own #401e0d` | 13.19 | 4.5:1 | pass |
 | Own bubble timestamp (muted) on accent-subtle | `muted #c9ab9b` | `own #401e0d` | 6.94 | 4.5:1 | pass |
 | Role bubble text on overlay | `text #fbefe6` | `overlay #22140f` | 15.82 | 4.5:1 | pass |
 | Role bubble timestamp on overlay | `muted #c9ab9b` | `overlay #22140f` | 8.33 | 4.5:1 | pass |
 | Active nav label (text) on active fill | `text #fbefe6` | `nav-on #361809` | 14.40 | 4.5:1 | pass |
-| Active nav counter (accent) on active fill | `accent #ff7a2e` | `nav-on #361809` | 6.25 | 4.5:1 | pass |
+| Active nav counter (accent) on active fill | `accent #ff4a3d` | `nav-on #361809` | 4.88 | 4.5:1 | pass |
 | Nav counter (muted) on sidebar | `muted #c9ab9b` | `bg #0a0605` | 9.40 | 4.5:1 | pass |
-| Tab count label on accent pill | `contrast #1a0802` | `accent #ff7a2e` | 7.48 | 4.5:1 | pass |
+| Tab count label on accent pill | `contrast #1a0802` | `accent #ff4a3d` | 5.83 | 4.5:1 | pass |
 | Urgent tab count label on attention pill | `contrast #1a0802` | `attention #c4a1ff` | 9.16 | 4.5:1 | pass |
 | Tainted chip (review) on raised | `review #ffc93d` | `tint` | 8.88 | 4.5:1 | pass |
 | Focus ring vs bg (non-text) | `focus #ffc93d` | `bg #0a0605` | 13.13 | 3:1 | pass |
 | Input border (border-strong) vs bg (non-text) | `border-strong #8f5a44` | `bg #0a0605` | 3.57 | 3:1 | pass |
 | Input border (border-strong) vs raised (non-text) | `border-strong #8f5a44` | `raised #160d0a` | 3.39 | 3:1 | pass |
-| Switch on (accent) vs bg (non-text) | `accent #ff7a2e` | `bg #0a0605` | 7.76 | 3:1 | pass |
-| Progress bar fill vs track (non-text) | `accent #ff7a2e` | `overlay #22140f` | 6.87 | 3:1 | pass |
+| Switch on (accent) vs bg (non-text) | `accent #ff4a3d` | `bg #0a0605` | 6.05 | 3:1 | pass |
+| Progress bar fill vs track (non-text) | `accent #ff4a3d` | `overlay #22140f` | 5.36 | 3:1 | pass |
 | Group 1 chip text on its tint | `g1 #c4a1ff` | `tint #322531` | 6.85 | 4.5:1 | pass |
 | Group 2 chip text on its tint | `g2 #7ab8ff` | `tint #262831` | 7.08 | 4.5:1 | pass |
 | Group 3 chip text on its tint | `g3 #ffd23f` | `tint #3b2d12` | 9.26 | 4.5:1 | pass |
@@ -507,13 +566,13 @@ const ratio = (fg,bg) => { const B = hex(bg), F = blend(hex(fg),B);
 | Group 7 chip text on its tint | `g7 #5fd8e0` | `tint #222d2c` | 8.37 | 4.5:1 | pass |
 | Diff add fg on diff add bg | `add #6fe39a` | `add-bg #162117` | 10.39 | 4.5:1 | pass |
 | Diff body text on add bg | `text #fbefe6` | `add-bg #162117` | 14.71 | 4.5:1 | pass |
-| Diff del fg on diff del bg | `del #ff5468` | `del-bg #2c1113` | 5.62 | 4.5:1 | pass |
+| Diff del fg on diff del bg | `del #ff4fa3` | `del-bg #2c101b` | 5.76 | 4.5:1 | pass |
 | Diff body text on del bg | `text #fbefe6` | `del-bg #2c1113` | 15.54 | 4.5:1 | pass |
 | Diff hunk fg on diff hunk bg | `hunk #7ab8ff` | `hunk-bg #15181e` | 8.57 | 4.5:1 | pass |
 | Diff body text on hunk bg | `text #fbefe6` | `hunk-bg #15181e` | 15.74 | 4.5:1 | pass |
 | Terminal foreground | `foreground #f3e6dc` | `terminal-bg #0a0605` | 16.48 | 4.5:1 | pass |
 | Terminal black (a TUI background, not text) | `black #2a1c17` | `terminal-bg #0a0605` | 1.23 | n/a | — |
-| Terminal red | `red #ff5468` | `terminal-bg #0a0605` | 6.45 | 4.5:1 | pass |
+| Terminal red | `red #ff4fa3` | `terminal-bg #0a0605` | 6.63 | 4.5:1 | pass |
 | Terminal green | `green #6fe39a` | `terminal-bg #0a0605` | 12.61 | 4.5:1 | pass |
 | Terminal yellow | `yellow #ffc93d` | `terminal-bg #0a0605` | 13.13 | 4.5:1 | pass |
 | Terminal blue | `blue #7ab8ff` | `terminal-bg #0a0605` | 9.73 | 4.5:1 | pass |
@@ -547,41 +606,41 @@ muted, and accent when active).
 | Body on card hover (opaque) | `text #fbefe6` | `card-hover #1c110d` | 16.37 | 4.5:1 | pass |
 | Muted on card hover (opaque) | `muted #c9ab9b` | `card-hover #1c110d` | 8.62 | 4.5:1 | pass |
 | Faint (decoration) on card hover (opaque) | `faint #8a6c5e` | `card-hover #1c110d` | 3.86 | 3:1 | pass |
-| Accent on card hover (opaque) | `accent #ff7a2e` | `card-hover #1c110d` | 7.11 | 4.5:1 | pass |
-| Failed on card hover (opaque) | `failed #ff5468` | `card-hover #1c110d` | 5.92 | 4.5:1 | pass |
+| Accent on card hover (opaque) | `accent #ff4a3d` | `card-hover #1c110d` | 5.55 | 4.5:1 | pass |
+| Failed on card hover (opaque) | `failed #ff4fa3` | `card-hover #1c110d` | 6.08 | 4.5:1 | pass |
 | Attention on card hover (opaque) | `attention #c4a1ff` | `card-hover #1c110d` | 8.71 | 4.5:1 | pass |
 | Review on card hover (opaque) | `review #ffc93d` | `card-hover #1c110d` | 12.04 | 4.5:1 | pass |
 | Body on button (opaque) | `text #fbefe6` | `btn #2b1d17` | 14.40 | 4.5:1 | pass |
 | Muted on button (opaque) | `muted #c9ab9b` | `btn #2b1d17` | 7.58 | 4.5:1 | pass |
 | Faint (decoration) on button (opaque) | `faint #8a6c5e` | `btn #2b1d17` | 3.40 | 3:1 | pass |
-| Accent on button (opaque) | `accent #ff7a2e` | `btn #2b1d17` | 6.26 | 4.5:1 | pass |
-| Failed on button (opaque) | `failed #ff5468` | `btn #2b1d17` | 5.21 | 4.5:1 | pass |
+| Accent on button (opaque) | `accent #ff4a3d` | `btn #2b1d17` | 4.88 | 4.5:1 | pass |
+| Failed on button (opaque) | `failed #ff4fa3` | `btn #2b1d17` | 5.34 | 4.5:1 | pass |
 | Attention on button (opaque) | `attention #c4a1ff` | `btn #2b1d17` | 7.66 | 4.5:1 | pass |
 | Review on button (opaque) | `review #ffc93d` | `btn #2b1d17` | 10.59 | 4.5:1 | pass |
 | Body on button hover (opaque) | `text #fbefe6` | `btn-hover #37261e` | 12.75 | 4.5:1 | pass |
 | Muted on button hover (opaque) | `muted #c9ab9b` | `btn-hover #37261e` | 6.71 | 4.5:1 | pass |
 | Faint (decoration) on button hover (opaque) | `faint #8a6c5e` | `btn-hover #37261e` | 3.01 | 3:1 | pass |
-| Accent on button hover (opaque) | `accent #ff7a2e` | `btn-hover #37261e` | 5.54 | 4.5:1 | pass |
-| Failed on button hover (opaque) | `failed #ff5468` | `btn-hover #37261e` | 4.61 | 4.5:1 | pass |
+| Accent on button hover (opaque) | `accent-text #ff7a5c` | `btn-hover #37261e` | 5.62 | 4.5:1 | pass |
+| Failed on button hover (opaque) | `failed #ff4fa3` | `btn-hover #37261e` | 4.73 | 4.5:1 | pass |
 | Attention on button hover (opaque) | `attention #c4a1ff` | `btn-hover #37261e` | 6.78 | 4.5:1 | pass |
 | Review on button hover (opaque) | `review #ffc93d` | `btn-hover #37261e` | 9.38 | 4.5:1 | pass |
 | Body on glass bar over the glow peak | `text #fbefe6` | `bar on peak #33180b` | 14.57 | 4.5:1 | pass |
 | Muted on glass bar over the glow peak | `muted #c9ab9b` | `bar on peak #33180b` | 7.66 | 4.5:1 | pass |
 | Faint (decoration) on glass bar over the glow peak | `faint #8a6c5e` | `bar on peak #33180b` | 3.44 | 3:1 | pass |
-| Accent on glass bar over the glow peak | `accent #ff7a2e` | `bar on peak #33180b` | 6.33 | 4.5:1 | pass |
-| Failed on glass bar over the glow peak | `failed #ff5468` | `bar on peak #33180b` | 5.27 | 4.5:1 | pass |
+| Accent on glass bar over the glow peak | `accent #ff4a3d` | `bar on peak #33180b` | 4.94 | 4.5:1 | pass |
+| Failed on glass bar over the glow peak | `failed #ff4fa3` | `bar on peak #33180b` | 5.41 | 4.5:1 | pass |
 | Attention on glass bar over the glow peak | `attention #c4a1ff` | `bar on peak #33180b` | 7.75 | 4.5:1 | pass |
 | Review on glass bar over the glow peak | `review #ffc93d` | `bar on peak #33180b` | 10.71 | 4.5:1 | pass |
 | Body on glass thick (sheets) over the glow peak | `text #fbefe6` | `thick on peak #22100a` | 16.22 | 4.5:1 | pass |
 | Muted on glass thick (sheets) over the glow peak | `muted #c9ab9b` | `thick on peak #22100a` | 8.53 | 4.5:1 | pass |
 | Faint (decoration) on glass thick (sheets) over the glow peak | `faint #8a6c5e` | `thick on peak #22100a` | 3.83 | 3:1 | pass |
-| Accent on glass thick (sheets) over the glow peak | `accent #ff7a2e` | `thick on peak #22100a` | 7.04 | 4.5:1 | pass |
-| Failed on glass thick (sheets) over the glow peak | `failed #ff5468` | `thick on peak #22100a` | 5.86 | 4.5:1 | pass |
+| Accent on glass thick (sheets) over the glow peak | `accent #ff4a3d` | `thick on peak #22100a` | 5.49 | 4.5:1 | pass |
+| Failed on glass thick (sheets) over the glow peak | `failed #ff4fa3` | `thick on peak #22100a` | 6.02 | 4.5:1 | pass |
 | Attention on glass thick (sheets) over the glow peak | `attention #c4a1ff` | `thick on peak #22100a` | 8.63 | 4.5:1 | pass |
 | Review on glass thick (sheets) over the glow peak | `review #ffc93d` | `thick on peak #22100a` | 11.93 | 4.5:1 | pass |
 | Body on tab lens over the bar over the glow peak | `text #fbefe6` | `lens on bar #542e18` | 10.44 | 4.5:1 | pass |
 | Muted on tab lens over the bar over the glow peak | `muted #c9ab9b` | `lens on bar #542e18` | 5.49 | 4.5:1 | pass |
-| Accent on tab lens over the bar over the glow peak | `accent #ff7a2e` | `lens on bar #542e18` | 4.53 | 4.5:1 | pass |
+| Accent on tab lens over the bar over the glow peak | `accent-text #ff7a5c` | `lens on bar #542e18` | 4.60 | 4.5:1 | pass |
 
 All 38 composited rows pass. The tightest is the active tab label on the lens
 at the theoretical peak (4.53), which in practice sits at the bottom of the
@@ -591,8 +650,8 @@ screen, far from the top-left glow.
 
 | Pair | Ratio | Instead |
 |---|---:|---|
-| white on `#ff5a14` (a white-label orange button) | 3.12 | `--tm-accent-contrast` `#1a0802` label (6.23) |
-| `#1a0802` on `#e5312b` (a red end stop for the ember gradient) | 4.45 | gradient stops at `#ff5a14` |
+| white on `#ff4a3d` (a white-label red button) | 3.33 | `--tm-accent-contrast` `#1a0802` label (5.83) |
+| `#1a0802` on `#e5312b` (a red end stop for the ember gradient) | 4.45 | gradient stops at `#ff4a3d` (5.83) |
 | `--tm-gray-0` on `#c4a1ff` (today's `.tab-count.urgent` label) | 2.03 | `--tm-accent-contrast` (9.16), a `magma.css` rule |
 | Classic's `--tm-border-strong` `#464b52` as an input outline | 2.20 | Magma's `#8f5a44` (3.57 on bg, 3.39 on raised) |
 
@@ -694,7 +753,7 @@ three objects into one `terminalTheme(design)` helper beside the components):
 | `cursor` / `cursorAccent` | `#ffc93d` / `#0a0605` | 13.1 |
 | `selectionBackground` | `rgba(255,122,46,.32)` (blends to `#582b12`) | fg on it 9.7 |
 | `black` / `brightBlack` | `#2a1c17` / `#8a6c5e` | TUI bg / 4.2 |
-| `red` / `brightRed` | `#ff5468` / `#ff8590` | 6.5 / 8.7 |
+| `red` / `brightRed` | `#ff4fa3` / `#ff85c0` | 6.6 / 9.0 |
 | `green` / `brightGreen` | `#6fe39a` / `#9af0b6` | 12.6 / 14.9 |
 | `yellow` / `brightYellow` | `#ffc93d` / `#ffe08a` | 13.1 / 15.6 |
 | `blue` / `brightBlue` | `#7ab8ff` / `#a8d0ff` | 9.7 / 12.6 |
@@ -720,8 +779,8 @@ where the G opens. It is one stroke, one dot and one tile, so it survives
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Gor">
   <defs>
     <linearGradient id="gor-ember" x1="14" y1="50" x2="50" y2="14" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ff5a14"/>
-      <stop offset=".6" stop-color="#ff7a2e"/>
+      <stop offset="0" stop-color="#ff4a3d"/>
+      <stop offset=".6" stop-color="#ff8a3d"/>
       <stop offset="1" stop-color="#ffc93d"/>
     </linearGradient>
   </defs>
@@ -909,7 +968,7 @@ A counter never counts what its page would not show.
 Statuses are the shared unions: `TaskStatus` (`shared/src/types.ts:3-22`),
 `FeatureStatus` (`:2269-2279`).
 
-### Proposed extras (need the owner's sign-off; not built unless approved)
+### Extras (all approved by the owner, Q7; plus Office group chat · unread)
 
 | Counter | Predicate | Note |
 |---|---|---|
@@ -1111,6 +1170,9 @@ pairs of § 5. Every row is also re-checked in Glass and Classic for "unchanged"
 | Emulator (desktop only) | floating phone frame over the board | — |
 
 ## 15. Open questions for the owner
+
+All answered on 2026-11-07. See § Owner decisions, which wins over the
+proposals below.
 
 1. **Default design.** Does Magma become the default for an unset device
    (`tm.design` unset → today Glass)? Proposed: **no, not in this feature**.
