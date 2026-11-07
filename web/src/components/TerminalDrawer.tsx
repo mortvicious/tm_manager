@@ -9,6 +9,7 @@ import { clampHeight, clampWidth, savedHeight, savedWidth, saveHeight, saveWidth
 import { IconArrowDown, IconChevron, IconDockBottom, IconDockRight, IconSend, IconX } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
 import { attachTouchScroll } from './termTouchScroll.ts';
+import { terminalTheme, useTerminalTheme } from '../termTheme.ts';
 
 export const b64ToBytes = (b64: string): Uint8Array => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 export const bytesToB64 = (bytes: Uint8Array): string => {
@@ -116,6 +117,7 @@ export function TerminalDrawer({
   const sendRef = useRef<((d: string) => void) | null>(null);
   const focusRef = useRef<(() => void) | null>(null);
   const termRef = useRef<Terminal | null>(null);
+  useTerminalTheme(termRef);
   const composeRef = useRef<HTMLTextAreaElement>(null);
   const [draft, setDraft] = useState('');
   const [mobileFont, setMobileFont] = useState(loadMobileFont);
@@ -270,12 +272,12 @@ export function TerminalDrawer({
     // Guards handlers of a socket the cleanup already closed (StrictMode, R2).
     let disposed = false;
 
-    // Colors from docs/tm-design-tokens.html (--tm-terminal-bg / -text);
-    // xterm needs concrete values, not CSS variables.
+    // Colors from docs/tm-design-tokens.html per design (termTheme.ts): xterm
+    // needs concrete values, not CSS variables; useTerminalTheme re-themes it.
     const term = new Terminal({
       fontFamily: "'JetBrains Mono', ui-monospace, monospace",
       fontSize: fontRef.current,
-      theme: { background: '#0a0c0e', foreground: '#d2f5ec', cursor: '#2dd4bf' },
+      theme: terminalTheme(),
       scrollback: 8000,
       cursorBlink: true,
     });

@@ -1,7 +1,10 @@
 /**
- * How THIS DEVICE looks (docs/glass.md): the design layer, `classic` (the
- * original sheet) or `glass` (the iOS Liquid Glass layer in glass.css), and
- * the colour scheme, `light`/`dark` pinned or following the system.
+ * How THIS DEVICE looks (docs/glass.md, docs/magma.md): the design layer,
+ * `classic` (the original sheet), `glass` (the iOS Liquid Glass layer in
+ * glass.css) or `magma` (glow on black, magma.css, on Glass's structure), and
+ * the colour scheme, `light`/`dark` pinned or following the system. Magma is
+ * dark-only: under it the scheme is always dark, and the stored pick is kept
+ * for when the device goes back to Glass or Classic.
  *
  * Both live in localStorage, never in tm_config, so the phone can run Glass
  * while the desktop stays Classic. index.html carries an inline twin of
@@ -11,7 +14,10 @@
 import { useSyncExternalStore } from 'react';
 import { flushSync } from 'react-dom';
 
-export type Design = 'classic' | 'glass';
+export type Design = 'classic' | 'glass' | 'magma';
+/** What each design is called on screen (Config → Appearance, the settings summary). */
+export const DESIGN_LABELS: Record<Design, string> = { glass: 'Glass', classic: 'Classic', magma: 'Magma' };
+
 export type SchemePref = 'system' | 'light' | 'dark';
 export type Scheme = 'light' | 'dark';
 
@@ -53,11 +59,15 @@ function store(key: string, value: string | null) {
 }
 
 function resolve(): Look {
-  const design: Design = stored(DESIGN_KEY) === 'classic' ? 'classic' : 'glass';
+  // nothing stored (or anything unknown) = Magma, the default since 2026-11-07
+  // (docs/magma.md § Owner decisions Q1); a stored Glass or Classic is kept
+  const raw0 = stored(DESIGN_KEY);
+  const design: Design = raw0 === 'classic' || raw0 === 'glass' ? raw0 : 'magma';
   const raw = stored(SCHEME_KEY);
   const pref: SchemePref = raw === 'light' || raw === 'dark' ? raw : 'system';
-  // no media query support reads as dark, the old default
-  const scheme: Scheme = pref === 'system' ? (systemLight?.matches ? 'light' : 'dark') : pref;
+  // Magma is dark-only (Q3); no media query support reads as dark, the old default
+  const scheme: Scheme =
+    design === 'magma' ? 'dark' : pref === 'system' ? (systemLight?.matches ? 'light' : 'dark') : pref;
   return { design, pref, scheme };
 }
 
@@ -87,13 +97,13 @@ function refresh(animate: boolean) {
     // re-render (Glass drops nav entries), not only the attribute change
     flushSync(() => listeners.forEach((fn) => fn()));
   };
-  // A switch that involves Glass repaints every surface at once: cross-fade it
-  // (View Transitions, Safari 18+) unless motion is reduced. A Classic-only
-  // scheme flip stays as it always was.
+  // A switch that involves Glass or Magma repaints every surface at once:
+  // cross-fade it (View Transitions, Safari 18+) unless motion is reduced. A
+  // Classic-only scheme flip stays as it always was.
   const doc = document as Document & { startViewTransition?: (cb: () => void) => unknown };
   const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  const glass = look.design === 'glass' || next.design === 'glass';
-  if (animate && glass && doc.startViewTransition && !still && document.visibilityState === 'visible') {
+  const layered = look.design !== 'classic' || next.design !== 'classic';
+  if (animate && layered && doc.startViewTransition && !still && document.visibilityState === 'visible') {
     doc.startViewTransition(commit);
   } else {
     commit();
@@ -122,6 +132,11 @@ function subscribe(fn: () => void) {
   return () => {
     listeners.delete(fn);
   };
+}
+
+/** The look right now, outside React (an xterm being created). */
+export function currentLook(): Look {
+  return look;
 }
 
 export function useLook(): Look {
