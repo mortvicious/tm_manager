@@ -1,11 +1,14 @@
 /**
- * Motion helpers for the Glass design (docs/glass.md § Motion). Classic never
- * sees any of this: every effect is gated on `html[data-design='glass']`.
+ * Motion helpers for the layered designs, Glass and Magma (docs/glass.md
+ * § Motion, docs/magma.md § 8 — Magma keeps Glass's behaviour). Classic never
+ * sees any of this: every effect is gated on `html[data-design]` being one of
+ * the two.
  */
 
-function glassMotion() {
+export function layeredMotion() {
+  const design = document.documentElement.dataset.design;
   return (
-    document.documentElement.dataset.design === 'glass' &&
+    (design === 'glass' || design === 'magma') &&
     !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
   );
 }
@@ -28,7 +31,7 @@ export function exitGhost(node: HTMLElement | null) {
     // React detaches refs before it removes the DOM, so the node still holds
     // its last frame here. Clone NOW: passive-effect cleanups (an xterm
     // dispose) may strip its DOM before the microtask below runs.
-    if (!glassMotion()) return;
+    if (!layeredMotion()) return;
     const parent = node.parentNode;
     const next = node.nextSibling;
     const ghost = node.cloneNode(true) as HTMLElement;

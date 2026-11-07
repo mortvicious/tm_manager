@@ -1,0 +1,426 @@
+/* =====================================================================
+   MAGMA: glow on black (docs/magma.md)
+
+   Loaded after glass.css. Magma reuses Glass's STRUCTURE — every glass.css
+   rule and the scheme-independent Glass token blocks are widened to
+   :is([data-design='glass'], [data-design='magma']) — and Glass's BEHAVIOUR
+   (sheets, exit ghosts, the row cascade, the tab-bar lens, the view
+   transition). What it drops is Glass's LOOK (owner sign-off, § 3 § Game
+   look): no frost, no round capsules, no specular rims. This file holds only
+   Magma's own rules, every one scoped to [data-design='magma'], every value a
+   --tm-* token from theme.css's Magma block.
+
+   Rules of the layer:
+   - Glow is static: gradients and box-shadows, never an animation, never
+     filter/drop-shadow/text-shadow. At most four lit glows on a screen (§ 8):
+     the active nav item (or the Board disc on a phone), the view's primary
+     button, the focused composer, the brand mark. Rows, cards and badges
+     never glow.
+   - Nothing here goes on .main, .header or .app as transform/filter/
+     backdrop-filter/clip-path: they hold position:fixed overlays.
+   - No infinite animation (docs/spa-performance.md § Calm).
+   - Chamfers: `corner-shape: bevel` where the browser has it (borders and
+     shadows follow the cut, children are not clipped); otherwise leaf
+     controls (buttons, badges, chips) are cut with clip-path and containers
+     keep Magma's hard 2–6px radii, because a clip-path would cut off the
+     popovers that open inside a panel.
+   ===================================================================== */
+
+/* ---------- base: the wallpaper and the ember dot field ---------- */
+
+/* One paint (§ 8): the dots are the top layer of the body's own background,
+   so there is no extra element and no stacking context to manage. The body
+   never scrolls (.main does), so this is painted once. */
+[data-design='magma'] body {
+  background: var(--tm-sparks), var(--tm-wallpaper);
+  background-color: var(--tm-bg);
+}
+
+[data-design='magma'] ::selection {
+  background: var(--tm-accent-subtle);
+  color: var(--tm-text);
+}
+
+/* ---------- focus (§ 6): Classic's geometry, ember-yellow, never a glow ---------- */
+
+[data-design='magma'] :focus-visible {
+  outline-color: var(--tm-focus);
+}
+
+/* a field's own focus: the border lights up in the accent, the yellow ring
+   (when keyboard focus draws one) sits outside it */
+:where([data-design='magma']) :is(input, textarea, select).field:focus,
+:where([data-design='magma']) button.field:focus-visible {
+  border-color: var(--tm-accent);
+}
+
+/* ---------- links in prose ---------- */
+
+[data-design='magma'] :where(p, li, .hint) a:not([class]) {
+  color: var(--tm-link);
+}
+
+/* ---------- the shell ---------- */
+
+/* the sidebar pane: opaque warm black with a hard bevel instead of a lit rim */
+[data-design='magma'] .sidebar {
+  border-color: var(--tm-border);
+  box-shadow:
+    inset 1px 1px 0 var(--tm-magma-bevel-light),
+    inset -1px -1px 0 var(--tm-magma-bevel-dark),
+    var(--tm-glass-shadow-sm);
+}
+
+/* the lava hairline under the brand (a pseudo-element of the sidebar's own
+   brand block, never of .header or .main) */
+[data-design='magma'] .sidebar .brand {
+  position: relative;
+}
+
+[data-design='magma'] .sidebar .brand::after {
+  content: '';
+  position: absolute;
+  left: var(--tm-space-3);
+  right: var(--tm-space-3);
+  bottom: var(--tm-space-2);
+  height: 1px;
+  background: var(--tm-lava-line);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* the active nav item: a lava frame, a hot rail, and the nav's one glow; the
+   glow fades in as a transition, not a keyframe (§ 8) */
+[data-design='magma'] .sidebar .nav-link {
+  position: relative;
+  transition:
+    color var(--tm-dur-fast) var(--tm-ease-out),
+    background var(--tm-dur-fast) var(--tm-ease-out),
+    box-shadow var(--tm-dur-base) var(--tm-ease-out),
+    transform var(--tm-dur-spring) var(--tm-ease-spring);
+}
+
+[data-design='magma'] .sidebar .nav-link.active {
+  background: var(--tm-magma-frame-fill);
+  box-shadow: var(--tm-magma-frame);
+  color: var(--tm-text);
+}
+
+[data-design='magma'] .sidebar .nav-link.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--tm-magma-rail);
+  box-shadow: var(--tm-magma-rail-glow);
+  pointer-events: none;
+}
+
+/* ---------- materials: panels with a hard bevel ---------- */
+
+[data-design='magma'] :is(.panel, .tile, .chart-card) {
+  border-color: var(--tm-border);
+  box-shadow:
+    inset 1px 1px 0 var(--tm-magma-bevel-light),
+    inset -1px -1px 0 var(--tm-magma-bevel-dark),
+    var(--tm-glass-shadow-sm);
+}
+
+/* the selected Inbox card: the lava frame, no outer glow (cards never glow) */
+[data-design='magma'] .panel.inbox-item.sel {
+  border-color: var(--tm-accent);
+  box-shadow: var(--tm-magma-frame);
+}
+
+/* floating materials (task panel, sheets, popovers, dialogs, toasts): the
+   rim becomes a hard edge and the specular line a bevel */
+[data-design='magma'] :is(.slideover, .more-sheet, .qmodal, .nt-dialog, .bs-pop, .pal-pop, .cmd-pop, .group-picker-pop, .ws-pop, .bf-card, .toast, .offline-banner, .bulk-bar) {
+  border-color: var(--tm-border-strong);
+}
+
+/* ---------- buttons: chunky, outlined, pushed down when pressed ---------- */
+
+/* :where() like glass.css, so Classic-structured state rules (.preset-btn.on,
+   .queue-btn …) still win over the base. The 2px outline takes a pixel off
+   each side of Glass's padding, so a button keeps its size. */
+:where([data-design='magma']) .btn,
+:where([data-design='magma']) .btn:hover {
+  border: 2px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-glass-btn);
+  color: var(--tm-text);
+  box-shadow:
+    inset 1px 1px 0 var(--tm-magma-bevel-light),
+    inset -1px -1px 0 var(--tm-magma-bevel-dark);
+}
+
+:where([data-design='magma']) .btn {
+  padding: 6px 15px;
+  transition:
+    transform var(--tm-dur-press) var(--tm-ease-out),
+    background var(--tm-dur-fast) var(--tm-ease-out),
+    color var(--tm-dur-fast) var(--tm-ease-out),
+    border-color var(--tm-dur-fast) var(--tm-ease-out),
+    box-shadow var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+/* the press is a push-down, not Glass's shrink: the bevel flips */
+:where([data-design='magma']) .btn:active:not(:disabled) {
+  transform: translateY(var(--tm-magma-press));
+  box-shadow:
+    inset 1px 1px 0 var(--tm-magma-bevel-dark),
+    inset -1px -1px 0 var(--tm-magma-bevel-light);
+}
+
+/* the primary is the ember fill, with the view's one button glow */
+:where([data-design='magma']) .btn.primary,
+:where([data-design='magma']) .btn.primary:hover {
+  border-color: var(--tm-accent);
+  background: var(--tm-ember);
+  color: var(--tm-accent-contrast);
+  box-shadow: var(--tm-magma-btn-glow);
+}
+
+:where([data-design='magma']) .btn.danger,
+:where([data-design='magma']) .btn.danger:hover {
+  border-color: color-mix(in srgb, var(--tm-status-failed) 60%, transparent);
+  background: color-mix(in srgb, var(--tm-status-failed) 14%, var(--tm-bg-raised));
+  color: var(--tm-status-failed);
+  box-shadow: none;
+}
+
+:where([data-design='magma']) .btn.ghost,
+:where([data-design='magma']) .btn.ghost:hover {
+  border-color: transparent;
+  background: transparent;
+  color: var(--tm-text-muted);
+  box-shadow: none;
+}
+
+[data-design='magma'] .btn.ghost.on,
+[data-design='magma'] .btn.ghost.on:hover {
+  border-color: color-mix(in srgb, var(--tm-accent) 45%, transparent);
+  background: var(--tm-accent-subtle);
+  color: var(--tm-accent);
+}
+
+/* a segmented control: a hard-edged well; the picked segment is the lit one */
+[data-design='magma'] .seg {
+  border-radius: var(--tm-radius-sm);
+}
+
+[data-design='magma'] .seg .btn,
+[data-design='magma'] .seg .btn:hover {
+  border-color: transparent;
+  border-radius: var(--tm-radius-sm);
+}
+
+[data-design='magma'] .seg .btn.primary,
+[data-design='magma'] .seg .btn.primary:hover {
+  border-color: var(--tm-accent);
+  box-shadow: none;
+}
+
+@media (hover: hover) {
+  /* accent text on the lightest surface uses the lighter accent (§ 5) */
+  :where([data-design='magma']) .btn:hover {
+    border-color: var(--tm-accent);
+    background: var(--tm-glass-btn-hover);
+    color: var(--tm-accent-text);
+  }
+
+  :where([data-design='magma']) .btn.primary:hover {
+    background: var(--tm-ember);
+    color: var(--tm-accent-contrast);
+  }
+
+  :where([data-design='magma']) .btn.ghost:hover {
+    border-color: transparent;
+    background: var(--tm-bg-overlay);
+    color: var(--tm-text);
+  }
+}
+
+/* header capsules are buttons too: no pills */
+[data-design='magma'] .header .btn,
+[data-design='magma'] .header .btn:hover {
+  border-radius: var(--tm-radius-sm);
+}
+
+/* the phone row's next-step button (Run now …) is a pill in Classic's structure */
+[data-design='magma'] .app.mobile .task-row.m .btn.next-step {
+  border-radius: var(--tm-radius-sm);
+}
+
+/* ---------- inputs ---------- */
+
+:where([data-design='magma']) :is(input, textarea, select, button).field {
+  border: 1px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-bg-inset);
+  box-shadow: inset 1px 1px 0 var(--tm-magma-bevel-dark);
+}
+
+/* ---------- badges, chips, HUD counters ---------- */
+
+[data-design='magma'] .badge,
+[data-design='magma'] .chip {
+  border-radius: var(--tm-radius-sm);
+}
+
+[data-design='magma'] :is(.bs-trigger, .bs-count, .bs-token, .bs-tok-prev, .tl-lane) {
+  border-radius: var(--tm-radius-sm);
+}
+
+/* counters and small kind badges: hard-cornered, tabular numerals (HUD) */
+[data-design='magma'] :is(.section-head .count, .cfg-count, .inbox-kind, .fbadge, .sev) {
+  border-radius: var(--tm-radius-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-design='magma'] .bs-foot select.field {
+  border-radius: var(--tm-radius-sm);
+}
+
+/* the tab bar's counters read like a game HUD: a cut badge, a tabular mono
+   numeral. The urgent one's label: --tm-gray-0 is 2.03:1 on Magma's violet,
+   the accent contrast is 9.16:1 (§ 5). */
+[data-design='magma'] .tab-count {
+  border-radius: var(--tm-radius-sm);
+  font-family: var(--tm-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+[data-design='magma'] .tab-count.urgent {
+  color: var(--tm-accent-contrast);
+}
+
+/* ---------- the phone tab bar: cut capsules, an ember Board disc ---------- */
+
+[data-design='magma'] .tabbar .tab-group {
+  border-color: var(--tm-border-strong);
+  border-radius: var(--tm-radius-md);
+  box-shadow:
+    inset 1px 1px 0 var(--tm-magma-bevel-light),
+    inset -1px -1px 0 var(--tm-magma-bevel-dark),
+    var(--tm-glass-shadow);
+}
+
+[data-design='magma'] .tabbar .tab-group::before {
+  border-radius: var(--tm-radius-sm);
+  box-shadow: inset 0 0 0 1px var(--tm-glass-rim);
+}
+
+[data-design='magma'] .tabbar .nav-link {
+  border-radius: var(--tm-radius-sm);
+}
+
+/* the lens is the lightest surface: accent text there is the lighter accent */
+[data-design='magma'] .tabbar .nav-link.active,
+[data-design='magma'] .tabbar .nav-link.here {
+  color: var(--tm-accent-text);
+}
+
+[data-design='magma'] .tabbar .tab-centre .tab-fab {
+  border: 0;
+  background: var(--tm-glass-thick);
+  color: var(--tm-accent);
+  box-shadow: var(--tm-magma-disc-ring), var(--tm-glass-shadow);
+}
+
+[data-design='magma'] .tabbar .tab-centre.active .tab-fab {
+  background: var(--tm-ember);
+  color: var(--tm-accent-contrast);
+  box-shadow: var(--tm-magma-disc-glow);
+}
+
+/* ---------- chamfers ---------- */
+
+@supports (corner-shape: bevel) {
+  [data-design='magma'] :is(.panel, .tile, .chart-card, .sidebar, .slideover, .qmodal, .nt-dialog, .bs-pop, .pal-pop, .cmd-pop, .group-picker-pop, .ws-pop, .bf-card, .toast, .offline-banner, .bulk-bar) {
+    border-radius: var(--tm-magma-chamfer);
+    corner-shape: bevel;
+  }
+
+  /* a sheet stands on the screen's bottom edge: only its top corners are cut */
+  [data-design='magma'] .more-sheet:not(.sheet-tall),
+  [data-design='magma'] .more-sheet.sheet-tall {
+    border-radius: var(--tm-magma-chamfer) var(--tm-magma-chamfer) 0 0;
+    corner-shape: bevel;
+  }
+
+  :where([data-design='magma']) .btn,
+  :where([data-design='magma']) .btn:hover,
+  [data-design='magma'] .header .btn,
+  [data-design='magma'] .header .btn:hover,
+  [data-design='magma'] .seg,
+  [data-design='magma'] :is(.badge, .chip, .tab-count, .bs-trigger) {
+    border-radius: var(--tm-magma-chamfer-sm);
+    corner-shape: bevel;
+  }
+
+  [data-design='magma'] .tabbar .tab-group {
+    border-radius: var(--tm-magma-chamfer);
+    corner-shape: bevel;
+  }
+}
+
+/* No corner-shape (Safari today): cut the leaf controls with a polygon. They
+   host no popovers, so nothing of theirs is clipped. The polygon reaches
+   --bleed outside the box along every edge, so the primary button's glow and
+   the focus ring (offset 2px + 2px) still show there; only the corners are
+   cut. --cut + --bleed stays under half of the smallest control (28px). */
+@supports not (corner-shape: bevel) {
+  :where([data-design='magma']) .btn,
+  [data-design='magma'] :is(.badge, .chip, .tab-count) {
+    --cut: var(--tm-magma-chamfer-sm);
+    --bleed: 8px;
+    clip-path: polygon(
+      calc(var(--cut) + var(--bleed)) calc(-1 * var(--bleed)),
+      calc(100% - var(--cut) - var(--bleed)) calc(-1 * var(--bleed)),
+      calc(100% + var(--bleed)) calc(var(--cut) + var(--bleed)),
+      calc(100% + var(--bleed)) calc(100% - var(--cut) - var(--bleed)),
+      calc(100% - var(--cut) - var(--bleed)) calc(100% + var(--bleed)),
+      calc(var(--cut) + var(--bleed)) calc(100% + var(--bleed)),
+      calc(-1 * var(--bleed)) calc(100% - var(--cut) - var(--bleed)),
+      calc(-1 * var(--bleed)) calc(var(--cut) + var(--bleed))
+    );
+  }
+
+  /* badges and counters are small: a smaller bleed keeps the polygon simple */
+  [data-design='magma'] :is(.badge, .chip, .tab-count) {
+    --cut: 3px;
+    --bleed: 2px;
+  }
+
+  /* the polygon would cut the primary's outer glow off square at the bleed:
+     here the ember light stays inside the button */
+  :where([data-design='magma']) .btn.primary,
+  :where([data-design='magma']) .btn.primary:hover {
+    box-shadow: var(--tm-magma-btn-glow-inner);
+  }
+
+  /* a ghost has no outline to cut and is often an icon in a tight row */
+  :where([data-design='magma']) .btn.ghost {
+    clip-path: none;
+  }
+}
+
+/* ---------- motion ---------- */
+
+/* Magma's one animation of its own (the nav glow fading in) is a transition,
+   which the global Reduce Motion rule already collapses; the push-down goes
+   too. The entry motion (page rise, row cascade, sheets, exit ghosts) is
+   Glass's, widened, and is switched off there under Reduce Motion. */
+@media (prefers-reduced-motion: reduce) {
+  [data-design='magma'] .sidebar .nav-link {
+    transition: none;
+  }
+
+  :where([data-design='magma']) .btn:active:not(:disabled) {
+    transform: none;
+  }
+}

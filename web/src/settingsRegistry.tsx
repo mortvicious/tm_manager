@@ -24,7 +24,7 @@ import { ConcurrencyNote } from './components/ConcurrencyNote.tsx';
 import { PresetEditor } from './components/PresetEditor.tsx';
 import { PushSettings } from './components/PushSettings.tsx';
 import { TemplateEditor } from './components/TemplateEditor.tsx';
-import type { Look } from './appearance.ts';
+import { DESIGN_LABELS, type Look } from './appearance.ts';
 import { valueOf, type SettingKey, type SettingsForm } from './settingsForm.ts';
 
 export type SectionId =
@@ -221,8 +221,9 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     title: 'Appearance',
     intent: 'look',
     device: AppearanceSettings,
-    keywords: 'design glass classic theme scheme light dark system board version this device',
-    summary: ({ look }) => `${look.design === 'glass' ? 'Glass' : 'Classic'} · ${look.pref} · this device`,
+    keywords: 'design glass classic magma theme scheme light dark system board version this device',
+    summary: ({ look }) =>
+      `${DESIGN_LABELS[look.design]} · ${look.design === 'magma' ? 'dark only' : look.pref} · this device`,
   },
   {
     id: 'notifications',

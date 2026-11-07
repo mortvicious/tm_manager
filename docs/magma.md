@@ -2,8 +2,10 @@
 
 **Status: signed off by the owner with changes on 2026-11-07** (feature *Gor: Magma theme,
 rebrand, grouped side-nav with live counters, messenger-style office chats*,
-phase 1/4). Nothing here is built yet. No app code changes until this document
-is signed off in the next card; phases 2–4 implement it. Every "will" below is
+phase 1/4). **Phase 2's plumbing is built** (2026-11-07): the design switch,
+the token block, `magma.css`'s base, the widened Glass structure and the xterm
+theme — see § Build notes at the end. The nav groups, counters, the Gor mark,
+the rebrand and the messenger are later cards. Every "will" below is
 the proposal being signed off, and § 15 lists what the owner still has to
 decide.
 
@@ -1202,3 +1204,112 @@ proposals below.
 7. **Extra counters.** Which of § 12's proposed extras to build: Jobs running,
    Jobs needs-you, Inbox urgent as a number, Chat unread, Office proposals,
    Terminals live?
+
+## Build notes (phase 2 plumbing, 2026-11-07)
+
+What the plumbing card built, and where it departs from the text above. Each
+departure follows § Owner decisions' game-look change, which wins over the
+older sections.
+
+**Files.** `appearance.ts` (`Design` gains `'magma'`, `DESIGN_LABELS`;
+`resolve()` reads `classic`/`glass` and anything else is `magma`; Magma forces
+`scheme: 'dark'` and keeps `pref`; the view transition runs when either side
+is not Classic; `currentLook()`), `index.html` (the same three-way and forced
+dark), `motion.ts` (`layeredMotion()`), `AppearanceSettings.tsx` (Magma with
+its hint; Light or dark disabled under Magma with § 2's hint),
+`settingsRegistry.tsx` (three-way summary, `magma` keyword), `Layout.tsx`
+(`ThemeToggle` renders nothing under Magma; `GLASS_HIDDEN` stays Glass-only per
+Q4; the tab-bar lens needed no JS), `termTheme.ts` (`terminalTheme(design)` +
+`useTerminalTheme(termRef)`, used by `TerminalDrawer` and `ShellPane`; Classic
+and Glass get exactly the old `{ background: '#0a0c0e', foreground:
+'#d2f5ec', cursor: '#2dd4bf' }`, Magma § 9's object, and a live terminal is
+re-themed via `term.options.theme` when the design changes), `theme.css` (the
+Magma block, mirrored in `docs/tm-design-tokens.html`), `glass.css` (all 241
+selectors widened mechanically, per § 3's recommendation) and `magma.css`
+(imported in `main.tsx` after `glass.css`).
+
+**The token block lives in `theme.css`**, as § 3 and § 4 say (the card's
+"token block in `magma.css`" lost to the spec and to CLAUDE.md's rule that
+tokens are defined in theme.css + the tokens sheet). `magma.css` only reads
+tokens; it has no literal colour.
+
+**Game-look values** (§ 3 § Game look made concrete):
+
+- `--tm-blur`, `--tm-blur-thick`, `--tm-blur-edge` are `0px` and
+  `--tm-saturate` is `100%`, so the widened Glass rules place a material and
+  draw no frost.
+- With no blur, § 4's translucent `--tm-glass-bar` (`.58`) would show the rows
+  scrolled under the header capsules and the tab bar unblurred. The bar is
+  therefore `rgba(30,14,10,.94)` and the sheet material `--tm-glass-thick`
+  `rgba(26,12,9,.97)`: near-opaque, as the game look asks. The
+  reduced-transparency rows stay § 4's solid `#1e100c` / `#1a0c09`.
+- Radii: `--tm-radius-sm/md/lg/xl` are `2/3/4/6px` (Glass's 8/12/22/32 are the
+  "round capsules" the owner dropped). `--tm-radius-pill` stays `999px`, so
+  dots, avatars and the switch knob stay round; the capsule selectors that use
+  it (buttons, `.seg`, chips, badges, header capsules, tab-bar capsules and
+  links, the search triggers, the phone's next-step button, counters) get
+  `--tm-radius-sm` in `magma.css`.
+- **Chamfers**: `corner-shape: bevel` with the radius as the cut
+  (`--tm-magma-chamfer` 10px for panels, sheets (top corners only), the task
+  panel, dialogs, popovers, toasts, the sidebar and the tab-bar capsules;
+  `--tm-magma-chamfer-sm` 5px for buttons, badges, chips, counters). Borders
+  and shadows follow the cut and children are not clipped. Where the browser
+  has no `corner-shape` (Safari today), only leaf controls (buttons, badges,
+  chips, counters) are cut with a `clip-path` polygon that reaches 8px outside
+  every edge (2px for the small ones), so the focus ring still shows along the
+  edges; containers keep the hard radii, because a clip-path on a panel would
+  cut off the popovers that open inside it. In that fallback the primary
+  button's outer glow would end square at the polygon, so it keeps only its
+  inner light (`--tm-magma-btn-glow-inner`).
+- **Bevel**: a 1px inset light top-left / dark bottom-right
+  (`--tm-magma-bevel-light/-dark`) replaces Glass's specular rim on the
+  sidebar, cards, buttons and the tab-bar capsules.
+- **Chunky buttons**: a 2px `--tm-border-strong` outline (padding one pixel
+  smaller than Glass's, so sizes do not change), a push-down of
+  `--tm-magma-press` (2px) with the bevel flipped instead of Glass's shrink,
+  hover lights the outline and uses `--tm-accent-text`; the primary is the
+  ember fill with `--tm-magma-btn-glow`.
+- **HUD counters**: the tab counters are mono, tabular, 700, hard-cornered;
+  `.tab-count.urgent` takes `--tm-accent-contrast` (§ 5).
+- **Lava frames**: the active sidebar item gets § 4's frame fill, inset frame
+  and the 2px ember rail with the nav's one glow, faded in by a `box-shadow`
+  transition; the selected Inbox card gets the inset frame (no outer glow:
+  cards never glow).
+
+**The ember dot field is a background layer of `body`**, not a
+`body::before`: `background: var(--tm-sparks), var(--tm-wallpaper)`. It is the
+same one paint (§ 8), but needs no extra element, no `z-index` and no
+stacking context over `#root` (a `z-index: 0` pseudo-element would paint over
+the non-positioned shell).
+
+**Not in this card:** the lava hairline under the phone's top bar (§ 4 lists
+it; the phone header has no inner row to hang it on yet, and the nav card
+reworks that area), the Gor mark/wordmark, the side-nav groups and counters,
+the messenger, and per-screen coverage (the "Magma coverage" card). The
+remaining Classic-structured pills on secondary screens are that card's.
+
+**Verification.** `npm run typecheck`, `npm test`, `npm run build`. A Playwright
+harness (Chromium 1243 and WebKit 2248) inside a heavy lease, serving a
+scratch build of HEAD and of this change against replayed API fixtures, with
+every non-GET and every WebSocket blocked:
+
+- `getComputedStyle` of every element (and its `::before`/`::after`),
+  compared as sorted property maps, is **identical before and after** for
+  Classic dark, Glass dark and Glass light, on /board and /office, at
+  1440×900 and 393×852 (12 snapshots). Only Chromium's iteration order of
+  custom properties differs, which is why the raw dumps hash differently.
+  /config differs only because Appearance now has a third option.
+- Pixel diffs of the same screenshots: 0 to 41 pixels, all inside live
+  indicators (the running chip's dot and the live row's progress bar), whose
+  computed styles are identical.
+- The first-paint resolver (app JS blocked) and `appearance.ts` agree for
+  unset, `magma`, `glass`, `classic` and an unknown value, each with
+  `tm.theme` unset/light/dark and the system light/dark: unset or unknown →
+  Magma dark, a stored `tm.theme` is never rewritten, the `ThemeToggle` is
+  absent and the scheme control disabled under Magma only.
+- Clicking Magma → Glass → Classic → Magma in Config applies at once and
+  stores `tm.design`.
+- Magma rendered on the board, Config and /office at both widths in Chromium
+  (the `corner-shape` path), and on the board and Config at both widths in
+  WebKit (the `clip-path` fallback).
+

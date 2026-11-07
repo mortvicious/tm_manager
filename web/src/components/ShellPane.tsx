@@ -6,6 +6,7 @@ import type { TerminalServerMsg } from '@tm/shared';
 import { useApp } from '../state.tsx';
 import { b64ToBytes, bytesToB64 } from './TerminalDrawer.tsx';
 import { attachTouchScroll } from './termTouchScroll.ts';
+import { terminalTheme, useTerminalTheme } from '../termTheme.ts';
 
 export type PaneStatus = 'connecting' | 'live' | 'closed' | 'gone';
 
@@ -30,6 +31,7 @@ export function ShellPane({
   const { token } = useApp();
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  useTerminalTheme(termRef);
   const [status, setStatus] = useState<PaneStatus>('connecting');
   const onStatusRef = useRef(onStatus);
   onStatusRef.current = onStatus;
@@ -41,12 +43,12 @@ export function ShellPane({
     let disposed = false;
     setStatus('connecting');
 
-    // Colors from docs/tm-design-tokens.html (--tm-terminal-bg / -text), as in
-    // TerminalDrawer: xterm needs concrete values, not CSS variables.
+    // Colors from docs/tm-design-tokens.html per design (termTheme.ts): xterm
+    // needs concrete values, not CSS variables; useTerminalTheme re-themes it.
     const term = new Terminal({
       fontFamily: "'JetBrains Mono', ui-monospace, monospace",
       fontSize: 12.5,
-      theme: { background: '#0a0c0e', foreground: '#d2f5ec', cursor: '#2dd4bf' },
+      theme: terminalTheme(),
       scrollback: 8000,
       cursorBlink: true,
     });
