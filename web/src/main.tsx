@@ -9,6 +9,8 @@ import { applyRememberedWorkspace } from './workspace.ts';
 import './theme.css';
 // after theme.css: the Glass layer overrides it (docs/glass.md)
 import './glass.css';
+// after glass.css: Magma rides on Glass's structure and overrides its look (docs/magma.md)
+import './magma.css';
 
 installTouchActive();
 // html[data-calm] — the idle pulses stop when nobody is looking (docs/spa-performance.md § Calm)

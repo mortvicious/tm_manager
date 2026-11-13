@@ -281,13 +281,15 @@
 
 /* ---- design: Glass (docs/glass.md) ----
    The iOS 26 Liquid Glass design, picked per device (`html[data-design]`,
-   src/appearance.ts). These blocks REMAP the semantic layer for both schemes
+   src/appearance.ts). The scheme-independent blocks (fonts, radii, springs,
+   blur, the phone scale) are widened to Magma too, which keeps Glass's
+   structure (docs/magma.md § 3); the two colour blocks are Glass-only. These blocks REMAP the semantic layer for both schemes
    and add the material and spring tokens that glass.css draws with. Classic
    never matches them. Colours are Apple's system palette: the plain dark
    variants, and the increased-contrast light variants wherever a hue is TEXT
    (the plain light ones read under 3:1 on white). The exception is the
    accent, which stays Classic's teal: it is the app's own colour. */
-[data-design='glass'] {
+:is([data-design='glass'], [data-design='magma']) {
   /* SF on Apple devices, the platform's own UI face elsewhere */
   --tm-font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
   --tm-font-body: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
@@ -323,7 +325,7 @@
 
 /* sampled from a damped spring (bounce 0 and 0.3), SwiftUI's own model */
 @supports (transition-timing-function: linear(0, 1)) {
-  [data-design='glass'] {
+  :is([data-design='glass'], [data-design='magma']) {
     --tm-ease-smooth: linear(0, 0.099, 0.285, 0.47, 0.623, 0.74, 0.824, 0.883, 0.923, 0.95, 0.968, 0.979, 0.987, 0.992, 0.995, 0.997, 0.998, 0.999, 1);
     --tm-ease-spring: linear(0, 0.047, 0.158, 0.3, 0.45, 0.592, 0.716, 0.819, 0.9, 0.959, 1, 1.026, 1.04, 1.045, 1.045, 1.041, 1.035, 1.028, 1.021, 1.015, 1.01, 1.006, 1.003, 1.001, 0.999, 0.998, 0.998, 0.998, 0.998, 0.998, 0.999, 0.999, 1);
   }
@@ -517,10 +519,178 @@
   --tm-guild-iron: #48443f;
 }
 
+/* ---- design: Magma (docs/magma.md) ----
+   Glow on black: red, yellow and black, the colour coming off a black field.
+   Magma rides on Glass's STRUCTURE (the scheme-independent Glass blocks above
+   and every glass.css rule are widened to :is(glass, magma)), but Glass's two
+   colour blocks are Glass-only: this block is Magma's whole palette. Magma is
+   dark-only (appearance.ts forces data-theme='dark'), so it is one block,
+   scheme-independent, and later than the Glass blocks so it wins at the same
+   specificity. Game look (docs/magma.md § 3 § Game look): no frosted blur,
+   hard small radii (the chamfers come from magma.css), opaque materials. */
+[data-design='magma'] {
+  /* surfaces, borders, text (§ 4) */
+  --tm-bg: #0a0605;
+  --tm-bg-raised: #160d0a;
+  --tm-bg-overlay: #22140f;
+  --tm-bg-inset: #070403;
+  --tm-border: #3a2219;
+  --tm-border-strong: #8f5a44;
+  --tm-text: #fbefe6;
+  --tm-text-muted: #c9ab9b;
+  --tm-text-faint: #8a6c5e;
+  /* accent and status (owner decision Q6: red dominant, failed in magenta) */
+  --tm-accent: #ff4a3d;
+  --tm-accent-strong: #ff4a3d;
+  --tm-accent-text: #ff7a5c;
+  --tm-accent-subtle: rgba(255, 74, 61, 0.18);
+  --tm-accent-contrast: #1a0802;
+  --tm-status-queued: #b39d92;
+  --tm-status-running: #ff4a3d;
+  --tm-status-review: #ffc93d;
+  --tm-status-done: #6fe39a;
+  --tm-status-published: #3fcf73;
+  --tm-status-failed: #ff4fa3;
+  --tm-status-attention: #c4a1ff;
+  /* groups, presets, charts, timeline, diff, terminal */
+  --tm-group-1: #c4a1ff;
+  --tm-group-2: #7ab8ff;
+  --tm-group-3: #ffd23f;
+  --tm-group-4: #ff6fa8;
+  --tm-group-5: #6fe39a;
+  --tm-group-6: #ff9a4d;
+  --tm-group-7: #5fd8e0;
+  --tm-group-tint: 16%;
+  --tm-preset-small: #6fe39a;
+  --tm-preset-routine: #7ab8ff;
+  --tm-preset-complex: #c4a1ff;
+  --tm-preset-codexFree: #ff9a4d;
+  --tm-chart-worker: #ff4a3d;
+  --tm-chart-analyze: #c4a1ff;
+  --tm-tl-checks: #ffc93d;
+  --tm-tl-fixing: #ff6fa8;
+  --tm-diff-add-fg: #6fe39a;
+  --tm-diff-add-bg: rgba(111, 227, 154, 0.12);
+  --tm-diff-del-fg: #ff4fa3;
+  --tm-diff-del-bg: rgba(255, 79, 163, 0.14);
+  --tm-diff-hunk-fg: #7ab8ff;
+  --tm-diff-hunk-bg: rgba(122, 184, 255, 0.1);
+  --tm-terminal-bg: #0a0605;
+  --tm-terminal-text: #f3e6dc;
+  --tm-grid-dot: transparent;
+  /* shadows and the materials the widened Glass rules draw with. Cards and
+     buttons are opaque (§ 4: translucency over the ember glow fails contrast);
+     the floating bar and sheet are near-opaque, because with no blur (game
+     look) a translucent bar would show the rows scrolled under it. */
+  --tm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.6);
+  --tm-shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --tm-shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.6);
+  --tm-glass-card: #160d0a;
+  --tm-glass-card-hover: #1c110d;
+  --tm-glass-bar: rgba(30, 14, 10, 0.94);
+  --tm-glass-thick: rgba(26, 12, 9, 0.97);
+  --tm-glass-btn: #2b1d17;
+  --tm-glass-btn-hover: #37261e;
+  --tm-glass-lens: rgba(255, 160, 92, 0.16);
+  --tm-glass-rim: rgba(255, 160, 92, 0.22);
+  --tm-glass-specular: rgba(255, 220, 180, 0.16);
+  --tm-glass-shadow: 0 1px 1px rgba(0, 0, 0, 0.3), 0 10px 32px rgba(0, 0, 0, 0.45);
+  --tm-glass-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.28), 0 6px 18px rgba(0, 0, 0, 0.2);
+  --tm-edge-tint: rgba(10, 6, 5, 0.6);
+  --tm-scrim: rgba(0, 0, 0, 0.55);
+  --tm-fill-press: rgba(255, 170, 120, 0.08);
+  --tm-switch-on: var(--tm-accent);
+  --tm-switch-off: rgba(143, 90, 68, 0.4);
+  --tm-knob: #fff7f0;
+  --tm-knob-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  --tm-seg-thumb: #4a2e22;
+  /* game look: no frost, hard edges (the Glass blur and radius tokens, re-set) */
+  --tm-blur: 0px;
+  --tm-blur-thick: 0px;
+  --tm-blur-edge: 0px;
+  --tm-saturate: 100%;
+  --tm-radius-sm: 2px;
+  --tm-radius-md: 3px;
+  --tm-radius-lg: 4px;
+  --tm-radius-xl: 6px;
+  /* office skins: Glass dark's values verbatim (§ 4 § Office skins) */
+  --tm-office-floor: #2c2c2e;
+  --tm-office-wall: #48484a;
+  --tm-office-wood: #a2845e;
+  --tm-office-metal: #636366;
+  --tm-office-skin: #f1c7a1;
+  --tm-office-leaf: #30d158;
+  --tm-office-paper: #f2f2f7;
+  --tm-office-shade: #000000;
+  --tm-bridge-space: #04060c;
+  --tm-bridge-hull: #1c2130;
+  --tm-bridge-bulkhead: #48506a;
+  --tm-bridge-console: #2a2f3e;
+  --tm-bridge-trim: #0b0d12;
+  --tm-bridge-star: #d1d9ee;
+  --tm-guild-plank: #4d3a2a;
+  --tm-guild-stone: #66605a;
+  --tm-guild-oak: #74502f;
+  --tm-guild-parchment: #efe3c2;
+  --tm-guild-flame: #ff9f0a;
+  --tm-guild-iron: #2c2a28;
+  /* Magma-only tokens, read only by magma.css (§ 4, § 3 § Game look) */
+  --tm-link: #ff8a7a;
+  --tm-focus: #ffc93d;
+  --tm-ember: linear-gradient(135deg, #ffc93d 0%, #ff8a3d 55%, #ff4a3d 100%);
+  --tm-ember-text: linear-gradient(90deg, #ffc93d, #ff4a3d);
+  --tm-ember-glow: 0 0 0 1px rgba(255, 122, 46, 0.35), 0 0 18px rgba(255, 90, 20, 0.28);
+  --tm-lava-line: linear-gradient(90deg, transparent, #ff4a3d 20%, #ffc93d 50%, #ff4a3d 80%, transparent);
+  /* the chamfer of a panel / of a button or badge, and the 1px hard bevel */
+  --tm-magma-chamfer: 10px;
+  --tm-magma-chamfer-sm: 5px;
+  --tm-magma-bevel-light: rgba(255, 190, 150, 0.16);
+  --tm-magma-bevel-dark: rgba(0, 0, 0, 0.55);
+  /* the pressed "push-down" of a chunky button */
+  --tm-magma-press: 2px;
+  /* the lava frame on the active nav item, the selected row */
+  --tm-magma-frame: inset 0 0 0 1px rgba(255, 122, 46, 0.26), inset 0 0 14px rgba(255, 90, 20, 0.16);
+  --tm-magma-frame-fill: linear-gradient(90deg, rgba(255, 122, 46, 0.2), rgba(255, 122, 46, 0.05));
+  --tm-magma-rail: linear-gradient(180deg, #ffc93d, #ff8a3d 50%, #ff4a3d);
+  --tm-magma-rail-glow: 0 0 8px rgba(255, 90, 20, 0.9);
+  --tm-magma-btn-glow: inset 0 1px 0 rgba(255, 236, 200, 0.45), inset 0 0 12px rgba(255, 201, 61, 0.25),
+    0 0 18px rgba(255, 90, 20, 0.35);
+  /* the same light without the outer glow, where a clip-path would cut it */
+  --tm-magma-btn-glow-inner: inset 0 1px 0 rgba(255, 236, 200, 0.45), inset 0 0 12px rgba(255, 201, 61, 0.25);
+  --tm-magma-disc-glow: inset 0 1px 0 rgba(255, 240, 210, 0.55), inset 0 -8px 14px rgba(229, 49, 43, 0.3),
+    0 0 0 4px rgba(10, 6, 5, 0.85), 0 0 24px rgba(255, 90, 20, 0.55);
+  --tm-magma-disc-ring: inset 0 0 0 1.5px rgba(255, 122, 46, 0.65);
+  --tm-wallpaper:
+    radial-gradient(70% 50% at 10% 0%, rgba(255, 90, 20, 0.2), transparent 60%),
+    radial-gradient(60% 45% at 100% 100%, rgba(229, 49, 43, 0.16), transparent 62%),
+    radial-gradient(40% 30% at 85% 8%, rgba(255, 201, 61, 0.08), transparent 60%),
+    linear-gradient(180deg, #120806 0%, #0a0605 55%, #070403 100%);
+  /* the ember dot field: eighteen static dots, painted once (magma.css body::before) */
+  --tm-sparks:
+    radial-gradient(1.6px 1.6px at 7% 12%, rgba(255, 201, 61, 0.7), transparent),
+    radial-gradient(1px 1px at 18% 64%, rgba(255, 160, 92, 0.55), transparent),
+    radial-gradient(1.4px 1.4px at 27% 31%, rgba(255, 122, 46, 0.6), transparent),
+    radial-gradient(1px 1px at 34% 86%, rgba(255, 201, 61, 0.45), transparent),
+    radial-gradient(2px 2px at 43% 9%, rgba(255, 122, 46, 0.55), transparent),
+    radial-gradient(1px 1px at 51% 47%, rgba(255, 201, 61, 0.4), transparent),
+    radial-gradient(1.4px 1.4px at 58% 78%, rgba(255, 90, 20, 0.6), transparent),
+    radial-gradient(1px 1px at 64% 22%, rgba(255, 201, 61, 0.5), transparent),
+    radial-gradient(1.8px 1.8px at 71% 58%, rgba(255, 160, 92, 0.45), transparent),
+    radial-gradient(1px 1px at 77% 5%, rgba(255, 201, 61, 0.65), transparent),
+    radial-gradient(1.4px 1.4px at 83% 38%, rgba(255, 122, 46, 0.5), transparent),
+    radial-gradient(1px 1px at 89% 91%, rgba(255, 201, 61, 0.45), transparent),
+    radial-gradient(1.6px 1.6px at 94% 17%, rgba(255, 90, 20, 0.55), transparent),
+    radial-gradient(1px 1px at 12% 93%, rgba(255, 122, 46, 0.45), transparent),
+    radial-gradient(1.2px 1.2px at 3% 44%, rgba(255, 201, 61, 0.5), transparent),
+    radial-gradient(1px 1px at 47% 66%, rgba(255, 160, 92, 0.4), transparent),
+    radial-gradient(1.2px 1.2px at 68% 95%, rgba(255, 201, 61, 0.45), transparent),
+    radial-gradient(1px 1px at 98% 70%, rgba(255, 122, 46, 0.5), transparent);
+}
+
 /* A phone in Glass: iOS's scale (15pt subheadline base, 17pt headline, 34pt
    large title) and the floating tab bar, whose bottom gap overlaps the
    home-indicator inset. Keyed off .app.mobile like Classic's own phone overrides. */
-[data-design='glass'] .app.mobile {
+:is([data-design='glass'], [data-design='magma']) .app.mobile {
   --tm-text-xs: calc(0.75 * var(--tm-type));
   --tm-text-sm: calc(0.9375 * var(--tm-type));
   --tm-text-md: calc(1.0625 * var(--tm-type));
@@ -552,6 +722,24 @@
   [data-design='glass'][data-theme] {
     --tm-glass-bar: var(--tm-bg-raised);
     --tm-glass-thick: var(--tm-bg-raised);
+    --tm-edge-tint: var(--tm-bg);
+  }
+}
+
+/* Magma's rows in the two blocks above: its cards and buttons are opaque
+   already, so only the floating bar and the sheet turn solid (docs/magma.md § 4) */
+@media (prefers-reduced-transparency: reduce) {
+  [data-design='magma'][data-theme] {
+    --tm-glass-bar: #1e100c;
+    --tm-glass-thick: #1a0c09;
+    --tm-edge-tint: var(--tm-bg);
+  }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  [data-design='magma'][data-theme] {
+    --tm-glass-bar: #1e100c;
+    --tm-glass-thick: #1a0c09;
     --tm-edge-tint: var(--tm-bg);
   }
 }

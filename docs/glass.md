@@ -17,11 +17,23 @@ hidden on the phone only, see § Hidden in Glass.
 
 ## Choosing it: per device
 
+**Magma shares this layer's structure** (docs/magma.md § 3): every
+`glass.css` selector and the scheme-independent Glass blocks in `theme.css`
+are written `:is([data-design='glass'], [data-design='magma'])` (or the
+`:where(…)` twin). Both arguments are one attribute selector, so Glass keeps
+every rule's specificity and source order and computes exactly as before
+(verified by a computed-style diff, docs/magma.md § Build notes). A Glass fix
+therefore reaches Magma too; Magma's own look is `magma.css`, loaded after
+this file. The two Glass colour blocks stay Glass-only.
+
 Config → **Appearance** (the first panel, and shown even while the API is down,
 since it needs nothing from the server):
 
-- **Design**: Glass | Classic. Stored as `localStorage['tm.design']`, default
-  **glass**.
+- **Design**: Glass | Classic | Magma. Stored as `localStorage['tm.design']`,
+  default **magma** since 2026-11-07 (docs/magma.md § Owner decisions Q1; it
+  was glass). A stored `glass` or `classic` is kept. Magma is dark-only: under
+  it Light or dark is shown disabled and the stored pick is left for the other
+  two designs.
 - **Light or dark**: System | Light | Dark. Stored as `localStorage['tm.theme']`,
   the key the old theme toggle already used. **Unset means follow the system**,
   live, via `prefers-color-scheme`. That is a change for Classic too: an unset
@@ -35,7 +47,7 @@ the same way Notifications works. `src/appearance.ts` owns them and sets
 that runs before the first paint, so a reload never flashes the other look.
 Keep the keys, defaults and attribute names of the two in step. A design or
 scheme change cross-fades the page through the View Transitions API (Safari
-18+) whenever Glass is on either side of it, and is instant under Reduce
+18+) whenever Glass or Magma is on either side of it, and is instant under Reduce
 Motion. A Classic-only light/dark flip stays as it was. A pick that storage
 refuses (blocked, full) still applies for the life of the tab.
 

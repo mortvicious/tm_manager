@@ -1,10 +1,16 @@
 import { BoardVersionsSetting } from './BoardVersions.tsx';
-import { setDesign, setSchemePref, useLook, type Design, type SchemePref } from '../appearance.ts';
+import { DESIGN_LABELS, setDesign, setSchemePref, useLook, type Design, type SchemePref } from '../appearance.ts';
 
-const DESIGNS: { id: Design; label: string }[] = [
-  { id: 'glass', label: 'Glass' },
-  { id: 'classic', label: 'Classic' },
-];
+const DESIGNS: { id: Design; label: string }[] = (['glass', 'classic', 'magma'] as const).map((id) => ({
+  id,
+  label: DESIGN_LABELS[id],
+}));
+
+const DESIGN_HINTS: Record<Design, string> = {
+  glass: 'iOS Liquid Glass, on this device only. Features and Chat are left out of the menus.',
+  classic: 'The original terminal look, on this device only.',
+  magma: 'Glow on black, with game-like panels, on this device only. Always dark.',
+};
 
 const SCHEMES: { id: SchemePref; label: string }[] = [
   { id: 'system', label: 'System' },
@@ -17,11 +23,13 @@ function Segmented<T extends string>({
   value,
   options,
   onChange,
+  disabled = false,
 }: {
   label: string;
   value: T;
   options: { id: T; label: string }[];
   onChange: (v: T) => void;
+  disabled?: boolean;
 }) {
   return (
     // a toggle-button group, like the Board's View switch: plain buttons need no roving focus
@@ -31,6 +39,7 @@ function Segmented<T extends string>({
           key={o.id}
           type="button"
           aria-pressed={value === o.id}
+          disabled={disabled}
           className={`btn ${value === o.id ? 'primary' : ''}`}
           onClick={() => onChange(o.id)}
         >
@@ -54,11 +63,7 @@ export function AppearanceSettings() {
       <div className="cfg-row">
         <div>
           <div>Design</div>
-          <div className="hint">
-            {look.design === 'glass'
-              ? 'iOS Liquid Glass, on this device only. Features and Chat are left out of the menus.'
-              : 'The original terminal look, on this device only.'}
-          </div>
+          <div className="hint">{DESIGN_HINTS[look.design]}</div>
         </div>
         <Segmented label="Design" value={look.design} options={DESIGNS} onChange={setDesign} />
       </div>
@@ -66,10 +71,21 @@ export function AppearanceSettings() {
         <div>
           <div>Light or dark</div>
           <div className="hint">
-            {look.pref === 'system' ? `follows this device (now ${look.scheme})` : `pinned to ${look.pref} on this device`}
+            {look.design === 'magma'
+              ? 'Magma is dark-only. This choice applies to Glass and Classic.'
+              : look.pref === 'system'
+                ? `follows this device (now ${look.scheme})`
+                : `pinned to ${look.pref} on this device`}
           </div>
         </div>
-        <Segmented label="Light or dark" value={look.pref} options={SCHEMES} onChange={setSchemePref} />
+        {/* Magma is dark-only (docs/magma.md § 2): shown, disabled, and the stored pick kept for the other designs */}
+        <Segmented
+          label="Light or dark"
+          value={look.pref}
+          options={SCHEMES}
+          onChange={setSchemePref}
+          disabled={look.design === 'magma'}
+        />
       </div>
       {/* the phone's Versions control (docs/board-versions.md); nothing while the original is the only one */}
       <BoardVersionsSetting />

@@ -1,9 +1,11 @@
 /* =====================================================================
    GLASS: the iOS 26 Liquid Glass design layer (docs/glass.md)
 
-   Loaded after theme.css. Every rule is scoped to html[data-design='glass'],
-   which src/appearance.ts sets per device, so Classic renders exactly as it
-   did. Every value is a --tm-* token from theme.css's Glass blocks; nothing
+   Loaded after theme.css. Every rule is scoped to html[data-design='glass']
+   — written :is([data-design='glass'], [data-design='magma']), because Magma
+   reuses Glass's STRUCTURE (docs/magma.md § 3; same specificity, so Glass
+   computes exactly as before) — which src/appearance.ts sets per device, so
+   Classic renders exactly as it did. Magma's own rules are in magma.css. Every value is a --tm-* token from theme.css's Glass blocks; nothing
    here introduces a colour of its own.
 
    Two traps decide where a blur may go (docs/glass.md § Materials):
@@ -25,29 +27,29 @@
 
 /* ---------- base ---------- */
 
-:root[data-design='glass'] {
+:root:is([data-design='glass'], [data-design='magma']) {
   -webkit-tap-highlight-color: transparent;
   background: var(--tm-bg);
 }
 
-[data-design='glass'] body {
+:is([data-design='glass'], [data-design='magma']) body {
   background: var(--tm-wallpaper);
   background-color: var(--tm-bg);
 }
 
-[data-design='glass'] ::selection {
+:is([data-design='glass'], [data-design='magma']) ::selection {
   background: color-mix(in srgb, var(--tm-accent) 32%, transparent);
   color: inherit;
 }
 
 /* iOS type on a phone (the scale is in theme.css's Glass blocks). The body's
    own size is fixed before .app redefines the tokens, so set it here. */
-[data-design='glass'] .app.mobile {
+:is([data-design='glass'], [data-design='magma']) .app.mobile {
   font-size: var(--tm-text-sm);
 }
 
 /* chrome is not text: no selection loupe or callout on a long press */
-[data-design='glass'] .app.mobile
+:is([data-design='glass'], [data-design='magma']) .app.mobile
   :is(.header, .tabbar, .btn, .nav-link, .badge, .chip, .section-head, .sheet-action, .switch, .task-row) {
   -webkit-user-select: none;
   user-select: none;
@@ -56,12 +58,12 @@
 
 /* ---------- the shell: the top bar floats and the page scrolls under it ---------- */
 
-[data-design='glass'] .app {
+:is([data-design='glass'], [data-design='magma']) .app {
   grid-template-rows: minmax(0, 1fr);
   grid-template-areas: 'side main';
 }
 
-[data-design='glass'] .app.mobile {
+:is([data-design='glass'], [data-design='magma']) .app.mobile {
   grid-template-rows: minmax(0, 1fr);
   grid-template-areas: 'main';
 }
@@ -71,7 +73,7 @@
    emulator inside it above the drawer (25), as before. */
 /* pointer-events: the bar spans .main's top edge, so its gaps let clicks,
    the wheel and the scrollbar through to the page; its controls still take them */
-[data-design='glass'] .header {
+:is([data-design='glass'], [data-design='magma']) .header {
   pointer-events: none;
   grid-area: main;
   align-self: start;
@@ -84,18 +86,18 @@
   border-bottom: 0;
 }
 
-[data-design='glass'] .header > * {
+:is([data-design='glass'], [data-design='magma']) .header > * {
   pointer-events: auto;
 }
 
-[data-design='glass'] .app.mobile .header {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .header {
   min-height: calc(var(--tm-head-h) + env(safe-area-inset-top, 0px));
   padding-top: calc(var(--tm-space-2) + env(safe-area-inset-top, 0px));
 }
 
 /* iOS 26's scroll-edge effect: a soft blur under the bar that is invisible
    over the wallpaper and only shows once content slides beneath it */
-[data-design='glass'] .edge-top {
+:is([data-design='glass'], [data-design='magma']) .edge-top {
   display: block;
   grid-area: main;
   align-self: start;
@@ -114,7 +116,7 @@
    hard-edged dark block beside the pane's top (read as a broken sidebar
    shadow). It fades in across .main's gutter instead — the page's content
    starts where it is at full strength. */
-[data-design='glass'] .app:not(.mobile) .edge-top {
+:is([data-design='glass'], [data-design='magma']) .app:not(.mobile) .edge-top {
   -webkit-mask-image:
     linear-gradient(to bottom, currentColor 45%, transparent),
     linear-gradient(to right, transparent, currentColor var(--tm-space-5));
@@ -125,23 +127,23 @@
   mask-composite: intersect;
 }
 
-[data-design='glass'] .app.mobile .edge-top {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .edge-top {
   height: calc(var(--tm-head-h) + env(safe-area-inset-top, 0px) + var(--tm-space-6));
 }
 
-[data-design='glass'] .main {
+:is([data-design='glass'], [data-design='magma']) .main {
   padding-top: calc(var(--tm-head-h) + var(--tm-space-3));
   scroll-padding-top: calc(var(--tm-head-h) + var(--tm-space-3));
   background-image: none;
 }
 
-[data-design='glass'] .app.mobile .main {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .main {
   padding-top: calc(var(--tm-head-h) + env(safe-area-inset-top, 0px) + var(--tm-space-2));
   scroll-padding-top: calc(var(--tm-head-h) + env(safe-area-inset-top, 0px) + var(--tm-space-2));
 }
 
 /* desktop: the sidebar is a pane of glass inset from the window edge */
-[data-design='glass'] .sidebar {
+:is([data-design='glass'], [data-design='magma']) .sidebar {
   margin: var(--tm-space-2) 0 var(--tm-space-2) var(--tm-space-2);
   min-height: 0;
   overflow: auto;
@@ -152,25 +154,25 @@
   box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
 }
 
-[data-design='glass'] .brand,
-[data-design='glass'] .brand-mini {
+:is([data-design='glass'], [data-design='magma']) .brand,
+:is([data-design='glass'], [data-design='magma']) .brand-mini {
   font-family: var(--tm-font-display);
   font-weight: 700;
   letter-spacing: -0.01em;
 }
 
-[data-design='glass'] .brand {
+:is([data-design='glass'], [data-design='magma']) .brand {
   font-size: var(--tm-text-md);
   padding: var(--tm-space-1) var(--tm-space-3) var(--tm-space-4);
 }
 
-[data-design='glass'] .brand .sub,
-[data-design='glass'] .sidebar-foot {
+:is([data-design='glass'], [data-design='magma']) .brand .sub,
+:is([data-design='glass'], [data-design='magma']) .sidebar-foot {
   font-family: var(--tm-font-body);
   letter-spacing: 0;
 }
 
-[data-design='glass'] .sidebar .nav-link {
+:is([data-design='glass'], [data-design='magma']) .sidebar .nav-link {
   padding: 8px 10px;
   border-radius: var(--tm-radius-md);
   color: var(--tm-text);
@@ -180,34 +182,34 @@
     transform var(--tm-dur-spring) var(--tm-ease-spring);
 }
 
-[data-design='glass'] .sidebar .nav-link svg {
+:is([data-design='glass'], [data-design='magma']) .sidebar .nav-link svg {
   color: var(--tm-accent);
   opacity: 1;
 }
 
-[data-design='glass'] .sidebar .nav-link.active {
+:is([data-design='glass'], [data-design='magma']) .sidebar .nav-link.active {
   background: var(--tm-accent-subtle);
   color: var(--tm-accent);
 }
 
-[data-design='glass'] .sidebar .nav-link:active {
+:is([data-design='glass'], [data-design='magma']) .sidebar .nav-link:active {
   transform: scale(0.97);
   transition-duration: var(--tm-dur-press);
 }
 
 /* large titles */
-[data-design='glass'] .page-title {
+:is([data-design='glass'], [data-design='magma']) .page-title {
   font-weight: 700;
   letter-spacing: -0.005em;
 }
 
-[data-design='glass'] .app.mobile .page-title {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .page-title {
   font-size: var(--tm-text-3xl);
   line-height: 1.15;
   margin: var(--tm-space-1) var(--tm-space-1) var(--tm-space-3);
 }
 
-[data-design='glass'] .page-title.glass-only {
+:is([data-design='glass'], [data-design='magma']) .page-title.glass-only {
   display: flex;
 }
 
@@ -215,7 +217,7 @@
 
 /* cards sit on the wallpaper: translucent, a lit rim, no blur (nothing
    behind them but the wallpaper, and a blur of a gradient is that gradient) */
-[data-design='glass'] :is(.panel, .tile, .chart-card) {
+:is([data-design='glass'], [data-design='magma']) :is(.panel, .tile, .chart-card) {
   border: 1px solid var(--tm-glass-rim);
   border-radius: var(--tm-radius-lg);
   background: var(--tm-glass-card);
@@ -226,7 +228,7 @@
    flex-shrink: overflow other than visible drops a flex item's automatic
    min-height to 0, so in a column that overflows (the task panel's body) the
    list was squeezed to its 2px border — the panel's Files list vanished. */
-[data-design='glass'] .panel:has(> .task-row, > .task-group) {
+:is([data-design='glass'], [data-design='magma']) .panel:has(> .task-row, > .task-group) {
   overflow: hidden;
   flex-shrink: 0;
 }
@@ -237,8 +239,8 @@
    state rules (.preset-btn.on, .pick-btn.on, .queue-btn …) still win over
    the base. The :hover twin stops Classic's hover colours sticking after a
    tap on a phone (iOS keeps :hover until the next tap elsewhere). */
-:where([data-design='glass']) .btn,
-:where([data-design='glass']) .btn:hover {
+:where([data-design='glass'], [data-design='magma']) .btn,
+:where([data-design='glass'], [data-design='magma']) .btn:hover {
   border: 1px solid var(--tm-glass-rim);
   border-radius: var(--tm-radius-pill);
   background: var(--tm-glass-btn);
@@ -246,7 +248,7 @@
   box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-shadow-sm);
 }
 
-:where([data-design='glass']) .btn {
+:where([data-design='glass'], [data-design='magma']) .btn {
   padding: 7px 16px;
   transition:
     transform var(--tm-dur-spring) var(--tm-ease-spring),
@@ -255,14 +257,14 @@
     box-shadow var(--tm-dur-fast) var(--tm-ease-out);
 }
 
-:where([data-design='glass']) .btn:active {
+:where([data-design='glass'], [data-design='magma']) .btn:active {
   transform: scale(var(--tm-press-scale));
   transition-duration: var(--tm-dur-press);
   transition-timing-function: var(--tm-ease-out);
 }
 
-:where([data-design='glass']) .btn.primary,
-:where([data-design='glass']) .btn.primary:hover {
+:where([data-design='glass'], [data-design='magma']) .btn.primary,
+:where([data-design='glass'], [data-design='magma']) .btn.primary:hover {
   border-color: transparent;
   background: var(--tm-accent);
   color: var(--tm-accent-contrast);
@@ -271,47 +273,47 @@
     0 6px 18px color-mix(in srgb, var(--tm-accent) 32%, transparent);
 }
 
-:where([data-design='glass']) .btn.danger,
-:where([data-design='glass']) .btn.danger:hover {
+:where([data-design='glass'], [data-design='magma']) .btn.danger,
+:where([data-design='glass'], [data-design='magma']) .btn.danger:hover {
   border-color: transparent;
   background: color-mix(in srgb, var(--tm-status-failed) 14%, transparent);
   color: var(--tm-status-failed);
   box-shadow: none;
 }
 
-:where([data-design='glass']) .btn.ghost,
-:where([data-design='glass']) .btn.ghost:hover {
+:where([data-design='glass'], [data-design='magma']) .btn.ghost,
+:where([data-design='glass'], [data-design='magma']) .btn.ghost:hover {
   border-color: transparent;
   background: transparent;
   color: var(--tm-text-muted);
   box-shadow: none;
 }
 
-[data-design='glass'] .btn.queue-btn,
-[data-design='glass'] .btn.queue-btn:hover {
+:is([data-design='glass'], [data-design='magma']) .btn.queue-btn,
+:is([data-design='glass'], [data-design='magma']) .btn.queue-btn:hover {
   color: var(--tm-accent);
 }
 
-[data-design='glass'] .btn.ghost.on,
-[data-design='glass'] .btn.ghost.on:hover {
+:is([data-design='glass'], [data-design='magma']) .btn.ghost.on,
+:is([data-design='glass'], [data-design='magma']) .btn.ghost.on:hover {
   background: var(--tm-accent-subtle);
   color: var(--tm-accent);
 }
 
 @media (hover: hover) {
-  :where([data-design='glass']) .btn:hover {
+  :where([data-design='glass'], [data-design='magma']) .btn:hover {
     background: var(--tm-glass-btn-hover);
   }
 
-  :where([data-design='glass']) .btn.primary:hover {
+  :where([data-design='glass'], [data-design='magma']) .btn.primary:hover {
     background: var(--tm-accent-strong);
   }
 
-  :where([data-design='glass']) .btn.danger:hover {
+  :where([data-design='glass'], [data-design='magma']) .btn.danger:hover {
     background: color-mix(in srgb, var(--tm-status-failed) 22%, transparent);
   }
 
-  :where([data-design='glass']) .btn.ghost:hover {
+  :where([data-design='glass'], [data-design='magma']) .btn.ghost:hover {
     background: var(--tm-bg-overlay);
     color: var(--tm-text);
   }
@@ -319,11 +321,11 @@
 
 /* The terminal's chrome is dark in both schemes, so its ghost buttons keep
    Classic's light-on-dark greys instead of Glass light's dark label colour. */
-[data-design='glass'] :is(.term-head, .term-compact, .shell-pane-head) .btn.ghost {
+:is([data-design='glass'], [data-design='magma']) :is(.term-head, .term-compact, .shell-pane-head) .btn.ghost {
   color: var(--tm-gray-4);
 }
 
-[data-design='glass'] :is(.term-head, .term-compact, .shell-pane-head) .btn.ghost:hover {
+:is([data-design='glass'], [data-design='magma']) :is(.term-head, .term-compact, .shell-pane-head) .btn.ghost:hover {
   background: color-mix(in srgb, var(--tm-gray-1) 12%, transparent);
   color: var(--tm-gray-1);
 }
@@ -331,7 +333,7 @@
 /* segmented control: a filled track, the pick a raised thumb */
 /* a grid, so the segments are equal (the widest sets the size) and fill the
    track when a phone's config row stretches it */
-[data-design='glass'] .seg {
+:is([data-design='glass'], [data-design='magma']) .seg {
   display: inline-grid;
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
@@ -341,8 +343,8 @@
   background: var(--tm-bg-inset);
 }
 
-[data-design='glass'] .seg .btn,
-[data-design='glass'] .seg .btn:hover {
+:is([data-design='glass'], [data-design='magma']) .seg .btn,
+:is([data-design='glass'], [data-design='magma']) .seg .btn:hover {
   justify-content: center;
   padding: 5px 14px;
   border-color: transparent;
@@ -352,8 +354,8 @@
   font-weight: 500;
 }
 
-[data-design='glass'] .seg .btn.primary,
-[data-design='glass'] .seg .btn.primary:hover {
+:is([data-design='glass'], [data-design='magma']) .seg .btn.primary,
+:is([data-design='glass'], [data-design='magma']) .seg .btn.primary:hover {
   background: var(--tm-seg-thumb);
   color: var(--tm-text);
   box-shadow: var(--tm-knob-shadow);
@@ -362,7 +364,7 @@
 
 /* ---------- fields ---------- */
 
-:where([data-design='glass']) :is(input, textarea, select, button).field {
+:where([data-design='glass'], [data-design='magma']) :is(input, textarea, select, button).field {
   border: 1px solid transparent;
   border-radius: var(--tm-radius-md);
   background-color: var(--tm-bg-inset);
@@ -373,7 +375,7 @@
 
 /* WebKit draws a native select square whatever its radius: drop the native
    face and draw the chevron from two gradient triangles in currentColor */
-:where([data-design='glass']) select.field:not([multiple]) {
+:where([data-design='glass'], [data-design='magma']) select.field:not([multiple]) {
   -webkit-appearance: none;
   appearance: none;
   padding-right: 30px;
@@ -388,17 +390,17 @@
 }
 
 /* `.app.mobile select.field` sets its own padding (0,3,1): keep room for the chevron there too */
-:where([data-design='glass']) .app.mobile select.field:not([multiple]) {
+:where([data-design='glass'], [data-design='magma']) .app.mobile select.field:not([multiple]) {
   padding-right: 30px;
 }
 
-:where([data-design='glass']) :is(input, textarea, select).field:focus,
-:where([data-design='glass']) button.field:focus-visible {
+:where([data-design='glass'], [data-design='magma']) :is(input, textarea, select).field:focus,
+:where([data-design='glass'], [data-design='magma']) button.field:focus-visible {
   border-color: var(--tm-accent);
   box-shadow: 0 0 0 4px var(--tm-accent-subtle);
 }
 
-[data-design='glass'] .label {
+:is([data-design='glass'], [data-design='magma']) .label {
   font-family: var(--tm-font-body);
   font-weight: 600;
   letter-spacing: 0.03em;
@@ -408,7 +410,7 @@
 
 /* the tint is the chip's own colour, so neutral chips read grey and tag
    chips (coloured inline) read in their hue without a rule per hue */
-[data-design='glass'] .chip {
+:is([data-design='glass'], [data-design='magma']) .chip {
   padding: 2px 9px;
   border: 0;
   border-radius: var(--tm-radius-pill);
@@ -417,7 +419,7 @@
   font-weight: 500;
 }
 
-[data-design='glass'] .badge {
+:is([data-design='glass'], [data-design='magma']) .badge {
   padding: 3px 10px;
   border: 0;
   background: color-mix(in srgb, currentColor 16%, transparent);
@@ -431,22 +433,22 @@
 
 /* a badge that opens the reviewer's terminal, or its explanation on a phone,
    is still a badge */
-[data-design='glass'] button.badge:is(.badge-link, .badge-tap) {
+:is([data-design='glass'], [data-design='magma']) button.badge:is(.badge-link, .badge-tap) {
   background: color-mix(in srgb, currentColor 16%, transparent);
 }
 
-[data-design='glass'] button.badge.badge-link:hover {
+:is([data-design='glass'], [data-design='magma']) button.badge.badge-link:hover {
   background: color-mix(in srgb, currentColor 26%, transparent);
 }
 
-[data-design='glass'] :is(.runcount, .mono.runcount) {
+:is([data-design='glass'], [data-design='magma']) :is(.runcount, .mono.runcount) {
   font-family: var(--tm-font-body);
   font-variant-numeric: tabular-nums;
 }
 
 /* ---------- the iOS switch: 51x31, the knob stretches while held ---------- */
 
-[data-design='glass'] .switch .track {
+:is([data-design='glass'], [data-design='magma']) .switch .track {
   width: 51px;
   height: 31px;
   border: 0;
@@ -454,7 +456,7 @@
   transition: background var(--tm-dur-base) var(--tm-ease-out);
 }
 
-[data-design='glass'] .switch .knob {
+:is([data-design='glass'], [data-design='magma']) .switch .knob {
   top: 2px;
   left: 2px;
   width: 27px;
@@ -466,29 +468,29 @@
     width var(--tm-dur-spring) var(--tm-ease-spring);
 }
 
-[data-design='glass'] .switch.on .track {
+:is([data-design='glass'], [data-design='magma']) .switch.on .track {
   background: var(--tm-switch-on);
 }
 
-[data-design='glass'] .switch.on .knob {
+:is([data-design='glass'], [data-design='magma']) .switch.on .knob {
   left: 2px;
   background: var(--tm-knob);
   transform: translateX(20px);
 }
 
-[data-design='glass'] .switch:active .knob {
+:is([data-design='glass'], [data-design='magma']) .switch:active .knob {
   width: 33px;
 }
 
-[data-design='glass'] .switch.on:active .knob {
+:is([data-design='glass'], [data-design='magma']) .switch.on:active .knob {
   transform: translateX(14px);
 }
 
 /* ---------- top bar controls: floating glass capsules ---------- */
 
-[data-design='glass'] .header :is(.switch, .runcount),
-[data-design='glass'] .header .btn,
-[data-design='glass'] .header .btn:hover {
+:is([data-design='glass'], [data-design='magma']) .header :is(.switch, .runcount),
+:is([data-design='glass'], [data-design='magma']) .header .btn,
+:is([data-design='glass'], [data-design='magma']) .header .btn:hover {
   min-height: 40px;
   border: 1px solid var(--tm-glass-rim);
   border-radius: var(--tm-radius-pill);
@@ -500,7 +502,7 @@
 
 /* inline-block, not flex: a flex container would trim the spaces around the
    usage pill's " · " separators */
-[data-design='glass'] .header .runcount {
+:is([data-design='glass'], [data-design='magma']) .header .runcount {
   display: inline-block;
   line-height: 38px;
   white-space: nowrap;
@@ -509,52 +511,52 @@
   font-weight: 500;
 }
 
-[data-design='glass'] .header .switch {
+:is([data-design='glass'], [data-design='magma']) .header .switch {
   padding: 0 var(--tm-space-3) 0 4px;
   transition: transform var(--tm-dur-spring) var(--tm-ease-spring);
 }
 
-[data-design='glass'] .header .switch .track {
+:is([data-design='glass'], [data-design='magma']) .header .switch .track {
   /* 51x31 inside a 40px capsule */
   transform: scale(0.9);
   transform-origin: left center;
   margin-right: -4px;
 }
 
-[data-design='glass'] .header .btn {
+:is([data-design='glass'], [data-design='magma']) .header .btn {
   justify-content: center;
   min-width: 40px;
   padding: 0 var(--tm-space-3);
   color: var(--tm-text);
 }
 
-[data-design='glass'] .header .btn.ghost.on,
-[data-design='glass'] .header .btn.ghost.on:hover {
+:is([data-design='glass'], [data-design='magma']) .header .btn.ghost.on,
+:is([data-design='glass'], [data-design='magma']) .header .btn.ghost.on:hover {
   background: var(--tm-accent-subtle);
   color: var(--tm-accent);
 }
 
-[data-design='glass'] .header .qchip,
-[data-design='glass'] .header .qchip:hover,
-[data-design='glass'] .header .ichip.urgent,
-[data-design='glass'] .header .ichip.urgent:hover {
+:is([data-design='glass'], [data-design='magma']) .header .qchip,
+:is([data-design='glass'], [data-design='magma']) .header .qchip:hover,
+:is([data-design='glass'], [data-design='magma']) .header .ichip.urgent,
+:is([data-design='glass'], [data-design='magma']) .header .ichip.urgent:hover {
   color: var(--tm-status-attention);
 }
 
-[data-design='glass'] .header :is(.conn-dot-btn, .pal-btn) {
+:is([data-design='glass'], [data-design='magma']) .header :is(.conn-dot-btn, .pal-btn) {
   width: 40px;
   padding: 0;
 }
 
 /* A phone's bar holds four capsules at most. The queue switch is not one of
    them: it lives in the More sheet, and the run count carries its state dot. */
-[data-design='glass'] .app.mobile .header,
-[data-design='glass'] .app.mobile .header .btn {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .header,
+:is([data-design='glass'], [data-design='magma']) .app.mobile .header .btn {
   font-size: var(--tm-text-xs);
 }
 
 @media (hover: hover) {
-  [data-design='glass'] .header .btn:hover {
+  :is([data-design='glass'], [data-design='magma']) .header .btn:hover {
     background: var(--tm-glass-btn-hover);
   }
 }
@@ -564,7 +566,7 @@
    changes): Dashboard · Inbox, then the Board as a raised accent-tinted disc,
    then Queue · More. The bar itself is only the row that holds them. */
 
-[data-design='glass'] .tabbar {
+:is([data-design='glass'], [data-design='magma']) .tabbar {
   left: calc(var(--tm-space-4) + env(safe-area-inset-left, 0px));
   right: calc(var(--tm-space-4) + env(safe-area-inset-right, 0px));
   bottom: var(--tm-tabbar-float);
@@ -577,7 +579,7 @@
   box-shadow: none;
 }
 
-[data-design='glass'] .tabbar .tab-group {
+:is([data-design='glass'], [data-design='magma']) .tabbar .tab-group {
   position: relative;
   isolation: isolate;
   height: 100%;
@@ -593,7 +595,7 @@
 /* --tab-i / --tab-n / --lens come from TabBar: the lens rides under the tab
    that owns the page, inside the capsule that holds it (More owns everything
    reached from the More sheet); the other capsule's lens fades out */
-[data-design='glass'] .tabbar .tab-group::before {
+:is([data-design='glass'], [data-design='magma']) .tabbar .tab-group::before {
   content: '';
   position: absolute;
   z-index: -1;
@@ -612,20 +614,20 @@
 }
 
 /* the lens swells under a finger, as Liquid Glass does */
-[data-design='glass'] .tabbar .tab-group:active::before {
+:is([data-design='glass'], [data-design='magma']) .tabbar .tab-group:active::before {
   transform: translateX(calc(var(--tab-i, 0) * 100%)) scale(1.05);
 }
 
 /* The Board: a disc 10px taller than the capsules, standing on their
    baseline so it rises above them. Accent-tinted glass, the label kept for
    screen readers only (the NavLink's aria-label names it). */
-[data-design='glass'] .tabbar .tab-centre {
+:is([data-design='glass'], [data-design='magma']) .tabbar .tab-centre {
   flex: none;
   width: calc(var(--tm-tabbar-h) + 10px);
   height: calc(var(--tm-tabbar-h) + 10px);
 }
 
-[data-design='glass'] .tabbar .tab-centre .tab-fab {
+:is([data-design='glass'], [data-design='magma']) .tabbar .tab-centre .tab-fab {
   width: 100%;
   height: 100%;
   margin: 0;
@@ -642,12 +644,12 @@
     box-shadow var(--tm-dur-base) var(--tm-ease-out);
 }
 
-[data-design='glass'] .tabbar .tab-centre .tab-fab svg {
+:is([data-design='glass'], [data-design='magma']) .tabbar .tab-centre .tab-fab svg {
   width: 27px;
   height: 27px;
 }
 
-[data-design='glass'] .tabbar .tab-centre.active .tab-fab {
+:is([data-design='glass'], [data-design='magma']) .tabbar .tab-centre.active .tab-fab {
   background: var(--tm-accent);
   box-shadow:
     inset 0 1px 0 var(--tm-glass-specular),
@@ -655,16 +657,16 @@
     var(--tm-glass-shadow);
 }
 
-[data-design='glass'] .tabbar .tab-centre:active .tab-fab {
+:is([data-design='glass'], [data-design='magma']) .tabbar .tab-centre:active .tab-fab {
   transform: scale(0.9);
   transition-duration: var(--tm-dur-press);
 }
 
-[data-design='glass'] .tabbar .tab-centre:active svg {
+:is([data-design='glass'], [data-design='magma']) .tabbar .tab-centre:active svg {
   transform: none;
 }
 
-[data-design='glass'] .tabbar .tab-centre-label {
+:is([data-design='glass'], [data-design='magma']) .tabbar .tab-centre-label {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -673,11 +675,11 @@
   white-space: nowrap;
 }
 
-[data-design='glass'] .tab-count {
+:is([data-design='glass'], [data-design='magma']) .tab-count {
   box-shadow: none;
 }
 
-[data-design='glass'] .tabbar .nav-link {
+:is([data-design='glass'], [data-design='magma']) .tabbar .nav-link {
   min-height: 0;
   padding: 0;
   gap: 2px;
@@ -688,26 +690,26 @@
   letter-spacing: 0.01em;
 }
 
-[data-design='glass'] .tabbar .nav-link.active,
-[data-design='glass'] .tabbar .nav-link.here {
+:is([data-design='glass'], [data-design='magma']) .tabbar .nav-link.active,
+:is([data-design='glass'], [data-design='magma']) .tabbar .nav-link.here {
   color: var(--tm-accent);
 }
 
-[data-design='glass'] .tabbar .nav-link.active::before {
+:is([data-design='glass'], [data-design='magma']) .tabbar .nav-link.active::before {
   content: none;
 }
 
-[data-design='glass'] .tabbar .nav-link:active {
+:is([data-design='glass'], [data-design='magma']) .tabbar .nav-link:active {
   background: transparent;
 }
 
-[data-design='glass'] .tabbar .nav-link svg {
+:is([data-design='glass'], [data-design='magma']) .tabbar .nav-link svg {
   width: 23px;
   height: 23px;
   transition: transform var(--tm-dur-spring) var(--tm-ease-spring);
 }
 
-[data-design='glass'] .tabbar .nav-link:active svg {
+:is([data-design='glass'], [data-design='magma']) .tabbar .nav-link:active svg {
   transform: scale(0.82);
   transition-duration: var(--tm-dur-press);
 }
@@ -716,7 +718,7 @@
 
 /* sentence-case section titles; Classic's mono micro-caps stay Classic's.
    :where() so a group-tinted head (.section-head.group-tint) keeps its hue. */
-:where([data-design='glass']) .section-head {
+:where([data-design='glass'], [data-design='magma']) .section-head {
   margin: var(--tm-space-5) var(--tm-space-1) var(--tm-space-2);
   color: var(--tm-text);
   font-family: var(--tm-font-display);
@@ -726,7 +728,7 @@
   text-transform: none;
 }
 
-:where([data-design='glass']) .section-head .count {
+:where([data-design='glass'], [data-design='magma']) .section-head .count {
   padding: 1px 8px;
   background: var(--tm-bg-inset);
   color: var(--tm-text-muted);
@@ -737,17 +739,17 @@
   font-variant-numeric: tabular-nums;
 }
 
-[data-design='glass'] .section-head.accent,
-[data-design='glass'] .section-head.accent .section-fold:hover {
+:is([data-design='glass'], [data-design='magma']) .section-head.accent,
+:is([data-design='glass'], [data-design='magma']) .section-head.accent .section-fold:hover {
   color: var(--tm-text);
 }
 
-[data-design='glass'] .section-head.accent .count {
+:is([data-design='glass'], [data-design='magma']) .section-head.accent .count {
   background: var(--tm-accent-subtle);
   color: var(--tm-accent);
 }
 
-[data-design='glass'] .section-head .section-toggle {
+:is([data-design='glass'], [data-design='magma']) .section-head .section-toggle {
   color: var(--tm-accent);
   font-family: var(--tm-font-body);
   font-size: var(--tm-text-sm);
@@ -756,12 +758,12 @@
   text-transform: none;
 }
 
-[data-design='glass'] :is(.section-head, .task-group-head) .caret {
+:is([data-design='glass'], [data-design='magma']) :is(.section-head, .task-group-head) .caret {
   transition: transform var(--tm-dur-spring) var(--tm-ease-spring);
 }
 
 /* inset-grouped sections scroll away with their list, as iOS's do */
-[data-design='glass'] .app.mobile .board .section-head {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .board .section-head {
   position: static;
   margin: var(--tm-space-5) var(--tm-space-1) var(--tm-space-2);
   padding: 0;
@@ -769,13 +771,13 @@
 }
 
 /* :where(): Classic's .task-row:last-child and :has(+ .dispatch-strip) still drop the line */
-:where([data-design='glass']) .task-row {
+:where([data-design='glass'], [data-design='magma']) .task-row {
   border-bottom: 0.5px solid var(--tm-border);
   transition: background var(--tm-dur-exit) var(--tm-ease-out);
 }
 
 /* a row highlights under the finger and fades out on release */
-[data-design='glass'] .task-row:active {
+:is([data-design='glass'], [data-design='magma']) .task-row:active {
   background: var(--tm-fill-press);
   transition-duration: 0ms;
   /* a scroll view holds a touch a beat before it highlights, so a scroll
@@ -783,21 +785,21 @@
   transition-delay: 60ms;
 }
 
-[data-design='glass'] .task-row .title {
+:is([data-design='glass'], [data-design='magma']) .task-row .title {
   font-weight: 600;
 }
 
-[data-design='glass'] .task-row .age {
+:is([data-design='glass'], [data-design='magma']) .task-row .age {
   font-family: var(--tm-font-body);
   font-variant-numeric: tabular-nums;
 }
 
-:where([data-design='glass']) .task-group {
+:where([data-design='glass'], [data-design='magma']) .task-group {
   border-bottom: 0.5px solid var(--tm-border);
 }
 
 /* the rail stays a hue only: with group colours off a neutral line would just be noise */
-[data-design='glass'] .task-group::before {
+:is([data-design='glass'], [data-design='magma']) .task-group::before {
   background: var(--tm-group, transparent);
 }
 
@@ -805,11 +807,11 @@
    is Spotlight on a desktop (thick glass, grown out of the top) and a Liquid
    Glass sheet on a phone (docs/search.md). The phone keeps Search leading and
    New trailing. */
-[data-design='glass'] .app.mobile .board-toolbar > .btn {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .board-toolbar > .btn {
   min-height: 40px;
 }
 
-[data-design='glass'] .bs-trigger {
+:is([data-design='glass'], [data-design='magma']) .bs-trigger {
   min-height: 36px;
   border-color: var(--tm-glass-rim);
   border-radius: var(--tm-radius-pill);
@@ -817,37 +819,37 @@
   box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-shadow-sm);
 }
 
-[data-design='glass'] .bs-trigger.on {
+:is([data-design='glass'], [data-design='magma']) .bs-trigger.on {
   border-color: var(--tm-accent);
 }
 
 @media (hover: hover) {
-  [data-design='glass'] .bs-trigger:hover {
+  :is([data-design='glass'], [data-design='magma']) .bs-trigger:hover {
     background: var(--tm-glass-btn-hover);
   }
 }
 
-[data-design='glass'] .bs-trigger:active {
+:is([data-design='glass'], [data-design='magma']) .bs-trigger:active {
   transform: scale(0.98);
   transition: transform var(--tm-dur-press) var(--tm-ease-out);
 }
 
-[data-design='glass'] .app.mobile .board-toolbar > .bs-trigger {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .board-toolbar > .bs-trigger {
   min-height: 40px;
   border-color: var(--tm-glass-rim);
   background: var(--tm-glass-btn);
 }
 
-[data-design='glass'] .app.mobile .board-toolbar > .bs-trigger.on {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .board-toolbar > .bs-trigger.on {
   border-color: var(--tm-accent);
 }
 
-[data-design='glass'] :is(.bs-count, .bs-token, .bs-tok-prev) {
+:is([data-design='glass'], [data-design='magma']) :is(.bs-count, .bs-token, .bs-tok-prev) {
   border-radius: var(--tm-radius-pill);
 }
 
-[data-design='glass'] .bs-pop,
-[data-design='glass'] .pal-pop {
+:is([data-design='glass'], [data-design='magma']) .bs-pop,
+:is([data-design='glass'], [data-design='magma']) .pal-pop {
   border: 1px solid var(--tm-glass-rim);
   border-radius: var(--tm-radius-xl);
   background: var(--tm-glass-thick);
@@ -858,27 +860,27 @@
   animation: tm-pop-in var(--tm-dur-spring) var(--tm-ease-spring);
 }
 
-[data-design='glass'] .bs-field,
-[data-design='glass'] .bs-foot {
+:is([data-design='glass'], [data-design='magma']) .bs-field,
+:is([data-design='glass'], [data-design='magma']) .bs-foot {
   border-color: var(--tm-glass-rim);
 }
 
-[data-design='glass'] .bs-foot {
+:is([data-design='glass'], [data-design='magma']) .bs-foot {
   background: transparent;
 }
 
-[data-design='glass'] .bs-foot select.field {
+:is([data-design='glass'], [data-design='magma']) .bs-foot select.field {
   border-color: var(--tm-glass-rim);
   border-radius: var(--tm-radius-pill);
   background-color: var(--tm-glass-btn);
 }
 
-[data-design='glass'] .bs-opt {
+:is([data-design='glass'], [data-design='magma']) .bs-opt {
   border-radius: var(--tm-radius-sm);
 }
 
 /* the field inside the sheet is the iOS search field: a lens, no rim */
-[data-design='glass'] .bs-sheet-body .bs-field {
+:is([data-design='glass'], [data-design='magma']) .bs-sheet-body .bs-field {
   border-radius: var(--tm-radius-md);
   background: var(--tm-glass-lens);
 }
@@ -886,40 +888,40 @@
 /* sticky hover on a phone: the last tapped row or item must not stay lit */
 /* at Classic's specificity: a drop target's fill and the press highlight still win */
 @media (hover: none) {
-  :where([data-design='glass']) .task-row:hover,
-  :where([data-design='glass']) .task-row .quick:hover,
-  [data-design='glass'] .sidebar .nav-link:hover:not(.active) {
+  :where([data-design='glass'], [data-design='magma']) .task-row:hover,
+  :where([data-design='glass'], [data-design='magma']) .task-row .quick:hover,
+  :is([data-design='glass'], [data-design='magma']) .sidebar .nav-link:hover:not(.active) {
     background: transparent;
   }
 }
 
 /* ---------- config and dashboard ---------- */
 
-[data-design='glass'] .cfg-group h3 {
+:is([data-design='glass'], [data-design='magma']) .cfg-group h3 {
   font-size: var(--tm-text-lg);
   font-weight: 700;
 }
 
-[data-design='glass'] .cfg-row + .cfg-row {
+:is([data-design='glass'], [data-design='magma']) .cfg-row + .cfg-row {
   border-top: 0.5px solid var(--tm-border);
 }
 
-[data-design='glass'] .tile .value {
+:is([data-design='glass'], [data-design='magma']) .tile .value {
   font-weight: 700;
 }
 
 /* the settings rail sticks BELOW the floating header, like the bulk bar */
-[data-design='glass'] .cfg-rail {
+:is([data-design='glass'], [data-design='magma']) .cfg-rail {
   top: calc(var(--tm-head-h) + var(--tm-space-2));
 }
 
-[data-design='glass'] :is(.cfg-anchor, .cfg-card) {
+:is([data-design='glass'], [data-design='magma']) :is(.cfg-anchor, .cfg-card) {
   scroll-margin-top: calc(var(--tm-head-h) + var(--tm-space-3));
 }
 
 /* ---------- overlays ---------- */
 
-[data-design='glass'] .overlay {
+:is([data-design='glass'], [data-design='magma']) .overlay {
   background: var(--tm-scrim);
   animation: tm-fade-in var(--tm-dur-sheet) var(--tm-ease-smooth);
 }
@@ -929,7 +931,7 @@
    with inline styles and slides it with an inline transform, so the float
    below has to win over those with !important; the motion is the library's
    (its tween reads --tm-sheet-dur/--tm-sheet-ease), never a CSS animation. */
-[data-design='glass'] .more-sheet {
+:is([data-design='glass'], [data-design='magma']) .more-sheet {
   border: 1px solid var(--tm-glass-rim);
   background: var(--tm-glass-thick);
   -webkit-backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
@@ -938,7 +940,7 @@
 }
 
 /* a content-height sheet floats inside the screen's own corners (iOS 26) */
-[data-design='glass'] .more-sheet:not(.sheet-tall) {
+:is([data-design='glass'], [data-design='magma']) .more-sheet:not(.sheet-tall) {
   left: calc(var(--tm-space-2) + env(safe-area-inset-left, 0px)) !important;
   width: calc(100% - 2 * var(--tm-space-2) - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)) !important;
   bottom: var(--tm-space-2) !important;
@@ -946,22 +948,22 @@
   border-radius: var(--tm-radius-xl);
 }
 
-[data-design='glass'] .more-sheet:not(.sheet-tall, .sheet-flush) .sheet-head {
+:is([data-design='glass'], [data-design='magma']) .more-sheet:not(.sheet-tall, .sheet-flush) .sheet-head {
   padding-left: var(--tm-space-4);
   padding-right: var(--tm-space-4);
 }
 
-[data-design='glass'] .more-sheet:not(.sheet-tall) .sheet-body {
+:is([data-design='glass'], [data-design='magma']) .more-sheet:not(.sheet-tall) .sheet-body {
   padding: var(--tm-space-3) var(--tm-space-4) max(var(--tm-space-4), calc(env(safe-area-inset-bottom, 0px) - var(--tm-space-2)));
 }
 
 /* a full-height one is a card from the bottom edge, like the task panel was */
-[data-design='glass'] .more-sheet.sheet-tall {
+:is([data-design='glass'], [data-design='magma']) .more-sheet.sheet-tall {
   border-width: 1px 0 0;
   border-radius: var(--tm-radius-lg) var(--tm-radius-lg) 0 0;
 }
 
-[data-design='glass'] .sheet-grip {
+:is([data-design='glass'], [data-design='magma']) .sheet-grip {
   width: 36px;
   height: 5px;
   margin: 2px auto 0;
@@ -969,18 +971,18 @@
   opacity: 0.55;
 }
 
-[data-design='glass'] .sheet-title {
+:is([data-design='glass'], [data-design='magma']) .sheet-title {
   font-family: var(--tm-font-display);
   font-size: var(--tm-text-lg);
   font-weight: 700;
 }
 
 /* the More sheet's nav: Control Center tiles */
-[data-design='glass'] .sheet-nav {
+:is([data-design='glass'], [data-design='magma']) .sheet-nav {
   gap: var(--tm-space-2);
 }
 
-[data-design='glass'] .sheet-nav .nav-link {
+:is([data-design='glass'], [data-design='magma']) .sheet-nav .nav-link {
   min-height: 52px;
   padding: var(--tm-space-2) var(--tm-space-3);
   border: 1px solid var(--tm-glass-rim);
@@ -993,49 +995,49 @@
     background var(--tm-dur-fast) var(--tm-ease-out);
 }
 
-[data-design='glass'] .sheet-nav .nav-link svg {
+:is([data-design='glass'], [data-design='magma']) .sheet-nav .nav-link svg {
   width: 20px;
   height: 20px;
   color: var(--tm-accent);
   opacity: 1;
 }
 
-[data-design='glass'] .sheet-nav .nav-link.active {
+:is([data-design='glass'], [data-design='magma']) .sheet-nav .nav-link.active {
   border-color: transparent;
   background: var(--tm-accent-subtle);
   color: var(--tm-accent);
 }
 
-[data-design='glass'] .sheet-nav .nav-link:active {
+:is([data-design='glass'], [data-design='magma']) .sheet-nav .nav-link:active {
   transform: scale(0.96);
   transition-duration: var(--tm-dur-press);
 }
 
-[data-design='glass'] .sheet-tools {
+:is([data-design='glass'], [data-design='magma']) .sheet-tools {
   border-top: 0.5px solid var(--tm-border);
 }
 
-[data-design='glass'] .sheet-action {
+:is([data-design='glass'], [data-design='magma']) .sheet-action {
   border-radius: var(--tm-radius-md);
   transition: background var(--tm-dur-exit) var(--tm-ease-out);
 }
 
-[data-design='glass'] .sheet-action:active:not(:disabled) {
+:is([data-design='glass'], [data-design='magma']) .sheet-action:active:not(:disabled) {
   background: var(--tm-fill-press);
   transition-duration: 0ms;
 }
 
-[data-design='glass'] .sheet-actions.danger-zone {
+:is([data-design='glass'], [data-design='magma']) .sheet-actions.danger-zone {
   border-top: 0.5px solid var(--tm-border);
 }
 
-[data-design='glass'] .full-sheet-head {
+:is([data-design='glass'], [data-design='magma']) .full-sheet-head {
   border-bottom: 0.5px solid var(--tm-border);
   background: transparent;
 }
 
 /* the New task foot is a bar: the same material as the task panel's Save bar */
-[data-design='glass'] .new-task-foot {
+:is([data-design='glass'], [data-design='magma']) .new-task-foot {
   border-top: 0.5px solid var(--tm-border);
   background: var(--tm-glass-bar);
   -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
@@ -1043,20 +1045,20 @@
 }
 
 /* the Review deck's pinned bar is the same material as New task's foot */
-[data-design='glass'] .deck-bar {
+:is([data-design='glass'], [data-design='magma']) .deck-bar {
   border-top: 0.5px solid var(--tm-border);
   background: var(--tm-glass-bar);
   -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
   backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
 }
 
-[data-design='glass'] .full-sheet-title {
+:is([data-design='glass'], [data-design='magma']) .full-sheet-title {
   font-family: var(--tm-font-display);
   font-weight: 700;
 }
 
 /* the task panel: a floating pane on a desktop, a card sheet on a phone */
-[data-design='glass'] .slideover {
+:is([data-design='glass'], [data-design='magma']) .slideover {
   top: var(--tm-space-2);
   right: var(--tm-space-2);
   bottom: var(--tm-space-2);
@@ -1070,15 +1072,15 @@
   animation: tm-panel-in var(--tm-dur-sheet) var(--tm-ease-smooth);
 }
 
-[data-design='glass'] .slideover-head,
-[data-design='glass'] .so-bar,
-[data-design='glass'] .slideover > .so-actions {
+:is([data-design='glass'], [data-design='magma']) .slideover-head,
+:is([data-design='glass'], [data-design='magma']) .so-bar,
+:is([data-design='glass'], [data-design='magma']) .slideover > .so-actions {
   border-bottom: 0.5px solid var(--tm-border);
   background: transparent;
 }
 
 /* the desktop panel's Save footer: a hairline over the pane's own material */
-[data-design='glass'] .slideover > .so-save {
+:is([data-design='glass'], [data-design='magma']) .slideover > .so-save {
   border-top: 0.5px solid var(--tm-border);
   background: transparent;
 }
@@ -1087,18 +1089,18 @@
    material, so the text passing under it blurs away instead of reading
    through (the thinner bar material left it legible). On the strip only —
    never on .main/.header/.app, whose fixed overlays it would trap. */
-[data-design='glass'] .so-tabs {
+:is([data-design='glass'], [data-design='magma']) .so-tabs {
   background: var(--tm-glass-thick);
   -webkit-backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
   backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
   box-shadow: inset 0 -0.5px 0 var(--tm-border);
 }
 
-[data-design='glass'] .so-tab {
+:is([data-design='glass'], [data-design='magma']) .so-tab {
   font-family: var(--tm-font-display);
 }
 
-[data-design='glass'] .app.mobile .slideover-body > .so-save {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .slideover-body > .so-save {
   border-top: 0.5px solid var(--tm-border);
   background: var(--tm-glass-bar);
   -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
@@ -1107,7 +1109,7 @@
 
 /* New task on a desktop: the question modal's material, a calmer entrance
    (a 1000px pane growing in from 112% would sweep the whole window) */
-[data-design='glass'] .nt-dialog {
+:is([data-design='glass'], [data-design='magma']) .nt-dialog {
   border: 1px solid var(--tm-glass-rim);
   border-radius: var(--tm-radius-xl);
   background: var(--tm-glass-thick);
@@ -1117,7 +1119,7 @@
   animation: tm-dialog-in var(--tm-dur-spring) var(--tm-ease-spring);
 }
 
-[data-design='glass'] .nt-dialog.dropping {
+:is([data-design='glass'], [data-design='magma']) .nt-dialog.dropping {
   border-color: var(--tm-accent);
   box-shadow:
     inset 0 1px 0 var(--tm-glass-specular),
@@ -1125,19 +1127,19 @@
     var(--tm-shadow-lg);
 }
 
-[data-design='glass'] .nt-head,
-[data-design='glass'] .nt-foot {
+:is([data-design='glass'], [data-design='magma']) .nt-head,
+:is([data-design='glass'], [data-design='magma']) .nt-foot {
   border-color: var(--tm-border);
   border-width: 0.5px;
   background: transparent;
 }
 
-[data-design='glass'] .nt-side {
+:is([data-design='glass'], [data-design='magma']) .nt-side {
   border-left: 0.5px solid var(--tm-border);
   background: var(--tm-glass-card);
 }
 
-[data-design='glass'] .att-item {
+:is([data-design='glass'], [data-design='magma']) .att-item {
   border: 0.5px solid var(--tm-glass-rim);
   background: var(--tm-glass-card);
 }
@@ -1150,7 +1152,7 @@
 }
 
 /* an agent's question: an alert that pops in from slightly too big */
-[data-design='glass'] .qmodal {
+:is([data-design='glass'], [data-design='magma']) .qmodal {
   overflow: hidden;
   border: 1px solid var(--tm-glass-rim);
   border-radius: var(--tm-radius-xl);
@@ -1162,7 +1164,7 @@
 }
 
 /* popovers grow out of their button */
-[data-design='glass'] :is(.cmd-pop, .group-picker-pop, .ws-pop) {
+:is([data-design='glass'], [data-design='magma']) :is(.cmd-pop, .group-picker-pop, .ws-pop) {
   border: 1px solid var(--tm-glass-rim);
   border-radius: var(--tm-radius-lg);
   background: var(--tm-glass-thick);
@@ -1174,19 +1176,19 @@
 }
 
 /* the terminal drawer rises like a sheet; it stays a terminal inside */
-[data-design='glass'] .term-drawer {
+:is([data-design='glass'], [data-design='magma']) .term-drawer {
   overflow: hidden;
   border-top: 0;
   border-radius: var(--tm-radius-lg) var(--tm-radius-lg) 0 0;
   animation: tm-sheet-in var(--tm-dur-sheet) var(--tm-ease-smooth);
 }
 
-[data-design='glass'] .app.mobile .term-drawer.full {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .term-drawer.full {
   border-radius: 0;
 }
 
 /* docked right: a floating pane like the task panel, under the floating header */
-[data-design='glass'] .term-drawer.docked:not(.compact) {
+:is([data-design='glass'], [data-design='magma']) .term-drawer.docked:not(.compact) {
   top: calc(var(--tm-head-h) + var(--tm-space-2));
   right: var(--tm-space-2);
   bottom: var(--tm-space-2);
@@ -1195,19 +1197,19 @@
   animation: tm-panel-in var(--tm-dur-sheet) var(--tm-ease-smooth);
 }
 
-[data-design='glass'] .main:has(> .slideover) > .term-drawer.docked:not(.compact) {
+:is([data-design='glass'], [data-design='magma']) .main:has(> .slideover) > .term-drawer.docked:not(.compact) {
   top: var(--tm-space-2);
 }
 
-[data-design='glass'] .main:has(> .term-drawer.docked:not(.compact)) > .slideover {
+:is([data-design='glass'], [data-design='magma']) .main:has(> .term-drawer.docked:not(.compact)) > .slideover {
   right: calc(var(--tm-term-w) + var(--tm-space-2) * 2);
 }
 
 /* ---------- toasts and the offline banner (docs/mobile.md § Action errors, § Server offline) ---------- */
 /* Thick glass like the other floating pieces; the status hue stays on the dot
    and the rim, so red still reads as red over any wallpaper. */
-[data-design='glass'] .toast,
-[data-design='glass'] .offline-banner {
+:is([data-design='glass'], [data-design='magma']) .toast,
+:is([data-design='glass'], [data-design='magma']) .offline-banner {
   border-color: color-mix(in srgb, var(--tm-status-failed) 45%, var(--tm-glass-rim));
   border-radius: var(--tm-radius-lg);
   background: var(--tm-glass-thick);
@@ -1217,15 +1219,15 @@
 }
 
 /* an undo toast (toastUndo) is not a failure: a neutral rim */
-[data-design='glass'] .toast.info {
+:is([data-design='glass'], [data-design='magma']) .toast.info {
   border-color: var(--tm-glass-rim);
 }
 
-[data-design='glass'] .toast {
+:is([data-design='glass'], [data-design='magma']) .toast {
   animation: tm-toast-in var(--tm-dur-spring) var(--tm-ease-spring);
 }
 
-[data-design='glass'] .offline-banner.offline {
+:is([data-design='glass'], [data-design='magma']) .offline-banner.offline {
   border-color: color-mix(in srgb, var(--tm-status-review) 45%, var(--tm-glass-rim));
 }
 
@@ -1234,7 +1236,7 @@
 /* pages rise into place. `backwards`, never `both`: a transform left on the
    page root after the animation would trap every fixed element inside it */
 /* the phone's offline banner (theme.css) is never the page: the one after it is */
-[data-design='glass'] .main > :is(:first-child, .offline-banner + *):not(.offline-banner) {
+:is([data-design='glass'], [data-design='magma']) .main > :is(:first-child, .offline-banner + *):not(.offline-banner) {
   animation: tm-page-in var(--tm-dur-page) var(--tm-ease-smooth) backwards;
 }
 
@@ -1242,24 +1244,24 @@
    (`.main[data-entering]`, set by Layout for 900ms per section change). A
    keyed reorder MOVES rows with insertBefore, which restarts any CSS animation
    on them, so an always-on cascade would blink the board on every update. */
-[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group) {
+:is([data-design='glass'], [data-design='magma']) .main[data-entering] .panel > :is(.task-row, .task-group) {
   animation: tm-row-in var(--tm-dur-page) var(--tm-ease-smooth) backwards;
 }
 
-[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(2) { animation-delay: 30ms; }
-[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(3) { animation-delay: 60ms; }
-[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(4) { animation-delay: 90ms; }
-[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(5) { animation-delay: 120ms; }
-[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(6) { animation-delay: 150ms; }
-[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(7) { animation-delay: 180ms; }
-[data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(n + 8) { animation-delay: 210ms; }
+:is([data-design='glass'], [data-design='magma']) .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(2) { animation-delay: 30ms; }
+:is([data-design='glass'], [data-design='magma']) .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(3) { animation-delay: 60ms; }
+:is([data-design='glass'], [data-design='magma']) .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(4) { animation-delay: 90ms; }
+:is([data-design='glass'], [data-design='magma']) .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(5) { animation-delay: 120ms; }
+:is([data-design='glass'], [data-design='magma']) .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(6) { animation-delay: 150ms; }
+:is([data-design='glass'], [data-design='magma']) .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(7) { animation-delay: 180ms; }
+:is([data-design='glass'], [data-design='magma']) .main[data-entering] .panel > :is(.task-row, .task-group):nth-child(n + 8) { animation-delay: 210ms; }
 
 /* Reduce Motion: theme.css collapses durations but not delays, which would
    leave staggered rows invisible for a beat. Nothing rises at all instead. */
 @media (prefers-reduced-motion: reduce) {
-  [data-design='glass'] .main > :is(:first-child, .offline-banner + *):not(.offline-banner),
-  [data-design='glass'] .toast,
-  [data-design='glass'] .main[data-entering] .panel > :is(.task-row, .task-group) {
+  :is([data-design='glass'], [data-design='magma']) .main > :is(:first-child, .offline-banner + *):not(.offline-banner),
+  :is([data-design='glass'], [data-design='magma']) .toast,
+  :is([data-design='glass'], [data-design='magma']) .main[data-entering] .panel > :is(.task-row, .task-group) {
     animation: none;
   }
 }
@@ -1275,34 +1277,34 @@
   pointer-events: none !important;
 }
 
-[data-design='glass'] .tm-exit.overlay,
-[data-design='glass'] .tm-exit > .overlay,
-[data-design='glass'] .sheet-root.tm-exit .sheet-overlay {
+:is([data-design='glass'], [data-design='magma']) .tm-exit.overlay,
+:is([data-design='glass'], [data-design='magma']) .tm-exit > .overlay,
+:is([data-design='glass'], [data-design='magma']) .sheet-root.tm-exit .sheet-overlay {
   animation: tm-fade-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
 }
 
-[data-design='glass'] .sheet-root.tm-exit .more-sheet {
+:is([data-design='glass'], [data-design='magma']) .sheet-root.tm-exit .more-sheet {
   animation: tm-sheet-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
 }
 
-[data-design='glass'] .slideover.tm-exit {
+:is([data-design='glass'], [data-design='magma']) .slideover.tm-exit {
   animation: tm-panel-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
 }
 
-[data-design='glass'] .bs-root.tm-exit .bs-pop,
-[data-design='glass'] .pal-root.tm-exit .pal-pop {
+:is([data-design='glass'], [data-design='magma']) .bs-root.tm-exit .bs-pop,
+:is([data-design='glass'], [data-design='magma']) .pal-root.tm-exit .pal-pop {
   animation: tm-fade-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
 }
 
-[data-design='glass'] .qmodal.tm-exit {
+:is([data-design='glass'], [data-design='magma']) .qmodal.tm-exit {
   animation: tm-alert-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
 }
 
-[data-design='glass'] .nt-dialog.tm-exit {
+:is([data-design='glass'], [data-design='magma']) .nt-dialog.tm-exit {
   animation: tm-alert-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
 }
 
-[data-design='glass'] .toast.tm-exit {
+:is([data-design='glass'], [data-design='magma']) .toast.tm-exit {
   animation: tm-fade-out var(--tm-dur-exit) var(--tm-ease-exit) forwards !important;
 }
 
@@ -1395,13 +1397,13 @@
 /* ---------- inbox + board multi-select (docs/inbox.md) ---------- */
 
 /* the selected decision keeps its accent rim over the card's lit one */
-[data-design='glass'] .panel.inbox-item.sel {
+:is([data-design='glass'], [data-design='magma']) .panel.inbox-item.sel {
   border-color: var(--tm-accent);
 }
 
 /* the bulk bar floats over the scrolling rows: bar material, like the header's
    capsules, and it sticks BELOW the floating header (which the rows scroll under) */
-[data-design='glass'] .bulk-bar {
+:is([data-design='glass'], [data-design='magma']) .bulk-bar {
   top: calc(var(--tm-head-h) + var(--tm-space-2));
   border: 1px solid var(--tm-glass-rim);
   border-radius: var(--tm-radius-lg);
@@ -1411,18 +1413,18 @@
   box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
 }
 
-[data-design='glass'] .app.mobile .bulk-bar {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .bulk-bar {
   top: calc(var(--tm-head-h) + env(safe-area-inset-top, 0px) + var(--tm-space-2));
 }
 
-[data-design='glass'] .inbox-row:active {
+:is([data-design='glass'], [data-design='magma']) .inbox-row:active {
   background: var(--tm-glass-btn-hover);
 }
 
 /* ---------- timeline tracks (docs/timeline.md § Tracks) ---------- */
 
 /* the sticky repo column is a bar the time scrolls under: frosted, not a solid block on the card */
-[data-design='glass'] .tlt-label {
+:is([data-design='glass'], [data-design='magma']) .tlt-label {
   background: var(--tm-glass-bar);
   -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
   backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
@@ -1430,11 +1432,11 @@
 }
 
 /* on the translucent card a bar mixes with what is behind it, not with Classic's raised grey */
-[data-design='glass'] .tlt-item {
+:is([data-design='glass'], [data-design='magma']) .tlt-item {
   background: color-mix(in srgb, var(--c) 38%, transparent);
 }
 
-[data-design='glass'] .tlt-sub {
+:is([data-design='glass'], [data-design='magma']) .tlt-sub {
   background: repeating-linear-gradient(
     135deg,
     var(--k) 0 var(--tm-space-1),
@@ -1442,15 +1444,15 @@
   );
 }
 
-[data-design='glass'] .tlt-marker {
+:is([data-design='glass'], [data-design='magma']) .tlt-marker {
   border-color: var(--tm-glass-rim);
 }
 
-[data-design='glass'] .tlt-item-label {
+:is([data-design='glass'], [data-design='magma']) .tlt-item-label {
   text-shadow: none;
 }
 
-[data-design='glass'] .tlt-card {
+:is([data-design='glass'], [data-design='magma']) .tlt-card {
   border: 1px solid var(--tm-glass-rim);
   border-radius: var(--tm-radius-lg);
   background: var(--tm-glass-thick);
@@ -1463,7 +1465,7 @@
 
 /* NOW floats like the header's capsules (bar material); .main's padding
    already keeps its sticky top below the floating header */
-[data-design='glass'] .app.mobile .tl-now-divider {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .tl-now-divider {
   border: 1px solid var(--tm-glass-rim);
   border-radius: var(--tm-radius-lg);
   background: var(--tm-glass-bar);
@@ -1473,24 +1475,24 @@
   transition: transform var(--tm-dur-press) var(--tm-ease-spring);
 }
 
-[data-design='glass'] .app.mobile .tl-now-divider:active {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .tl-now-divider:active {
   transform: scale(var(--tm-press-scale));
 }
 
 /* rows: hairlines and the press highlight of the board's rows */
-[data-design='glass'] .tl-srow {
+:is([data-design='glass'], [data-design='magma']) .tl-srow {
   border-bottom-width: 0.5px;
   transition: background var(--tm-dur-exit) var(--tm-ease-out);
 }
 
-[data-design='glass'] .tl-srow:active {
+:is([data-design='glass'], [data-design='magma']) .tl-srow:active {
   background: var(--tm-fill-press);
   transition-duration: 0ms;
   transition-delay: 60ms;
 }
 
 /* inset-grouped rails: each stripe is a rounded pill clear of the row's edges */
-[data-design='glass'] .tl-lane {
+:is([data-design='glass'], [data-design='magma']) .tl-lane {
   border-radius: var(--tm-radius-pill);
   margin-block: var(--tm-space-1);
 }
@@ -1498,7 +1500,7 @@
 /* ---------- timeline: the time cursor (docs/timeline.md § Scrub and playback) ---------- */
 
 /* the phone's scrub bar floats like the NOW divider: bar material */
-[data-design='glass'] .app.mobile .tl-scrub {
+:is([data-design='glass'], [data-design='magma']) .app.mobile .tl-scrub {
   border: 1px solid var(--tm-glass-rim);
   border-radius: var(--tm-radius-lg);
   background: var(--tm-glass-bar);
@@ -1507,19 +1509,19 @@
   box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
 }
 
-[data-design='glass'] .tl-scrub-chip {
+:is([data-design='glass'], [data-design='magma']) .tl-scrub-chip {
   border-color: var(--tm-glass-rim);
   background: var(--tm-glass-btn);
 }
 
-[data-design='glass'] .tl-srow.at {
+:is([data-design='glass'], [data-design='magma']) .tl-srow.at {
   background: var(--tm-fill-press);
 }
 
 
 /* Board versions' focus card (docs/board-versions.md): the popover material,
    since the Glass overlay token is translucent */
-[data-design='glass'] .bf-card:not(.bf-card-sheet) {
+:is([data-design='glass'], [data-design='magma']) .bf-card:not(.bf-card-sheet) {
   border: 1px solid var(--tm-glass-rim);
   background: var(--tm-glass-thick);
   -webkit-backdrop-filter: blur(var(--tm-blur-thick)) saturate(var(--tm-saturate));
@@ -1531,7 +1533,7 @@
    card inside the roles panel — the lit rim and the card material, not the
    Classic inset fill, which reads as a hole in the glass */
 @media (max-width: 768px) {
-  [data-design='glass'] .office-roles .office-role {
+  :is([data-design='glass'], [data-design='magma']) .office-roles .office-role {
     border-color: var(--tm-glass-rim);
     border-radius: var(--tm-radius-lg);
     background: var(--tm-glass-card);
@@ -1543,14 +1545,14 @@
    name plates are the skin's own small material — in Glass they are lit glass
    capsules over the floor instead of Classic's hard pixel boxes. No blur: up to
    a dozen of them move with their avatars, and the thick fill reads alone. */
-[data-design='glass'] :is(.po-bubble, .po-plate) {
+:is([data-design='glass'], [data-design='magma']) :is(.po-bubble, .po-plate) {
   border-width: 1px;
   border-radius: var(--tm-radius-pill);
   background: var(--tm-glass-thick);
   box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
 }
 /* a bubble that means something keeps its hue on the rim */
-[data-design='glass'] :is(.po-plate, .po-bubble:not(.b-waiting, .b-guarded, .b-blocked, .b-huddle, .b-chat)) {
+:is([data-design='glass'], [data-design='magma']) :is(.po-plate, .po-bubble:not(.b-waiting, .b-guarded, .b-blocked, .b-huddle, .b-chat)) {
   border-color: var(--tm-glass-rim);
 }
 
@@ -1558,16 +1560,16 @@
    capsules as the Pixel office's — a bridge's readouts ARE glass. The Fantasy
    guild hall keeps its parchment bubbles and plates in Glass (parchment is that
    skin's material); they only gain the specular line. */
-[data-design='glass'] :is(.sb-bubble, .sb-plate) {
+:is([data-design='glass'], [data-design='magma']) :is(.sb-bubble, .sb-plate) {
   border-width: 1px;
   border-radius: var(--tm-radius-pill);
   background: var(--tm-glass-thick);
   box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
 }
-[data-design='glass'] :is(.sb-plate, .sb-bubble:not(.b-waiting, .b-guarded, .b-blocked, .b-huddle, .b-chat)) {
+:is([data-design='glass'], [data-design='magma']) :is(.sb-plate, .sb-bubble:not(.b-waiting, .b-guarded, .b-blocked, .b-huddle, .b-chat)) {
   border-color: var(--tm-glass-rim);
 }
-[data-design='glass'] :is(.fg-bubble, .fg-plate) {
+:is([data-design='glass'], [data-design='magma']) :is(.fg-bubble, .fg-plate) {
   border-width: 1px;
   box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
 }

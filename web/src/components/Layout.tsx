@@ -67,8 +67,10 @@ export function useIsMobile() {
 
 function ThemeToggle() {
   // Flips what is on screen and pins it. Only an explicit pick is stored (R9);
-  // Config → Appearance → System goes back to following the device.
-  const { scheme } = useLook();
+  // Config → Appearance → System goes back to following the device. Magma is
+  // dark-only (docs/magma.md § 2): a toggle that does nothing is not drawn.
+  const { scheme, design } = useLook();
+  if (design === 'magma') return null;
   return (
     <button className="btn ghost" title="Toggle light / dark" onClick={toggleScheme}>
       {scheme === 'dark' ? <IconSun /> : <IconMoon />}
@@ -838,6 +840,7 @@ const TABS_RIGHT = ['/queue'];
  * designs, and the routes stay, so push deep links, the Inbox's plan rows and
  * the Queue's aux-run links still land on them.
  */
+// Glass only: Magma shows both on the phone (docs/magma.md § Owner decisions Q4)
 const GLASS_HIDDEN = new Set(['/features', '/chat']);
 
 function useNav() {
