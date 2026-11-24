@@ -5,8 +5,10 @@
 // stakeholder's own message can be sent to the office channel as a trusted
 // request (two presses) — a role's reply never can. The transcript lives in
 // the app store (`chatMessages`, kept current by `chat.message` frames); the
-// chat list is this office's, re-read on `chat.updated|deleted`.
-import { useCallback, useEffect, useRef, useState } from 'react';
+// chat list is this office's (`useOfficeChats`, kept live from the chat
+// frames). `ChatPane` is also the conversation list's thread
+// (OfficeConversations.tsx, docs/office.md § Conversation list).
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   isStandupRole,
   mentionAtCaret,
@@ -20,7 +22,8 @@ import {
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { useArm } from '../arm.ts';
-import { onServerEvent, useApp } from '../state.tsx';
+import { useApp } from '../state.tsx';
+import { useOfficeChats } from './officeConversationHooks.ts';
 import { toastError } from '../toast.ts';
 import { Reply } from '../pages/Chat.tsx';
 import { IconSend, IconStop } from './Icons.tsx';
@@ -31,39 +34,6 @@ function when(iso: string): string {
 
 function errText(e: unknown): string {
   return (e as Error)?.message || String(e);
-}
-
-/** This office's chats, newest first, following the chat frames. */
-function useOfficeChats(officeId: string): { list: Chat[] | null; error: string | null } {
-  const [list, setList] = useState<Chat[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    setList(null);
-    api.listOfficeChats(officeId).then(
-      (l) => live && (setList(l), setError(null)),
-      (e) => live && setError(errText(e)),
-    );
-    const off = onServerEvent((e) => {
-      if (e.type === 'chat.updated' && e.chat.officeId === officeId) {
-        setList((cur) => {
-          const rest = (cur ?? []).filter((c) => c.id !== e.chat.id);
-          const i = (cur ?? []).findIndex((c) => c.id === e.chat.id);
-          if (i === -1) return [e.chat, ...rest];
-          const next = (cur ?? []).slice();
-          next[i] = e.chat;
-          return next;
-        });
-      } else if (e.type === 'chat.deleted') {
-        setList((cur) => (cur ? cur.filter((c) => c.id !== e.chatId) : cur));
-      }
-    });
-    return () => {
-      live = false;
-      off();
-    };
-  }, [officeId]);
-  return { list, error };
 }
 
 export function OfficeChat({ office, roles, inSheet }: { office: Office; roles: OfficeRole[]; inSheet: boolean }) {
@@ -120,7 +90,8 @@ export function OfficeChat({ office, roles, inSheet }: { office: Office; roles: 
   );
 }
 
-function ChatPane({ chat, roles }: { chat: Chat; roles: OfficeRole[] }) {
+/** One chat's transcript + composer. `endSlot` renders after the last message (the read sentinel). */
+export function ChatPane({ chat, roles, endSlot }: { chat: Chat; roles: OfficeRole[]; endSlot?: ReactNode }) {
   const { chatMessages, loadChat } = useApp();
   const messages = chatMessages[chat.id];
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -207,6 +178,7 @@ function ChatPane({ chat, roles }: { chat: Chat; roles: OfficeRole[] }) {
           )
         )}
         {answering && <div className="chat-thinking">{answering} is answering…</div>}
+        {endSlot}
         <div ref={endRef} />
       </div>
       <Composer chat={chat} roles={roles} />

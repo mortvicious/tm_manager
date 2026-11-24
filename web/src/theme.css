@@ -14766,6 +14766,188 @@ button.explain-tap:active {
   min-height: 16rem;
 }
 
+/* The office conversation list (docs/office.md § Conversation list): the
+   channel, group chats and huddles in one list beside the open thread.
+   Structural only and unscoped — every design reads it through the tokens;
+   per-design polish is the messenger styling card (docs/magma.md § 13). */
+.office-conv-title-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tm-space-2);
+}
+
+.office-conv-actions {
+  display: flex;
+  gap: var(--tm-space-1);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.office-conv-body {
+  display: grid;
+  grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+  min-height: 24rem;
+}
+
+.office-conv-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--tm-space-1) 0;
+  border-right: 1px solid var(--tm-border);
+  max-height: 44rem;
+  overflow-y: auto;
+}
+
+.office-conv-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--tm-space-3);
+  width: 100%;
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border: 0;
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.office-conv-row:hover {
+  background: var(--tm-bg-raised);
+}
+
+.office-conv-row.active {
+  background: var(--tm-accent-subtle);
+  border-left-color: var(--tm-accent);
+}
+
+.office-conv-row:focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: -2px;
+}
+
+.role-avatars {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  min-width: 2rem;
+}
+
+.role-avatars .role-chip-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-bg-overlay);
+  border: 1px solid var(--tm-border);
+  font-size: var(--tm-text-sm);
+}
+
+.role-avatars .role-chip-avatar + .role-chip-avatar {
+  margin-left: calc(-1 * var(--tm-space-3));
+}
+
+.office-conv-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  min-width: 0;
+}
+
+.office-conv-top,
+.office-conv-bottom {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  min-width: 0;
+}
+
+.office-conv-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.office-conv-time {
+  flex: none;
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+}
+
+.office-conv-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tm-text-sm);
+  color: var(--tm-text-muted);
+}
+
+.office-conv-preview.tainted {
+  font-style: italic;
+}
+
+.office-conv-sender {
+  color: var(--tm-text);
+}
+
+.office-conv-detail {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+}
+
+/* static on purpose (no animation, so not in the calm lists) */
+.office-conv-working {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-status-running);
+}
+
+.office-conv-unread {
+  flex: none;
+  min-width: 1.25rem;
+  padding: 0 var(--tm-space-1);
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-accent);
+  color: var(--tm-accent-contrast);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  line-height: 1.25rem;
+  text-align: center;
+}
+
+.office-conv-thread {
+  min-width: 0;
+  max-height: 44rem;
+  overflow-y: auto;
+}
+
+.office-conv-thread-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  padding: var(--tm-space-2) var(--tm-space-4);
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.office-conv-sentinel {
+  height: 1px;
+}
+
 /* The office group chat (docs/office.md § Group chat) — bubbles reuse .chat-msg/.chat-body */
 .office-chat-head {
   display: flex;

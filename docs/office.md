@@ -2706,7 +2706,8 @@ ordinary chat); `getChatMessage`, `setChatMessageChannel` on both drivers.
 
 ### UI
 
-`components/OfficeChat.tsx`: a **Group chat** panel on /office (desktop), a
+`components/OfficeChat.tsx`: the group chat thread — inside the
+**Conversations** panel on /office (desktop, § Conversation list below), a
 `<Sheet>` from the phone bar's **Chat** button. The newest chat opens (a picker
 when there are several, **New chat**), bubbles name the role (`you → 🧭 Ada`,
 `🔎 Mira`), a tainted reply has the `tainted` chip and an attention border, and
@@ -2719,6 +2720,76 @@ turn runs, Send becomes Stop.
 
 A reply's Web Push (kind `chat`) names the role, says `tainted` when it is,
 and opens `/office?ws=<slug>` rather than the Chat page.
+
+### Conversation list
+
+The first of the messenger cards (docs/magma.md § 13). On a desktop /office
+shows ONE **Conversations** panel instead of the separate Group chat, Channel
+and Huddles panels: a list of the office's channel, its group chats and its
+huddles, newest activity first, beside the picked conversation's thread. The
+phone keeps its three sheets until the push-navigation card.
+
+**A row**: avatars (`RoleAvatars` in `RoleChip.tsx` — up to three of the chat's
+participants, a huddle's roles, the channel's latest writers, else `#`), the
+title (`Channel`, the chat's title, `Huddle: <subject>`), the last message as
+`Sender: text` (one line; `You` = the stakeholder; an untrusted channel or
+huddle line is italic with an `untrusted` chip), the relative time (`fmtAgo`
+on the shared minute clock), the unread count (hidden at 0, `99+` above 99)
+and a static **working** dot. Under it: `N unrouted` for the channel, `turn
+n/max · status` for a huddle. Nothing is open until a row is picked — opening
+a thread marks it read, so a default pick would clear a count nobody looked
+at. The threads are the existing views with their composers (`ChatPane`,
+`OfficeChannel` with the list's own channel data, `HuddleRow` opened);
+**New chat** and **Open a huddle** sit in the panel's title bar.
+
+**Working**: a group chat while `chat.status === 'thinking'`; a huddle while
+`open` with a turn owed (`huddleNextRoleId`). The channel never shows it: its
+data has no live-turn signal (`routingDueAt` is a routing wake that is OWED,
+not one running; a routing shift is in the shift log).
+
+**Data, no polling.** The pure half is `web/src/officeConversations.ts`
+(`buildConversations`, the unread maths, the merge rules, the read store),
+tested by `web/src/officeConversations.test.ts`; the live half is
+`components/officeConversationHooks.ts` + the channel/huddle hooks
+(`useChannel`, `useHuddles`, unchanged frames). A group-chat row needs a
+preview and a count, which the list never had, and reading every transcript
+per visit would be N fetches — so **`Chat` gains `lastMessage`
+`{text, role, actor, roleId} | null` and `messageCount`** (migration **67**).
+They are MAINTAINED columns on `tm_chats` (`last_message_text/_role/_actor/
+_role_id`, `message_count`), written by `appendChatMessage` in the same UPDATE
+as `last_message_at` and mapped by `rowToChat` — never a subquery in the read,
+because `beginChatTurn`/`finishChatTurn` answer with `UPDATE … RETURNING *`
+and that row is the `chat.updated` after every reply. The text is
+`chatPreviewText` (shared: fence markers dropped, whitespace collapsed, ≤ 140
+code points with `…`, idempotent); an empty failed reply previews as
+`⚠ <error>`. The migration backfills existing chats (count + the newest
+message by id, a raw `SUBSTR(…, 1, 140)` the SPA normalises). Messages leave
+only with their chat (`deleteChat`), so the columns cannot drift. No route,
+event type or existing field changed. Live, the hook applies every
+`chat.message` of its office's chats (`applyChatMessage`: count + 1, new
+preview; a message no newer than the row's `lastMessageAt` is already counted
+— the Send-to-channel re-broadcast, a list read after the append) and merges
+every `chat.updated` (`mergeChatUpdate`: the incoming row wins unless it lacks
+the fields or has a LOWER `messageCount`, then the local preview, count and
+`lastMessageAt` stay). Note the order of a turn: `beginChatTurn`'s `thinking`
+row is broadcast BEFORE the stakeholder's message is appended, so it carries
+the previous count; the `chat.message` after it moves the counter.
+
+**Unread is per device** (nothing on the server): `localStorage['tm.office.read']`
+= `{ [conversation key]: {count, at} }`, keys `channel:<officeId>`,
+`chat:<id>`, `huddle:<id>`. A group chat's unread is `messageCount − count`
+(≥ 0); the channel's and a huddle's are the messages with `createdAt` (entry
+`at`) later than `at`. Every message counts, your own from another tab or the
+phone included. The marker only moves forward (`markRead`): the thread's end
+carries a `ReadSentinel` that marks the conversation read while it is on
+screen (inside the window and every scrolling ancestor) in a visible tab — on
+entering view, on the tab turning visible, and a frame after each new
+message. A device that never wrote the key starts with everything it can see
+marked read (`writeBaseline`, once all three sources loaded), so the first
+visit is not a wall of old counts. Other tabs follow through the `storage`
+event, this tab through `onReadChange`; at most 300 markers are kept, the
+stalest dropped. (docs/magma.md § 13 sketched a `tm.chat.read` time-only model
+for the repo Chat page; office group chats count instead, per the card.)
 
 ## Office planner
 

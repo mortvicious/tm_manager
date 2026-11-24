@@ -15,6 +15,13 @@ const BACKFILL_GENERATION = `UPDATE tm_tasks SET
 /** Depth the backfill reaches. Real trees are 1-2 deep (split children, and
  *  agent follow-ups linked as siblings); 8 is slack, not a limit on new rows. */
 const BACKFILL_GENERATIONS = 8;
+/**
+ * Migration 67's backfilled preview of one message `m`: its text, or `⚠ <error>`
+ * for an empty failed reply — the SQL twin of `chatMessagePreview` (sqlite.ts /
+ * postgres.ts), cut raw at 140 (SUBSTR counts characters on both dialects).
+ */
+const LAST_PREVIEW_SQL = `SUBSTR(CASE WHEN m.text = '' AND m.error IS NOT NULL THEN '⚠ ' || m.error ELSE m.text END, 1, 140)`;
+
 export const MIGRATIONS: { id: number; statements: string[] }[] = [
   {
     id: 1,
@@ -1271,6 +1278,33 @@ export const MIGRATIONS: { id: number; statements: string[] }[] = [
     statements: [
       `ALTER TABLE tm_repos ADD COLUMN office_autonomy_optin INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE tm_offices ADD COLUMN kill_switch INTEGER NOT NULL DEFAULT 0`,
+    ],
+  },
+  {
+    id: 67,
+    // The conversation list's row (docs/office.md § Conversation list): the
+    // newest message's preview and the transcript's length, MAINTAINED on
+    // tm_chats by appendChatMessage in the same UPDATE as last_message_at —
+    // never a subquery in the read, because every Chat-returning path
+    // (SELECT *, and the turn's UPDATE … RETURNING *) must carry them or the
+    // chat.updated after a reply would erase the preview. Messages leave only
+    // with their whole chat, so the columns cannot drift. The backfill fills
+    // chats whose messages predate this; the newest message is the largest
+    // id (eventId is time-ordered). Its raw SUBSTR is normalised by
+    // chatPreviewText (idempotent) in the SPA.
+    statements: [
+      `ALTER TABLE tm_chats ADD COLUMN last_message_text TEXT`,
+      `ALTER TABLE tm_chats ADD COLUMN last_message_role TEXT`,
+      `ALTER TABLE tm_chats ADD COLUMN last_message_actor TEXT`,
+      `ALTER TABLE tm_chats ADD COLUMN last_message_role_id TEXT`,
+      `ALTER TABLE tm_chats ADD COLUMN message_count INTEGER NOT NULL DEFAULT 0`,
+      `UPDATE tm_chats SET message_count = (SELECT COUNT(*) FROM tm_chat_messages m WHERE m.chat_id = tm_chats.id)`,
+      `UPDATE tm_chats SET
+        last_message_text = (SELECT ${LAST_PREVIEW_SQL} FROM tm_chat_messages m WHERE m.chat_id = tm_chats.id ORDER BY m.id DESC LIMIT 1),
+        last_message_role = (SELECT m.role FROM tm_chat_messages m WHERE m.chat_id = tm_chats.id ORDER BY m.id DESC LIMIT 1),
+        last_message_actor = (SELECT m.actor FROM tm_chat_messages m WHERE m.chat_id = tm_chats.id ORDER BY m.id DESC LIMIT 1),
+        last_message_role_id = (SELECT m.role_id FROM tm_chat_messages m WHERE m.chat_id = tm_chats.id ORDER BY m.id DESC LIMIT 1)
+      WHERE message_count > 0`,
     ],
   },
 ];

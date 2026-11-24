@@ -4,7 +4,7 @@
 // stakeholder's composer; and Mark reviewed on a tainted message, which
 // releases its text to the next routing shift. The server routes; this only
 // shows the record and follows `office-message.created|updated`.
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
   OFFICE_MESSAGE_BODY_MAX,
   OFFICE_MESSAGE_KINDS,
@@ -34,8 +34,18 @@ function roleLabel(roles: OfficeRole[], id: string | null, none: string): string
   return r ? `${r.avatar} ${r.name}` : 'deleted role';
 }
 
-/** The channel, re-read on every message event of this office. */
-function useChannel(officeId: string): { channel: OfficeChannelResponse | null; error: string | null; reload: () => void } {
+export interface ChannelSource {
+  channel: OfficeChannelResponse | null;
+  error: string | null;
+  reload: () => void;
+}
+
+/**
+ * The channel, re-read on every message event of this office. `enabled:
+ * false` = a parent already holds it (the conversation list passes its own
+ * as `source`), so nothing is fetched twice.
+ */
+export function useChannel(officeId: string, enabled = true): ChannelSource {
   const [channel, setChannel] = useState<OfficeChannelResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const reload = useCallback(() => {
@@ -45,12 +55,13 @@ function useChannel(officeId: string): { channel: OfficeChannelResponse | null; 
     );
   }, [officeId]);
   useEffect(() => {
+    if (!enabled) return;
     setChannel(null);
     reload();
     return onServerEvent((e) => {
       if ((e.type === 'office-message.created' || e.type === 'office-message.updated') && e.message.officeId === officeId) reload();
     });
-  }, [officeId, reload]);
+  }, [officeId, reload, enabled]);
   return { channel, error, reload };
 }
 
@@ -250,14 +261,22 @@ export function OfficeChannel({
   roles,
   inSheet,
   onOpenTask,
+  source,
+  endSlot,
 }: {
   office: Office;
   roles: OfficeRole[];
+  /** in a phone Sheet, or a thread under its own header: no section title */
   inSheet: boolean;
   onOpenTask: (id: string) => void;
+  /** the channel a parent already follows (the conversation list); else fetched here */
+  source?: ChannelSource;
+  /** rendered after the last message (the conversation list's read sentinel) */
+  endSlot?: ReactNode;
 }) {
   const now = useNow();
-  const { channel, error, reload } = useChannel(office.id);
+  const own = useChannel(office.id, !source);
+  const { channel, error, reload } = source ?? own;
   const unrouted = channel?.messages.filter((m) => !m.routedAt).length ?? 0;
   return (
     <div className="office-channel">
@@ -284,6 +303,7 @@ export function OfficeChannel({
           onChanged={reload}
         />
       ))}
+      {channel && endSlot}
       {error && <div className="warn-text office-pad">{error}</div>}
       <Composer office={office} roles={roles} onSent={reload} />
     </div>

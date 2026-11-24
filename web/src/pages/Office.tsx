@@ -63,6 +63,7 @@ import { OfficeVision } from '../components/OfficeVision.tsx';
 import { OfficeChannel } from '../components/OfficeChannel.tsx';
 import { OfficeScorecard } from '../components/OfficeScorecard.tsx';
 import { OfficeChat } from '../components/OfficeChat.tsx';
+import { OfficeConversations } from '../components/OfficeConversations.tsx';
 import { OfficeHuddles } from '../components/OfficeHuddles.tsx';
 import { RatingButtons, ratingKey, useOfficeRatings } from '../components/OfficeRating.tsx';
 import { OfficeWork } from '../components/OfficeWork.tsx';
@@ -522,9 +523,13 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
         </div>
       )}
       {!mobile && <div className="panel">{assistant}</div>}
-      {!mobile && <div className="panel">{chat}</div>}
-      {!mobile && <div className="panel">{channel}</div>}
-      {!mobile && <div className="panel">{huddles}</div>}
+      {/* desktop: ONE conversation list — channel, group chats, huddles (docs/office.md § Conversation list);
+          the phone keeps its three sheets until the push-navigation card */}
+      {!mobile && (
+        <div className="panel">
+          <OfficeConversations office={office} roles={roles} onOpenTask={onOpenTask} />
+        </div>
+      )}
       {mobile && sheet === 'assistant' && (
         <Sheet label="Office assistant" title="Assistant" onClose={() => setSheet(null)} disableDrag tall>
           {assistant}

@@ -16,7 +16,7 @@ export function useTaskRole(task: Pick<Task, 'roleId'>): OfficeRole | null {
  * An avatar is an emoji, or an image id for a later phase; an id (plain
  * letters/digits) is shown as the name's initial instead of as text.
  */
-function avatarGlyph(role: Pick<OfficeRole, 'avatar' | 'name'>): string {
+export function avatarGlyph(role: Pick<OfficeRole, 'avatar' | 'name'>): string {
   const a = role.avatar.trim();
   if (a && !/^[\w-]+$/.test(a)) return a;
   return role.name.trim().charAt(0).toUpperCase() || '?';
@@ -31,6 +31,30 @@ export function RoleChip({ task }: { task: Pick<Task, 'roleId'> }) {
         {avatarGlyph(role)}
       </span>
       <span className="role-chip-name">{role.name}</span>
+    </span>
+  );
+}
+
+/**
+ * Up to three role avatars, overlapped — a conversation-list row's picture
+ * (docs/office.md § Conversation list). An unknown id (a deleted role) is a
+ * `?`; no ids renders `fallback` (the channel's `#`).
+ */
+export function RoleAvatars({ roleIds, roles, fallback = '#' }: { roleIds: string[]; roles: OfficeRole[]; fallback?: string }) {
+  const shown = roleIds.slice(0, 3);
+  const named = shown.map((id) => roles.find((r) => r.id === id) ?? null);
+  const label = named.map((r) => (r ? r.name : 'a deleted role')).join(', ');
+  return (
+    <span className="role-avatars" role="img" aria-label={label || undefined} aria-hidden={label ? undefined : true} title={label || undefined}>
+      {shown.length === 0 ? (
+        <span className="role-chip-avatar">{fallback}</span>
+      ) : (
+        named.map((r, i) => (
+          <span key={shown[i]} className="role-chip-avatar">
+            {r ? avatarGlyph(r) : '?'}
+          </span>
+        ))
+      )}
     </span>
   );
 }

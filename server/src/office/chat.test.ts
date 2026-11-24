@@ -21,6 +21,7 @@ import {
   officeChatTarget,
   type Chat,
   type ChatMessage,
+  type ServerEvent,
   type Office,
   type OfficeRole,
 } from '@tm/shared';
@@ -29,6 +30,7 @@ import { CONVERSATIONAL_REPLY_RULE } from '../claude/reply-style.ts';
 import { ChatService, OFFICE_CHAT_NO_WRITE } from '../chat/service.ts';
 import type { SessionManager } from '../pty/session-manager.ts';
 import { registerChatRoutes } from '../routes/chat.ts';
+import { onEvent } from '../events.ts';
 import { SqliteStorage } from '../storage/sqlite.ts';
 import type { NewOfficeRole } from '../storage/office-sql.ts';
 import { channelParts } from './chat.ts';
@@ -259,6 +261,43 @@ describe('office chat turns', () => {
 
     const bad = await chats.send(chat.id, '@Bob hello', 'human');
     assert.ok(!bad.ok && bad.code === 400 && /no role @Bob/.test(bad.error));
+  });
+
+  test('the chat.updated broadcast after a reply carries the preview and the message count', async () => {
+    const o = await office();
+    const d = await role(o, { key: 'director', name: 'Ada', preset: 'director', title: 'Director' });
+    const chat = await officeChat(o);
+    assert.equal(chat.messageCount, 0);
+    assert.equal(chat.lastMessage, null);
+    const seen: ServerEvent[] = [];
+    const off = onEvent((e) => {
+      if ((e.type === 'chat.updated' && e.chat.id === chat.id) || (e.type === 'chat.message' && e.message.chatId === chat.id)) seen.push(e);
+    });
+    try {
+      await turn(chat, 'status?', 'All green.');
+    } finally {
+      off();
+    }
+    const updates = seen.flatMap((e) => (e.type === 'chat.updated' ? [e.chat] : []));
+    assert.ok(updates.length >= 2, 'begin and finish both broadcast the row');
+    // the lock is taken BEFORE the stakeholder's message is appended, so the
+    // `thinking` row still has the previous count; the chat.message after it
+    // is what moves the client's counter (the hook's merge keeps the larger)
+    const begun = updates.find((c) => c.status === 'thinking')!;
+    assert.equal(begun.messageCount, 0);
+    assert.equal(begun.lastMessage, null);
+    const kinds = seen.map((e) => e.type);
+    assert.ok(kinds.indexOf('chat.updated') < kinds.indexOf('chat.message'), 'thinking row, then the user message');
+    // every row broadcast after the user message carries at least it
+    const userAt = kinds.indexOf('chat.message');
+    for (const e of seen.slice(userAt)) if (e.type === 'chat.updated') assert.ok(e.chat.messageCount >= 1);
+    // the LAST frame is finishChatTurn's RETURNING * row, after the reply's chat.message
+    const last = seen[seen.length - 1];
+    assert.equal(last.type, 'chat.updated');
+    const finished = (last as Extract<ServerEvent, { type: 'chat.updated' }>).chat;
+    assert.equal(finished.status, 'idle');
+    assert.equal(finished.messageCount, 2);
+    assert.deepEqual(finished.lastMessage, { text: 'All green.', role: 'assistant', actor: 'claude', roleId: d.id });
   });
 
   test('turns are serialized by beginChatTurn and every path settles through finishChatTurn', async () => {

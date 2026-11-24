@@ -2783,6 +2783,17 @@ export interface Chat {
   updatedAt: string;
   /** last message in either direction — the list's sort key */
   lastMessageAt: string | null;
+  /**
+   * The newest message, for a conversation-list row (docs/office.md §
+   * Conversation list, migration 67). Maintained on `tm_chats` by
+   * `appendChatMessage` in the same write as `lastMessageAt`, so every
+   * Chat-returning path (list, get, the `RETURNING *` of a turn) carries it;
+   * null while the chat has no message. `text` is `chatPreviewText` of the
+   * message (an error reply previews as `⚠ <error>`).
+   */
+  lastMessage: ChatLastMessage | null;
+  /** messages in the transcript, both directions — the unread maths' counter */
+  messageCount: number;
   /** an office group chat (docs/office.md § Data model, migration 60); null = an ordinary chat */
   officeId: string | null;
   /** an office chat's role ids, in order; [] for an ordinary chat */
@@ -2796,6 +2807,31 @@ export interface Chat {
 }
 
 export type ChatRole = 'user' | 'assistant';
+
+/** `Chat.lastMessage`: what a conversation-list row previews. */
+export interface ChatLastMessage {
+  /** plain text, whitespace collapsed, at most `CHAT_PREVIEW_CHARS` */
+  text: string;
+  role: ChatRole;
+  actor: string;
+  /** the office role that spoke (a reply) or was addressed (the stakeholder's message); null elsewhere */
+  roleId: string | null;
+}
+
+/** A preview is at most this many characters (code points), an ellipsis included. */
+export const CHAT_PREVIEW_CHARS = 140;
+
+/**
+ * One line of plain text for a list preview: code-fence markers dropped,
+ * whitespace collapsed, cut to `CHAT_PREVIEW_CHARS` code points with `…`.
+ * Idempotent, so the SPA may re-apply it to a stored preview (the migration
+ * 67 backfill stores a raw `SUBSTR`).
+ */
+export function chatPreviewText(text: string): string {
+  const flat = text.replace(/```[^\n]*/g, ' ').replace(/\s+/g, ' ').trim();
+  const cps = Array.from(flat);
+  return cps.length <= CHAT_PREVIEW_CHARS ? flat : `${cps.slice(0, CHAT_PREVIEW_CHARS - 1).join('').trimEnd()}…`;
+}
 
 export interface ChatMessage {
   id: string;

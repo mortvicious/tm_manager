@@ -242,6 +242,7 @@ import {
   eventId,
   now,
   rowToChat,
+  chatMessagePreview,
   rowToChatMessage,
   rowToCommand,
   rowToDispatch,
@@ -1728,7 +1729,13 @@ export class PostgresStorage implements Storage {
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
         [id, m.chatId, m.role, m.text, m.actor, m.error ?? null, m.costUsd ?? 0, m.durationMs ?? null, at, m.roleId ?? null, m.taintedAt ?? null, m.blueprint ? JSON.stringify(m.blueprint) : null],
       );
-      await c.query(toPg(`UPDATE tm_chats SET last_message_at = ?, updated_at = ? WHERE id = ?`), [at, at, m.chatId]);
+      // The list row's preview and counter ride the same write (migration 67).
+      await c.query(
+        toPg(`UPDATE tm_chats SET last_message_at = ?, updated_at = ?, message_count = message_count + 1,
+                last_message_text = ?, last_message_role = ?, last_message_actor = ?, last_message_role_id = ?
+              WHERE id = ?`),
+        [at, at, chatMessagePreview(m), m.role, m.actor, m.roleId ?? null, m.chatId],
+      );
       const r = await c.query(toPg(`SELECT * FROM tm_chat_messages WHERE id = ?`), [id]);
       return rowToChatMessage(r.rows[0]);
     });

@@ -34,8 +34,14 @@ function roleName(roles: OfficeRole[], id: string | null): string {
   return r ? `${r.avatar} ${r.name}` : 'deleted role';
 }
 
+export interface HuddlesSource {
+  huddles: OfficeHuddleView[] | null;
+  error: string | null;
+  reload: () => void;
+}
+
 /** The huddles, re-read on every huddle event of this office. */
-function useHuddles(officeId: string): { huddles: OfficeHuddleView[] | null; error: string | null; reload: () => void } {
+export function useHuddles(officeId: string): HuddlesSource {
   const [huddles, setHuddles] = useState<OfficeHuddleView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const reload = useCallback(() => {
@@ -54,13 +60,15 @@ function useHuddles(officeId: string): { huddles: OfficeHuddleView[] | null; err
   return { huddles, error, reload };
 }
 
-function HuddleRow({
+/** One huddle: head, participants, decision, transcript (also the conversation list's thread). */
+export function HuddleRow({
   office,
   huddle: h,
   roles,
   now,
   onOpenTask,
   onChanged,
+  defaultOpen,
 }: {
   office: Office;
   huddle: OfficeHuddleView;
@@ -68,9 +76,11 @@ function HuddleRow({
   now: number;
   onOpenTask: (id: string) => void;
   onChanged: () => void;
+  /** transcript shown at first (default: while the huddle is open) */
+  defaultOpen?: boolean;
 }) {
   const arm = useArm();
-  const [open, setOpen] = useState(h.status === 'open');
+  const [open, setOpen] = useState(defaultOpen ?? h.status === 'open');
   const [busy, setBusy] = useState(false);
   const next = huddleNextRoleId(h);
   const close = async () => {
@@ -147,7 +157,8 @@ const SUBJECT_KINDS: { kind: OfficeSubjectKind; label: string }[] = [
   { kind: 'message', label: 'A channel message (id)' },
 ];
 
-function OpenForm({ office, roles, onOpened }: { office: Office; roles: OfficeRole[]; onOpened: () => void }) {
+/** The stakeholder's "Open a huddle" form (a subject is required). */
+export function OpenForm({ office, roles, onOpened }: { office: Office; roles: OfficeRole[]; onOpened: () => void }) {
   const { tasks, workspaces } = useApp();
   const [kind, setKind] = useState<OfficeSubjectKind>('task');
   const [subjectId, setSubjectId] = useState('');

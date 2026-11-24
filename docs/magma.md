@@ -1580,3 +1580,21 @@ Visible brand only (Q2), so only text a human reads changed:
   exported at build time.
 - **Docs**: README (§ Name), handbook, design.md, glass.md, menubar.md, and
   the strings quoted in telegram.md and pause.md.
+
+## Build notes (messenger card 1: conversation data and list, 2026-11-24)
+
+- The office's channel, group chats and huddles are ONE desktop list
+  (`components/OfficeConversations.tsx`, docs/office.md § Conversation list);
+  the phone keeps its sheets until the push-navigation card.
+- `Chat.lastMessage` / `Chat.messageCount` are maintained `tm_chats` columns
+  (migration 67), so every `chat.updated` — including the `RETURNING *` row
+  after a reply — carries the preview and the count.
+- Unread for office conversations is `tm.office.read` `{count, at}` per
+  conversation, not § 13's `tm.chat.read` time model (that one is still the
+  plan for the repo Chat page). Pure maths in `web/src/officeConversations.ts`.
+- Styles are structural and unscoped in `theme.css` (`.office-conv-*`,
+  `.role-avatars`); the unread badge is the accent fill, the working dot
+  `--tm-status-running` and static. Per-design polish (§ 13 "In each design")
+  is the styling card.
+- Not done here: the nav's "Office group chat · unread" counter (Q7) — it
+  needs these chats in the store; the list's data is per-office local state.

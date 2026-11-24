@@ -244,6 +244,7 @@ import {
   eventId,
   now,
   rowToChat,
+  chatMessagePreview,
   rowToChatMessage,
   rowToCommand,
   rowToDispatch,
@@ -1739,7 +1740,14 @@ export class SqliteStorage implements Storage {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(id, m.chatId, m.role, m.text, m.actor, m.error ?? null, m.costUsd ?? 0, m.durationMs ?? null, at, m.roleId ?? null, m.taintedAt ?? null, m.blueprint ? JSON.stringify(m.blueprint) : null);
-      this.db.prepare(`UPDATE tm_chats SET last_message_at = ?, updated_at = ? WHERE id = ?`).run(at, at, m.chatId);
+      // The list row's preview and counter ride the same write (migration 67).
+      this.db
+        .prepare(
+          `UPDATE tm_chats SET last_message_at = ?, updated_at = ?, message_count = message_count + 1,
+             last_message_text = ?, last_message_role = ?, last_message_actor = ?, last_message_role_id = ?
+           WHERE id = ?`,
+        )
+        .run(at, at, chatMessagePreview(m), m.role, m.actor, m.roleId ?? null, m.chatId);
       return rowToChatMessage(this.db.prepare(`SELECT * FROM tm_chat_messages WHERE id = ?`).get(id));
     });
   }

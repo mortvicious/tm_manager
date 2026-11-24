@@ -20,7 +20,7 @@ import type {
   LandingTier,
   Task,
 } from '@tm/shared';
-import { LANDING_TIERS, PARALLEL_MAX, PUSH_POLICIES, QUESTION_AUTOPILOT_MAX_MINUTES, QUESTION_AUTOPILOT_MIN_MINUTES, REPO_DELIVERIES } from '@tm/shared';
+import { LANDING_TIERS, chatPreviewText, PARALLEL_MAX, PUSH_POLICIES, QUESTION_AUTOPILOT_MAX_MINUTES, QUESTION_AUTOPILOT_MIN_MINUTES, REPO_DELIVERIES } from '@tm/shared';
 
 const CHECK_STATES: (CheckState | null)[] = ['pending', 'running', 'green', 'red', 'error'];
 const LOOP_STATES = new Set<string>([
@@ -390,10 +390,30 @@ export function rowToChat(r: any): Chat {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     lastMessageAt: r.last_message_at ?? null,
+    lastMessage:
+      r.last_message_text === null || r.last_message_text === undefined || !r.last_message_role
+        ? null
+        : {
+            text: r.last_message_text,
+            role: r.last_message_role === 'assistant' ? 'assistant' : 'user',
+            actor: r.last_message_actor ?? '',
+            roleId: r.last_message_role_id ?? null,
+          },
+    // pg returns COUNT-sized integers as strings on some drivers; pre-67 rows have no column
+    messageCount: Number(r.message_count ?? 0),
     officeId: r.office_id ?? null,
     participants: chatParticipants(r.participants),
     plannerWorkspaceId: r.planner_workspace_id ?? null,
   };
+}
+
+/**
+ * `tm_chats.last_message_text` for a message being appended: its text, or
+ * `⚠ <error>` for an empty failed reply, as `chatPreviewText`. The SQL twin is
+ * migration 67's backfill (`LAST_PREVIEW_SQL`).
+ */
+export function chatMessagePreview(m: { text: string; error?: string | null }): string {
+  return chatPreviewText(m.text === '' && m.error ? `⚠ ${m.error}` : m.text);
 }
 
 function chatParticipants(raw: unknown): string[] {
