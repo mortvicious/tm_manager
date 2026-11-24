@@ -660,6 +660,8 @@
   --tm-magma-disc-glow: inset 0 1px 0 rgba(255, 240, 210, 0.55), inset 0 -8px 14px rgba(229, 49, 43, 0.3),
     0 0 0 4px rgba(10, 6, 5, 0.85), 0 0 24px rgba(255, 90, 20, 0.55);
   --tm-magma-disc-ring: inset 0 0 0 1.5px rgba(255, 122, 46, 0.65);
+  /* the own messenger bubble's and the jump pill's ember rim (docs/magma.md § 13) */
+  --tm-magma-own-rim: rgba(255, 122, 46, 0.35);
   --tm-wallpaper:
     radial-gradient(70% 50% at 10% 0%, rgba(255, 90, 20, 0.2), transparent 60%),
     radial-gradient(60% 45% at 100% 100%, rgba(229, 49, 43, 0.16), transparent 62%),
@@ -15216,8 +15218,12 @@ button.explain-tap:active {
 }
 
 .thread-bubble {
+  /* the radius and the joined corner's: per-design rules restate these two, so the
+     joined-corner rules below keep working under every design */
+  --bubble-r: var(--tm-radius-lg);
+  --bubble-join: var(--tm-radius-sm);
   padding: var(--tm-space-2) var(--tm-space-3);
-  border-radius: var(--tm-radius-lg);
+  border-radius: var(--bubble-r);
   background: var(--tm-bg-inset);
   border: 1px solid var(--tm-border);
   font-size: var(--tm-text-sm);
@@ -15234,16 +15240,16 @@ button.explain-tap:active {
 
 /* joined bubbles: the corner on the sender's side tightens */
 .thread-group.other .thread-item + .thread-item .thread-bubble {
-  border-top-left-radius: var(--tm-radius-sm);
+  border-top-left-radius: var(--bubble-join);
 }
 .thread-group.other .thread-item:has(+ .thread-item) .thread-bubble {
-  border-bottom-left-radius: var(--tm-radius-sm);
+  border-bottom-left-radius: var(--bubble-join);
 }
 .thread-group.own .thread-item + .thread-item .thread-bubble {
-  border-top-right-radius: var(--tm-radius-sm);
+  border-top-right-radius: var(--bubble-join);
 }
 .thread-group.own .thread-item:has(+ .thread-item) .thread-bubble {
-  border-bottom-right-radius: var(--tm-radius-sm);
+  border-bottom-right-radius: var(--bubble-join);
 }
 
 .thread-bubble.tainted {
@@ -15867,8 +15873,121 @@ button.explain-tap:active {
   gap: var(--tm-space-2);
 }
 
+/* the Channel's To · Kind · Subject row: the selects size to their text, the
+   subject takes the rest (and its own line on a narrow phone) */
+.thread-compose .office-msg-compose-row > .field {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+.thread-compose .office-msg-compose-row > .office-msg-subject-field {
+  flex: 1 1 12rem;
+}
+
 .office-msg-compose textarea.field {
   width: 100%;
+}
+
+/* ---- The messenger in CLASSIC (docs/magma.md § 13 › In each design) ----
+   Every rule is scoped to [data-design='classic'] and touches only the
+   messenger's own classes (.office-conv-*, .thread-*, the office composers),
+   so the repo Chat page and every other screen keep rendering as before.
+   Glass's look is in glass.css and Magma's in magma.css. */
+[data-design='classic'] .thread-bubble {
+  --bubble-r: var(--tm-radius-md);
+}
+
+[data-design='classic'] .thread-group.other .thread-bubble {
+  background: var(--tm-bg-raised);
+  border-color: var(--tm-border);
+}
+
+/* the own bubble keeps the structural accent-subtle fill and accent border;
+   a tainted reply keeps its dashed review rim over the role bubble's border */
+[data-design='classic'] .thread-group .thread-bubble.tainted {
+  border-color: var(--tm-status-review);
+}
+
+/* meta and timestamps: mono, muted (faint is decoration only) */
+[data-design='classic'] :is(.thread-time, .thread-own-meta, .thread-sender, .thread-bubble-head, .thread-msg-foot, .office-conv-time) {
+  font-family: var(--tm-font-mono);
+}
+
+[data-design='classic'] .thread-time {
+  color: var(--tm-text-muted);
+}
+
+/* the day pill: square-ish on the overlay */
+[data-design='classic'] .thread-day span {
+  border-radius: var(--tm-radius-sm);
+  font-family: var(--tm-font-mono);
+}
+
+/* the docked composer: an inset field with the strong border; the send
+   button is the accent fill */
+[data-design='classic'] .thread-compose .chat-composer textarea,
+[data-design='classic'] .office-msg-compose .field {
+  background: var(--tm-bg-inset);
+  border-color: var(--tm-border-strong);
+}
+
+[data-design='classic'] .thread-compose .chat-composer textarea:focus,
+[data-design='classic'] .office-msg-compose .field:focus {
+  border-color: var(--tm-accent);
+}
+
+[data-design='classic'] .btn.thread-send:not(.ghost) {
+  background: var(--tm-accent);
+  border-color: transparent;
+  color: var(--tm-accent-contrast);
+}
+
+[data-design='classic'] .btn.thread-send:not(.ghost):disabled {
+  background: var(--tm-bg-overlay);
+  color: var(--tm-text-muted);
+}
+
+/* while a turn runs the send button is Stop: a bordered disc, not a bare glyph */
+[data-design='classic'] .btn.thread-send.ghost {
+  border-color: var(--tm-border-strong);
+  color: var(--tm-text);
+}
+
+/* the jump pill: accent text on raised */
+[data-design='classic'] .thread-jump {
+  background: var(--tm-bg-raised);
+  border-color: var(--tm-border-strong);
+  /* the accent pulled toward the text colour: lighter in dark, darker in light,
+     where the bare accent on white is 3.74:1 (docs/magma.md § 5 › Messenger) */
+  color: color-mix(in srgb, var(--tm-accent) 60%, var(--tm-text));
+}
+
+/* the unread count: the same pull on its fill, so the label passes in light */
+[data-design='classic'] .office-conv-unread {
+  background: color-mix(in srgb, var(--tm-accent) 75%, var(--tm-text));
+}
+
+/* the active row's time reads in the text colour over the accent tint */
+[data-design='classic'] .office-conv-row.active .office-conv-time {
+  color: var(--tm-text);
+}
+
+/* a chip inside a bubble (the repo chip on a task card, the kind chip) reads
+   in the text colour over the bubble's tint; the taint chip keeps its own */
+[data-design='classic'] .thread-bubble .chip:not(.office-taint) {
+  color: var(--tm-text);
+}
+
+/* the task card: inset with the border */
+[data-design='classic'] .thread-task {
+  background: var(--tm-bg-inset);
+  border-color: var(--tm-border);
+}
+
+/* working dots: muted and static (the bubble's own muted colour) */
+[data-design='classic'] .thread-working-bubble {
+  background: var(--tm-bg-raised);
 }
 
 /* Huddles (docs/office.md § Huddles) */

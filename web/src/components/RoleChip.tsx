@@ -2,7 +2,8 @@
 // avatar + name, on TaskRow, the task panel head, the board versions and the
 // timeline tooltip. Reads the store's `officeRoles` slice; renders nothing for
 // a task without a role, or while the role is unknown (deleted, not loaded).
-import type { OfficeRole, Task } from '@tm/shared';
+import type { CSSProperties } from 'react';
+import { officeHash, type OfficeRole, type Task } from '@tm/shared';
 import { useApp } from '../state.tsx';
 
 /** The role a task's `roleId` names, from the store; null when none/unknown. */
@@ -20,6 +21,17 @@ export function avatarGlyph(role: Pick<OfficeRole, 'avatar' | 'name'>): string {
   const a = role.avatar.trim();
   if (a && !/^[\w-]+$/.test(a)) return a;
   return role.name.trim().charAt(0).toUpperCase() || '?';
+}
+
+/**
+ * The role's hue as `--role-hue: var(--tm-group-<n>)` — the same stable slot
+ * its body wears in the office view (`layoutOffice` `colorSlot`). Read only
+ * by the design layers (Magma rings a messenger avatar in it, docs/magma.md
+ * § 13); an unknown role gets none.
+ */
+export function roleHueStyle(role: Pick<OfficeRole, 'id'> | null): CSSProperties | undefined {
+  if (!role) return undefined;
+  return { '--role-hue': `var(--tm-group-${(officeHash(role.id) % 7) + 1})` } as CSSProperties;
 }
 
 export function RoleChip({ task }: { task: Pick<Task, 'roleId'> }) {
@@ -50,7 +62,7 @@ export function RoleAvatars({ roleIds, roles, fallback = '#' }: { roleIds: strin
         <span className="role-chip-avatar">{fallback}</span>
       ) : (
         named.map((r, i) => (
-          <span key={shown[i]} className="role-chip-avatar">
+          <span key={shown[i]} className="role-chip-avatar" style={roleHueStyle(r)}>
             {r ? avatarGlyph(r) : '?'}
           </span>
         ))

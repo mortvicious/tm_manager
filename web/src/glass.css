@@ -1582,3 +1582,210 @@
   border-width: 1px;
   box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
 }
+
+/* ---------- the office messenger (docs/magma.md § 13 › In each design) ----------
+
+   Glass's look for the conversation list and the thread: rounded bubbles
+   (own = accent tint, roles = the card material — cards never blur), capsule
+   day and jump pills, and the composer as a floating bar with a capsule field.
+   Widened to Magma like every rule here (Magma rides on this structure);
+   magma.css restates the look. Only the messenger's own classes are touched,
+   so the repo Chat page keeps its own composer. The one blur of its own is the
+   composer bar and the jump pill: neither is a scroll container, and the
+   thread's scroller (.thread-log, the sheet's) never gets one. */
+
+/* the list: rows are inset capsules; the active one takes the nav's treatment */
+:is([data-design='glass'], [data-design='magma']) .office-conv-list {
+  border-right-color: var(--tm-glass-rim);
+}
+
+:is([data-design='glass'], [data-design='magma']) .office-conv-row {
+  border-left: 0;
+  border-radius: var(--tm-radius-md);
+}
+
+:is([data-design='glass'], [data-design='magma']) .office-conv:not(.phone) .office-conv-row {
+  width: calc(100% - 2 * var(--tm-space-2));
+  margin: 0 var(--tm-space-2);
+}
+
+:is([data-design='glass'], [data-design='magma']) .office-conv-row:hover {
+  background: var(--tm-glass-card-hover);
+}
+
+:is([data-design='glass'], [data-design='magma']) .office-conv-row.active {
+  background: var(--tm-accent-subtle);
+}
+
+/* the active row's time in the text colour (muted on the accent tint is
+   4.53:1 in light); the title stays the text colour — the bare accent on the
+   tint is 3.13:1 in Glass light (docs/magma.md § 5 › Messenger) */
+:is([data-design='glass'], [data-design='magma']) .office-conv-row.active .office-conv-time {
+  color: var(--tm-text);
+}
+
+/* the unread count's fill pulled toward the text colour, so the label passes
+   in light (white on the bare light accent is 3.74:1) */
+[data-design='glass'] .office-conv-unread {
+  background: color-mix(in srgb, var(--tm-accent) 75%, var(--tm-text));
+}
+
+/* a chip inside a bubble: Glass chips are translucent tints, which over the
+   own bubble's accent tint fell to 3.4:1 — the text colour reads; the taint
+   chip keeps its own */
+:is([data-design='glass'], [data-design='magma']) .thread-bubble .chip:not(.office-taint) {
+  color: var(--tm-text);
+}
+
+:is([data-design='glass'], [data-design='magma']) :is(.role-avatars .role-chip-avatar, .thread-avatar) {
+  border-color: var(--tm-glass-rim);
+  background: var(--tm-glass-btn);
+}
+
+:is([data-design='glass'], [data-design='magma']) .office-conv-thread-head {
+  border-bottom-color: var(--tm-glass-rim);
+}
+
+/* bubbles */
+:is([data-design='glass'], [data-design='magma']) .thread-bubble {
+  --bubble-r: var(--tm-radius-lg);
+  --bubble-join: var(--tm-radius-sm);
+  border-color: transparent;
+}
+
+:is([data-design='glass'], [data-design='magma']) .thread-group.other .thread-bubble {
+  background: var(--tm-glass-card);
+}
+
+:is([data-design='glass'], [data-design='magma']) .thread-group.own .thread-bubble {
+  background: var(--tm-accent-subtle);
+  border-color: transparent;
+  color: var(--tm-text);
+}
+
+/* a tainted reply keeps its dashed review rim over the transparent border */
+:is([data-design='glass'], [data-design='magma']) .thread-group .thread-bubble.tainted {
+  border-color: var(--tm-status-review);
+}
+
+/* meta and timestamps: the body face, muted */
+:is([data-design='glass'], [data-design='magma']) :is(.thread-time, .thread-own-meta, .thread-sender, .thread-bubble-head, .thread-msg-foot) {
+  font-family: var(--tm-font-body);
+}
+
+:is([data-design='glass'], [data-design='magma']) .thread-time {
+  color: var(--tm-text-muted);
+}
+
+/* the day pill: a capsule on the button material */
+:is([data-design='glass'], [data-design='magma']) .thread-day span {
+  padding: 3px var(--tm-space-3);
+  background: var(--tm-glass-btn);
+  font-weight: 600;
+}
+
+:is([data-design='glass'], [data-design='magma']) .thread-system span {
+  border-color: var(--tm-glass-rim);
+  border-radius: var(--tm-radius-lg);
+}
+
+/* the task card inside a bubble: the button material */
+:is([data-design='glass'], [data-design='magma']) .thread-task {
+  border-color: transparent;
+  background: var(--tm-glass-btn);
+  border-radius: var(--tm-radius-md);
+}
+
+:is([data-design='glass'], [data-design='magma']) .thread-task:hover {
+  background: var(--tm-glass-btn-hover);
+  border-color: transparent;
+}
+
+/* the composer: a floating bar holding a capsule field */
+:is([data-design='glass'], [data-design='magma']) .thread-compose {
+  border-top: 1px solid var(--tm-glass-rim);
+  background: var(--tm-glass-bar);
+  -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+}
+
+/* the bar's own rim replaces the structural rules between its parts */
+:is([data-design='glass'], [data-design='magma']) .thread-compose .chat-composer {
+  border-top: 0;
+  align-items: center;
+}
+
+:is([data-design='glass'], [data-design='magma']) .thread-compose .chat-composer textarea,
+:is([data-design='glass'], [data-design='magma']) .office-msg-compose .field {
+  /* Glass's own field fill (glass.css § fields): the button material on the
+     bar material all but vanished in light */
+  border: 1px solid var(--tm-glass-rim);
+  background: var(--tm-bg-inset);
+  transition:
+    border-color var(--tm-dur-fast) var(--tm-ease-out),
+    box-shadow var(--tm-dur-fast) var(--tm-ease-out);
+}
+
+:is([data-design='glass'], [data-design='magma']) .thread-compose .chat-composer textarea {
+  /* one line reads as a capsule; a grown field keeps the round ends */
+  border-radius: var(--tm-radius-lg);
+  padding: 9px 14px;
+}
+
+:is([data-design='glass'], [data-design='magma']) .thread-compose .chat-composer textarea:focus,
+:is([data-design='glass'], [data-design='magma']) .office-msg-compose .field:focus {
+  border-color: var(--tm-accent);
+  box-shadow: 0 0 0 4px var(--tm-accent-subtle);
+}
+
+/* the send button: a round accent disc (the Stop ghost keeps the ghost look) */
+:is([data-design='glass'], [data-design='magma']) .btn.thread-send {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--tm-radius-pill);
+}
+
+:is([data-design='glass'], [data-design='magma']) .btn.thread-send:not(.ghost),
+:is([data-design='glass'], [data-design='magma']) .btn.thread-send:not(.ghost):hover {
+  border-color: transparent;
+  background: var(--tm-accent);
+  color: var(--tm-accent-contrast);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--tm-accent-contrast) 28%, transparent);
+}
+
+:is([data-design='glass'], [data-design='magma']) .btn.thread-send:not(.ghost):disabled {
+  background: var(--tm-glass-btn);
+  color: var(--tm-text-muted);
+  box-shadow: none;
+}
+
+/* while a turn runs the send button is Stop: a disc on the button material */
+[data-design='glass'] .btn.thread-send.ghost,
+[data-design='glass'] .btn.thread-send.ghost:hover {
+  border-color: var(--tm-glass-rim);
+  background: var(--tm-glass-btn);
+  color: var(--tm-text);
+}
+
+/* the mention list above the field: the popover material */
+:is([data-design='glass'], [data-design='magma']) .thread-compose .office-chat-mentions {
+  border-color: var(--tm-glass-rim);
+  background: var(--tm-glass-thick);
+  box-shadow: var(--tm-glass-shadow-sm);
+}
+
+/* the jump pill: a glass capsule floating over the thread */
+:is([data-design='glass'], [data-design='magma']) .thread-jump {
+  padding: 6px var(--tm-space-3);
+  border: 1px solid var(--tm-glass-rim);
+  background: var(--tm-glass-bar);
+  -webkit-backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  backdrop-filter: blur(var(--tm-blur)) saturate(var(--tm-saturate));
+  box-shadow: inset 0 1px 0 var(--tm-glass-specular), var(--tm-glass-shadow-sm);
+  font-weight: 600;
+}
+
+/* the working row: the role bubble's material, the dots muted and static */
+:is([data-design='glass'], [data-design='magma']) .thread-working-bubble {
+  background: var(--tm-glass-card);
+}

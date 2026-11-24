@@ -416,6 +416,7 @@ a possible later card, not this feature.)
 | `--tm-ember-text` | `linear-gradient(90deg, #ffc93d, #ff4a3d)`: the wordmark only, via `background-clip: text` with `--tm-text` as the fallback colour |
 | `--tm-ember-glow` | `0 0 0 1px rgba(255,122,46,.35), 0 0 18px rgba(255,90,20,.28)` |
 | `--tm-lava-line` | `linear-gradient(90deg, transparent, #ff4a3d 20%, #ffc93d 50%, #ff4a3d 80%, transparent)` (1px hairlines) |
+| `--tm-magma-own-rim` | `rgba(255,122,46,.35)`: the own messenger bubble's 1px rim and the jump pill's (§ 13). Decoration: 1.89:1 against the panel, the bubble's fill carries its shape |
 | `--tm-wallpaper` | see below |
 | `--tm-sparks` | see below |
 
@@ -548,6 +549,15 @@ const ratio = (fg,bg) => { const B = hex(bg), F = blend(hex(fg),B);
 | Own bubble timestamp (muted) on accent-subtle | `muted #c9ab9b` | `own #401e0d` | 6.94 | 4.5:1 | pass |
 | Role bubble text on overlay | `text #fbefe6` | `overlay #22140f` | 15.82 | 4.5:1 | pass |
 | Role bubble timestamp on overlay | `muted #c9ab9b` | `overlay #22140f` | 8.33 | 4.5:1 | pass |
+| Own bubble text on accent-subtle over the panel (measured in the build) | `text #fbefe6` | `own #401813` | 13.69 | 4.5:1 | pass |
+| Chip in an own bubble (repo / kind chip, text colour) | `text #fbefe6` | `chip on own #58342f` | 9.54 | 4.5:1 | pass |
+| Active conversation row title and time on the lava frame fill (its peak) | `text #fbefe6` | `frame peak #452311` | 12.42 | 4.5:1 | pass |
+| Active conversation row preview on the lava frame fill (its peak) | `muted #c9ab9b` | `frame peak #452311` | 6.54 | 4.5:1 | pass |
+| Jump pill label on the thick material | `accent-text #ff7a5c` | `thick #1a0c09` | 7.44 | 4.5:1 | pass |
+| Unread counter label on its accent fill | `contrast #1a0802` | `accent #ff4a3d` | 5.83 | 4.5:1 | pass |
+| Working dots vs the overlay bubble (non-text) | `accent #ff4a3d` | `overlay #22140f` | 5.36 | 3:1 | pass |
+| Tainted bubble's dashed rim vs overlay (non-text) | `review #ffc93d` | `overlay #22140f` | 11.64 | 3:1 | pass |
+| Composer field border vs its inset fill (non-text) | `border-strong #8f5a44` | `inset #070403` | 3.61 | 3:1 | pass |
 | Active nav label (text) on active fill | `text #fbefe6` | `nav-on #361809` | 14.40 | 4.5:1 | pass |
 | Active nav counter (accent) on active fill | `accent #ff4a3d` | `nav-on #361809` | 4.88 | 4.5:1 | pass |
 | Nav counter (muted) on sidebar | `muted #c9ab9b` | `bg #0a0605` | 9.40 | 4.5:1 | pass |
@@ -600,7 +610,7 @@ const ratio = (fg,bg) => { const B = hex(bg), F = blend(hex(fg),B);
 | Terminal foreground on selection | `fg #f3e6dc` | `selection #582b12` | 9.70 | 4.5:1 | pass |
 | Terminal cursor vs bg (non-text) | `cursor #ffc93d` | `terminal-bg` | 13.13 | 3:1 | pass |
 
-All 82 graded pairs above pass. Terminal black is a TUI background colour, not text, so it is not graded. The tightest are the input border on raised (3.39) and on bg (3.57) against 3:1, faint on overlay (3.73, decoration only), the failed badge on its tint (5.05), and the darkest primary-button stop (6.23).
+All 91 graded pairs above pass. Terminal black is a TUI background colour, not text, so it is not graded. The tightest are the input border on raised (3.39) and on bg (3.57) against 3:1, faint on overlay (3.73, decoration only), the failed badge on its tint (5.05), and the darkest primary-button stop (6.23).
 
 **Translucent surfaces, composited at the worst case.** Text in Magma also sits on
 Glass's floating materials, which are translucent over the wallpaper. Each is
@@ -664,6 +674,44 @@ screen, far from the top-left glow.
 | `#1a0802` on `#e5312b` (a red end stop for the ember gradient) | 4.45 | gradient stops at `#ff4a3d` (5.83) |
 | `--tm-gray-0` on `#c4a1ff` (today's `.tab-count.urgent` label) | 2.03 | `--tm-accent-contrast` (9.16), a `magma.css` rule |
 | Classic's `--tm-border-strong` `#464b52` as an input outline | 2.20 | Magma's `#8f5a44` (3.57 on bg, 3.39 on raised) |
+
+### Messenger pairs in Classic and Glass (measured)
+
+The messenger card (§ 13) is styled in all three designs, so its text pairs
+are graded in Classic and Glass too, in both schemes. These are **measured in
+the built SPA**, not computed from the sheet: a Playwright run reads each
+element's computed `color` and composites the `background-color` of it and
+its ancestors (alpha layers included) down to the first opaque one, then
+applies the formula above (`shots.mjs` in the styling card's artifacts; 215
+probes over all three designs, both widths, both schemes; none below 4.5:1).
+Desktop values; the phone's differ by < 0.1.
+
+| Pair | Classic dark | Classic light | Glass dark | Glass light |
+|---|---:|---:|---:|---:|
+| Own bubble text on its accent tint | 10.74 | 15.76 | 11.76 | 17.54 |
+| Role bubble text | 16.18 | 18.13 | 14.90 | 20.68 |
+| Sender name, timestamp (muted) on the panel | 6.86 | 4.93 | 6.42 | 4.91 |
+| Day pill (muted) | 6.19 | 4.93 | 5.38 | 4.99 |
+| Server line (muted) | 6.86 | 4.93 | 6.42 | 4.91 |
+| Task card title | 17.78 | 16.18 | 10.90 | 20.91 |
+| Chip in a bubble (text colour) | 17.78 | 16.18 | 6.07 | 14.85 |
+| Error line under a bubble | 5.90 | 6.47 | 5.23 | 5.17 |
+| Working label (muted) | 6.86 | 4.93 | 5.77 | 4.98 |
+| Jump pill label | 11.62 | 7.22 | 16.81 | 20.85 |
+| Unread counter label | 9.70 | 5.59 | 10.02 | 6.04 |
+| Active row title and time | 10.74 | 15.76 | 11.76 | 17.54 |
+| List preview (muted) | 6.86 | 4.93 | 5.45 | 4.99 |
+
+Pairs that failed in the first build and were changed (all in the
+messenger's own rules):
+
+| Pair | Was | Now |
+|---|---:|---|
+| Classic light: jump pill in the bare accent on raised (§ 13's table) | 3.74 | `color-mix(accent 60%, text)`: 7.22 (dark 11.62) |
+| Classic and Glass light: white on the bare accent (the unread counter) | 3.74 | fill `color-mix(accent 75%, text)`: 5.59 / 6.04 |
+| Glass light: active row title in the accent on its tint | 3.13 | title stays `--tm-text`: 17.54 |
+| Classic light: active row time (muted) on the accent tint | 4.29 | `--tm-text`: 15.76 |
+| Glass dark: a translucent chip inside an own bubble | 3.41 | chips in bubbles read `--tm-text`: 6.07 |
 
 ## 6. Focus ring
 
@@ -998,12 +1046,13 @@ entries as bubbles in the same thread, with the differences listed below. It
 is specified for all three designs. Behaviour (who answers, taint,
 read-only, Send to channel, Stop) does not change.
 
-*Built so far:* the office group-chat thread, the Channel and the Huddles,
-with their structural layer only (docs/office.md § Group chat › The thread,
-§ Channel › The thread, § Huddles › The thread: `src/officeThread.ts`
-`buildThreadOf`, the shared pieces in `components/OfficeThread.tsx`, read
-marks through `src/officeConversations.ts`, `.thread-*` in `theme.css`). The
-repo Chat page and the per-design polish are later cards.
+*Built so far:* the office group-chat thread, the Channel and the Huddles
+(docs/office.md § Group chat › The thread, § Channel › The thread, § Huddles ›
+The thread: `src/officeThread.ts` `buildThreadOf`, the shared pieces in
+`components/OfficeThread.tsx`, read marks through `src/officeConversations.ts`,
+the structural `.thread-*` in `theme.css`), and their look in all three
+designs (the table below; build notes: messenger styling card). The repo Chat
+page is a later card.
 
 ```
  desktop ── conversation list ──┬──────────── thread ─────────────────────────────┐
@@ -1155,6 +1204,29 @@ repo Chat page and the per-design polish are later cards.
 | Jump pill | accent text on raised | glass capsule | `--tm-glass-thick` capsule, accent text, rim |
 | Task card | `--tm-bg-inset` + border | `--tm-glass-btn` | `--tm-bg-raised` + 1px `--tm-border` |
 | Working dots | muted, static | muted, static | `--tm-accent`, static |
+
+As built (messenger styling card), with these refinements to the table:
+
+- **Classic** jump pill text and the unread fill are the accent pulled toward
+  `--tm-text` (`color-mix`), because the bare light accent fails on white
+  (§ 5 › Messenger pairs). Meta is mono; the role bubble radius matches the
+  own bubble's (`--tm-radius-md`).
+- **Glass** puts the composer's *bar* on `--tm-glass-bar` with the blur (the
+  docked row holding the hint, the mention list and the field), and the field
+  inside it on the button material (`--tm-bg-inset` for the Channel's
+  fields). The active conversation row keeps `--tm-text` for its title
+  (accent on the tint is 3.13:1 in light).
+- **Magma** chamfers bubbles, the task card, fields and the unread counter
+  with `corner-shape: bevel` where the browser has it (the pills become HUD
+  hexagons; elsewhere the hard 4px/2px radii stand), rings avatars in the
+  role's group hue (`--role-hue`, the same slot as its body in the office
+  view), draws the lava hairline on the composer's top edge, gives the active
+  row the nav's frame and rail without the rail's glow, and makes Send an
+  ember disc with the inner light only — the focused field is the lit one.
+- **All designs:** a chip inside a bubble reads in `--tm-text` (the taint chip
+  keeps its colour); a tainted reply's dashed review rim out-ranks the role
+  bubble's border; while a turn runs, Stop is a bordered disc; the Channel's
+  To · Kind · Subject sit in one row above the body.
 
 ## 14. Screen-by-screen checklist
 
@@ -1618,3 +1690,39 @@ Visible brand only (Q2), so only text a human reads changed:
   `visualViewport` listener.
 - Desktop: roving tabindex over the rows, focus to the composer on open,
   Escape back to the row. Reduce Motion drops the push slide.
+
+## Build notes (messenger card 4: Classic, Glass and Magma styling, 2026-11-24)
+
+- **Where the rules live.** Classic: `[data-design='classic']` rules in
+  `theme.css` after the structural messenger block. Glass: `glass.css` § the
+  office messenger, widened to Magma like every rule in that file. Magma:
+  `magma.css` § the office messenger (the hero) plus the messenger's lines in
+  its `@supports (corner-shape: bevel)` block. Every selector names a
+  messenger class (`.thread-*`, `.office-conv-*`, `.office-msg-compose`,
+  `.role-avatars`); those classes are used only by the Office messenger
+  components, so the repo Chat page (`.chat-composer` alone) is untouched.
+- **Structural hooks.** The bubble radius is now two custom properties
+  (`--bubble-r`, `--bubble-join`) so a design restates the radius without
+  breaking the joined-corner rules; it computes exactly as before.
+  `roleHueStyle(role)` (`RoleChip.tsx`) sets `--role-hue: var(--tm-group-n)` on
+  `RoleAvatar` and `RoleAvatars`; only Magma reads it. The Channel's Subject
+  input moved into the To · Kind row (`.office-msg-subject-field`).
+- **New token:** `--tm-magma-own-rim` (§ 4).
+- **Glow budget (§ 8).** The messenger adds one lit glow in Magma, the
+  focused composer field (`--tm-ember-glow`). Send's ember disc has the inner
+  light only; bubbles, cards, pills, rows and the unread counter never glow.
+  No backdrop-filter on a scroller: Glass blurs only the docked composer bar
+  and the jump pill (Magma's blur tokens are 0).
+- **Motion.** No animation was added; the dots stay static and the jump pill
+  keeps its one-shot entry (off under Reduce Motion).
+- **Verified** (artifacts of the card): Playwright screenshots of the list,
+  the group chat, the Channel, a huddle, the scrolled-up pill state and the
+  working state in Classic, Glass and Magma at 1440 and 393 px (plus Classic
+  and Glass light), on a scratch build with replayed live GETs and mocked
+  office data. Contrast measured from computed styles: 215 probes, none below
+  4.5:1 (§ 5 › Messenger pairs). Non-Office screens in Classic and Glass
+  (Board, Chat, Config, Inbox, Dashboard; dark and light; 1440 and 393) were
+  pixel-compared against the HEAD build: the only differing pixels are
+  corner anti-aliasing and one chip row, at the same magnitude as a HEAD vs
+  HEAD run (≤ 85 px).
+

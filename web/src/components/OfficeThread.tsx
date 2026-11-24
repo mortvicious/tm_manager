@@ -11,6 +11,7 @@ import type { OfficeRole, Task } from '@tm/shared';
 import { openTaskFromAnywhere } from '../nav.ts';
 import { countNewSinceOf, resolveTaskRefs, taskRefCandidates } from '../officeThread.ts';
 import { useAppSelector } from '../state.tsx';
+import { roleHueStyle } from './RoleChip.tsx';
 import { StatusBadge } from './StatusBadge.tsx';
 
 /** within this many px of the end counts as "at the bottom" */
@@ -215,7 +216,7 @@ function TaskLinkCard({ id }: { id: string }) {
 
 export function RoleAvatar({ role }: { role: OfficeRole | null }) {
   return (
-    <span className="thread-avatar" aria-hidden="true">
+    <span className="thread-avatar" aria-hidden="true" style={roleHueStyle(role)}>
       {role?.avatar ?? '?'}
     </span>
   );

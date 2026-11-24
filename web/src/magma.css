@@ -508,6 +508,216 @@
   color: var(--tm-status-failed);
 }
 
+/* ---------- the office messenger: the hero (docs/magma.md § 13 › In each design) ----------
+
+   On Glass's messenger structure (glass.css § the office messenger): own
+   bubbles in the accent tint with an ember rim, role bubbles on the overlay
+   with a hard bevel and no border, avatars ringed in the role's group hue
+   (`--role-hue`, set by RoleAvatar/RoleAvatars), HUD numerals, and the
+   composer's focused field as the screen's one composer glow (§ 8: one of
+   the four). Bubbles, cards, pills and rows never glow; nothing animates. */
+
+/* the list: the active row takes the nav's lava frame and rail — without the
+   rail's glow, since rows never glow */
+[data-design='magma'] .office-conv-list {
+  border-right-color: var(--tm-border);
+}
+
+[data-design='magma'] .office-conv-row {
+  position: relative;
+  border-radius: var(--tm-radius-md);
+}
+
+[data-design='magma'] .office-conv-row.active {
+  background: var(--tm-magma-frame-fill);
+  box-shadow: var(--tm-magma-frame);
+}
+
+[data-design='magma'] .office-conv-row.active .office-conv-title {
+  color: var(--tm-text);
+}
+
+[data-design='magma'] .office-conv-row.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--tm-magma-rail);
+  pointer-events: none;
+}
+
+/* HUD numerals: the time and the unread counter */
+[data-design='magma'] :is(.office-conv-time, .office-conv-unread, .thread-time) {
+  font-family: var(--tm-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-design='magma'] .office-conv-unread {
+  font-weight: 700;
+  border-radius: var(--tm-radius-sm);
+}
+
+/* avatars: the overlay disc ringed in the role's hue (a ring, not a glow) */
+[data-design='magma'] :is(.role-avatars .role-chip-avatar, .thread-avatar) {
+  background: var(--tm-bg-overlay);
+  border: 1.5px solid var(--role-hue, var(--tm-border-strong));
+}
+
+[data-design='magma'] .role-avatars .role-chip-avatar + .role-chip-avatar {
+  box-shadow: 0 0 0 2px var(--tm-glass-card);
+}
+
+[data-design='magma'] .office-conv-thread-head {
+  border-bottom-color: var(--tm-border);
+}
+
+/* bubbles: hard corners (Magma's 4px/2px, chamfered below where the browser
+   cuts corners) */
+[data-design='magma'] .thread-bubble {
+  --bubble-r: var(--tm-radius-lg);
+  --bubble-join: var(--tm-radius-sm);
+}
+
+[data-design='magma'] .thread-group.other .thread-bubble {
+  background: var(--tm-bg-overlay);
+  border-color: transparent;
+  box-shadow:
+    inset 1px 1px 0 var(--tm-magma-bevel-light),
+    inset -1px -1px 0 var(--tm-magma-bevel-dark);
+}
+
+[data-design='magma'] .thread-group.own .thread-bubble {
+  background: var(--tm-accent-subtle);
+  border-color: var(--tm-magma-own-rim);
+}
+
+/* a tainted reply keeps its dashed review rim (out-ranks the role bubble's border) */
+[data-design='magma'] .thread-group .thread-bubble.tainted {
+  border-color: var(--tm-status-review);
+}
+
+[data-design='magma'] .thread-sender {
+  color: var(--tm-text-muted);
+  font-weight: 600;
+}
+
+/* pills: the day pill and the server lines on the overlay */
+[data-design='magma'] .thread-day span {
+  background: var(--tm-bg-overlay);
+  color: var(--tm-text-muted);
+  box-shadow: inset 0 0 0 1px var(--tm-border);
+}
+
+[data-design='magma'] .thread-system span {
+  border-color: var(--tm-border);
+  border-radius: var(--tm-radius-md);
+}
+
+/* the task card: raised with the hard border */
+[data-design='magma'] .thread-task,
+[data-design='magma'] .thread-task:hover {
+  background: var(--tm-bg-raised);
+  border-color: var(--tm-border);
+  border-radius: var(--tm-radius-md);
+}
+
+[data-design='magma'] .thread-task:hover {
+  border-color: var(--tm-border-strong);
+}
+
+/* the working row: overlay bubble, the dots in the accent — static */
+[data-design='magma'] .thread-working-bubble {
+  background: var(--tm-bg-overlay);
+  box-shadow: none;
+}
+
+[data-design='magma'] .thread-dots i {
+  background: var(--tm-accent);
+  opacity: 1;
+}
+
+/* the composer: Magma's near-opaque bar with the lava hairline on its top
+   edge, an inset field with the input border; focus = accent border + the
+   ember glow (the composer's glow of the four) + the yellow ring (§ 6) */
+[data-design='magma'] .thread-compose {
+  border-top-color: var(--tm-border);
+}
+
+[data-design='magma'] .thread-compose::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--tm-lava-line);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+[data-design='magma'] .thread-compose .chat-composer textarea,
+[data-design='magma'] .office-msg-compose .field {
+  border-color: var(--tm-border-strong);
+  background: var(--tm-bg-inset);
+}
+
+[data-design='magma'] .thread-compose .chat-composer textarea {
+  border-radius: var(--tm-radius-md);
+}
+
+[data-design='magma'] .thread-compose .chat-composer textarea:focus,
+[data-design='magma'] .office-msg-compose textarea.field:focus {
+  border-color: var(--tm-accent);
+  box-shadow: var(--tm-ember-glow);
+}
+
+/* the Channel's selects and subject line focus without a glow (one glow:
+   the message field) */
+[data-design='magma'] .office-msg-compose :is(input, select).field:focus {
+  border-color: var(--tm-accent);
+  box-shadow: none;
+}
+
+/* the send button: an ember disc with the inner light only (no outer glow —
+   the focused field next to it is the lit one) */
+[data-design='magma'] .btn.thread-send:not(.ghost),
+[data-design='magma'] .btn.thread-send:not(.ghost):hover {
+  border-color: transparent;
+  border-radius: var(--tm-radius-pill);
+  corner-shape: round;
+  clip-path: none;
+  background: var(--tm-ember);
+  color: var(--tm-accent-contrast);
+  box-shadow: var(--tm-magma-btn-glow-inner);
+}
+
+[data-design='magma'] .btn.thread-send:not(.ghost):disabled {
+  background: var(--tm-glass-btn);
+  color: var(--tm-text-muted);
+  box-shadow: var(--tm-magma-disc-ring);
+  opacity: 1;
+}
+
+[data-design='magma'] .btn.thread-send.ghost {
+  border-radius: var(--tm-radius-pill);
+  corner-shape: round;
+  clip-path: none;
+  color: var(--tm-accent-text);
+  box-shadow: var(--tm-magma-disc-ring);
+}
+
+/* the jump pill: the thick material, accent text, the ember rim */
+[data-design='magma'] .thread-jump {
+  border-color: var(--tm-magma-own-rim);
+  background: var(--tm-glass-thick);
+  color: var(--tm-accent-text);
+  box-shadow:
+    inset 1px 1px 0 var(--tm-magma-bevel-light),
+    var(--tm-glass-shadow-sm);
+}
+
 /* ---------- chamfers ---------- */
 
 @supports (corner-shape: bevel) {
@@ -536,6 +746,23 @@
 
   [data-design='magma'] .tabbar .tab-group {
     border-radius: var(--tm-magma-chamfer);
+    corner-shape: bevel;
+  }
+
+  /* the messenger: chamfered bubbles (the joined corner a small cut),
+     cards, fields and the unread counter; the pills become HUD hexagons */
+  [data-design='magma'] .thread-bubble {
+    --bubble-r: var(--tm-magma-chamfer);
+    --bubble-join: var(--tm-radius-sm);
+    corner-shape: bevel;
+  }
+
+  [data-design='magma'] :is(.thread-task, .thread-system span, .office-conv-unread, .thread-compose .chat-composer textarea, .office-msg-compose .field) {
+    border-radius: var(--tm-magma-chamfer-sm);
+    corner-shape: bevel;
+  }
+
+  [data-design='magma'] :is(.thread-day span, .thread-jump) {
     corner-shape: bevel;
   }
 }

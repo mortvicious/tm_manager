@@ -2760,8 +2760,9 @@ the refusal). While a turn runs, Send becomes Stop.
 ### The thread
 
 The group chat is rendered as a messenger thread (docs/magma.md § 13 Messenger
-chat anatomy). The layout is structural only, in `theme.css` (`.thread-*`);
-per-design polish is a later card.
+chat anatomy). The layout is structural, in `theme.css` (`.thread-*`); each
+design's look (Classic, Glass, Magma) is a scoped layer over it, see
+docs/magma.md § 13 › In each design.
 
 - **Bubbles.** Your messages (`role: 'user'`, actor `human` or `telegram`) sit
   on the right. Roles sit on the left with their avatar and `name · title`,

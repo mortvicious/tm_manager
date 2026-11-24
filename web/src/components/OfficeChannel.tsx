@@ -308,14 +308,16 @@ function Composer({
             </option>
           ))}
         </select>
+        {/* To · Kind · Subject: one compact row above the body (docs/magma.md § 13) */}
+        <input
+          className="field office-msg-subject-field"
+          placeholder="Subject"
+          aria-label="Subject"
+          maxLength={OFFICE_MESSAGE_SUBJECT_MAX}
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+        />
       </div>
-      <input
-        className="field"
-        placeholder="Subject"
-        maxLength={OFFICE_MESSAGE_SUBJECT_MAX}
-        value={subject}
-        onChange={(e) => setSubject(e.target.value)}
-      />
       <textarea
         className="field"
         rows={2}
