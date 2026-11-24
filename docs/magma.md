@@ -557,6 +557,14 @@ const ratio = (fg,bg) => { const B = hex(bg), F = blend(hex(fg),B);
 | Focus ring vs bg (non-text) | `focus #ffc93d` | `bg #0a0605` | 13.13 | 3:1 | pass |
 | Input border (border-strong) vs bg (non-text) | `border-strong #8f5a44` | `bg #0a0605` | 3.57 | 3:1 | pass |
 | Input border (border-strong) vs raised (non-text) | `border-strong #8f5a44` | `raised #160d0a` | 3.39 | 3:1 | pass |
+| Focus ring vs overlay (popovers, sheets, a terminal key) (non-text) | `focus #ffc93d` | `overlay #22140f` | 11.64 | 3:1 | pass |
+| Focus ring vs terminal chrome (non-text) | `focus #ffc93d` | `chrome #140c09` | 12.59 | 3:1 | pass |
+| Terminal chrome text (drawer head, shell pane head, compact strip) | `muted #c9ab9b` | `chrome #140c09` (terminal-bg 60% + overlay) | 9.01 | 4.5:1 | pass |
+| Terminal chrome name / compact name | `text #fbefe6` | `chrome #140c09` | 17.11 | 4.5:1 | pass |
+| Phone terminal key label | `muted #c9ab9b` | `overlay #22140f` | 8.33 | 4.5:1 | pass |
+| Phone terminal key, pressed | `text #fbefe6` | `border #3a2219` | 13.07 | 4.5:1 | pass |
+| Resize grip / key-row separator vs chrome (non-text) | `border-strong #8f5a44` | `chrome #140c09` | 3.42 | 3:1 | pass |
+| Chat write-mode note | `failed #ff4fa3` | `inset #070403` | 6.71 | 4.5:1 | pass |
 | Switch on (accent) vs bg (non-text) | `accent #ff4a3d` | `bg #0a0605` | 6.05 | 3:1 | pass |
 | Progress bar fill vs track (non-text) | `accent #ff4a3d` | `overlay #22140f` | 5.36 | 3:1 | pass |
 | Group 1 chip text on its tint | `g1 #c4a1ff` | `tint #322531` | 6.85 | 4.5:1 | pass |
@@ -1393,3 +1401,104 @@ render counts twice under StrictMode in dev:
   title-only edit renders only `InboxLink`;
 - Queue hidden once it reaches 0; Board's drafts capped at `99+`;
 - the phone tab bar and the More sheet's order are exactly NAV's.
+
+## Build notes (Magma coverage, 2026-11-24)
+
+The "Magma coverage" card (phase 2/4) walked § 14 at 1440×900 and 393×852 and
+styled what the plumbing card left. Everything is in `web/src/magma.css`; no
+token was added and no other file changed (§ 5 gained the pairs below).
+
+**What the walk found.** Glass's structure plus the Magma token block already
+carried every screen's colours: no Classic-coloured surface and no teal accent
+was left on any § 14 screen. The leftovers were of five kinds:
+
+- **Focus rings.** A dozen components restate Classic's ring in the accent at
+  a higher specificity than § 6's one declaration (`.rm-seg
+  button:focus-visible`, `.tl-srow`, `.st-head`, `.sl-card-open`,
+  `.td-file-row`, `.th-row`, `.ov-feed-main` …), and an accent ring vanishes
+  on the accent-coloured controls it marks. § 6's rule is therefore
+  `outline-color: var(--tm-focus) !important` — the colour only; geometry
+  stays each component's. Rings the widened Glass rules or Classic's child
+  rings left out are drawn explicitly: the board search trigger (Glass's
+  capsule restates border and shadow over Classic's focus state), fields and
+  the chat composer (accent border + the yellow outline outside it, § 6), a
+  metro station's halo (`stroke`), and the office avatars' floor ellipse
+  (`.po-shadow`, `.sc-shadow`, `.sb-ring`, `.fg-ring`) as an OUTLINE, never
+  a box-shadow (§ 6: no glow on focus). The dialogs that take focus without
+  a ring stay ringless.
+- **Links.** An unclassed link outside `p`/`li`/`.hint` (the task panel's
+  lines, the Review deck's "Back to the Inbox") took the browser's own
+  dark-scheme blue `#9e9eff`. A zero-specificity rule
+  (`:where([data-design='magma']) :where(a:not([class]))`) gives them
+  `--tm-link`; it beats only the UA default, never a component's `.x a`.
+- **Capsules.** The header's queue switch and run count (beside the
+  hard-cornered header buttons, chamfered with them), `.runcount`, the task
+  panel's `.so-flag`, `.ws-repo`, the timeline's `.tlt-now-pill` and
+  `.tl-scrub-chip`, `.office-rating-btn`, and the office skins' plates and
+  bubbles (`.po-*`, `.sb-*` — lit capsules in Glass — and the colony's
+  `.sc-plate`) take `--tm-radius-sm`. Skin colours are untouched. Round on
+  purpose: dots, rails, progress bars, the switch track and knob, the sheet
+  grabber, avatars and their floor ellipses.
+- **Terminal chrome.** The drawer's head, compact strip, phone key row and
+  compose bar and a shell pane's head are pinned to Classic's graphite
+  primitives (`--tm-gray-1…8`), and the widened Glass rule keeps those greys
+  on their ghost buttons: cool greys beside Magma's warm terminal. Magma is
+  dark-only, so its semantic tokens ARE the dark chrome: gray-7 → `border`,
+  gray-8 → `bg-overlay` (in the same `color-mix` with `--tm-terminal-bg`),
+  gray-6 → `border-strong`, gray-3/4/5 text → `text-muted` (faint is
+  decoration only, so the cwd and activity line are muted too; faint keeps
+  the idle dot), gray-1/2 → `text`. Base rules are held at Classic's
+  specificity with `:where()`, so the armed Ctrl key, the resize grip's hover
+  and the compact strip's hover still win. The primitives are not redefined.
+- **Chat write-mode note** is `--tm-status-failed` (§ 14), not Classic's
+  `--tm-amber-5`.
+
+**Left as they are, on purpose:** the emulator's frame (a light device bezel
+around the emulated app's own page), the phone sheets' `.97` material (the
+plumbing card's decision), a disabled primary button's dimmed ember, the
+office skins' own colour tokens, the yarl lightbox, and the dimming
+`.overlay` (Glass's).
+
+**Verification** (Playwright, Chromium 1243, inside a heavy lease; a scratch
+build of HEAD and of this change served at the front door's origin over
+replayed API fixtures, every non-GET and every WebSocket blocked, reduced
+motion on, the served build id pinned so no reload toast covers a shot):
+
+- **Every § 14 screen in Magma at both widths**: 49 desktop + 51 phone
+  screenshots — Board (Original, Stacks, Swimlanes, Relation map, Metro,
+  search), the task panel's five tabs, Inbox / Review deck / Draft triage /
+  the phone `InboxSheet`, Queue, Timeline, Dashboard, Chat list and thread,
+  Features and a feature, Reports, Jobs, Office (place view in all four
+  skins, the list, the settings/scorecard/channel panels), Shared,
+  Terminals, the terminal drawer, Repos, Handbook, Config (Original and the
+  six versions), ⌘K palette, the question modal, the memory-fuse and
+  push-health banners, the phone offline banner, a toast, New task, the More
+  sheet, the emulator and two keyboard-focus shots. They are in the task's
+  artifacts (`magma/`).
+- **Audit over those 100 screens**: every keyboard-focusable element in view
+  focused in turn (3,687), each drawing a ring (its own outline, a changed
+  border/shadow, a wrapper's `:focus-within` outline, or a child's
+  outline/stroke) in `#ffc93d` — 0 without, 0 in another colour. No text,
+  background or border in a cool grey or teal. The only pill-shaped boxes
+  left are the switch track and the skins' floor ellipses.
+- **Classic and Glass unchanged**: the same screens from both builds with the
+  clock fixed, compared as `getComputedStyle` of every element and its
+  `::before`/`::after` (sorted property maps) and as pixels: 50
+  comparisons — Classic dark 23, Glass dark 17, Glass light 6, Classic
+  light 4 — over the board, the task panel, Inbox, Queue, Timeline, a chat
+  thread, Reports, Office, Config, New task, the terminal drawer and the
+  More sheet at both widths. **0 elements differ in computed style** on
+  every one; pixels differ by 0–84, on live indicators (a running row's dot
+  and progress bar) and single anti-aliased pixels, whose computed styles
+  are identical.
+- **Scope**: all 100 selectors in `magma.css` (98 at the walk, plus the nav card's two) start with
+  `[data-design='magma']` (or its `:where()`/`:is()`); no `@keyframes`, no
+  `animation`, no `backdrop-filter`/`filter`/`transform` on `.main`,
+  `.header` or `.app`.
+- `npm run typecheck` and `npm run build` green.
+
+**§ 14 not exercised here:** xterm's ANSI colours and selection (no live
+PTY in the harness; the theme object is the plumbing card's `termTheme.ts`),
+each of the office's twelve phone sheets, huddles and the group chat's push
+nav, the timeline drag grip mid-drag, and the board drag ghost. They use the
+components and tokens audited above.

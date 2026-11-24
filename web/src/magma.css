@@ -43,20 +43,65 @@
 
 /* ---------- focus (§ 6): Classic's geometry, ember-yellow, never a glow ---------- */
 
+/* The colour only — the geometry stays each component's own. !important
+   because a dozen components restate Classic's ring at a higher specificity
+   (`.rm-seg button:focus-visible { outline: 2px solid var(--tm-accent) }` …),
+   and in Magma an accent ring disappears on the accent-coloured controls it
+   marks (§ 6). Only a focus-visible outline is touched. */
 [data-design='magma'] :focus-visible {
-  outline-color: var(--tm-focus);
+  outline-color: var(--tm-focus) !important;
 }
 
 /* a field's own focus: the border lights up in the accent, the yellow ring
-   (when keyboard focus draws one) sits outside it */
+   sits outside it (§ 6). Classic draws no outline on a field (`outline:
+   none`, the border is its whole focus state); in Magma the ring is drawn. */
 :where([data-design='magma']) :is(input, textarea, select).field:focus,
-:where([data-design='magma']) button.field:focus-visible {
+:where([data-design='magma']) button.field:focus-visible,
+[data-design='magma'] .chat-composer textarea:focus {
   border-color: var(--tm-accent);
 }
 
-/* ---------- links in prose ---------- */
+[data-design='magma'] :is(input, textarea, select, button).field:focus-visible,
+[data-design='magma'] .chat-composer textarea:focus-visible {
+  outline: 2px solid var(--tm-focus);
+  outline-offset: 2px;
+}
+
+/* Rings the widened Glass rules took away, or that Classic draws in the
+   accent on a child: the board search trigger (Glass's capsule restates its
+   border and shadow over Classic's focus state), a metro station's halo, an
+   office avatar's floor ring. */
+[data-design='magma'] .bs-trigger:focus-visible {
+  outline: 2px solid var(--tm-focus);
+  outline-offset: 2px;
+}
+
+[data-design='magma'] .mt-st:focus-visible .mt-halo {
+  stroke: var(--tm-focus);
+}
+
+/* the avatar itself draws no outline (it is a sprite); its floor ellipse
+   does — as an outline, never a box-shadow (§ 6). A selected avatar keeps
+   its accent tint under the ring. */
+[data-design='magma'] .po-avatar:focus-visible .po-shadow,
+[data-design='magma'] .sc-colonist:focus-visible .sc-shadow,
+[data-design='magma'] :is(.sb-avatar, .fg-avatar):focus-visible :is(.sb-ring, .fg-ring) {
+  box-shadow: none;
+  outline: 2px solid var(--tm-focus);
+  outline-offset: 0;
+}
+
+/* ---------- links ---------- */
 
 [data-design='magma'] :where(p, li, .hint) a:not([class]) {
+  color: var(--tm-link);
+}
+
+/* Any other unclassed link (the task panel's lines, an empty state's "Back
+   to the Inbox") would take the browser's own dark-scheme blue, #9e9eff.
+   Zero specificity: it beats only that default, never a component's own
+   `.x a` colour. */
+:where([data-design='magma']) :where(a:not([class])) {
   color: var(--tm-link);
 }
 
@@ -261,6 +306,12 @@
   border-radius: var(--tm-radius-sm);
 }
 
+/* the header's other capsules (queue switch, run count / usage, the phone's
+   run-count tap) sit beside the buttons: the same hard corners */
+[data-design='magma'] .header :is(.switch, .runcount) {
+  border-radius: var(--tm-radius-sm);
+}
+
 /* the phone row's next-step button (Run now …) is a pill in Classic's structure */
 [data-design='magma'] .app.mobile .task-row.m .btn.next-step {
   border-radius: var(--tm-radius-sm);
@@ -290,6 +341,21 @@
 [data-design='magma'] :is(.section-head .count, .cfg-count, .inbox-kind, .fbadge, .sev) {
   border-radius: var(--tm-radius-sm);
   font-variant-numeric: tabular-nums;
+}
+
+/* the other text capsules of the secondary screens: run counts, the task
+   panel's flags, workspace repo chips, the timeline's NOW handle and scrub
+   chip, the office's rating buttons. Dots, rails, bars, the switch track and
+   the sheet grabber stay round (--tm-radius-pill is unchanged). */
+[data-design='magma'] :is(.runcount, .so-flag, .ws-repo, .tl-scrub-chip, .tlt-now-pill, .office-rating-btn) {
+  border-radius: var(--tm-radius-sm);
+}
+
+/* the office skins' name plates and speech bubbles (Pixel office, bridge —
+   lit capsules in Glass — and the colony's pill plates): hard HUD plates in
+   Magma. Only the shape: the skin colours are untouched. */
+[data-design='magma'] :is(.po-bubble, .po-plate, .sb-bubble, .sb-plate, .sc-plate) {
+  border-radius: var(--tm-radius-sm);
 }
 
 [data-design='magma'] .bs-foot select.field {
@@ -349,6 +415,88 @@
   box-shadow: var(--tm-magma-disc-glow);
 }
 
+/* ---------- terminal chrome ---------- */
+
+/* The drawer's head, compact strip, phone key row and compose bar, and a
+   shell pane's head, are always dark: Classic pins them to its graphite
+   primitives (--tm-gray-1…8), and the widened Glass rule keeps those greys
+   on their ghost buttons — cool greys beside Magma's warm terminal
+   background. Magma is dark-only, so its own semantic tokens ARE the dark
+   chrome: gray-7 → border, gray-8 → overlay, gray-6 → border-strong,
+   gray-3/4/5 text → muted (faint is decoration only, § 5; it keeps the
+   idle dot), gray-1/2 → text. Base rules are held at
+   Classic's specificity with :where() so Classic's state rules (Ctrl armed,
+   the resize grip's hover, a compact strip's hover) still win. */
+:where([data-design='magma']) :is(.term-head, .shell-pane-head, .term-compact, .term-keys, .term-compose) {
+  border-color: var(--tm-border);
+  color: var(--tm-text-muted);
+  background: color-mix(in srgb, var(--tm-terminal-bg) 60%, var(--tm-bg-overlay));
+}
+
+[data-design='magma'] .term-compact:hover {
+  background: color-mix(in srgb, var(--tm-terminal-bg) 40%, var(--tm-bg-overlay));
+}
+
+/* `.app` ties Classic's phone rule (`.app.mobile .term-head .btn.ghost`) */
+[data-design='magma'] .app :is(.term-head, .term-compact, .shell-pane-head) .btn.ghost {
+  color: var(--tm-text-muted);
+}
+
+[data-design='magma'] .app :is(.term-head, .term-compact, .shell-pane-head) .btn.ghost:hover {
+  background: color-mix(in srgb, var(--tm-text) 12%, transparent);
+  color: var(--tm-text);
+}
+
+[data-design='magma'] :is(.term-compact-name, .app .term-head .term-name) {
+  color: var(--tm-text);
+}
+
+/* the phone's full-screen drawer moves the key row's rule to its top edge */
+[data-design='magma'] .app.mobile .term-drawer.full .term-keys {
+  border-top-color: var(--tm-border);
+}
+
+/* Classic's dimmer grey (gray-5) for the cwd and the activity line: in Magma
+   faint is decoration only (§ 5), so this text is muted like the head's */
+[data-design='magma'] :is(.term-compact-activity, .shell-pane-cwd) {
+  color: var(--tm-text-muted);
+}
+
+[data-design='magma'] .term-compact-dot.off {
+  background: var(--tm-text-faint);
+}
+
+:where([data-design='magma']) .term-resize::after {
+  background: var(--tm-border-strong);
+}
+
+:where([data-design='magma']) .term-compose .field {
+  border-color: var(--tm-border);
+}
+
+:where([data-design='magma']) .term-key {
+  border-color: var(--tm-border);
+  background: var(--tm-bg-overlay);
+  color: var(--tm-text-muted);
+}
+
+:where([data-design='magma']) .term-key:active {
+  background: var(--tm-border);
+  color: var(--tm-text);
+}
+
+[data-design='magma'] .term-keys-sep {
+  background: var(--tm-border-strong);
+}
+
+/* ---------- chat ---------- */
+
+/* the write-mode note warns that the chat can edit files and run commands:
+   Magma's warning colour (§ 14), not Classic's amber primitive */
+[data-design='magma'] .chat-mode-note {
+  color: var(--tm-status-failed);
+}
+
 /* ---------- chamfers ---------- */
 
 @supports (corner-shape: bevel) {
@@ -368,6 +516,7 @@
   :where([data-design='magma']) .btn:hover,
   [data-design='magma'] .header .btn,
   [data-design='magma'] .header .btn:hover,
+  [data-design='magma'] .header :is(.switch, .runcount),
   [data-design='magma'] .seg,
   [data-design='magma'] :is(.badge, .chip, .tab-count, .bs-trigger) {
     border-radius: var(--tm-magma-chamfer-sm);
