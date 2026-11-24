@@ -60,11 +60,8 @@ import { useIsMobile } from '../components/Layout.tsx';
 import { Sheet } from '../components/Sheet.tsx';
 import { Markdown } from '../components/Markdown.tsx';
 import { OfficeVision } from '../components/OfficeVision.tsx';
-import { OfficeChannel } from '../components/OfficeChannel.tsx';
 import { OfficeScorecard } from '../components/OfficeScorecard.tsx';
-import { OfficeChat } from '../components/OfficeChat.tsx';
 import { OfficeConversations, OfficeReadBaseline } from '../components/OfficeConversations.tsx';
-import { OfficeHuddles } from '../components/OfficeHuddles.tsx';
 import { RatingButtons, ratingKey, useOfficeRatings } from '../components/OfficeRating.tsx';
 import { OfficeWork } from '../components/OfficeWork.tsx';
 import { OfficeMetricsPanel, RoleMetrics } from '../components/OfficeMetrics.tsx';
@@ -386,7 +383,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
   const now = useNow();
   const { detail, states, error, reload } = useOfficeDetail(officeId);
   const [editing, setEditing] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | 'channel' | 'huddles' | 'chat' | 'assistant' | 'work' | 'scorecard' | 'metrics' | null>(null);
+  const [sheet, setSheet] = useState<'settings' | 'log' | 'briefs' | 'vision' | 'ask' | 'chats' | 'assistant' | 'work' | 'scorecard' | 'metrics' | null>(null);
   const briefs = useOfficeBriefs(officeId);
   const ratings = useOfficeRatings({ officeId });
   const [briefId, setBriefId] = useBriefParam();
@@ -412,10 +409,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
     />
   );
   const ask = <AskDirector office={office} director={director} onAsked={reload} />;
-  const channel = <OfficeChannel office={office} roles={roles} inSheet={mobile} onOpenTask={onOpenTask} />;
-  const chat = <OfficeChat office={office} roles={roles} inSheet={mobile} />;
   const assistant = <OfficeAssistant office={office} roles={roles} inSheet={mobile} />;
-  const huddles = <OfficeHuddles office={office} roles={roles} inSheet={mobile} onOpenTask={onOpenTask} />;
   const briefList = (
     <BriefList office={office} roles={roles} briefs={briefs} ratings={ratings} selected={briefId} inSheet={mobile} onSelect={(id) => setBriefId(id === briefId ? null : id)} />
   );
@@ -444,14 +438,8 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
           <button className="btn" onClick={() => setSheet('ask')}>
             Ask the Director
           </button>
-          <button className="btn" onClick={() => setSheet('chat')}>
-            Chat
-          </button>
-          <button className="btn" onClick={() => setSheet('channel')}>
-            Channel
-          </button>
-          <button className="btn" onClick={() => setSheet('huddles')}>
-            Huddles
+          <button className="btn" onClick={() => setSheet('chats')}>
+            Chats
           </button>
           <button className="btn" onClick={() => setSheet('briefs')}>
             Briefs <span className="muted">{briefs?.length ?? ''}</span>
@@ -523,9 +511,9 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
         </div>
       )}
       {!mobile && <div className="panel">{assistant}</div>}
-      {/* desktop: ONE conversation list — channel, group chats, huddles (docs/office.md § Conversation list);
-          the phone keeps its three sheets until the push-navigation card */}
-      {/* the phone's sheets have no list to write the fresh-device read baseline */}
+      {/* ONE conversation list — channel, group chats, huddles (docs/office.md § Conversation list);
+          on a phone it is its own tall sheet with list → thread push navigation */}
+      {/* the phone's list lives in the Chats sheet, mounted only while open: this writes the fresh-device read baseline */}
       {mobile && <OfficeReadBaseline office={office} roles={roles} />}
       {!mobile && (
         <div className="panel">
@@ -537,21 +525,7 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
           {assistant}
         </Sheet>
       )}
-      {mobile && sheet === 'chat' && (
-        <Sheet label="Office group chat" title="Group chat" onClose={() => setSheet(null)} disableDrag tall>
-          {chat}
-        </Sheet>
-      )}
-      {mobile && sheet === 'huddles' && (
-        <Sheet label="Office huddles" title="Huddles" onClose={() => setSheet(null)} disableDrag tall>
-          {huddles}
-        </Sheet>
-      )}
-      {mobile && sheet === 'channel' && (
-        <Sheet label="Office channel" title="Channel" onClose={() => setSheet(null)} disableDrag tall>
-          {channel}
-        </Sheet>
-      )}
+      {mobile && sheet === 'chats' && <OfficeConversations office={office} roles={roles} onOpenTask={onOpenTask} phone={{ onClose: () => setSheet(null) }} />}
       {mobile && sheet === 'ask' && (
         <Sheet label="Ask the Director for a feature" title="Ask the Director" onClose={() => setSheet(null)} disableDrag>
           {ask}

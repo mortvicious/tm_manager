@@ -2388,7 +2388,7 @@ routing shift gets its FULL text. A forward's copy is reviewed on its own.
 the newest messages of the last 30 days, oldest first, with `routes` (message id
 → route record), `passes` and `routingDueAt`. /office shows it as the
 **Channel** (`components/OfficeChannel.tsx`; on a desktop a row of the
-conversation list, on a phone a `<Sheet>` from the bar). It re-reads on
+conversation list, on a phone pushed from the **Chats** sheet — § Conversation list › Navigation). It re-reads on
 `office-message.created|updated` for the office.
 
 ### The thread
@@ -2597,11 +2597,10 @@ open, and the usual state after it closes.
 
 `office-huddle.updated` (`{huddle}`) is broadcast on every change.
 
-/office shows huddles in the conversation list on a desktop and as a
-**Huddles** `<Sheet>` from the bar on a phone (`components/OfficeHuddles.tsx`).
-The sheet is a list — subject, roles' avatars, last line, relative time,
-unread count, a static working dot, `turn n/max · status` — with **Open a
-huddle** in its header; a row opens the huddle's thread and ← returns.
+/office shows huddles in the conversation list — on a desktop beside the
+thread, on a phone pushed from the **Chats** sheet (§ Conversation list ›
+Navigation) — with **Open a huddle** in the list's header
+(`components/OfficeHuddles.tsx`).
 
 The open form has a subject picker (the workspace's open tasks, or an id for a
 proposal, signal or message), 2–3 role checkboxes, the turn cap and an optional
@@ -2748,10 +2747,9 @@ ordinary chat); `getChatMessage`, `setChatMessageChannel` on both drivers.
 ### UI
 
 `components/OfficeChat.tsx`: the group chat thread — inside the
-**Conversations** panel on /office (desktop, § Conversation list below), a
-`<Sheet>` from the phone bar's **Chat** button. The newest chat opens (a picker
-when there are several, **New chat**) as a messenger thread (§ The thread
-below). A tainted reply has the `tainted` chip and a dashed rim, and each of
+**Conversations** panel on /office (desktop), or pushed from the list in the
+phone bar's **Chats** sheet (§ Conversation list › Navigation below). A chat
+opens as a messenger thread (§ The thread below). A tainted reply has the `tainted` chip and a dashed rim, and each of
 your messages says who it went to (`→ 🧭 Ada`) and has a two-press **Send to
 channel** (then `sent to the channel ✓`). The composer's **@-autocomplete**
 opens on `@` (↑/↓, Enter/Tab to pick, Esc to close; a tap keeps the keyboard
@@ -2845,8 +2843,8 @@ and opens `/office?ws=<slug>` rather than the Chat page.
 The first of the messenger cards (docs/magma.md § 13). On a desktop /office
 shows ONE **Conversations** panel instead of the separate Group chat, Channel
 and Huddles panels: a list of the office's channel, its group chats and its
-huddles, newest activity first, beside the picked conversation's thread. The
-phone keeps its three sheets until the push-navigation card.
+huddles, newest activity first, beside the picked conversation's thread. On a
+phone the same list is one sheet with push navigation (§ Navigation below).
 
 **A row**: avatars (`RoleAvatars` in `RoleChip.tsx` — up to three of the chat's
 participants, a huddle's roles, the channel's latest writers, else `#`), the
@@ -2916,6 +2914,61 @@ thread did not touch are never counted all-unread. Other tabs follow through the
 event, this tab through `onReadChange`; at most 300 markers are kept, the
 stalest dropped. (docs/magma.md § 13 sketched a `tm.chat.read` time-only model
 for the repo Chat page; office group chats count instead, per the card.)
+
+#### Navigation (keyboard and phone)
+
+The third messenger card (docs/magma.md § 13 › phone). All of it lives in
+`components/OfficeConversations.tsx`; the thread views are unchanged.
+
+- **Phone: list → thread is a push inside ONE sheet.** The phone bar's
+  **Chats** button (it replaced the separate Chat, Channel and Huddles
+  buttons) opens a tall `<Sheet>` — the Office's existing drill-in pattern;
+  `PanelNav.tsx` is the task panel's prev/next strip, not a drill-in, so it
+  was not used. The list and a pushed thread take turns in the sheet's ONE
+  scroller (docs/mobile.md § Sheets: no nested scroller). The sheet head is
+  `Chats N` + New chat / Open a huddle on the list and **‹ Chats** + avatars +
+  title on a thread. Back — the button, or Escape from a hardware keyboard —
+  pops to the list at the scroll offset it was left at (saved on push,
+  restored before paint) with focus on the row that was open; Escape on the
+  list closes the sheet as any sheet's does (the thread's Escape calls
+  `preventDefault`, which the Sheet's own listener respects, so one press
+  never does both). There is no swipe-back: the sheet's gesture is drag-down
+  to close (`disableDrag`: from the head only), and an edge swipe is not a
+  pattern this app has. Opening a thread focuses the thread box, not the
+  composer, so the keyboard does not rise unasked; the chat thread pins
+  itself to its end as on desktop, and so do the channel and a huddle (only
+  the open-a-huddle form is reset to its top; a thread never is, or the
+  parent's reset would undo the thread's own pin, which runs first). Channel, group chats, huddles and the
+  open-a-huddle form are all pushed the same way.
+- **Composer above the keyboard.** The app's sheet approach, not a new one:
+  react-modal-sheet measures the keyboard (`visualViewport`, or the
+  VirtualKeyboard API) and pads its scroller by it. A sticky element's edge
+  is inset by its scroller's padding (measured in WebKit and Chromium), so
+  the sticky thread composer (`.thread-compose`, `bottom: 0`) sits on the
+  keys; it must NOT also add `--keyboard-inset-height` to its `bottom` — that
+  counts the keyboard twice and floats it a keyboard height above the keys. The channel's longer form is not sticky; the
+  library scrolls the focused field into view.
+- **The selection is not in the URL.** Neither was the desktop list's pick
+  before this card (only `?brief=` is), so a reload starts on the list; that
+  was left as it was.
+- **Reduce Motion**: the push is a short slide (`office-conv-push` /
+  `office-conv-pop` on the sheet tween tokens, played once per move, so not
+  in the calm lists); under `prefers-reduced-motion` it is an instant swap.
+- **Desktop keyboard.** The rows are ONE tab stop (roving tabindex: the row
+  last focused, else the open one, else the first); ↑/↓/Home/End move
+  between rows, Enter/Space open. Opening a conversation (click or Enter)
+  moves focus to its composer — the chat's textarea, the channel's first
+  field — or to the thread box when it has none (a huddle). Escape in the
+  thread hands focus back to its row (an open @-mention list closes first;
+  it prevents the default). Rows keep their `:focus-visible` accent ring;
+  the thread box gets the same ring only for keyboard focus.
+
+Verified with Playwright (chromium, fixtures of 25 chats + a huddle over the
+live read API, writes aborted) at 393×852 touch — push, Back and Escape, list
+scroll kept, a loaded chat reopened at its end, the composer's bottom at the
+keyboard's top with an emulated 336 px keyboard (the variable on the sheet
+AND the scroller's padding, as iOS Safari resolves them), no animation under `reducedMotion: 'reduce'` — and at 1440 px
+by keyboard only. A real iOS keyboard was not available (no simulator).
 
 ## Office planner
 

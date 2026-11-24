@@ -3,13 +3,22 @@
 // avatars, title, last-message preview, relative time, unread count and a
 // working marker — beside the selected conversation's thread. The threads
 // are the messenger views (ChatPane, OfficeChannel, HuddleThread over
-// OfficeThread.tsx, docs/magma.md § 13); the phone push navigation and
-// per-design styling are later cards. Everything here is computed
+// OfficeThread.tsx, docs/magma.md § 13); per-design styling is a later
+// card. Everything here is computed
 // by the pure `buildConversations` over data the Office already follows; the
 // read markers are per device (`tm.office.read`) and advance when the
 // thread's end is on screen in a visible tab (the chat: `ReadSentinel` →
 // `markRead`; the channel and huddle threads mark themselves at their end).
-import { useEffect, useMemo, useRef, useState } from 'react';
+//
+// Keyboard and phone (docs/office.md § Conversation list › Navigation): the
+// rows are ONE tab stop (roving tabindex; Up/Down/Home/End move, Enter opens),
+// opening a thread moves focus into it (its composer when it has one), and
+// Escape in the thread hands focus back to its row. On a phone the whole list
+// is one tall `<Sheet>` (the Office's drill-in pattern) and a thread is PUSHED
+// inside it: the sheet head turns into "‹ Chats", Back or Escape pops to the
+// list at the scroll position it was left at, and Reduce Motion swaps
+// without the slide.
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { Office, OfficeRole } from '@tm/shared';
 import { api } from '../api.ts';
 import {
@@ -27,6 +36,7 @@ import { OfficeChannel, useChannel } from './OfficeChannel.tsx';
 import { HuddleThread, OpenForm, useHuddles } from './OfficeHuddles.tsx';
 import { useOfficeChats, useReadMap } from './officeConversationHooks.ts';
 import { RoleAvatars } from './RoleChip.tsx';
+import { Sheet } from './Sheet.tsx';
 import { fmtAgo, useNow } from './TimeAgo.tsx';
 
 const NEW_HUDDLE = 'new-huddle';
@@ -87,12 +97,54 @@ function ReadSentinel({ onSeen, version }: { onSeen: () => void; version: string
   return <div ref={ref} className="office-conv-sentinel" aria-hidden="true" />;
 }
 
-function Row({ row, roles, active, now, onPick }: { row: Conversation; roles: OfficeRole[]; active: boolean; now: number; onPick: () => void }) {
+/** the element that scrolls `el`: its own box, or (in a phone Sheet) the sheet's scroller */
+function scrollerOf(el: HTMLElement | null): HTMLElement | null {
+  for (let p = el; p; p = p.parentElement) {
+    const oy = getComputedStyle(p).overflowY;
+    if (oy === 'auto' || oy === 'scroll') return p;
+  }
+  return null;
+}
+
+const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+
+/** the composer of an opened thread, else the thread itself (a huddle has none) */
+function focusThread(thread: HTMLElement | null, composer: boolean) {
+  if (!thread) return;
+  const field = composer ? thread.querySelector<HTMLElement>('textarea:not([disabled]), input:not([disabled]):not([type="hidden"])') : null;
+  (field ?? thread).focus({ preventScroll: true });
+}
+
+function Row({
+  row,
+  roles,
+  active,
+  now,
+  tabStop,
+  onPick,
+  onFocus,
+}: {
+  row: Conversation;
+  roles: OfficeRole[];
+  active: boolean;
+  now: number;
+  /** the list's one tab stop (roving tabindex) */
+  tabStop: boolean;
+  onPick: () => void;
+  onFocus: () => void;
+}) {
   const badge = formatUnread(row.unread);
   const t = row.lastAt ? Date.parse(row.lastAt) : NaN;
   return (
     <li>
-      <button className={`office-conv-row${active ? ' active' : ''}`} aria-current={active ? 'true' : undefined} onClick={onPick}>
+      <button
+        className={`office-conv-row${active ? ' active' : ''}`}
+        aria-current={active ? 'true' : undefined}
+        data-conv={row.key}
+        tabIndex={tabStop ? 0 : -1}
+        onClick={onPick}
+        onFocus={onFocus}
+      >
         <RoleAvatars roleIds={row.roleIds} roles={roles} fallback={FALLBACK_GLYPH[row.kind]} />
         <span className="office-conv-main">
           <span className="office-conv-top">
@@ -137,8 +189,8 @@ function Row({ row, roles, active, now, onPick }: { row: Conversation; roles: Of
 }
 
 /**
- * The phone has no conversation list yet (three sheets), so nothing there
- * wrote the fresh-device baseline: this does, once — it fetches the three
+ * The phone's list is in a sheet that mounts only when opened, so until then
+ * nothing writes the fresh-device baseline: this does, once — it fetches the three
  * sources only while the device has none, then unmounts its loader.
  */
 export function OfficeReadBaseline({ office, roles }: { office: Office; roles: OfficeRole[] }) {
@@ -159,7 +211,18 @@ function BaselineLoader({ office, roles }: { office: Office; roles: OfficeRole[]
   return null;
 }
 
-export function OfficeConversations({ office, roles, onOpenTask }: { office: Office; roles: OfficeRole[]; onOpenTask: (id: string) => void }) {
+export function OfficeConversations({
+  office,
+  roles,
+  onOpenTask,
+  phone,
+}: {
+  office: Office;
+  roles: OfficeRole[];
+  onOpenTask: (id: string) => void;
+  /** a phone: render as a tall Sheet with list → thread push navigation; `onClose` closes it */
+  phone?: { onClose: () => void };
+}) {
   const now = useNow();
   const chats = useOfficeChats(office.id);
   const channel = useChannel(office.id);
@@ -167,6 +230,16 @@ export function OfficeConversations({ office, roles, onOpenTask }: { office: Off
   const read = useReadMap();
   const [picked, setPicked] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  /** the row that holds the list's tab stop (roving tabindex) */
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  /** which way the phone view last moved — the slide it plays ('none' = Reduce Motion or first paint) */
+  const [motion, setMotion] = useState<'push' | 'pop' | 'none'>('none');
+  const listRef = useRef<HTMLUListElement | null>(null);
+  const threadRef = useRef<HTMLDivElement | null>(null);
+  /** the phone list's scroll offset when a thread was pushed over it */
+  const listScroll = useRef(0);
+  /** after a pick, move focus into the thread once it is rendered; after a pop, back to this row */
+  const focusNext = useRef<{ to: 'thread' } | { to: 'row'; key: string } | null>(null);
 
   const rows = useMemo(
     () =>
@@ -191,11 +264,96 @@ export function OfficeConversations({ office, roles, onOpenTask }: { office: Off
   // a default pick would clear an unread count nobody looked at.
   const selected = picked === NEW_HUDDLE || picked === null ? null : (shown.find((r) => r.key === picked) ?? null);
 
+  /** open a conversation (or the huddle form): the phone pushes it over the list */
+  const open = useCallback(
+    (key: string) => {
+      if (phone && picked === null) {
+        listScroll.current = scrollerOf(listRef.current)?.scrollTop ?? 0;
+        setMotion(reducedMotion() ? 'none' : 'push');
+      }
+      if (key !== NEW_HUDDLE) setFocusKey(key);
+      focusNext.current = { to: 'thread' };
+      setPicked(key);
+    },
+    [phone, picked],
+  );
+
+  /** the phone's Back: pop to the list, where it was scrolled, focus on the row left */
+  const back = useCallback(() => {
+    const key = picked;
+    setMotion(reducedMotion() ? 'none' : 'pop');
+    setPicked(null);
+    focusNext.current = key && key !== NEW_HUDDLE ? { to: 'row', key } : null;
+  }, [picked]);
+
+  // Focus and scroll after the view changed (before paint, so the restored
+  // list never flashes at the top).
+  useLayoutEffect(() => {
+    const next = focusNext.current;
+    if (phone && picked === null) {
+      const s = scrollerOf(listRef.current);
+      if (s) s.scrollTop = listScroll.current;
+    } else if (phone && picked === NEW_HUDDLE && next?.to === 'thread') {
+      // the open-a-huddle form starts at its top. Never a thread: the chat, the
+      // channel and a huddle pin themselves to their end (useThreadScroll) in
+      // their OWN layout effects, which run before this parent's — a reset here
+      // would undo that and strand them at the oldest message.
+      const s = scrollerOf(threadRef.current);
+      if (s) s.scrollTop = 0;
+    }
+    if (!next) return;
+    if (next.to === 'row') {
+      focusNext.current = null;
+      listRef.current?.querySelector<HTMLElement>(`[data-conv="${CSS.escape(next.key)}"]`)?.focus({ preventScroll: !!phone });
+      return;
+    }
+    // a thread's composer mounts with its transcript: wait for it a frame
+    const raf = requestAnimationFrame(() => {
+      if (focusNext.current !== next) return;
+      focusNext.current = null;
+      // on a phone the composer is not focused: that would raise the keyboard unasked
+      focusThread(threadRef.current, !phone);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [picked, phone]);
+
+  /** Up/Down/Home/End over the rows (roving tabindex); Enter/Space are the button's own */
+  const onListKey = (e: ReactKeyboardEvent<HTMLUListElement>) => {
+    const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End'];
+    if (!keys.includes(e.key) || e.altKey || e.metaKey || e.ctrlKey) return;
+    const rowsEls = [...(listRef.current?.querySelectorAll<HTMLElement>('.office-conv-row') ?? [])];
+    if (rowsEls.length === 0) return;
+    e.preventDefault();
+    const at = rowsEls.indexOf(document.activeElement as HTMLElement);
+    const i =
+      e.key === 'Home' ? 0 : e.key === 'End' ? rowsEls.length - 1 : e.key === 'ArrowDown' ? Math.min(rowsEls.length - 1, at + 1) : Math.max(0, at < 0 ? 0 : at - 1);
+    rowsEls[i].focus();
+    rowsEls[i].scrollIntoView({ block: 'nearest' });
+  };
+
+  /** Escape in a thread: the phone pops to the list, the desktop hands focus back to the row */
+  const onThreadKey = (e: ReactKeyboardEvent<HTMLElement>) => {
+    // the composer's @mention list closes first (it prevents the default)
+    if (e.key !== 'Escape' || e.isDefaultPrevented() || picked === null) return;
+    // also keeps the Sheet's own Escape from closing the whole stack
+    e.preventDefault();
+    if (phone) {
+      back();
+      return;
+    }
+    const key = picked === NEW_HUDDLE ? (focusKey ?? shown[0]?.key) : picked;
+    const row = key ? listRef.current?.querySelector<HTMLElement>(`[data-conv="${CSS.escape(key)}"]`) : null;
+    (row ?? listRef.current?.querySelector<HTMLElement>('.office-conv-row'))?.focus();
+  };
+
+  // the tab stop: the focused/last-open row while it exists, else the open one, else the first
+  const tabKey = shown.some((r) => r.key === focusKey) ? focusKey : (selected?.key ?? shown[0]?.key ?? null);
+
   const create = async () => {
     setCreating(true);
     try {
       const c = await api.createOfficeChat(office.id);
-      setPicked(conversationKey('chat', c.id));
+      open(conversationKey('chat', c.id));
     } catch (e) {
       toastError(e, 'Could not open a chat');
     } finally {
@@ -216,9 +374,10 @@ export function OfficeConversations({ office, roles, onOpenTask }: { office: Off
           roles={roles}
           onOpened={() => {
             huddles.reload();
-            setPicked(null);
+            if (phone) back();
+            else setPicked(null);
           }}
-          onCancel={() => setPicked(null)}
+          onCancel={() => (phone ? back() : setPicked(null))}
         />
       );
     }
@@ -231,13 +390,13 @@ export function OfficeConversations({ office, roles, onOpenTask }: { office: Off
     }
     if (selected.kind === 'channel') {
       // the thread marks itself read at its end (useThreadScroll), like the huddle's
-      return <OfficeChannel office={office} roles={roles} inSheet={false} headless onOpenTask={onOpenTask} source={channel} />;
+      return <OfficeChannel office={office} roles={roles} inSheet={!!phone} headless onOpenTask={onOpenTask} source={channel} />;
     }
     if (selected.kind === 'chat') {
       const c = chats.list?.find((x) => x.id === selected.id);
       if (!c) return null;
       return (
-        <div className="office-chat">
+        <div className={`office-chat${phone ? ' in-sheet' : ''}`}>
           <div className="office-chat-head">
             <span className="office-hint muted">
               @mention a role to ask them; no mention goes to the Director. Read-only — roles answer, they do not act.
@@ -249,41 +408,101 @@ export function OfficeConversations({ office, roles, onOpenTask }: { office: Off
     }
     const h = huddles.huddles?.find((x) => x.id === selected.id);
     if (!h) return null;
-    return <HuddleThread key={h.id} office={office} huddle={h} roles={roles} now={now} inSheet={false} onOpenTask={onOpenTask} onChanged={huddles.reload} />;
+    return <HuddleThread key={h.id} office={office} huddle={h} roles={roles} now={now} inSheet={!!phone} onOpenTask={onOpenTask} onChanged={huddles.reload} />;
   };
 
   const errors = [chats.error, channel.error, huddles.error].filter(Boolean);
+  const actions = (
+    <span className="office-conv-actions">
+      <button className="btn ghost" disabled={creating} onClick={() => void create()}>
+        New chat
+      </button>
+      <button className={`btn ghost${picked === NEW_HUDDLE ? ' active' : ''}`} onClick={() => open(NEW_HUDDLE)}>
+        Open a huddle
+      </button>
+    </span>
+  );
+  const threadHead = selected && picked !== NEW_HUDDLE && (
+    <>
+      <RoleAvatars roleIds={selected.roleIds} roles={roles} fallback={FALLBACK_GLYPH[selected.kind]} />
+      <span className="office-conv-title">{selected.title}</span>
+      {selected.detail && <span className="muted office-conv-head-detail">{selected.detail}</span>}
+    </>
+  );
+  const list = (
+    <ul className="office-conv-list" aria-label="Office conversations" ref={listRef} onKeyDown={onListKey}>
+      {shown.map((r) => (
+        <Row
+          key={r.key}
+          row={r}
+          roles={roles}
+          active={picked !== NEW_HUDDLE && selected?.key === r.key}
+          now={now}
+          tabStop={r.key === tabKey}
+          onPick={() => open(r.key)}
+          onFocus={() => setFocusKey(r.key)}
+        />
+      ))}
+    </ul>
+  );
+  const threadLabel = picked === NEW_HUDDLE ? 'Open a huddle' : (selected?.title ?? 'Conversation');
+
+  if (phone) {
+    const pushed = picked !== null;
+    return (
+      <Sheet
+        label="Office conversations"
+        tall
+        disableDrag
+        onClose={phone.onClose}
+        head={
+          <div className="office-conv-phone-head" onKeyDown={onThreadKey}>
+            {pushed ? (
+              <>
+                <button className="btn ghost office-conv-back" onClick={back} aria-label="Back to the conversations">
+                  ‹ Chats
+                </button>
+                {threadHead || <span className="office-conv-title">{threadLabel}</span>}
+              </>
+            ) : (
+              <>
+                <span className="sheet-title office-conv-phone-title">
+                  Chats <span className="muted">{rows.length}</span>
+                </span>
+                {actions}
+              </>
+            )}
+          </div>
+        }
+      >
+        <div className={`office-conv phone motion-${motion}`}>
+          {errors.length > 0 && <div className="warn-text office-pad">{errors.join(' · ')}</div>}
+          {pushed ? (
+            <div key={picked} className="office-conv-thread office-conv-pane" ref={threadRef} tabIndex={-1} aria-label={threadLabel} onKeyDown={onThreadKey}>
+              {thread()}
+            </div>
+          ) : (
+            <div className="office-conv-pane">{list}</div>
+          )}
+        </div>
+      </Sheet>
+    );
+  }
+
   return (
     <div className="office-conv">
       <div className="office-section-title office-conv-title-bar">
         <span>
           Conversations <span className="muted">{rows.length}</span>
         </span>
-        <span className="office-conv-actions">
-          <button className="btn ghost" disabled={creating} onClick={() => void create()}>
-            New chat
-          </button>
-          <button className={`btn ghost${picked === NEW_HUDDLE ? ' active' : ''}`} onClick={() => setPicked(NEW_HUDDLE)}>
-            Open a huddle
-          </button>
-        </span>
+        {actions}
       </div>
       {errors.length > 0 && <div className="warn-text office-pad">{errors.join(' · ')}</div>}
       <div className="office-conv-body">
-        <ul className="office-conv-list" aria-label="Office conversations">
-          {shown.map((r) => (
-            <Row key={r.key} row={r} roles={roles} active={picked !== NEW_HUDDLE && selected?.key === r.key} now={now} onPick={() => setPicked(r.key)} />
-          ))}
-        </ul>
-        <div className="office-conv-thread">
+        {list}
+        <div className="office-conv-thread" ref={threadRef} tabIndex={-1} aria-label={threadLabel} onKeyDown={onThreadKey}>
           {/* a huddle's thread carries its own, fuller header (subject, participants, turns, status, decision, Close) */}
-          {selected && picked !== NEW_HUDDLE && selected.kind !== 'huddle' && (
-            <div className="office-conv-thread-head">
-              <RoleAvatars roleIds={selected.roleIds} roles={roles} fallback={FALLBACK_GLYPH[selected.kind]} />
-              <span className="office-conv-title">{selected.title}</span>
-              {selected.detail && <span className="muted">{selected.detail}</span>}
-            </div>
-          )}
+          {threadHead && selected?.kind !== 'huddle' && <div className="office-conv-thread-head">{threadHead}</div>}
           {thread()}
         </div>
       </div>

@@ -1037,6 +1037,9 @@ The /office page's **Office** view (docs/office.md § The view) on a phone:
   spend, the last brief, the shift terminal link, Wake now and Edit role.
   Opening the brief, the editor or the terminal closes the card first, so two
   sheets never stack.
+- **Chats** in the office bar opens the conversation list as one tall sheet;
+  a conversation is pushed over the list inside it (‹ Chats to go back, the
+  list keeps its scroll) — docs/office.md § Conversation list › Navigation.
 - Ambient life and the stepped animations stop whenever the page is calm. That
   covers a backgrounded PWA, a minute without touch, and Reduce Motion.
 

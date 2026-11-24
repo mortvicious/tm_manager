@@ -14948,6 +14948,105 @@ button.explain-tap:active {
   height: 1px;
 }
 
+/* Keyboard (docs/office.md § Conversation list › Navigation): the thread box
+   takes focus when a conversation without a composer opens */
+.office-conv-thread:focus {
+  outline: none;
+}
+
+.office-conv-thread:focus-visible {
+  outline: 2px solid var(--tm-accent);
+  outline-offset: -2px;
+}
+
+/* The phone: one tall sheet, the list and a pushed thread take turns in its
+   one scroller (no nested scroller — docs/mobile.md § Sheets) */
+.office-conv-phone-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  min-height: 44px;
+  min-width: 0;
+  padding-bottom: var(--tm-space-2);
+  border-bottom: 1px solid var(--tm-border);
+}
+
+.office-conv-phone-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.office-conv-phone-head .office-conv-head-detail {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tm-text-xs);
+}
+
+.btn.office-conv-back {
+  flex: none;
+  min-height: 44px;
+  padding: 0 var(--tm-space-2);
+  margin-left: calc(-1 * var(--tm-space-2));
+  font-weight: 600;
+  color: var(--tm-accent);
+}
+
+.office-conv.phone {
+  overflow-x: clip;
+}
+
+.office-conv.phone .office-conv-list {
+  max-height: none;
+  overflow: visible;
+  border-right: 0;
+  padding: 0;
+}
+
+.office-conv.phone .office-conv-row {
+  min-height: 56px;
+  padding: var(--tm-space-2) 0;
+  align-items: center;
+}
+
+.office-conv.phone .office-conv-thread {
+  max-height: none;
+  overflow: visible;
+}
+
+/* the push: a thread slides in from the right, the list back in from the left.
+   Played once per move (not infinite, so not in the calm lists) and dropped
+   under Reduce Motion, where the view swaps at once. */
+.office-conv.phone.motion-push .office-conv-pane {
+  animation: office-conv-push var(--tm-sheet-dur) var(--tm-sheet-ease);
+}
+
+.office-conv.phone.motion-pop .office-conv-pane {
+  animation: office-conv-pop var(--tm-sheet-dur) var(--tm-sheet-ease);
+}
+
+@keyframes office-conv-push {
+  from {
+    transform: translateX(32%);
+    opacity: 0;
+  }
+}
+
+@keyframes office-conv-pop {
+  from {
+    transform: translateX(-16%);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .office-conv.phone .office-conv-pane {
+    animation: none !important;
+  }
+}
+
 /* The office group chat (docs/office.md § Group chat) — bubbles reuse .chat-msg/.chat-body */
 .office-chat-head {
   display: flex;
@@ -15244,8 +15343,13 @@ button.explain-tap:active {
   background: var(--tm-bg-raised);
 }
 
-/* in a phone Sheet the sheet's scroller scrolls, so the composer sticks to its end */
-.office-chat.in-sheet .thread-compose {
+/* in a phone Sheet the sheet's scroller scrolls, so the composer sticks to its end —
+   above the on-screen keyboard: react-modal-sheet pads its scroller by the
+   keyboard's height (docs/mobile.md § Sheets), and a sticky edge is inset by the
+   scroller's padding (measured in WebKit and Chromium), so `bottom: 0` already
+   sits on the keys — adding the inset again would float it a keyboard higher */
+.office-chat.in-sheet .thread-compose,
+.office-conv.phone .thread-compose {
   position: sticky;
   bottom: 0;
   z-index: 1;

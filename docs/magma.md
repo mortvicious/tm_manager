@@ -1605,3 +1605,16 @@ Visible brand only (Q2), so only text a human reads changed:
   is the styling card.
 - Not done here: the nav's "Office group chat · unread" counter (Q7) — it
   needs these chats in the store; the list's data is per-office local state.
+
+## Build notes (messenger card 3: phone push navigation, keyboard and focus, 2026-11-24)
+
+- The phone's Chat, Channel and Huddles sheets are now ONE **Chats** sheet
+  holding the conversation list; a conversation is pushed over the list in
+  the same sheet (head **‹ Chats**), Back/Escape pops with the list's scroll
+  kept. The Office's drill-in pattern is the Sheet, so that is what it uses
+  (docs/office.md § Conversation list › Navigation).
+- The composer stays on the keyboard through react-modal-sheet's own
+  scroller padding (sticky `bottom: 0` is inset by it), not a second
+  `visualViewport` listener.
+- Desktop: roving tabindex over the rows, focus to the composer on open,
+  Escape back to the row. Reduce Motion drops the push slide.
