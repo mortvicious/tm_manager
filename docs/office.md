@@ -2387,12 +2387,35 @@ routing shift gets its FULL text. A forward's copy is reviewed on its own.
 `GET /api/offices/:id/messages?limit=` (`officeChannel`, default 200, ≤ 500):
 the newest messages of the last 30 days, oldest first, with `routes` (message id
 → route record), `passes` and `routingDueAt`. /office shows it as the
-**Channel** panel (`components/OfficeChannel.tsx`; a phone opens it from the
-bar as a `<Sheet>`): each message with writer → addressee, kind, the
-`untrusted` chip, its route (task link, proposal, huddle, forward, note) or why
-it waits (due time, `shown N×`, or "no longer wakes the Director"), Mark
-reviewed (two-press) on a tainted one, and the stakeholder composer. It re-reads
-on `office-message.created|updated` for the office.
+**Channel** (`components/OfficeChannel.tsx`; on a desktop a row of the
+conversation list, on a phone a `<Sheet>` from the bar). It re-reads on
+`office-message.created|updated` for the office.
+
+### The thread
+
+The channel is a messenger thread like the group chat (§ Group chat › The
+thread, docs/magma.md § 13), over the same pieces (`components/OfficeThread.tsx`:
+`useThreadScroll`, `DayPill`, `TaskLinks`, `JumpPill`; the pure
+`buildThreadOf` + `channelEntryView` in `src/officeThread.ts`):
+
+- **Bubbles by writer.** A role's messages sit on the left under its avatar
+  and `name · title`, grouped while the same role writes within 5 minutes;
+  the stakeholder's (`fromRoleId` null) sit on the right as `You`. Day pills
+  separate local days.
+- **A bubble** carries its head (kind chip, `→ addressee`, `untrusted`,
+  `reviewed`), the subject in bold and the body as plain text (monospace when
+  untrusted). Task-link cards come from ids in the text and, first, from the
+  task the route filed (`route.taskId`, else `routedTaskId`) — the card shows
+  the task row, never message text.
+- **Under the bubble**: the route line (task link, proposal, huddle, forward,
+  note) or why it waits (due time, `shown N×`, or "no longer wakes the
+  Director"), and a two-press **Mark reviewed** on a tainted message.
+- **The composer** is the stakeholder's form as before (To, Kind, Subject,
+  body; same `postOfficeMessage`), docked under the thread; a send pins the
+  thread to its end. The jump pill floats above it.
+- **Read**: reaching the end marks `channel:<officeId>` read with
+  `channelReadMark` (the same marker the list row computes). No working row:
+  the channel has no live-turn signal.
 
 ## Huddles
 
@@ -2574,19 +2597,37 @@ open, and the usual state after it closes.
 
 `office-huddle.updated` (`{huddle}`) is broadcast on every change.
 
-/office shows a **Huddles** panel (`components/OfficeHuddles.tsx`). A phone
-opens it from the bar as a `<Sheet>`. Each huddle shows:
-
-- its subject (a task opens the task panel), status, `turn n/max`, an
-  `untrusted` chip, the participants and who is next;
-- the decision ("sent to the Director to route");
-- the transcript, folded;
-- a two-press **Close**.
+/office shows huddles in the conversation list on a desktop and as a
+**Huddles** `<Sheet>` from the bar on a phone (`components/OfficeHuddles.tsx`).
+The sheet is a list — subject, roles' avatars, last line, relative time,
+unread count, a static working dot, `turn n/max · status` — with **Open a
+huddle** in its header; a row opens the huddle's thread and ← returns.
 
 The open form has a subject picker (the workspace's open tasks, or an id for a
 proposal, signal or message), 2–3 role checkboxes, the turn cap and an optional
-question. It is disabled while the office is off. The shift log names a turn
-`huddle turn`.
+question; Cancel closes it. It is disabled while the office is off. The shift
+log names a turn `huddle turn`.
+
+### The thread
+
+A huddle opens as a messenger thread (`HuddleThread`, over the same pieces
+as the channel; `huddleEntryView` in `src/officeThread.ts`):
+
+- **The header**: the subject (a task opens the task panel), the status chip,
+  `turn n/max`, `untrusted`, the participants (avatars + names), who opened
+  it and when, the decision ("sent to the Director to route"), and a
+  two-press **Close** on an open huddle. In the conversation list it replaces
+  the list's generic thread header.
+- **The transcript as bubbles**: the opening question (no role) is the
+  stakeholder's, on the right; each turn is its role's bubble on the left,
+  headed `Turn n` (`untrusted` when a tainted turn wrote it); a server note on
+  a turn that said nothing is a centred dashed line, never a bubble.
+- **Working**: while the huddle is open and `huddleNextRoleId(h)` names a
+  role, a static row at the end reads "<role> is taking turn n…".
+- **No composer**: humans never post into a huddle. The jump pill sits in a
+  `.thread-foot`.
+- **Read**: reaching the end marks `huddle:<id>` read with `huddleReadMark`.
+  It updates live from `office-huddle.updated` (the list re-reads).
 
 ## Group chat
 
@@ -2816,9 +2857,10 @@ on the shared minute clock), the unread count (hidden at 0, `99+` above 99)
 and a static **working** dot. Under it: `N unrouted` for the channel, `turn
 n/max · status` for a huddle. Nothing is open until a row is picked — opening
 a thread marks it read, so a default pick would clear a count nobody looked
-at. The threads are the existing views with their composers (`ChatPane`,
-`OfficeChannel` with the list's own channel data, `HuddleRow` opened);
-**New chat** and **Open a huddle** sit in the panel's title bar.
+at. The threads are the messenger views (`ChatPane`, `OfficeChannel` with
+the list's own channel data, `HuddleThread`; § Channel › The thread,
+§ Huddles › The thread); **New chat** and **Open a huddle** sit in the panel's
+title bar.
 
 **Working**: a group chat while `chat.status === 'thinking'`; a huddle while
 `open` with a turn owed (`huddleNextRoleId`). The channel never shows it: its
@@ -2858,13 +2900,19 @@ the previous count; the `chat.message` after it moves the counter.
 `chat:<id>`, `huddle:<id>`. A group chat's unread is `messageCount − count`
 (≥ 0); the channel's and a huddle's are the messages with `createdAt` (entry
 `at`) later than `at`. Every message counts, your own from another tab or the
-phone included. The marker only moves forward (`markRead`): the thread's end
-carries a `ReadSentinel` that marks the conversation read while it is on
+phone included. The marker only moves forward (`markRead`): the group chat's end
+carries a `ReadSentinel` (the channel and huddle threads mark themselves at
+their end through `useThreadScroll`, with `channelReadMark`/`huddleReadMark`) that marks the conversation read while it is on
 screen (inside the window and every scrolling ancestor) in a visible tab — on
 entering view, on the tab turning visible, and a frame after each new
-message. A device that never wrote the key starts with everything it can see
-marked read (`writeBaseline`, once all three sources loaded), so the first
-visit is not a wall of old counts. Other tabs follow through the `storage`
+message. A device starts with everything it can see marked read (`writeBaseline`,
+once all three sources loaded — the desktop list, or on a phone the
+`OfficeReadBaseline` loader /office mounts until it is done), so the first
+visit is not a wall of old counts. The baseline is a flag of its own
+(`tm.office.read.baseline`) and fills only keys with no marker: a thread can
+`markRead` before it (a phone sheet opened first), and until the flag is set
+no unread count is shown (`useReadMap` is null), so the conversations that
+thread did not touch are never counted all-unread. Other tabs follow through the `storage`
 event, this tab through `onReadChange`; at most 300 markers are kept, the
 stalest dropped. (docs/magma.md § 13 sketched a `tm.chat.read` time-only model
 for the repo Chat page; office group chats count instead, per the card.)

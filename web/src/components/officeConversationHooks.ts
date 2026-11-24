@@ -7,7 +7,7 @@
 import { useEffect, useState } from 'react';
 import type { Chat } from '@tm/shared';
 import { api } from '../api.ts';
-import { OFFICE_READ_KEY, applyChatMessage, loadReadMap, onReadChange, upsertChat, type ReadMap } from '../officeConversations.ts';
+import { OFFICE_READ_BASELINE_KEY, OFFICE_READ_KEY, applyChatMessage, loadBaselinedReadMap, onReadChange, upsertChat, type ReadMap } from '../officeConversations.ts';
 import { onServerEvent } from '../state.tsx';
 
 /** This office's chats, newest first, kept live from the chat frames. */
@@ -48,14 +48,14 @@ export function useOfficeChats(officeId: string): { list: Chat[] | null; error: 
   return { list, error };
 }
 
-/** The device's read markers; null until this device first wrote them (see `writeBaseline`). */
+/** The device's read markers; null until this device's baseline is written (see `writeBaseline`). */
 export function useReadMap(): ReadMap | null {
-  const [map, setMap] = useState<ReadMap | null>(() => loadReadMap());
+  const [map, setMap] = useState<ReadMap | null>(() => loadBaselinedReadMap());
   useEffect(() => {
-    const reload = () => setMap(loadReadMap());
+    const reload = () => setMap(loadBaselinedReadMap());
     const offLocal = onReadChange(reload);
     const onStorage = (e: StorageEvent) => {
-      if (e.key === OFFICE_READ_KEY || e.key === null) reload();
+      if (e.key === OFFICE_READ_KEY || e.key === OFFICE_READ_BASELINE_KEY || e.key === null) reload();
     };
     window.addEventListener('storage', onStorage);
     return () => {

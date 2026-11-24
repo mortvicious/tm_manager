@@ -2,12 +2,13 @@
 // of the office's channel, group chats and huddles, newest activity first —
 // avatars, title, last-message preview, relative time, unread count and a
 // working marker — beside the selected conversation's thread. The threads
-// are the existing views (ChatPane, OfficeChannel, HuddleRow) with their own
-// composers; the messenger thread, the phone push navigation and per-design
-// styling are later cards (docs/magma.md § 13). Everything here is computed
+// are the messenger views (ChatPane, OfficeChannel, HuddleThread over
+// OfficeThread.tsx, docs/magma.md § 13); the phone push navigation and
+// per-design styling are later cards. Everything here is computed
 // by the pure `buildConversations` over data the Office already follows; the
 // read markers are per device (`tm.office.read`) and advance when the
-// thread's end is on screen in a visible tab (`ReadSentinel` → `markRead`).
+// thread's end is on screen in a visible tab (the chat: `ReadSentinel` →
+// `markRead`; the channel and huddle threads mark themselves at their end).
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Office, OfficeRole } from '@tm/shared';
 import { api } from '../api.ts';
@@ -23,7 +24,7 @@ import {
 import { toastError } from '../toast.ts';
 import { ChatPane } from './OfficeChat.tsx';
 import { OfficeChannel, useChannel } from './OfficeChannel.tsx';
-import { HuddleRow, OpenForm, useHuddles } from './OfficeHuddles.tsx';
+import { HuddleThread, OpenForm, useHuddles } from './OfficeHuddles.tsx';
 import { useOfficeChats, useReadMap } from './officeConversationHooks.ts';
 import { RoleAvatars } from './RoleChip.tsx';
 import { fmtAgo, useNow } from './TimeAgo.tsx';
@@ -135,6 +136,29 @@ function Row({ row, roles, active, now, onPick }: { row: Conversation; roles: Of
   );
 }
 
+/**
+ * The phone has no conversation list yet (three sheets), so nothing there
+ * wrote the fresh-device baseline: this does, once — it fetches the three
+ * sources only while the device has none, then unmounts its loader.
+ */
+export function OfficeReadBaseline({ office, roles }: { office: Office; roles: OfficeRole[] }) {
+  const read = useReadMap();
+  return read === null ? <BaselineLoader office={office} roles={roles} /> : null;
+}
+
+function BaselineLoader({ office, roles }: { office: Office; roles: OfficeRole[] }) {
+  const chats = useOfficeChats(office.id);
+  const channel = useChannel(office.id);
+  const huddles = useHuddles(office.id);
+  useEffect(() => {
+    if (chats.list === null || channel.channel === null || huddles.huddles === null) return;
+    writeBaseline(
+      buildConversations({ officeId: office.id, chats: chats.list, channel: channel.channel, huddles: huddles.huddles, roles, read: {} }),
+    );
+  }, [office.id, chats.list, channel.channel, huddles.huddles, roles]);
+  return null;
+}
+
 export function OfficeConversations({ office, roles, onOpenTask }: { office: Office; roles: OfficeRole[]; onOpenTask: (id: string) => void }) {
   const now = useNow();
   const chats = useOfficeChats(office.id);
@@ -194,6 +218,7 @@ export function OfficeConversations({ office, roles, onOpenTask }: { office: Off
             huddles.reload();
             setPicked(null);
           }}
+          onCancel={() => setPicked(null)}
         />
       );
     }
@@ -205,7 +230,8 @@ export function OfficeConversations({ office, roles, onOpenTask }: { office: Off
       );
     }
     if (selected.kind === 'channel') {
-      return <OfficeChannel office={office} roles={roles} inSheet onOpenTask={onOpenTask} source={channel} endSlot={sentinel(selected)} />;
+      // the thread marks itself read at its end (useThreadScroll), like the huddle's
+      return <OfficeChannel office={office} roles={roles} inSheet={false} headless onOpenTask={onOpenTask} source={channel} />;
     }
     if (selected.kind === 'chat') {
       const c = chats.list?.find((x) => x.id === selected.id);
@@ -223,12 +249,7 @@ export function OfficeConversations({ office, roles, onOpenTask }: { office: Off
     }
     const h = huddles.huddles?.find((x) => x.id === selected.id);
     if (!h) return null;
-    return (
-      <div className="office-huddles">
-        <HuddleRow key={h.id} office={office} huddle={h} roles={roles} now={now} onOpenTask={onOpenTask} onChanged={huddles.reload} defaultOpen />
-        {sentinel(selected)}
-      </div>
-    );
+    return <HuddleThread key={h.id} office={office} huddle={h} roles={roles} now={now} inSheet={false} onOpenTask={onOpenTask} onChanged={huddles.reload} />;
   };
 
   const errors = [chats.error, channel.error, huddles.error].filter(Boolean);
@@ -255,7 +276,8 @@ export function OfficeConversations({ office, roles, onOpenTask }: { office: Off
           ))}
         </ul>
         <div className="office-conv-thread">
-          {selected && picked !== NEW_HUDDLE && (
+          {/* a huddle's thread carries its own, fuller header (subject, participants, turns, status, decision, Close) */}
+          {selected && picked !== NEW_HUDDLE && selected.kind !== 'huddle' && (
             <div className="office-conv-thread-head">
               <RoleAvatars roleIds={selected.roleIds} roles={roles} fallback={FALLBACK_GLYPH[selected.kind]} />
               <span className="office-conv-title">{selected.title}</span>

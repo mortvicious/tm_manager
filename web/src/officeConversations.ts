@@ -29,6 +29,12 @@ import {
 } from '@tm/shared';
 
 export const OFFICE_READ_KEY = 'tm.office.read';
+/**
+ * Set once this device's baseline is written (`writeBaseline`). A store that a
+ * thread's `markRead` created first (the phone opens one sheet before any list
+ * loaded) holds only that key; until the baseline lands, unread is not shown.
+ */
+export const OFFICE_READ_BASELINE_KEY = 'tm.office.read.baseline';
 /** At most this many markers are kept; the stalest (by `at`) go first. */
 export const OFFICE_READ_MAX = 300;
 /** An unread count above this reads `99+`. */
@@ -162,6 +168,21 @@ export function upsertChat(list: readonly Chat[], incoming: Chat): Chat[] {
   return next;
 }
 
+// ---- read marks ----
+
+/** The channel's read mark: its message count and newest message (the thread and the list agree on it). */
+export function channelReadMark(channel: Pick<OfficeChannelResponse, 'messages'> | null): ReadMarker {
+  const msgs = channel?.messages ?? [];
+  const last = msgs.length ? msgs[msgs.length - 1] : null;
+  return { count: msgs.length, at: last?.createdAt ?? '' };
+}
+
+/** A huddle's read mark: its transcript length and newest line. */
+export function huddleReadMark(h: Pick<OfficeHuddleView, 'entries'>): ReadMarker {
+  const last = h.entries.length ? h.entries[h.entries.length - 1] : null;
+  return { count: h.entries.length, at: last?.at ?? '' };
+}
+
 // ---- rows ----
 
 function chatRow(c: Chat, roles: readonly RoleLike[], read: ReadMap): Conversation {
@@ -225,7 +246,7 @@ function channelRow(officeId: string, channel: OfficeChannelResponse | null, rol
     // working marker; its pending routing shows as "N unrouted".
     working: false,
     detail: unrouted ? `${unrouted} unrouted` : null,
-    readMark: { count: msgs.length, at: last?.createdAt ?? '' },
+    readMark: channelReadMark(channel),
   };
 }
 
@@ -254,7 +275,7 @@ function huddleRow(h: OfficeHuddleView, roles: readonly RoleLike[], read: ReadMa
     ),
     working: h.status === 'open' && huddleNextRoleId(h) !== null,
     detail: `turn ${h.turns}/${h.maxTurns} · ${h.status}`,
-    readMark: { count: h.entries.length, at: last?.at ?? '' },
+    readMark: huddleReadMark(h),
   };
 }
 
@@ -381,8 +402,33 @@ export function markRead(key: string, marker: ReadMarker, storage: ReadStorage |
   save({ ...map, [key]: next }, storage);
 }
 
-/** Write the fresh-device baseline (only when the key was never written). */
+/**
+ * The read markers as unread counts may use them: null until this device's
+ * baseline is written, so a conversation with no marker is never counted as
+ * all-unread just because another thread marked itself read first.
+ */
+export function loadBaselinedReadMap(storage: ReadStorage | null = defaultStorage()): ReadMap | null {
+  try {
+    if (storage?.getItem(OFFICE_READ_BASELINE_KEY) == null) return null;
+  } catch {
+    return null;
+  }
+  return loadReadMap(storage) ?? {};
+}
+
+/**
+ * Write the fresh-device baseline, once per device: every row without a
+ * marker gets its current one (a marker a thread already wrote is kept).
+ */
 export function writeBaseline(rows: readonly Conversation[], storage: ReadStorage | null = defaultStorage()): void {
-  if (loadReadMap(storage) !== null) return;
-  save(baselineReadMap(rows), storage);
+  try {
+    if (!storage || storage.getItem(OFFICE_READ_BASELINE_KEY) != null) return;
+    storage.setItem(OFFICE_READ_BASELINE_KEY, '1');
+  } catch {
+    return;
+  }
+  const map = loadReadMap(storage) ?? {};
+  const base = baselineReadMap(rows);
+  for (const k of Object.keys(base)) if (!map[k]) map[k] = base[k];
+  save(map, storage);
 }

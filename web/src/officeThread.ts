@@ -1,8 +1,9 @@
 // The messenger thread's pure layer (docs/magma.md § 13 Messenger chat
 // anatomy, docs/office.md § Group chat › The thread): sender grouping, day
-// separators, task references and the jump pill's count. DOM-free so
+// separators, task references and the jump pill's count — for the group
+// chat, the channel and huddles alike (`buildThreadOf` + the entry views). DOM-free so
 // `npm test` covers it (officeThread.test.ts); OfficeChat.tsx renders it.
-import type { ChatMessage, Task } from '@tm/shared';
+import type { ChatMessage, OfficeHuddleEntry, OfficeMessage, Task } from '@tm/shared';
 
 /** consecutive messages from one sender within this window share a header (§ 13) */
 export const GROUP_WINDOW_MS = 5 * 60 * 1000;
@@ -54,6 +55,74 @@ export function timeLabel(at: Date): string {
   return at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+/** What the generic thread builder needs to know about one entry. */
+export interface ThreadEntryView {
+  id: string;
+  /** ISO instant */
+  at: string;
+  /** grouping key: consecutive entries of one sender within the window share a header */
+  sender: string;
+  /** the stakeholder's own entry (right side) */
+  own: boolean;
+  /** a server line (huddle `server` notes): a centred row, never a bubble, ends any group */
+  system?: boolean;
+}
+
+export type ThreadOfItem<T> =
+  | { kind: 'day'; key: string; label: string }
+  | { kind: 'system'; key: string; entry: T }
+  | {
+      kind: 'group';
+      /** the first entry's id: stable while the group grows */
+      key: string;
+      own: boolean;
+      sender: string;
+      messages: T[];
+    };
+
+/**
+ * The thread as rows, for any entry type (chat messages, channel messages,
+ * huddle lines): a day pill before each local day's first entry, and runs of
+ * one sender within `windowMs` of the PREVIOUS entry (a long conversation
+ * keeps one header as long as nobody pauses for 5 minutes). A day separator
+ * or a system line always ends a group. Input order is kept.
+ */
+export function buildThreadOf<T>(
+  entries: readonly T[],
+  view: (e: T) => ThreadEntryView,
+  now: Date,
+  windowMs: number = GROUP_WINDOW_MS,
+): ThreadOfItem<T>[] {
+  const out: ThreadOfItem<T>[] = [];
+  let day: string | null = null;
+  let group: Extract<ThreadOfItem<T>, { kind: 'group' }> | null = null;
+  let lastAt = 0;
+  let lastSender = '';
+  for (const e of entries) {
+    const v = view(e);
+    const at = new Date(v.at);
+    const k = dayKey(at);
+    if (k !== day) {
+      day = k;
+      out.push({ kind: 'day', key: `day:${k}`, label: dayLabel(at, now) });
+      group = null;
+    }
+    const t = at.getTime();
+    if (v.system) {
+      out.push({ kind: 'system', key: v.id, entry: e });
+      group = null;
+    } else if (group && v.sender === lastSender && t - lastAt <= windowMs && t >= lastAt) {
+      group.messages.push(e);
+    } else {
+      group = { kind: 'group', key: v.id, own: v.own, sender: v.sender, messages: [e] };
+      out.push(group);
+    }
+    lastAt = t;
+    lastSender = v.system ? '' : v.sender;
+  }
+  return out;
+}
+
 export type ThreadItem =
   | { kind: 'day'; key: string; label: string }
   | {
@@ -66,43 +135,32 @@ export type ThreadItem =
       messages: ChatMessage[];
     };
 
-/**
- * The thread as rows: a day pill before each local day's first message, and
- * runs of one sender within `windowMs` of the PREVIOUS message (a long
- * conversation keeps one header as long as nobody pauses for 5 minutes). A
- * day separator always ends a group. Input order is kept — the store holds the
- * transcript in arrival order, which is the server's `createdAt` order.
- */
+/** The group chat's thread: `buildThreadOf` over chat messages, grouped by `senderKey`. */
 export function buildThread(
   messages: readonly ChatMessage[],
   now: Date,
   windowMs: number = GROUP_WINDOW_MS,
 ): ThreadItem[] {
-  const out: ThreadItem[] = [];
-  let day: string | null = null;
-  let group: Extract<ThreadItem, { kind: 'group' }> | null = null;
-  let lastAt = 0;
-  let lastSender = '';
-  for (const m of messages) {
-    const at = new Date(m.createdAt);
-    const k = dayKey(at);
-    if (k !== day) {
-      day = k;
-      out.push({ kind: 'day', key: `day:${k}`, label: dayLabel(at, now) });
-      group = null;
-    }
-    const sender = senderKey(m);
-    const t = at.getTime();
-    if (group && sender === lastSender && t - lastAt <= windowMs && t >= lastAt) {
-      group.messages.push(m);
-    } else {
-      group = { kind: 'group', key: m.id, own: isOwnMessage(m), actor: m.actor, roleId: m.roleId, messages: [m] };
-      out.push(group);
-    }
-    lastAt = t;
-    lastSender = sender;
-  }
-  return out;
+  const items = buildThreadOf(messages, (m) => ({ id: m.id, at: m.createdAt, sender: senderKey(m), own: isOwnMessage(m) }), now, windowMs);
+  return items.map((it) =>
+    it.kind === 'group'
+      ? { kind: 'group', key: it.key, own: it.own, actor: it.messages[0].actor, roleId: it.messages[0].roleId, messages: it.messages }
+      : (it as Extract<ThreadItem, { kind: 'day' }>),
+  );
+}
+
+/** A channel message as a thread entry: the writer is the sender, the stakeholder (no role) is own. */
+export function channelEntryView(m: Pick<OfficeMessage, 'id' | 'createdAt' | 'fromRoleId'>): ThreadEntryView {
+  return { id: m.id, at: m.createdAt, sender: m.fromRoleId ?? 'own', own: m.fromRoleId === null };
+}
+
+/**
+ * A huddle line as a thread entry: a server note is a system row; a line with
+ * no role is the stakeholder's (the opening question); else the role speaking.
+ */
+export function huddleEntryView(e: Pick<OfficeHuddleEntry, 'messageId' | 'at' | 'roleId' | 'kind'>): ThreadEntryView {
+  if (e.kind === 'server') return { id: e.messageId, at: e.at, sender: 'server', own: false, system: true };
+  return { id: e.messageId, at: e.at, sender: e.roleId ?? 'own', own: e.roleId === null };
 }
 
 /**
@@ -112,11 +170,19 @@ export function buildThread(
  * was replaced) counts nothing rather than everything.
  */
 export function countNewSince(messages: readonly ChatMessage[], sinceId: string | null): number {
+  return countNewSinceOf(
+    messages.map((m) => ({ id: m.id, own: isOwnMessage(m) })),
+    sinceId,
+  );
+}
+
+/** `countNewSince` over any entries already reduced to id + own. */
+export function countNewSinceOf(entries: readonly { id: string; own: boolean }[], sinceId: string | null): number {
   if (sinceId === null) return 0;
-  const i = messages.findIndex((m) => m.id === sinceId);
+  const i = entries.findIndex((m) => m.id === sinceId);
   if (i === -1) return 0;
   let n = 0;
-  for (let j = i + 1; j < messages.length; j++) if (!isOwnMessage(messages[j])) n++;
+  for (let j = i + 1; j < entries.length; j++) if (!entries[j].own) n++;
   return n;
 }
 

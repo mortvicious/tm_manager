@@ -1,9 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { ChatMessage } from '@tm/shared';
+import type { ChatMessage, OfficeHuddleEntry } from '@tm/shared';
 import {
   buildThread,
+  buildThreadOf,
+  channelEntryView,
   countNewSince,
+  countNewSinceOf,
+  huddleEntryView,
   dayLabel,
   GROUP_WINDOW_MS,
   isOwnMessage,
@@ -141,4 +145,66 @@ test('resolveTaskRefs keeps known ids and unambiguous id8s only', () => {
     'db6965bc-ea9f-4ef3-bdca-610be2120a87',
   ]);
   assert.deepEqual(resolveTaskRefs({ full: [], short: [] }, tasks), []);
+});
+
+// ---- the channel's and huddles' threads (buildThreadOf + the entry views) ----
+
+function cmsg(id: string, fromRoleId: string | null, createdAt: string) {
+  return { id, fromRoleId, createdAt };
+}
+
+test('channel: writers group, the stakeholder (no role) is own', () => {
+  const items = buildThreadOf(
+    [
+      cmsg('a', 'r-qa', local(2026, 11, 20, 10, 0)),
+      cmsg('b', 'r-qa', local(2026, 11, 20, 10, 2)),
+      cmsg('c', null, local(2026, 11, 20, 10, 3)),
+      cmsg('d', 'r-ux', local(2026, 11, 20, 10, 4)),
+    ],
+    channelEntryView,
+    NOW,
+  );
+  const groups = items.filter((i) => i.kind === 'group');
+  assert.deepEqual(
+    groups.map((g) => (g.kind === 'group' ? [g.key, g.own, g.messages.length] : null)),
+    [
+      ['a', false, 2],
+      ['c', true, 1],
+      ['d', false, 1],
+    ],
+  );
+  assert.equal(items[0].kind, 'day');
+});
+
+function hentry(over: Partial<OfficeHuddleEntry> & { messageId: string; at: string }): OfficeHuddleEntry {
+  return { kind: 'turn', turn: 1, roleId: 'r-qa', text: 't', taintedAt: null, ...over };
+}
+
+test('huddle: the opening question is own, a server note is a system row that ends a group', () => {
+  const at = (mi: number) => local(2026, 11, 20, 11, mi);
+  const items = buildThreadOf(
+    [
+      hentry({ messageId: 'o', kind: 'opening', turn: null, roleId: null, at: at(0) }),
+      hentry({ messageId: 't1', roleId: 'r-qa', at: at(1) }),
+      hentry({ messageId: 's', kind: 'server', turn: 2, roleId: null, at: at(2) }),
+      hentry({ messageId: 't3', roleId: 'r-qa', turn: 3, at: at(3) }),
+    ],
+    huddleEntryView,
+    NOW,
+  );
+  assert.deepEqual(
+    items.map((i) => (i.kind === 'group' ? `g:${i.key}:${i.own}` : i.kind === 'system' ? `s:${i.key}` : 'day')),
+    ['day', 'g:o:true', 'g:t1:false', 's:s', 'g:t3:false'],
+  );
+});
+
+test('countNewSinceOf counts others after the mark', () => {
+  const es = [
+    { id: 'a', own: false },
+    { id: 'b', own: true },
+    { id: 'c', own: false },
+  ];
+  assert.equal(countNewSinceOf(es, 'a'), 1);
+  assert.equal(countNewSinceOf(es, 'zz'), 0);
+  assert.equal(countNewSinceOf(es, null), 0);
 });

@@ -10,7 +10,8 @@
 // (OfficeConversations.tsx, docs/office.md § Conversation list). The thread
 // is a messenger (docs/magma.md § 13): bubbles grouped by sender, day pills,
 // task-link cards, a jump-to-latest pill and a docked composer; its pure
-// layer is src/officeThread.ts, the read marks src/officeConversations.ts.
+// layer is src/officeThread.ts, the shared pieces OfficeThread.tsx (also the
+// channel's and huddles' threads), the read marks src/officeConversations.ts.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   isStandupRole,
@@ -27,24 +28,15 @@ import {
 import { api } from '../api.ts';
 import { useArm } from '../arm.ts';
 import { useClock } from '../clock.ts';
-import { openTaskFromAnywhere } from '../nav.ts';
 import { conversationKey, markRead } from '../officeConversations.ts';
-import {
-  buildThread,
-  countNewSince,
-  dayKey,
-  resolveTaskRefs,
-  taskRefCandidates,
-  timeLabel,
-  type ThreadItem,
-} from '../officeThread.ts';
-import { useApp, useAppSelector } from '../state.tsx';
+import { buildThread, dayKey, isOwnMessage, timeLabel, type ThreadItem } from '../officeThread.ts';
+import { useApp } from '../state.tsx';
 import { useOfficeChats } from './officeConversationHooks.ts';
 import { toastError } from '../toast.ts';
 import { Reply } from '../pages/Chat.tsx';
 import { IconSend, IconStop } from './Icons.tsx';
 import { useIsMobile } from './Layout.tsx';
-import { StatusBadge } from './StatusBadge.tsx';
+import { DayPill, JumpPill, RoleAvatar, TaskLinks, WorkingRow, fullTime, roleDisplayName, sameRole, useThreadScroll } from './OfficeThread.tsx';
 
 function errText(e: unknown): string {
   return (e as Error)?.message || String(e);
@@ -106,197 +98,11 @@ export function OfficeChat({ office, roles, inSheet }: { office: Office; roles: 
 
 // ---- the messenger thread (docs/magma.md § 13, docs/office.md § Group chat › The thread) ----
 
-/** within this many px of the end counts as "at the bottom" */
-const AT_BOTTOM_PX = 24;
-
-function reducedMotion(): boolean {
-  return typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-}
-
-/** the element that scrolls the thread: the log itself, or (in a phone Sheet) the sheet's scroller */
-function scrollParent(el: HTMLElement): HTMLElement {
-  for (let p: HTMLElement | null = el; p; p = p.parentElement) {
-    const oy = getComputedStyle(p).overflowY;
-    if (oy === 'auto' || oy === 'scroll') return p;
-  }
-  return (document.scrollingElement as HTMLElement | null) ?? document.documentElement;
-}
-
-function fullTime(iso: string): string {
-  return new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
-}
-
 function turnMeta(m: ChatMessage): string {
   const parts: string[] = [];
   if (m.durationMs) parts.push(`${Math.round(m.durationMs / 1000)}s`);
   if (m.costUsd > 0) parts.push(`$${m.costUsd.toFixed(2)}`);
   return parts.join(' · ');
-}
-
-/**
- * The scroll contract (§ 13 Jump-to-latest): follow new messages only when the
- * reader was already at the bottom; otherwise leave them where they are and
- * count what arrived since. Reaching the bottom with the document visible
- * marks the thread read in the conversation list's per-device store
- * (`markRead(conversationKey('chat', id), {count, at})`, src/officeConversations.ts —
- * one key drives the list's unread badges and this thread; advance-only).
- */
-function useThreadScroll(
-  chatId: string,
-  /** the chat row's maintained count (`Chat.messageCount`) — the list counts unread by it */
-  messageCount: number,
-  logRef: React.RefObject<HTMLDivElement | null>,
-  messages: ChatMessage[] | undefined,
-  thinking: boolean,
-) {
-  const scrollerRef = useRef<HTMLElement | null>(null);
-  const atBottomRef = useRef(true);
-  /** force the next layout to the end (the reader just sent a message) */
-  const pinRef = useRef(false);
-  const [atBottom, setAtBottom] = useState(true);
-  const [far, setFar] = useState(false);
-  /** the newest message id in view when the reader left the bottom */
-  const [awayFrom, setAwayFrom] = useState<string | null>(null);
-  const messagesRef = useRef(messages);
-  messagesRef.current = messages;
-  const countRef = useRef(messageCount);
-  countRef.current = messageCount;
-
-  const newest = messages && messages.length ? messages[messages.length - 1] : null;
-
-  const markSeen = useCallback(() => {
-    const ms = messagesRef.current;
-    if (!ms || ms.length === 0) return;
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-    // The loaded transcript is the whole chat, so its length is a floor for a
-    // count a `chat.updated` frame has not caught up with yet.
-    markRead(conversationKey('chat', chatId), { count: Math.max(countRef.current, ms.length), at: ms[ms.length - 1].createdAt });
-  }, [chatId]);
-
-  const measure = useCallback(() => {
-    const s = scrollerRef.current;
-    if (!s) return;
-    const gap = s.scrollHeight - s.scrollTop - s.clientHeight;
-    const bottom = gap <= AT_BOTTOM_PX;
-    if (bottom !== atBottomRef.current) {
-      atBottomRef.current = bottom;
-      setAtBottom(bottom);
-      const ms = messagesRef.current;
-      setAwayFrom(bottom ? null : ms && ms.length ? ms[ms.length - 1].id : null);
-      if (bottom) markSeen();
-    }
-    setFar(gap > s.clientHeight);
-  }, [markSeen]);
-
-  // Find the scroller once the log is in the tree, and follow its scrolling.
-  useEffect(() => {
-    const el = logRef.current;
-    if (!el) return;
-    const s = scrollParent(el);
-    scrollerRef.current = s;
-    const target: HTMLElement | Window = s === document.scrollingElement ? window : s;
-    target.addEventListener('scroll', measure, { passive: true });
-    const onVis = () => {
-      if (document.visibilityState === 'visible' && atBottomRef.current) markSeen();
-    };
-    document.addEventListener('visibilitychange', onVis);
-    return () => {
-      target.removeEventListener('scroll', measure);
-      document.removeEventListener('visibilitychange', onVis);
-    };
-  }, [logRef, measure, markSeen, messages === undefined]);
-
-  // New content: stay on the end if the reader was there (or just sent).
-  useLayoutEffect(() => {
-    const el = logRef.current;
-    if (!el) return;
-    if (!scrollerRef.current) scrollerRef.current = scrollParent(el);
-    const s = scrollerRef.current;
-    if (atBottomRef.current || pinRef.current) {
-      pinRef.current = false;
-      s.scrollTop = s.scrollHeight;
-      if (!atBottomRef.current) {
-        atBottomRef.current = true;
-        setAtBottom(true);
-        setAwayFrom(null);
-      }
-      setFar(false);
-      markSeen();
-    } else {
-      const gap = s.scrollHeight - s.scrollTop - s.clientHeight;
-      setFar(gap > s.clientHeight);
-    }
-  }, [logRef, newest?.id, messages?.length, thinking, markSeen]);
-
-  const jump = useCallback(() => {
-    const s = scrollerRef.current;
-    if (!s) return;
-    s.scrollTo({ top: s.scrollHeight, behavior: reducedMotion() ? 'auto' : 'smooth' });
-  }, []);
-
-  const pin = useCallback((on: boolean) => {
-    pinRef.current = on;
-  }, []);
-
-  const fresh = messages ? countNewSince(messages, awayFrom) : 0;
-  // The pill: more than a viewport above the end (§ 13), or anywhere above it
-  // once something new arrived — a reader one screen up must still learn of it.
-  const showPill = !atBottom && (far || fresh > 0);
-  return { showPill, fresh, jump, pin };
-}
-
-/** `tasks` → id set / id map, cached on the array's identity (src/runIndex.ts' pattern) */
-const taskIndexCache = new WeakMap<readonly Task[], Map<string, Task>>();
-function taskIndex(tasks: readonly Task[]): Map<string, Task> {
-  let m = taskIndexCache.get(tasks);
-  if (!m) {
-    m = new Map(tasks.map((t) => [t.id.toLowerCase(), t]));
-    taskIndexCache.set(tasks, m);
-  }
-  return m;
-}
-
-/**
- * Task-link cards (§ 13): only from references that resolve in the store — a
- * full id or `?task=` link, or an id8 naming exactly one task. The card shows
- * the task's own row data, never text from the message.
- */
-const TaskLinks = memo(function TaskLinks({ text }: { text: string }) {
-  const cands = useMemo(() => taskRefCandidates(text), [text]);
-  const none = cands.full.length === 0 && cands.short.length === 0;
-  // A joined string: a stable value, so a task update elsewhere re-renders nothing here.
-  const ids = useAppSelector((s) => (none ? '' : resolveTaskRefs(cands, s.tasks).join(' ')));
-  if (!ids) return null;
-  return (
-    <div className="thread-tasks">
-      {ids.split(' ').map((id) => (
-        <TaskLinkCard key={id} id={id} />
-      ))}
-    </div>
-  );
-});
-
-function TaskLinkCard({ id }: { id: string }) {
-  const task = useAppSelector((s) => taskIndex(s.tasks).get(id) ?? null);
-  const repo = useAppSelector((s) => (task ? (s.repos.find((r) => r.id === task.repoId)?.name ?? null) : null));
-  if (!task) return null;
-  return (
-    <button type="button" className="thread-task" onClick={() => openTaskFromAnywhere(task.id)} title={`Open task ${task.id.slice(0, 8)}`}>
-      <span className="thread-task-title">{task.title}</span>
-      <span className="thread-task-meta">
-        <StatusBadge status={task.status} reviewState={task.reviewState} checkState={task.checkState} loopState={task.loopState} explain={false} />
-        {repo && <span className="chip">{repo}</span>}
-      </span>
-    </button>
-  );
-}
-
-function RoleAvatar({ role }: { role: OfficeRole | null }) {
-  return (
-    <span className="thread-avatar" aria-hidden="true">
-      {role?.avatar ?? '?'}
-    </span>
-  );
 }
 
 function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
@@ -312,10 +118,6 @@ function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
       a.roleId === b.roleId &&
       a.createdAt === b.createdAt)
   );
-}
-
-function sameRole(a: OfficeRole | null, b: OfficeRole | null): boolean {
-  return a === b || (!!a && !!b && a.id === b.id && a.name === b.name && a.avatar === b.avatar && a.title === b.title);
 }
 
 interface GroupProps {
@@ -340,7 +142,7 @@ const ThreadGroup = memo(
   function ThreadGroup({ group, role, roleById, armed, busy, onChannel }: GroupProps) {
     const last = group.messages[group.messages.length - 1];
     const meta = group.own ? '' : turnMeta(last);
-    const name = group.own ? 'You' : role ? `${role.name}${role.title ? ` · ${role.title}` : ''}` : 'a deleted role';
+    const name = group.own ? 'You' : roleDisplayName(role);
     return (
       <div className={`thread-group ${group.own ? 'own' : 'other'}`} role="group" aria-label={`${name}, ${fullTime(group.messages[0].createdAt)}`}>
         {!group.own && <RoleAvatar role={role} />}
@@ -425,7 +227,17 @@ export function ChatPane({ chat, roles, endSlot }: { chat: Chat; roles: OfficeRo
     loadChat(chat.id).catch((e) => toastError(e, 'Could not load the chat'));
   }, [chat.id, loadChat]);
 
-  const { showPill, fresh, jump, pin } = useThreadScroll(chat.id, chat.messageCount, logRef, messages, thinking);
+  const entries = useMemo(() => messages?.map((m) => ({ id: m.id, own: isOwnMessage(m) })), [messages]);
+  const countRef = useRef(chat.messageCount);
+  countRef.current = chat.messageCount;
+  const onSeen = useCallback(() => {
+    const ms = messages;
+    if (!ms || ms.length === 0) return;
+    // The loaded transcript is the whole chat, so its length is a floor for a
+    // count a `chat.updated` frame has not caught up with yet.
+    markRead(conversationKey('chat', chat.id), { count: Math.max(countRef.current, ms.length), at: ms[ms.length - 1].createdAt });
+  }, [chat.id, messages]);
+  const { showPill, fresh, jump, pin } = useThreadScroll(logRef, entries, thinking, onSeen);
 
   // `today` is in the deps on purpose: the labels change when the day turns
   const items = useMemo(() => buildThread(messages ?? [], new Date()), [messages, today]);
@@ -464,9 +276,7 @@ export function ChatPane({ chat, roles, endSlot }: { chat: Chat; roles: OfficeRo
         ) : (
           items.map((it) =>
             it.kind === 'day' ? (
-              <div key={it.key} className="thread-day" role="separator">
-                <span>{it.label}</span>
-              </div>
+              <DayPill key={it.key} label={it.label} />
             ) : (
               <ThreadGroup
                 key={it.key}
@@ -480,30 +290,11 @@ export function ChatPane({ chat, roles, endSlot }: { chat: Chat; roles: OfficeRo
             ),
           )
         )}
-        {thinking && (
-          <div className="thread-group other thread-working">
-            <RoleAvatar role={answering} />
-            <div className="thread-stack">
-              <div className="thread-bubble thread-working-bubble">
-                {answering ? `${answering.name} is answering…` : 'Thinking…'}
-                {/* static on purpose (§ 8): never animated, so not in the calm lists */}
-                <span className="thread-dots" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
+        {thinking && <WorkingRow role={answering} label={answering ? `${answering.name} is answering…` : 'Thinking…'} />}
         {endSlot}
       </div>
       <Composer chat={chat} roles={roles} onSend={pin}>
-        {showPill && (
-          <button type="button" className="thread-jump" onClick={jump} aria-label={fresh > 0 ? `${fresh} new — jump to latest` : 'Jump to latest'}>
-            {fresh > 0 ? `${fresh} new ↓` : '↓'}
-          </button>
-        )}
+        <JumpPill show={showPill} fresh={fresh} onJump={jump} />
       </Composer>
     </>
   );

@@ -998,10 +998,12 @@ entries as bubbles in the same thread, with the differences listed below. It
 is specified for all three designs. Behaviour (who answers, taint,
 read-only, Send to channel, Stop) does not change.
 
-*Built so far:* the office group-chat thread, with its structural layer only
-(docs/office.md § Group chat › The thread: `src/officeThread.ts`,
-read marks through `src/officeConversations.ts`, `.thread-*` in `theme.css`). The repo Chat page, the
-Channel, the Huddles and the per-design polish are later cards.
+*Built so far:* the office group-chat thread, the Channel and the Huddles,
+with their structural layer only (docs/office.md § Group chat › The thread,
+§ Channel › The thread, § Huddles › The thread: `src/officeThread.ts`
+`buildThreadOf`, the shared pieces in `components/OfficeThread.tsx`, read
+marks through `src/officeConversations.ts`, `.thread-*` in `theme.css`). The
+repo Chat page and the per-design polish are later cards.
 
 ```
  desktop ── conversation list ──┬──────────── thread ─────────────────────────────┐

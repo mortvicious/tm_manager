@@ -15306,6 +15306,119 @@ button.explain-tap:active {
   }
 }
 
+/* The channel and huddles in the same thread layout (docs/office.md § Channel ›
+   The thread, § Huddles › The thread): a bubble head (kind / addressee / turn),
+   the route line under a channel bubble, centred server lines, the huddle's
+   header, and a pill foot for a thread with no composer. */
+.thread-bubble-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--tm-space-2);
+  font-size: var(--tm-text-xs);
+  white-space: normal;
+}
+
+.thread-bubble .office-msg-subject {
+  margin-top: var(--tm-space-1);
+}
+
+.thread-bubble .office-msg-body {
+  color: var(--tm-text);
+}
+
+.thread-bubble.tainted .office-msg-body,
+.thread-bubble.tainted .office-msg-subject {
+  font-family: var(--tm-font-mono);
+  font-size: var(--tm-text-xs);
+}
+
+.thread-msg-foot {
+  font-size: var(--tm-text-xs);
+}
+
+.thread-msg-foot .office-actions {
+  margin-top: 2px;
+}
+
+.thread-group.own .thread-msg-foot {
+  text-align: right;
+}
+
+.thread-system {
+  display: flex;
+  justify-content: center;
+}
+
+.thread-system span {
+  max-width: 86%;
+  padding: 2px var(--tm-space-3);
+  border-radius: var(--tm-radius-md);
+  border: 1px dashed var(--tm-border);
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.thread-system.tainted span {
+  font-family: var(--tm-font-mono);
+}
+
+/* the jump pill's anchor in a thread with no composer (huddles) */
+.thread-foot {
+  position: relative;
+}
+
+.office-chat.in-sheet .thread-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+}
+
+.office-chat.in-sheet .office-msg-compose {
+  padding: var(--tm-space-3) 0;
+}
+
+.office-huddle-head {
+  padding: var(--tm-space-2) var(--tm-space-4);
+  border-bottom: 1px solid var(--tm-border);
+  font-size: var(--tm-text-sm);
+}
+
+.office-chat.in-sheet .office-huddle-head {
+  padding: var(--tm-space-2) 0;
+}
+
+.office-huddle-head-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+}
+
+.office-huddle-subject {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.btn.office-huddle-close {
+  margin-left: auto;
+}
+
+.office-huddle-head .office-huddle-who {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+}
+
+.office-huddle-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--tm-space-1) 0;
+}
+
 /* The office planner (docs/office.md § Office planner) — the wizard, the
    blueprint cards and the Assistant's diff cards. The transcript reuses
    .office-chat-log / .chat-msg; in a phone Sheet nothing scrolls on its own. */
@@ -15609,19 +15722,6 @@ button.explain-tap:active {
 }
 
 /* The office channel (docs/office.md § Channel) */
-.office-msg {
-  padding: var(--tm-space-2) var(--tm-space-4);
-  border-bottom: 1px solid var(--tm-border);
-  font-size: var(--tm-text-sm);
-}
-
-.office-msg-head {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: var(--tm-space-2);
-}
-
 .office-msg-subject {
   margin-top: var(--tm-space-1);
   font-weight: 600;
@@ -15633,12 +15733,6 @@ button.explain-tap:active {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--tm-text-muted);
-}
-
-.office-msg.tainted .office-msg-body,
-.office-msg.tainted .office-msg-subject {
-  font-family: var(--tm-font-mono);
-  font-size: var(--tm-text-xs);
 }
 
 .office-msg-route {
@@ -15674,16 +15768,6 @@ button.explain-tap:active {
 }
 
 /* Huddles (docs/office.md § Huddles) */
-.office-huddle {
-  padding: var(--tm-space-2) var(--tm-space-4);
-  border-bottom: 1px solid var(--tm-border);
-  font-size: var(--tm-text-sm);
-}
-
-.office-huddle-toggle {
-  margin-left: auto;
-}
-
 .office-huddle-who {
   margin-top: var(--tm-space-1);
   font-size: var(--tm-text-xs);
@@ -15711,23 +15795,7 @@ button.explain-tap:active {
   color: var(--tm-text-muted);
 }
 
-.office-huddle-transcript {
-  margin-top: var(--tm-space-2);
-  padding-left: var(--tm-space-3);
-  border-left: 2px solid var(--tm-border);
-  display: flex;
-  flex-direction: column;
-  gap: var(--tm-space-2);
-}
 
-.office-huddle-line.server .office-msg-body {
-  font-style: italic;
-}
-
-.office-huddle-line.tainted .office-msg-body {
-  font-family: var(--tm-font-mono);
-  font-size: var(--tm-text-xs);
-}
 
 .office-huddle-roles {
   display: flex;

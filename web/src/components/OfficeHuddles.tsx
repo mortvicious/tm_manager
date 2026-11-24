@@ -1,9 +1,14 @@
-// Huddles (docs/office.md § Huddles): the office's huddles, newest first —
-// subject, participants, turns used of the cap, status, the decision and the
-// transcript — plus the stakeholder's "Open a huddle" form (a subject is
-// required: no free chat) and Close on an open one. The server runs the
-// turns; this only shows the record and follows `office-huddle.updated`.
-import { useCallback, useEffect, useMemo, useState } from 'react';
+// Huddles (docs/office.md § Huddles): the office's huddles, newest first, each
+// opening as a messenger thread (docs/magma.md § 13, docs/office.md § Huddles ›
+// The thread) — a header with the subject, participants, turns used of the
+// cap, status, the decision and Close on an open one; the transcript as
+// bubbles; a working row naming the role whose turn is due — plus the
+// stakeholder's "Open a huddle" form (a subject is required: no free chat),
+// reached from the list header. Humans never post into a huddle, so the thread
+// has no composer. The server runs the turns; this only shows the record and
+// follows `office-huddle.updated`. Reaching the end marks the huddle read
+// (`markRead`, src/officeConversations.ts).
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   OFFICE_HUDDLE_DEFAULT_TURNS,
   OFFICE_HUDDLE_MAX_ROLES,
@@ -16,15 +21,22 @@ import {
   huddleNextRoleId,
   isStandupRole,
   type Office,
+  type OfficeHuddleEntry,
   type OfficeHuddleView,
   type OfficeRole,
   type OfficeSubjectKind,
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { useArm } from '../arm.ts';
+import { useClock } from '../clock.ts';
+import { conversationKey, formatUnread, huddleReadMark, markRead, timeUnread } from '../officeConversations.ts';
+import { buildThreadOf, dayKey, huddleEntryView, timeLabel, type ThreadOfItem } from '../officeThread.ts';
 import { onServerEvent, useApp } from '../state.tsx';
 import { toastError } from '../toast.ts';
-import { useNow } from './TimeAgo.tsx';
+import { useReadMap } from './officeConversationHooks.ts';
+import { DayPill, JumpPill, RoleAvatar, TaskLinks, WorkingRow, fullTime, roleDisplayName, useThreadScroll } from './OfficeThread.tsx';
+import { RoleAvatars } from './RoleChip.tsx';
+import { fmtAgo, useNow } from './TimeAgo.tsx';
 
 const short = (id: string) => id.slice(0, 8);
 
@@ -60,29 +72,80 @@ export function useHuddles(officeId: string): HuddlesSource {
   return { huddles, error, reload };
 }
 
-/** One huddle: head, participants, decision, transcript (also the conversation list's thread). */
-export function HuddleRow({
+type HuddleGroup = Extract<ThreadOfItem<OfficeHuddleEntry>, { kind: 'group' }>;
+
+/** One speaker's run of huddle bubbles (the opening question is the stakeholder's own, on the right). */
+const HuddleGroupView = memo(function HuddleGroupView({ group, roles }: { group: HuddleGroup; roles: OfficeRole[] }) {
+  const last = group.messages[group.messages.length - 1];
+  const role = group.own ? null : (roles.find((r) => r.id === group.sender) ?? null);
+  const name = group.own ? 'You' : roleDisplayName(role);
+  return (
+    <div className={`thread-group ${group.own ? 'own' : 'other'}`} role="group" aria-label={`${name}, ${fullTime(group.messages[0].at)}`}>
+      {!group.own && <RoleAvatar role={role} />}
+      <div className="thread-stack">
+        {!group.own && <div className="thread-sender">{name}</div>}
+        {group.messages.map((e) => (
+          <div key={e.messageId} className="thread-item">
+            <div className={`thread-bubble${e.taintedAt ? ' tainted' : ''}`} title={fullTime(e.at)}>
+              <span className="sr-only">{fullTime(e.at)}: </span>
+              <div className="thread-bubble-head">
+                <span className="office-huddle-label">{e.kind === 'opening' ? 'Opened' : `Turn ${e.turn ?? '?'}`}</span>
+                {e.taintedAt && <span className="chip office-taint">untrusted</span>}
+              </div>
+              <div className="office-msg-body">{e.text}</div>
+              <TaskLinks text={e.text} />
+            </div>
+          </div>
+        ))}
+        <time className="thread-time" dateTime={last.at} title={fullTime(last.at)}>
+          {timeLabel(new Date(last.at))}
+        </time>
+      </div>
+    </div>
+  );
+});
+
+/**
+ * One huddle as a thread (also the conversation list's thread): the header,
+ * the transcript as bubbles (a server note as a centred line), the working
+ * row while a turn is due, and the jump pill. `onBack` shows a back button
+ * (the phone list); `onChanged` re-reads after Close.
+ */
+export function HuddleThread({
   office,
   huddle: h,
   roles,
   now,
+  inSheet,
   onOpenTask,
   onChanged,
-  defaultOpen,
+  onBack,
 }: {
   office: Office;
   huddle: OfficeHuddleView;
   roles: OfficeRole[];
   now: number;
+  inSheet: boolean;
   onOpenTask: (id: string) => void;
   onChanged: () => void;
-  /** transcript shown at first (default: while the huddle is open) */
-  defaultOpen?: boolean;
+  onBack?: () => void;
 }) {
   const arm = useArm();
-  const [open, setOpen] = useState(defaultOpen ?? h.status === 'open');
   const [busy, setBusy] = useState(false);
   const next = huddleNextRoleId(h);
+  const nextRole = next ? (roles.find((r) => r.id === next) ?? null) : null;
+  const working = h.status === 'open' && next !== null;
+  const logRef = useRef<HTMLDivElement | null>(null);
+  const minute = useClock(60_000);
+  const today = dayKey(new Date(minute));
+  // `today` is in the deps on purpose: the labels change when the day turns
+  const items = useMemo(() => buildThreadOf(h.entries, huddleEntryView, new Date()), [h.entries, today]);
+  const entries = useMemo(() => h.entries.map((e) => ({ id: e.messageId, own: e.roleId === null && e.kind !== 'server' })), [h.entries]);
+  const hRef = useRef(h);
+  hRef.current = h;
+  const onSeen = useCallback(() => markRead(conversationKey('huddle', h.id), huddleReadMark(hRef.current)), [h.id]);
+  const { showPill, fresh, jump } = useThreadScroll(logRef, entries, working, onSeen);
+
   const close = async () => {
     setBusy(true);
     try {
@@ -95,57 +158,72 @@ export function HuddleRow({
     }
   };
   return (
-    <div className={`office-huddle${h.taintedAt ? ' tainted' : ''}`}>
-      <div className="office-msg-head">
-        <span className="office-shift-when">{formatOfficeTime(Date.parse(h.createdAt), now, office.timezone)}</span>
-        {h.subject.kind === 'task' ? (
-          <button className="office-link" onClick={() => onOpenTask(h.subject.id)}>
-            {h.subjectLabel}
-          </button>
-        ) : (
-          <span className="office-shift-role">{h.subjectLabel}</span>
+    <div className={`office-chat office-huddle-thread${inSheet ? ' in-sheet' : ''}${h.taintedAt ? ' tainted' : ''}`}>
+      <div className="office-huddle-head">
+        <div className="office-huddle-head-top">
+          {onBack && (
+            <button className="btn ghost" onClick={onBack} aria-label="Back to the huddles">
+              ←
+            </button>
+          )}
+          {h.subject.kind === 'task' ? (
+            <button className="office-link office-huddle-subject" onClick={() => onOpenTask(h.subject.id)}>
+              {h.subjectLabel}
+            </button>
+          ) : (
+            <span className="office-huddle-subject">{h.subjectLabel}</span>
+          )}
+          <span className={`chip office-huddle-${h.status}`}>{h.status}</span>
+          <span className="muted">
+            turn {h.turns}/{h.maxTurns}
+          </span>
+          {h.taintedAt && <span className="chip office-taint">untrusted</span>}
+          {h.status === 'open' && (
+            <button
+              className={`btn ghost office-huddle-close${arm.armed === 'close' ? ' danger' : ''}`}
+              disabled={busy}
+              onClick={() => arm.press('close') && void close()}
+            >
+              {arm.armed === 'close' ? 'Close without a decision? tap again' : 'Close'}
+            </button>
+          )}
+        </div>
+        <div className="office-huddle-who muted">
+          <RoleAvatars roleIds={h.roleIds} roles={roles} fallback="⧉" />
+          <span>
+            {h.roleIds.map((id) => roleName(roles, id)).join(' · ')}
+            {h.openedBy && ` — opened by ${h.openedBy === 'director' ? 'the Director' : 'you'}`}
+            {` — ${formatOfficeTime(Date.parse(h.createdAt), now, office.timezone)}`}
+          </span>
+        </div>
+        {h.decision && (
+          <div className={`office-huddle-decision${h.status === 'expired' ? ' muted' : ''}`}>
+            <span className="office-huddle-label">{h.status === 'decided' ? 'Decision' : 'Closed'}</span> {h.decision}
+            {h.decisionMessageId && <span className="muted"> — sent to the Director to route</span>}
+          </div>
         )}
-        <span className={`chip office-huddle-${h.status}`}>{h.status}</span>
-        <span className="muted">
-          turn {h.turns}/{h.maxTurns}
-        </span>
-        {h.taintedAt && <span className="chip office-taint">untrusted</span>}
-        <button className="btn ghost office-huddle-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>
-          {open ? 'Hide' : 'Transcript'}
-        </button>
       </div>
-      <div className="office-huddle-who muted">
-        {h.roleIds.map((id) => roleName(roles, id)).join(' · ')}
-        {h.openedBy && ` — opened by ${h.openedBy === 'director' ? 'the Director' : 'you'}`}
-        {h.status === 'open' && next && ` — next: ${roleName(roles, next)}`}
-      </div>
-      {h.decision && (
-        <div className={`office-huddle-decision${h.status === 'expired' ? ' muted' : ''}`}>
-          <span className="office-huddle-label">{h.status === 'decided' ? 'Decision' : 'Closed'}</span> {h.decision}
-          {h.decisionMessageId && <span className="muted"> — sent to the Director to route</span>}
-        </div>
-      )}
-      {open && (
-        <div className="office-huddle-transcript">
-          {h.entries.length === 0 && <div className="muted">Nothing said yet.</div>}
-          {h.entries.map((e) => (
-            <div key={e.messageId} className={`office-huddle-line${e.taintedAt ? ' tainted' : ''}${e.kind === 'server' ? ' server' : ''}`}>
-              <span className="office-huddle-label">
-                {e.kind === 'opening' ? 'Opened' : `Turn ${e.turn ?? '?'}`} · {e.kind === 'server' ? 'server' : roleName(roles, e.roleId)}
+      <div className="office-chat-log thread-log" ref={logRef} role="log" aria-live="polite" aria-relevant="additions">
+        {h.entries.length === 0 && !working && <div className="muted">Nothing said yet.</div>}
+        {items.map((it) =>
+          it.kind === 'day' ? (
+            <DayPill key={it.key} label={it.label} />
+          ) : it.kind === 'system' ? (
+            <div key={it.key} className={`thread-system${it.entry.taintedAt ? ' tainted' : ''}`} title={fullTime(it.entry.at)}>
+              <span>
+                {`Turn ${it.entry.turn ?? '?'} · server: `}
+                {it.entry.text}
               </span>
-              {e.taintedAt && <span className="chip office-taint">untrusted</span>}
-              <div className="office-msg-body">{e.text}</div>
             </div>
-          ))}
-        </div>
-      )}
-      {h.status === 'open' && (
-        <div className="office-actions">
-          <button className={`btn${arm.armed === 'close' ? ' danger' : ''}`} disabled={busy} onClick={() => arm.press('close') && void close()}>
-            {arm.armed === 'close' ? 'Close without a decision? tap again' : 'Close'}
-          </button>
-        </div>
-      )}
+          ) : (
+            <HuddleGroupView key={it.key} group={it} roles={roles} />
+          ),
+        )}
+        {working && <WorkingRow role={nextRole} label={`${nextRole ? nextRole.name : 'A deleted role'} is taking turn ${h.turns + 1}…`} />}
+      </div>
+      <div className="thread-foot">
+        <JumpPill show={showPill} fresh={fresh} onJump={jump} />
+      </div>
     </div>
   );
 }
@@ -158,7 +236,18 @@ const SUBJECT_KINDS: { kind: OfficeSubjectKind; label: string }[] = [
 ];
 
 /** The stakeholder's "Open a huddle" form (a subject is required). */
-export function OpenForm({ office, roles, onOpened }: { office: Office; roles: OfficeRole[]; onOpened: () => void }) {
+export function OpenForm({
+  office,
+  roles,
+  onOpened,
+  onCancel,
+}: {
+  office: Office;
+  roles: OfficeRole[];
+  onOpened: () => void;
+  /** shows a Cancel button (the form was opened from a list header) */
+  onCancel?: () => void;
+}) {
   const { tasks, workspaces } = useApp();
   const [kind, setKind] = useState<OfficeSubjectKind>('task');
   const [subjectId, setSubjectId] = useState('');
@@ -265,12 +354,23 @@ export function OpenForm({ office, roles, onOpened }: { office: Office; roles: O
         <button className="btn primary" disabled={busy || !ready || !office.enabled} onClick={() => void submit()}>
           Open huddle
         </button>
+        {onCancel && (
+          <button className="btn ghost" disabled={busy} onClick={onCancel}>
+            Cancel
+          </button>
+        )}
         {!office.enabled && <span className="muted office-hint">turn the office on first</span>}
       </div>
     </div>
   );
 }
 
+const NEW_HUDDLE = 'new';
+
+/**
+ * The huddles on their own (the phone sheet): a list, newest first, with
+ * "Open a huddle" in its header; a row opens that huddle's thread, ← returns.
+ */
 export function OfficeHuddles({
   office,
   roles,
@@ -284,25 +384,96 @@ export function OfficeHuddles({
 }) {
   const now = useNow();
   const { huddles, error, reload } = useHuddles(office.id);
+  const read = useReadMap();
+  const [picked, setPicked] = useState<string | null>(null);
   const openCount = huddles?.filter((h) => h.status === 'open').length ?? 0;
+  const selected = picked && picked !== NEW_HUDDLE ? (huddles?.find((h) => h.id === picked) ?? null) : null;
+
+  if (selected) {
+    return (
+      <HuddleThread
+        key={selected.id}
+        office={office}
+        huddle={selected}
+        roles={roles}
+        now={now}
+        inSheet={inSheet}
+        onOpenTask={onOpenTask}
+        onChanged={reload}
+        onBack={() => setPicked(null)}
+      />
+    );
+  }
   return (
     <div className="office-huddles">
-      {!inSheet && (
-        <div className="office-section-title">
-          Huddles <span className="muted">{openCount ? `${openCount} open` : ''}</span>
-        </div>
+      <div className={`office-section-title office-conv-title-bar${inSheet ? ' in-sheet' : ''}`}>
+        <span>
+          {!inSheet && 'Huddles '}
+          <span className="muted">{openCount ? `${openCount} open` : ''}</span>
+        </span>
+        <button className={`btn ghost${picked === NEW_HUDDLE ? ' active' : ''}`} onClick={() => setPicked(picked === NEW_HUDDLE ? null : NEW_HUDDLE)}>
+          Open a huddle
+        </button>
+      </div>
+      {picked === NEW_HUDDLE && (
+        <OpenForm
+          office={office}
+          roles={roles}
+          onOpened={() => {
+            reload();
+            setPicked(null);
+          }}
+          onCancel={() => setPicked(null)}
+        />
       )}
+      {picked !== null && picked !== NEW_HUDDLE && huddles && <div className="muted office-pad">This huddle is gone.</div>}
       {huddles === null && !error && <div className="muted office-pad">Loading…</div>}
-      {huddles?.length === 0 && (
+      {huddles?.length === 0 && picked !== NEW_HUDDLE && (
         <div className="muted office-pad">
-          No huddles yet — 2–3 roles settle one subject in a few turns. The Director opens one from the channel, or you open one below.
+          No huddles yet — 2–3 roles settle one subject in a few turns. The Director opens one from the channel, or you open one here.
         </div>
       )}
-      {huddles?.map((h) => (
-        <HuddleRow key={h.id} office={office} huddle={h} roles={roles} now={now} onOpenTask={onOpenTask} onChanged={reload} />
-      ))}
+      {huddles && huddles.length > 0 && (
+        <ul className="office-huddle-list" aria-label="Huddles">
+          {huddles.map((h) => {
+            const last = h.entries.length ? h.entries[h.entries.length - 1] : null;
+            const lastAt = last?.at ?? h.createdAt;
+            // a fresh device (no read store yet) reads as nothing unread, like the conversation list
+            const badge = read ? formatUnread(timeUnread(h.entries.map((e) => e.at), read[conversationKey('huddle', h.id)])) : null;
+            return (
+              <li key={h.id}>
+                <button className="office-conv-row" onClick={() => setPicked(h.id)}>
+                  <RoleAvatars roleIds={h.roleIds} roles={roles} fallback="⧉" />
+                  <span className="office-conv-main">
+                    <span className="office-conv-top">
+                      <span className="office-conv-title">{h.subjectLabel}</span>
+                      <time className="office-conv-time" dateTime={lastAt}>
+                        {fmtAgo(now - Date.parse(lastAt))}
+                      </time>
+                    </span>
+                    <span className="office-conv-bottom">
+                      <span className={`office-conv-preview${last?.taintedAt ? ' tainted' : ''}`}>
+                        {last ? last.text : (h.decision ?? 'Nothing said yet')}
+                      </span>
+                      {h.status === 'open' && huddleNextRoleId(h) !== null && (
+                        <span className="office-conv-working" title="a turn is due">
+                          <span className="sr-only">working</span>
+                        </span>
+                      )}
+                      {badge && <span className="office-conv-unread">{badge}</span>}
+                    </span>
+                    <span className="office-conv-detail">
+                      turn {h.turns}/{h.maxTurns} · {h.status}
+                      {h.taintedAt && <span className="chip office-taint">untrusted</span>}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
       {error && <div className="warn-text office-pad">{error}</div>}
-      <OpenForm office={office} roles={roles} onOpened={reload} />
     </div>
   );
 }

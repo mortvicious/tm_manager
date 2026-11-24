@@ -10,6 +10,7 @@ import {
   chatUnread,
   conversationKey,
   formatUnread,
+  loadBaselinedReadMap,
   loadReadMap,
   markRead,
   mergeChatUpdate,
@@ -20,6 +21,8 @@ import {
   upsertChat,
   writeBaseline,
   type ReadStorage,
+  channelReadMark,
+  huddleReadMark,
 } from './officeConversations.ts';
 
 const roles = [
@@ -316,4 +319,47 @@ test('the read store: parse, advance-only markRead, baseline on a fresh device, 
   for (let i = 0; i < 10; i++) big[`k${i}`] = { count: i, at: `2026-11-${String(10 + i).padStart(2, '0')}` };
   assert.deepEqual(Object.keys(pruneReadMap(big, 3)).sort(), ['k7', 'k8', 'k9']);
   assert.equal(pruneReadMap(big, 20), big);
+});
+
+test('read marks: the threads and the list mark the channel and a huddle with the same marker', () => {
+  const ch = channel([officeMsg({ id: 'a' }), officeMsg({ id: 'b', createdAt: '2026-11-20T08:00:00.000Z' })]);
+  const rows = buildConversations({ officeId: 'o1', chats: [], channel: ch, huddles: [huddle()], roles, read: {} });
+  const by = new Map(rows.map((r) => [r.key, r]));
+  assert.deepEqual(channelReadMark(ch), { count: 2, at: '2026-11-20T08:00:00.000Z' });
+  assert.deepEqual(by.get('channel:o1')!.readMark, channelReadMark(ch));
+  assert.deepEqual(huddleReadMark(huddle()), { count: 2, at: '2026-11-20T06:30:00.000Z' });
+  assert.deepEqual(by.get('huddle:h1')!.readMark, huddleReadMark(huddle()));
+  assert.deepEqual(channelReadMark(null), { count: 0, at: '' });
+  // marking with it clears the row's unread
+  const read = { 'channel:o1': channelReadMark(ch), 'huddle:h1': huddleReadMark(huddle()) };
+  const after = buildConversations({ officeId: 'o1', chats: [], channel: ch, huddles: [huddle()], roles, read });
+  assert.deepEqual(
+    after.map((r) => r.unread),
+    [0, 0],
+  );
+});
+
+test('baseline: a thread marking first does not make every other conversation unread', () => {
+  const s = new FakeStorage();
+  // the phone opens one huddle's sheet before anything wrote the baseline
+  markRead('huddle:h1', { count: 2, at: '2026-11-20T06:30:00.000Z' }, s);
+  assert.notEqual(loadReadMap(s), null);
+  assert.equal(loadBaselinedReadMap(s), null, 'no unread is shown before the baseline');
+  const rows = buildConversations({
+    officeId: 'o1',
+    chats: [],
+    channel: channel([officeMsg()]),
+    huddles: [huddle(), huddle({ id: 'h2' })],
+    roles,
+    read: {},
+  });
+  writeBaseline(rows, s);
+  const read = loadBaselinedReadMap(s)!;
+  assert.ok(read['huddle:h2'] && read['channel:o1'], 'missing keys get their current marker');
+  const after = buildConversations({ officeId: 'o1', chats: [], channel: channel([officeMsg()]), huddles: [huddle(), huddle({ id: 'h2' })], roles, read });
+  assert.deepEqual(after.map((r) => r.unread), [0, 0, 0]);
+  // once per device: a later baseline never overwrites a real marker
+  markRead('huddle:h2', { count: 9, at: '2026-11-21T00:00:00.000Z' }, s);
+  writeBaseline(rows, s);
+  assert.equal(loadReadMap(s)!['huddle:h2'].count, 9);
 });

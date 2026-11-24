@@ -63,7 +63,7 @@ import { OfficeVision } from '../components/OfficeVision.tsx';
 import { OfficeChannel } from '../components/OfficeChannel.tsx';
 import { OfficeScorecard } from '../components/OfficeScorecard.tsx';
 import { OfficeChat } from '../components/OfficeChat.tsx';
-import { OfficeConversations } from '../components/OfficeConversations.tsx';
+import { OfficeConversations, OfficeReadBaseline } from '../components/OfficeConversations.tsx';
 import { OfficeHuddles } from '../components/OfficeHuddles.tsx';
 import { RatingButtons, ratingKey, useOfficeRatings } from '../components/OfficeRating.tsx';
 import { OfficeWork } from '../components/OfficeWork.tsx';
@@ -525,6 +525,8 @@ function OfficeView({ officeId, onOpenTask, onOpenTerminal }: { officeId: string
       {!mobile && <div className="panel">{assistant}</div>}
       {/* desktop: ONE conversation list — channel, group chats, huddles (docs/office.md § Conversation list);
           the phone keeps its three sheets until the push-navigation card */}
+      {/* the phone's sheets have no list to write the fresh-device read baseline */}
+      {mobile && <OfficeReadBaseline office={office} roles={roles} />}
       {!mobile && (
         <div className="panel">
           <OfficeConversations office={office} roles={roles} onOpenTask={onOpenTask} />

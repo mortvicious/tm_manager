@@ -1,10 +1,13 @@
 // The office channel (docs/office.md § Channel): the history of role and
-// stakeholder messages, oldest first, each with what the Director's routing
-// made of it (a task, a note, a huddle, a forward) or why it still waits; the
-// stakeholder's composer; and Mark reviewed on a tainted message, which
-// releases its text to the next routing shift. The server routes; this only
-// shows the record and follows `office-message.created|updated`.
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+// stakeholder messages as a messenger thread (docs/magma.md § 13, docs/office.md
+// § Channel › The thread) — bubbles grouped by writer, day pills, task-link
+// cards, the jump pill — each message with what the Director's routing made of
+// it (a task, a note, a huddle, a forward) or why it still waits; the
+// stakeholder's composer docked under it; and Mark reviewed on a tainted
+// message, which releases its text to the next routing shift. The server
+// routes; this only shows the record and follows `office-message.created|updated`.
+// Reaching the end marks the channel read (`markRead`, src/officeConversations.ts).
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   OFFICE_MESSAGE_BODY_MAX,
   OFFICE_MESSAGE_KINDS,
@@ -22,8 +25,12 @@ import {
 } from '@tm/shared';
 import { api } from '../api.ts';
 import { useArm } from '../arm.ts';
+import { useClock } from '../clock.ts';
+import { channelReadMark, conversationKey, markRead } from '../officeConversations.ts';
+import { buildThreadOf, channelEntryView, dayKey, timeLabel, type ThreadOfItem } from '../officeThread.ts';
 import { onServerEvent } from '../state.tsx';
 import { toastError } from '../toast.ts';
+import { DayPill, JumpPill, RoleAvatar, TaskLinks, fullTime, roleDisplayName, useThreadScroll } from './OfficeThread.tsx';
 import { useNow } from './TimeAgo.tsx';
 
 const short = (id: string) => id.slice(0, 8);
@@ -115,7 +122,12 @@ function RouteLine({
   }
 }
 
-function MessageRow({
+/**
+ * One channel message inside a sender group: its bubble (kind, addressee,
+ * subject, body, task cards) and under it the route line or why it waits, and
+ * Mark reviewed on a tainted one.
+ */
+function ChannelMessage({
   office,
   message: m,
   roles,
@@ -161,37 +173,99 @@ function MessageRow({
     </div>
   );
   return (
-    <div className={`office-msg${m.taintedAt ? ' tainted' : ''}`}>
-      <div className="office-msg-head">
-        <span className="office-shift-when">{formatOfficeTime(Date.parse(m.createdAt), now, office.timezone)}</span>
-        <span className="office-shift-role">{roleLabel(roles, m.fromRoleId, 'You (stakeholder)')}</span>
-        <span className="muted">→ {roleLabel(roles, m.toRoleId, 'channel')}</span>
-        <span className="chip">{m.kind}</span>
-        {m.taintedAt && <span className="chip office-taint">untrusted</span>}
-        {m.reviewedAt && <span className="chip">reviewed</span>}
-      </div>
-      <div className="office-msg-subject">{subject}</div>
-      {body && <div className="office-msg-body">{body}</div>}
-      {route ? <RouteLine route={route} roles={roles} onOpenTask={onOpenTask} /> : waiting}
-      {m.taintedAt && (
-        <div className="office-actions">
-          <button
-            className={`btn${arm.armed === 'msg-reviewed' ? ' danger' : ''}`}
-            disabled={busy}
-            onClick={() => arm.press('msg-reviewed') && void mark()}
-          >
-            {arm.armed === 'msg-reviewed' ? 'Read and safe? tap again' : 'Mark reviewed'}
-          </button>
-          <span className="muted office-hint">
-            written by a shift that read untrusted input — the Director sees only a digest until you vouch for this text
-          </span>
+    <div className="thread-item">
+      <div className={`thread-bubble${m.taintedAt ? ' tainted' : ''}`} title={fullTime(m.createdAt)}>
+        <span className="sr-only">{fullTime(m.createdAt)}: </span>
+        <div className="thread-bubble-head">
+          <span className="chip">{m.kind}</span>
+          <span className="muted">→ {roleLabel(roles, m.toRoleId, 'channel')}</span>
+          {m.taintedAt && <span className="chip office-taint">untrusted</span>}
+          {m.reviewedAt && <span className="chip">reviewed</span>}
         </div>
-      )}
+        <div className="office-msg-subject">{subject}</div>
+        {body && <div className="office-msg-body">{body}</div>}
+        <TaskLinks text={m.body} lead={route?.action === 'task' ? route.taskId : m.routedTaskId} />
+      </div>
+      <div className="thread-msg-foot">
+        {route ? <RouteLine route={route} roles={roles} onOpenTask={onOpenTask} /> : waiting}
+        {m.taintedAt && (
+          <div className="office-actions">
+            <button
+              className={`btn ghost office-chat-send${arm.armed === 'msg-reviewed' ? ' danger' : ''}`}
+              disabled={busy}
+              title="Written by a shift that read untrusted input — the Director sees only a digest until you vouch for this text"
+              onClick={() => arm.press('msg-reviewed') && void mark()}
+            >
+              {arm.armed === 'msg-reviewed' ? 'Read and safe? tap again' : 'Mark reviewed'}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-function Composer({ office, roles, onSent }: { office: Office; roles: OfficeRole[]; onSent: () => void }) {
+interface ChannelGroupProps {
+  office: Office;
+  group: Extract<ThreadOfItem<OfficeMessage>, { kind: 'group' }>;
+  roles: OfficeRole[];
+  channel: OfficeChannelResponse;
+  now: number;
+  onOpenTask: (id: string) => void;
+  onChanged: () => void;
+}
+
+/**
+ * One writer's run of channel bubbles. Memoised by props so the thread's own
+ * state (the jump pill) re-renders no bubble; a channel re-read (every message
+ * event, ≤ 200 rows) replaces the response and re-renders them all.
+ */
+const ChannelGroup = memo(function ChannelGroup({ office, group, roles, channel, now, onOpenTask, onChanged }: ChannelGroupProps) {
+  const last = group.messages[group.messages.length - 1];
+  const role = group.own ? null : (roles.find((r) => r.id === group.sender) ?? null);
+  const name = group.own ? 'You' : roleDisplayName(role);
+  return (
+    <div className={`thread-group ${group.own ? 'own' : 'other'}`} role="group" aria-label={`${name}, ${fullTime(group.messages[0].createdAt)}`}>
+      {!group.own && <RoleAvatar role={role} />}
+      <div className="thread-stack">
+        {!group.own && <div className="thread-sender">{name}</div>}
+        {group.messages.map((m) => (
+          <ChannelMessage
+            key={m.id}
+            office={office}
+            message={m}
+            roles={roles}
+            route={channel.routes[m.id]}
+            passes={channel.passes[m.id] ?? 0}
+            dueAt={channel.routingDueAt}
+            now={now}
+            onOpenTask={onOpenTask}
+            onChanged={onChanged}
+          />
+        ))}
+        <time className="thread-time" dateTime={last.createdAt} title={fullTime(last.createdAt)}>
+          {timeLabel(new Date(last.createdAt))}
+        </time>
+      </div>
+    </div>
+  );
+});
+
+function Composer({
+  office,
+  roles,
+  onSent,
+  onSend,
+  children,
+}: {
+  office: Office;
+  roles: OfficeRole[];
+  onSent: () => void;
+  /** called as a send starts (true) or fails (false): the thread pins itself to the end */
+  onSend: (on: boolean) => void;
+  /** the jump pill, which floats just above the composer */
+  children?: React.ReactNode;
+}) {
   const [to, setTo] = useState('director');
   const [kind, setKind] = useState<OfficeMessageKind>('request');
   const [subject, setSubject] = useState('');
@@ -201,19 +275,22 @@ function Composer({ office, roles, onSent }: { office: Office; roles: OfficeRole
   const send = async () => {
     if (!subject.trim()) return;
     setBusy(true);
+    onSend(true);
     try {
       await api.postOfficeMessage(office.id, { to: to === 'channel' ? null : to, kind, subject: subject.trim(), body: body.trim() });
       setSubject('');
       setBody('');
       onSent();
     } catch (e) {
+      onSend(false);
       toastError(e, 'Could not send the message');
     } finally {
       setBusy(false);
     }
   };
   return (
-    <div className="office-msg-compose">
+    <div className="office-chat-compose thread-compose office-msg-compose">
+      {children}
       <div className="office-msg-compose-row">
         <select className="field" value={to} onChange={(e) => setTo(e.target.value)} aria-label="To">
           <option value="director">To the Director</option>
@@ -241,7 +318,7 @@ function Composer({ office, roles, onSent }: { office: Office; roles: OfficeRole
       />
       <textarea
         className="field"
-        rows={3}
+        rows={2}
         maxLength={OFFICE_MESSAGE_BODY_MAX}
         placeholder="The Director routes it: a task, a note, a huddle, or a forward."
         value={body}
@@ -260,52 +337,70 @@ export function OfficeChannel({
   office,
   roles,
   inSheet,
+  headless,
   onOpenTask,
   source,
-  endSlot,
 }: {
   office: Office;
   roles: OfficeRole[];
-  /** in a phone Sheet, or a thread under its own header: no section title */
+  /** in a phone Sheet: the sheet's scroller scrolls, the composer sticks to its end */
   inSheet: boolean;
+  /** a thread under its own header (the conversation list): no section title */
+  headless?: boolean;
   onOpenTask: (id: string) => void;
   /** the channel a parent already follows (the conversation list); else fetched here */
   source?: ChannelSource;
-  /** rendered after the last message (the conversation list's read sentinel) */
-  endSlot?: ReactNode;
 }) {
   const now = useNow();
   const own = useChannel(office.id, !source);
   const { channel, error, reload } = source ?? own;
-  const unrouted = channel?.messages.filter((m) => !m.routedAt).length ?? 0;
+  const messages = channel?.messages;
+  const unrouted = messages?.filter((m) => !m.routedAt).length ?? 0;
+  const logRef = useRef<HTMLDivElement | null>(null);
+  // day pills read "Today"/"Yesterday": re-derive when the day can turn
+  const minute = useClock(60_000);
+  const today = dayKey(new Date(minute));
+  // `today` is in the deps on purpose: the labels change when the day turns
+  const items = useMemo(() => buildThreadOf(messages ?? [], channelEntryView, new Date()), [messages, today]);
+  const entries = useMemo(() => messages?.map((m) => ({ id: m.id, own: m.fromRoleId === null })), [messages]);
+  const channelRef = useRef(channel);
+  channelRef.current = channel;
+  const onSeen = useCallback(() => markRead(conversationKey('channel', office.id), channelReadMark(channelRef.current)), [office.id]);
+  const { showPill, fresh, jump, pin } = useThreadScroll(logRef, entries, false, onSeen);
   return (
-    <div className="office-channel">
-      {!inSheet && (
+    <div className={`office-chat office-channel${inSheet ? ' in-sheet' : ''}`}>
+      {!inSheet && !headless && (
         <div className="office-section-title">
           Channel <span className="muted">{unrouted ? `${unrouted} unrouted` : ''}</span>
         </div>
       )}
-      {channel === null && !error && <div className="muted office-pad">Loading…</div>}
-      {channel?.messages.length === 0 && (
-        <div className="muted office-pad">No messages yet — roles write here, and the Director routes each into a task, a note, a huddle or a forward.</div>
-      )}
-      {channel?.messages.map((m) => (
-        <MessageRow
-          key={m.id}
-          office={office}
-          message={m}
-          roles={roles}
-          route={channel.routes[m.id]}
-          passes={channel.passes[m.id] ?? 0}
-          dueAt={channel.routingDueAt}
-          now={now}
-          onOpenTask={onOpenTask}
-          onChanged={reload}
-        />
-      ))}
-      {channel && endSlot}
-      {error && <div className="warn-text office-pad">{error}</div>}
-      <Composer office={office} roles={roles} onSent={reload} />
+      <div className="office-chat-log thread-log" ref={logRef} role="log" aria-live="polite" aria-relevant="additions">
+        {channel === null && !error && <div className="muted">Loading…</div>}
+        {messages?.length === 0 && (
+          <div className="muted">No messages yet — roles write here, and the Director routes each into a task, a note, a huddle or a forward.</div>
+        )}
+        {channel &&
+          items.map((it) =>
+            it.kind === 'day' ? (
+              <DayPill key={it.key} label={it.label} />
+            ) : it.kind === 'group' ? (
+              <ChannelGroup
+                key={it.key}
+                office={office}
+                group={it}
+                roles={roles}
+                channel={channel}
+                now={now}
+                onOpenTask={onOpenTask}
+                onChanged={reload}
+              />
+            ) : null,
+          )}
+        {error && <div className="warn-text">{error}</div>}
+      </div>
+      <Composer office={office} roles={roles} onSent={reload} onSend={pin}>
+        <JumpPill show={showPill} fresh={fresh} onJump={jump} />
+      </Composer>
     </div>
   );
 }
