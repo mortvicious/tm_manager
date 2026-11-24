@@ -101,7 +101,7 @@ Every automatic way a turn starts checks the flag:
 | check fix turn (`runCheckStage`) | not typed. `check_state` goes back to `pending`, so Continue re-runs the checks and then types the failure. |
 | review fix turn (`runReviewRound`) | not sent; the round is not recorded (see above) |
 | auto-publish (`landIfClean`) | marked `{kind: 'land'}`; Continue runs the landing again, budget and verdict re-read. An `on-green` landing still happens: it starts no agent. |
-| `followUp` | backstop: any non-human actor gets 409 `the task manager is paused`, and the caller keeps its own refusal path |
+| `followUp` | backstop: any non-human actor gets 409 `Gor is paused`, and the caller keeps its own refusal path |
 | `startWorker` | backstop after the resume gate's re-read, for a turn that passed its check just before the flag went up. A resume is parked with its turn (as above). A fresh claim goes back to `queued`, keeping its place and mark. A loop's next iteration stays `running`+`next`. |
 | boot recovery | a worker run found `running` is owed (`review` + marker) instead of `failed`, and so is a stranded `running` task that ever had a worker. Verify rounds are not re-run until Continue. |
 | `reviewNow` | 409. A reviewer is an automatic session, and the human asks again after Continue. |

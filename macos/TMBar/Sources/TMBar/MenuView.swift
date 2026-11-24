@@ -37,9 +37,9 @@ struct MenuView: View {
 
     private var header: some View {
         HStack {
-            Image(systemName: store.state.symbol)
+            StateIcon(state: store.state)
                 .foregroundStyle(tint(store.state))
-            Text("Task manager").font(.headline)
+            Text("Gor").font(.headline)
             Spacer()
             Text(stateWord(store.state)).font(.subheadline).foregroundStyle(.secondary)
         }
@@ -141,7 +141,7 @@ struct MenuView: View {
                     twoPress("uninstall", "Uninstall…", confirm: "Confirm uninstall", role: .destructive) {
                         await store.runService(.uninstall)
                     }
-                    .help("Stop the service and remove its plist — the task manager stays down until npm start")
+                    .help("Stop the service and remove its plist — Gor stays down until npm start")
                 } else if svc?.loaded == true || svc?.installed == true {
                     // a service exists but a terminal/dev front door holds the port
                     twoPress("uninstall", "Uninstall service…", confirm: "Confirm uninstall", role: .destructive) {
@@ -219,7 +219,7 @@ struct MenuView: View {
     @ViewBuilder private var loginRow: some View {
         if LoginItem.available {
             VStack(alignment: .leading, spacing: 2) {
-                Toggle("Open TM Bar at login", isOn: Binding(
+                Toggle("Open Gor Bar at login", isOn: Binding(
                     get: { store.loginStatus == .enabled || store.loginStatus == .requiresApproval },
                     set: { store.setLogin($0) }
                 ))
@@ -370,7 +370,7 @@ struct MenuView: View {
 
     private var footer: some View {
         HStack {
-            Button("Open task manager") { store.openPage(store.pageBase) }
+            Button("Open Gor") { store.openPage(store.pageBase) }
                 .keyboardShortcut("o")
             // § The window: TM Bar's own WebKit window, or the browser (Brave when installed)
             Picker("Open in", selection: Binding(get: { store.openInWindow }, set: { store.openInWindow = $0 })) {
@@ -380,7 +380,7 @@ struct MenuView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
-            .help("Open pages in TM Bar's own window (system WebKit) or in the browser")
+            .help("Open pages in Gor Bar's own window (system WebKit) or in the browser")
             Spacer()
             Button {
                 NSApp.activate()

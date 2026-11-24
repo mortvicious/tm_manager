@@ -59,7 +59,7 @@ final class WebWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDel
         guard let window, let webView else { return }
         if NSApp.activationPolicy() != .regular {
             NSApp.setActivationPolicy(.regular)
-            NSApp.applicationIconImage = Self.dockIcon
+            NSApp.applicationIconImage = GorMark.appIcon
         }
         installMainMenu()
         // A deep link into the page already showing: let the SPA route it
@@ -135,7 +135,7 @@ final class WebWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDel
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false
         )
-        w.title = "Task manager"
+        w.title = "Gor"
         w.isReleasedWhenClosed = false
         w.contentView = content
         w.contentMinSize = NSSize(width: 360, height: 400)
@@ -235,7 +235,7 @@ final class WebWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDel
         let html = """
         <!doctype html><meta charset="utf-8"><meta name="color-scheme" content="light dark">
         <style>body{font:13px -apple-system,system-ui;display:grid;place-items:center;height:90vh;margin:0}
-        p{opacity:.7}</style><div><h3>The task manager is not answering</h3>
+        p{opacity:.7}</style><div><h3>Gor is not answering</h3>
         <p>\(Self.escape(url.absoluteString)) — \(Self.escape(reason))</p><p>Retrying every 3 s…</p></div>
         """
         webView?.loadHTMLString(html, baseURL: nil)
@@ -630,14 +630,14 @@ final class WebWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDel
             return i
         }
 
-        menu("TM Bar", [
-            item("About TM Bar", #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
+        menu("Gor Bar", [
+            item("About Gor Bar", #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
             .separator(),
-            item("Hide TM Bar", #selector(NSApplication.hide(_:)), "h"),
+            item("Hide Gor Bar", #selector(NSApplication.hide(_:)), "h"),
             item("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]),
             item("Show All", #selector(NSApplication.unhideAllApplications(_:))),
             .separator(),
-            item("Quit TM Bar", #selector(NSApplication.terminate(_:)), "q"),
+            item("Quit Gor Bar", #selector(NSApplication.terminate(_:)), "q"),
         ])
         menu("File", [
             item("Open in Browser", #selector(openInBrowser(_:)), "o", [.command, .shift], target: self),
@@ -686,25 +686,6 @@ final class WebWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDel
         NSApp.mainMenu = main
         NSApp.windowsMenu = windowMenu
     }
-
-    /// The bundle ships no icon file (scripts/menubar.mjs): while the window
-    /// makes TM Bar a Dock app, the menu-bar symbol on the system accent colour
-    /// stands in for the generic one. Native chrome, system colours only.
-    private static let dockIcon: NSImage = {
-        let size = NSSize(width: 512, height: 512)
-        return NSImage(size: size, flipped: false) { rect in
-            let inset = rect.insetBy(dx: 40, dy: 40)
-            NSColor.controlAccentColor.setFill()
-            NSBezierPath(roundedRect: inset, xRadius: 96, yRadius: 96).fill()
-            let cfg = NSImage.SymbolConfiguration(pointSize: 250, weight: .semibold)
-                .applying(.init(paletteColors: [.white]))
-            if let sym = NSImage(systemSymbolName: "checklist", accessibilityDescription: nil)?.withSymbolConfiguration(cfg) {
-                let s = sym.size
-                sym.draw(in: NSRect(x: rect.midX - s.width / 2, y: rect.midY - s.height / 2, width: s.width, height: s.height))
-            }
-            return true
-        }
-    }()
 
     private static func escape(_ s: String) -> String {
         s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")

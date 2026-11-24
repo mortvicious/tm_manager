@@ -109,7 +109,7 @@ Now, on the phone:
 - **`/status`** — the live state. Real output from a running instance:
 
 ```
-Task Manager
+Gor
 
 Queue: running · agents 0/2
 Usage: 5h 13.5% (est.) | week 21.3% (est.) | fable 10.4% (est.)

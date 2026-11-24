@@ -120,7 +120,7 @@ export function resolveBin(bin: string, cwd: string, repoRoot: string): string {
     const candidate = path.join(entry, bin);
     if (isExecutableFile(candidate)) return candidate;
   }
-  throw new Error(`command not found: ${bin} — it must be on the PATH of the task-manager server process`);
+  throw new Error(`command not found: ${bin} — it must be on the PATH of the Gor server process`);
 }
 
 /**

@@ -1533,7 +1533,7 @@ export class TelegramBot {
     await this.send(
       this.cfg.allowedUserId,
       [
-        `<b>Task Manager is back online.</b>`,
+        `<b>Gor is back online.</b>`,
         discarded > 0
           ? `${discarded} update(s) from before the restart were discarded — resend anything that still matters.`
           : `Nothing was waiting from before the restart.`,

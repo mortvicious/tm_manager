@@ -630,7 +630,7 @@ if (servingSpa) {
       .code(503)
       .type('text/plain; charset=utf-8')
       .send(
-        'task-manager: the API is running, but the UI has not been built.\n\n' +
+        'Gor: the API is running, but the UI has not been built.\n\n' +
           '  npm run build     then start the server again\n' +
           '  npm run dev       (or npm run dev:lan) and open port 5173 instead\n\n' +
           `This port serves the SPA only as a fallback. \`npm start\` runs the front door\n` +

@@ -251,7 +251,7 @@ export class ApprovalService {
         return {
           ok: true,
           params: { action, drainMinutes },
-          summary: `Rebuild & restart the Task Manager (drain): pause new work, build the SPA, typecheck, then restart once no agent is working${drainMinutes ? ` (wait up to ${drainMinutes} min)` : ''}. The requesting agent must END ITS TURN for the drain to finish.`,
+          summary: `Rebuild & restart Gor (drain): pause new work, build the SPA, typecheck, then restart once no agent is working${drainMinutes ? ` (wait up to ${drainMinutes} min)` : ''}. The requesting agent must END ITS TURN for the drain to finish.`,
           repo: null,
           autoRepos: [],
         };

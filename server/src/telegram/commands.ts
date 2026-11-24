@@ -210,7 +210,7 @@ export const COMMANDS: BotCommand[] = [
     description: 'What this bot is',
     async handler() {
       const html = [
-        `<b>Task Manager</b> — the phone side of the board running on the Mac.`,
+        `<b>Gor</b> — the phone side of the board running on the Mac.`,
         ``,
         `This bot talks to the server in-process: it reads and steers the queue,`,
         `and /chat holds a conversation with claude inside one of your repos.`,

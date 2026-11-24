@@ -13,25 +13,26 @@ enum BarState: Equatable {
     case paused // Pause all
     case running(Int) // live worker PTYs (0 = idle)
 
-    var symbol: String {
+    /// the SF Symbol for this state; nil = idle, shown as the Gor mark (`StateIcon`)
+    var symbol: String? {
         switch self {
         case .unreachable: "exclamationmark.triangle"
         case .stopped: "stop.circle"
         case .rebuilding: "arrow.triangle.2.circlepath"
         case .memoryHold: "memorychip"
         case .paused: "pause.circle"
-        case .running(let n): n > 0 ? "bolt.circle.fill" : "checklist"
+        case .running(let n): n > 0 ? "bolt.circle.fill" : nil
         }
     }
 
     var help: String {
         switch self {
-        case .unreachable: "Task manager: front door not answering"
-        case .stopped: "Task manager: API stopped"
-        case .rebuilding: "Task manager: rebuilding"
-        case .memoryHold: "Task manager: memory fuse holding"
-        case .paused: "Task manager: paused"
-        case .running(let n): n > 0 ? "Task manager: \(n) running" : "Task manager: idle"
+        case .unreachable: "Gor: front door not answering"
+        case .stopped: "Gor: API stopped"
+        case .rebuilding: "Gor: rebuilding"
+        case .memoryHold: "Gor: memory fuse holding"
+        case .paused: "Gor: paused"
+        case .running(let n): n > 0 ? "Gor: \(n) running" : "Gor: idle"
         }
     }
 }
@@ -207,7 +208,7 @@ final class Store {
             } catch _ where Task.isCancelled {
                 return
             } catch ClientError.missingRoute {
-                set(\.summaryError, "This API predates TM Bar's summary route — Rebuild & restart it for tasks and Inbox.")
+                set(\.summaryError, "This API predates Gor Bar's summary route — Rebuild & restart it for tasks and Inbox.")
             } catch {
                 set(\.summaryError, Self.describe(error))
             }

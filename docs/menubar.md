@@ -1,6 +1,13 @@
-# TM Bar — the menu-bar app
+# Gor Bar — the menu-bar app
 
-A small native macOS menu-bar app that reads the task manager at a glance: is
+**Name.** The app was called TM Bar until the Gor rebrand (docs/magma.md
+§ Owner decisions Q5, 2026-11-07). Only what macOS shows changed:
+`CFBundleName`/`CFBundleDisplayName` are "Gor Bar", while the bundle file
+`TM Bar.app`, the bundle id `com.taskmanager.bar`, the SwiftPM target
+`TMBar` and the `TM_BAR_*` env vars stay, so the login item, the notification
+permission and the Keychain carry over. Its icon is the Gor mark (§ The icon).
+
+A small native macOS menu-bar app that reads Gor at a glance: is
 the server up, what is running, what waits on you, is memory tight. It also
 holds the server controls: Start / Stop / Restart the API, Rebuild & restart,
 Pause all / Continue (§ Controls), the dashboard itself in a native
@@ -25,10 +32,11 @@ npm run menubar:build -- --debug # debug compile, same bundle layout
   third-party dependencies). Build script: `scripts/menubar.mjs` (plain node).
 - Bundle: `macos/TMBar/build/TM Bar.app` (git-ignored). `Info.plist` sets
   `LSUIElement` (no Dock icon, no app menu), `NSAllowsLocalNetworking`, and
-  `TMRepoRoot` = the checkout it was built from. The bundle is assembled in
+  `TMRepoRoot` = the checkout it was built from, `CFBundleName`/
+  `CFBundleDisplayName` "Gor Bar" and `CFBundleIconFile` `AppIcon` (§ The icon). The bundle is assembled in
   `TM Bar.app.next` and swapped in, then `codesign --sign -` (ad-hoc) — enough
   for Gatekeeper on the Mac that built it. Double-click it in Finder, or drag it
-  to /Applications; to start it at login tick **Open TM Bar at login** in the
+  to /Applications; to start it at login tick **Open Gor Bar at login** in the
   menu (§ Open at login). `TMNodePath` = the node that ran the build
   (`TM_BAR_NODE` overrides) — the node the Service actions run with (§ Service).
 - It is outside the npm workspaces: `npm run typecheck|build|test` never need
@@ -100,8 +108,9 @@ on `/api/orchestrator`.
 
 ## The icon
 
-One SF Symbol for the most urgent state, plus the running count whenever the
-API is up:
+One icon for the most urgent state, plus the running count whenever the
+API is up. Idle is the Gor mark; every other state keeps its SF Symbol,
+because those carry meaning (docs/magma.md § 10 § Icon sizes):
 
 | state (first that holds) | symbol |
 |---|---|
@@ -111,7 +120,22 @@ API is up:
 | memory fuse holding (`memory.hold`) | `memorychip` |
 | Pause all | `pause.circle` |
 | workers running | `bolt.circle.fill` + count |
-| idle | `checklist` |
+| idle | the Gor mark, a template image (was `checklist`) |
+
+The mark is drawn in code, once, by `GorMark.swift` from the SVG master's
+geometry in docs/magma.md § 10 (a 315° arc of r 18, the bar, the spark), so
+the menu-bar template, the Dock icon and the bundle's `.icns` cannot drift:
+
+- **Menu bar**: the template variant (black G, stroke 9, spark moved out to
+  (54,10) r 5 as § 10's small-size rule asks), 18 pt at 1x and 2x,
+  `isTemplate = true`, so macOS tints it for light/dark bars.
+- **App icon**: the master (dark tile, ember-gradient G, yellow spark) on the
+  macOS grid (824/1024 tile, radius ≈ 185). `scripts/menubar.mjs` runs the
+  freshly built binary as `TMBar --export-iconset <dir>` (it writes the
+  `.iconset` and exits before any UI), packs it with `iconutil` into
+  `Contents/Resources/AppIcon.icns` and sets `CFBundleIconFile`. The 16 px
+  sizes use the small-size spark. The Dock icon while the window is open is the
+  same drawing (`GorMark.appIcon`), so it also holds under `swift run`.
 
 ## The menu
 
@@ -131,10 +155,10 @@ API is up:
   terminal `npm start`, or dev — and, when it does not answer, what launchd says
   (running but not answering yet / stopped / installed but not loaded / not
   installed); the service actions and the logs (§ Service).
-- **Open TM Bar at login** (§ Open at login).
-- **Open task manager** (⌘O), **Open in: Window | Browser**, the bell → Preferences (⌘,, § Notifications), **Quit** (⌘Q).
+- **Open Gor Bar at login** (§ Open at login).
+- **Open Gor** (⌘O), **Open in: Window | Browser**, the bell → Preferences (⌘,, § Notifications), **Quit** (⌘Q).
 
-Pages (Open task manager, a task row, Inbox) open in TM Bar's own window by
+Pages (Open Gor, a task row, Inbox) open in Gor Bar's own window by
 default (§ The window). With **Browser** picked they open in the installed Brave
 (`com.brave.Browser`, through `NSWorkspace.open(_:withApplicationAt:)`) and
 otherwise in the default browser. The pick is per Mac:
@@ -153,15 +177,14 @@ sends its own `Origin` on writes. Nothing in `net.ts`, the session token or the
 remote gate knows it exists, and nothing was relaxed for it.
 
 - **One window.** Opening a page while it is open brings it forward;
-  **Open task manager** (the bare base) does only that. A deep
+  **Open Gor** (the bare base) does only that. A deep
   link to the page already showing (`/?task=<id>` from a task row) is routed
   inside the running SPA (`history.pushState` + `popstate`) rather than
   reloaded, which would refetch the whole state. A different origin, or a page
   still loading, is a plain load.
 - **Closing it tears the page down.** The web view is released, so the
-  WebContent process exits and a closed window costs what TM Bar costs.
-  While the window is open TM Bar is a regular app: Dock icon (the `checklist`
-  symbol on the accent colour, since the bundle ships no icon file), Cmd+Tab,
+  WebContent process exits and a closed window costs what Gor Bar costs.
+  While the window is open Gor Bar is a regular app: Dock icon (the Gor app icon, § The icon), Cmd+Tab,
   and a main menu. Closed, it is a menu-bar app again. A window open at Quit
   reopens at launch, on its last page (only one of the app's origins); the frame
   and zoom are remembered.
@@ -171,7 +194,7 @@ remote gate knows it exists, and nothing was relaxed for it.
   reach xterm and inputs. View: Reload ⌘R, Actual Size ⌘0, Zoom In ⌘=, Zoom
   Out ⌘−, Full Screen ⌃⌘F. History: Back ⌘[, Forward ⌘]. File: Open in Browser
   ⇧⌘O (the current page in Brave/the default browser), Close Window ⌘W.
-  ⌘Q quits TM Bar, menu-bar item included, like any app. Key equivalents go to
+  ⌘Q quits Gor Bar, menu-bar item included, like any app. Key equivalents go to
   the page first, so the SPA's own shortcuts still work; the menu gets only
   what the page leaves alone.
 - **Find** (⌘F): a find bar above the page (`WKWebView.find`). Return finds
@@ -196,20 +219,20 @@ remote gate knows it exists, and nothing was relaxed for it.
 - **Front door down**: a plain "not answering" page that retries every 3 s
   (a HEAD through a no-proxy session) and loads the page once it answers. A
   WebContent crash reloads the page.
-- **Inspectable**: Safari ▸ Develop ▸ TM Bar (`isInspectable`).
+- **Inspectable**: Safari ▸ Develop ▸ Gor Bar (`isInspectable`).
 - Back/forward swipes are off, because a two-finger swipe in the timeline/metro
   scrollers would leave the page.
 
 **Caveats** (the price of a separate engine and storage):
 
-- **Separate storage.** The window's `localStorage` is TM Bar's own WebKit
+- **Separate storage.** The window's `localStorage` is Gor Bar's own WebKit
   data store (`~/Library/WebKit/com.taskmanager.bar`), not Brave's. The per-device
   settings (design, board version, panel tab memory, workspace, `tm.*` floors)
   start from the defaults once and must be set again. They persist after that.
 - **No Web Push.** WKWebView has no Push API (the page reads
   `push: false`), so the SPA's push-capability check (`web/src/push.ts`) fails
   and a device cannot subscribe from the window. The desktop's
-  notifications are TM Bar's own (the native-notifications task of this group);
+  notifications are Gor Bar's own (the native-notifications task of this group);
   the iPhone PWA keeps Web Push.
 - `navigator.clipboard` works: loopback is a secure context (`secure: true`).
 
@@ -330,7 +353,7 @@ else `defaults … serviceLabel`, else `com.taskmanager.server`.
   …") and a **Force … — kills running agents** button. Force takes two presses
   (the second within 4 s; the label turns red to "Confirm: kill agents and
   …"), then reruns with `--force`. **Uninstall…** is two-press too: afterwards
-  nothing serves the task manager until `npm start`.
+  nothing serves Gor until `npm start`.
 - One command at a time. A spinner shows "Restarting the service…" and so on,
   then the script's last `✓`/`✗` line plus any `⚠` lines (an old node, `claude`
   missing from the service PATH). Its output also goes to the unified log
@@ -350,7 +373,7 @@ user, exactly what that user can already type.
 
 ## Open at login
 
-**Open TM Bar at login** registers the app with `SMAppService.mainApp`
+**Open Gor Bar at login** registers the app with `SMAppService.mainApp`
 (ServiceManagement, macOS 13+): the system's own Login Items list, with no
 helper and no plist of ours. `requiresApproval` shows "Allow it in System
 Settings → Login Items" with an **Open** button
@@ -395,7 +418,7 @@ button in the menu footer (⌘,) → the **Preferences** window
 every poll whatever the toggles say, and only posting is filtered, so turning
 a kind on never replays what is already true:
 
-- The first reading after launch is a baseline: TM Bar starting never replays.
+- The first reading after launch is a baseline: Gor Bar starting never replays.
 - A missing reading (front door or API down, a failing route) is not a
   reading. Nothing is forgotten, so the API coming back in the same state posts
   nothing.
@@ -418,7 +441,7 @@ while the menu is open (`willPresent` → banner + list).
 **Desktop channel** (Preferences, `notify.channel`): one source of desktop
 notifications on this Mac, never both.
 
-- **TM Bar** (default): it posts every kind that is on. The Preferences window
+- **Gor Bar** (default): it posts every kind that is on. The Preferences window
   lists the Web Push devices (`GET /api/push`) with the kinds each also sends:
   `question`, `attention`, `review`, and `anomaly` for the memory fuse.
   **Turn these off** PATCHes that device's kinds minus the overlap
@@ -427,7 +450,7 @@ notifications on this Mac, never both.
   said in the button's help). The server cannot tell which device is this Mac,
   so the human picks by the label the browser set.
 - **Web Push**: the kinds Web Push covers are greyed out ("Web Push sends
-  this") and TM Bar keeps only what it cannot send: the API stopping (the API
+  this") and Gor Bar keeps only what it cannot send: the API stopping (the API
   is the push sender), Rebuild & restart (a front door job), the swap line (no
   push rule).
 
@@ -440,7 +463,7 @@ poster only exists inside `TM Bar.app` (`Poster.available`). The tests use a
 sink instead.
 
 **Clicks** open the alert's path under the page base (Vite in dev) where every
-link in the menu opens: the **Open in** choice — TM Bar's window (§ The window)
+link in the menu opens: the **Open in** choice — Gor Bar's window (§ The window)
 or the browser.
 
 **Cost.** With an Inbox kind or the swap line on, the closed-menu poll reads
@@ -483,7 +506,7 @@ delta over 60 s, memory = macOS footprint from `top`, summed over the whole
 process tree; harness `sample.mjs` in task b977a302's artifacts). Brave is an
 isolated instance (`--user-data-dir=<scratch> --app=…/board
 --disable-extensions`), which is the cost of keeping Brave open only for the
-dashboard. TM Bar = TMBar + its `com.apple.WebKit.{WebContent,GPU,Networking}`
+dashboard. Gor Bar = TMBar + its `com.apple.WebKit.{WebContent,GPU,Networking}`
 (new pids after launch). Every page was verified `hidden` + calm (CDP for Brave,
 the probe for WebKit): the display had slept and the screen was locked, so no
 window could be on screen.
@@ -491,8 +514,8 @@ window could be on screen.
 | | CPU (60 s samples) | memory |
 |---|---|---|
 | Brave `--app` (browser + GPU + network + 2 renderers) | 1.2 – 2.7 % | 420 – 570 MB |
-| TM Bar window (TMBar + WebContent + GPU + Networking) | 0.15 – 1.1 % | 230 – 300 MB |
-| TM Bar, window closed (TMBar + Networking) | 0.2 % | ≈ 57 MB |
+| Gor Bar window (TMBar + WebContent + GPU + Networking) | 0.15 – 1.1 % | 230 – 300 MB |
+| Gor Bar, window closed (TMBar + Networking) | 0.2 % | ≈ 57 MB |
 
 The window costs about half the memory of the Brave app, saving 150–330 MB,
 and no more CPU. The heavy lease reported macOS memory pressure (warn) for the
@@ -615,7 +638,8 @@ page's selection was not copied. Check it at the Mac: select text, press
 | file | what |
 |---|---|
 | `macos/TMBar/Package.swift` | SwiftPM manifest (Swift 6 language mode, macOS 14) |
-| `Sources/TMBar/App.swift` | `MenuBarExtra` scene + the icon label |
+| `Sources/TMBar/App.swift` | entry point (`--export-iconset`), `MenuBarExtra` scene + the icon label |
+| `Sources/TMBar/GorMark.swift` | the Gor mark: menu-bar template, Dock icon, `.iconset` export, `StateIcon` |
 | `Sources/TMBar/Store.swift` | the poller, sleep/wake, `BarState` |
 | `Sources/TMBar/MenuView.swift` | the menu window |
 | `Sources/TMBar/Controls.swift`, `ControlsView.swift` | the server controls (§ Controls) |

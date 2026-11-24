@@ -191,7 +191,7 @@ struct NotifyEngine: Sendable {
         guard let exit, exit.at != lastExitAt, Self.unexpected(exit, host) else { return [] }
         guard !crashOpen else { return [] }
         crashOpen = true
-        return [Alert(kind: .crash, key: "crash:\(exit.at)", title: "Task manager API stopped unexpectedly",
+        return [Alert(kind: .crash, key: "crash:\(exit.at)", title: "Gor API stopped unexpectedly",
                       body: Self.crashBody(exit, host), path: "/dashboard")]
     }
 
@@ -217,7 +217,7 @@ struct NotifyEngine: Sendable {
         }
         let next = host.api.desired == "up" && host.api.managed
             ? "The front door is restarting it."
-            : "It stays down — start it from TM Bar."
+            : "It stays down — start it from Gor Bar."
         return "\(what) \(next)"
     }
 

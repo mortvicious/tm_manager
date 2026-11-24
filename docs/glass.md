@@ -1,6 +1,6 @@
 # Glass: the iOS Liquid Glass design
 
-The SPA has two designs. **Classic** is the original terminal look. **Glass**
+Gor's SPA had two designs when Glass was written (Magma, [magma.md](magma.md), is the third). **Classic** is the original terminal look. **Glass**
 re-skins the same components in the iOS 26 Liquid Glass language (translucent
 materials, floating controls, springs) and follows Apple's HIG on a phone. The
 app is used mostly as a Home Screen web app over the tailnet, so Glass aims to

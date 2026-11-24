@@ -76,7 +76,7 @@ function prBody(task: Task): string {
     ...(task.resultSummary ? ['', '## Summary', '', task.resultSummary.trim().slice(0, 6000)] : []),
     '',
     '---',
-    'Opened by Task Manager as a record of this task; it lands the change itself (local squash + fast-forward), which marks this PR merged.',
+    'Opened by Gor as a record of this task; it lands the change itself (local squash + fast-forward), which marks this PR merged.',
     '',
     `Task: ${task.id}`,
   ].join('\n');
@@ -142,7 +142,7 @@ export async function syncPr(storage: Storage, repo: Repo, task: Task, cwd: stri
 /** Close a cancelled task's PR (best effort; its remote branch is deleted by the cleanup). */
 export async function closePr(storage: Storage, repo: Repo, task: Task, why: string): Promise<void> {
   if (!task.prNumber || task.prState === 'merged' || task.prState === 'closed') return;
-  const r = await run(repo.path, 'gh', ['pr', 'close', String(task.prNumber), '--comment', `Closed by Task Manager: ${why}.`], GH_TIMEOUT);
+  const r = await run(repo.path, 'gh', ['pr', 'close', String(task.prNumber), '--comment', `Closed by Gor: ${why}.`], GH_TIMEOUT);
   if (r.code === 0) await storage.updateTaskWorktree(task.id, { prState: 'closed' });
   await event(storage, 'task.pr', task, { action: r.code === 0 ? 'closed' : 'close-failed', number: task.prNumber, why, ...(r.code ? { error: tail(r.out) } : {}) });
 }

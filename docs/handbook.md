@@ -1,4 +1,4 @@
-# Task Manager — Handbook
+# Gor — Handbook
 
 A local control panel that turns your task list into running Claude Code agents. You register repos, write tasks, and the orchestrator spawns `claude` sessions inside those repos — each one a real terminal you can open and type into at any moment.
 

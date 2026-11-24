@@ -817,7 +817,7 @@ export class Orchestrator implements OrchestratorApi {
       if (!(sh.pid && sh.pid > 0)) continue;
       roots.push({ id: sh.id, kind: 'shell', pid: sh.pid, label: `${sh.title || 'shell'} · ${sh.repoName}`, taskId: null, repoId: sh.repoId, runId: null, sub: null });
     }
-    roots.push({ id: 'api', kind: 'server', pid: process.pid, label: 'task manager API', taskId: null, repoId: null, runId: null, sub: null });
+    roots.push({ id: 'api', kind: 'server', pid: process.pid, label: 'Gor API', taskId: null, repoId: null, runId: null, sub: null });
     if (process.env.TM_SUPERVISED === '1' && process.env.TM_WATCH !== '1' && process.ppid > 1) {
       roots.push({ id: 'host', kind: 'server', pid: process.ppid, label: 'front door', taskId: null, repoId: null, runId: null, sub: null });
     }
@@ -853,7 +853,7 @@ export class Orchestrator implements OrchestratorApi {
         await this.alerts.emit({
           type: 'memory-high',
           severity: mh.severity,
-          message: `${mh.reason}.${top.length ? ` Biggest: ${top.join(', ')}.` : ''} The task manager's tree: ${formatMb(snapshot.totalMb)}.`,
+          message: `${mh.reason}.${top.length ? ` Biggest: ${top.join(', ')}.` : ''} Gor's process tree: ${formatMb(snapshot.totalMb)}.`,
           key: `memory-high:${mh.since}`,
           taskId: biggest?.taskId ?? null,
           runId: biggest?.runId ?? null,
@@ -4319,7 +4319,7 @@ export class Orchestrator implements OrchestratorApi {
     // caller did not defer it itself. Nothing is moved; the caller keeps its
     // own refusal path (a dispatch stays pending, and so on).
     if (!HUMAN_ACTORS.has(actor) && (await this.isPaused())) {
-      return { error: 'the task manager is paused — Continue to resume automatic work', code: 409 };
+      return { error: 'Gor is paused — Continue to resume automatic work', code: 409 };
     }
     // a worktree land is rebasing/squashing in the task's tree (docs/parallel.md § Land)
     if (this.landing.has(taskId)) return { error: 'the task is landing — wait for it to finish', code: 409 };
@@ -5616,7 +5616,7 @@ export class Orchestrator implements OrchestratorApi {
     if (!(await this.storage.getRepo(task.repoId))) return { error: 'repo not found', code: 409 };
     // A reviewer is an automatic session the pause holds (docs/pause.md).
     if (await this.isPaused()) {
-      return { error: 'the task manager is paused — Continue first, then review', code: 409 };
+      return { error: 'Gor is paused — Continue first, then review', code: 409 };
     }
     // Synchronous from the lock check to its registration: two presses cannot
     // both get past here.

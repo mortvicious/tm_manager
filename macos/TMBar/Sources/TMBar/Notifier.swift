@@ -100,8 +100,8 @@ final class Notifier {
 
     /// Preferences' "Send a test" and `TM_BAR_NOTIFY_TEST=1`.
     func test() {
-        deliver(Alert(kind: .rebuild, key: "test:\(Date().timeIntervalSince1970)", title: "TM Bar test",
-                      body: "Notifications from TM Bar work. A click opens the task manager.", path: "/"))
+        deliver(Alert(kind: .rebuild, key: "test:\(Date().timeIntervalSince1970)", title: "Gor Bar test",
+                      body: "Notifications from Gor Bar work. A click opens Gor.", path: "/"))
     }
 
     private func deliver(_ a: Alert) {

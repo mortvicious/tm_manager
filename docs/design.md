@@ -1,4 +1,6 @@
-# Task Manager — Local Claude Agent Orchestrator
+# Gor — Local Claude Agent Orchestrator
+
+_Gor was called Task Manager until 2026-11-07; internal identifiers keep the old names (README § Name)._
 
 ## Context
 

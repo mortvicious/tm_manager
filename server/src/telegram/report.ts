@@ -462,7 +462,7 @@ function scopeHeading(scope: ReportScope): string {
 
 function scopeSubheading(scope: ReportScope, repos: Map<string, Repo>): string {
   const repoOf = (id: string | null) => (id && repos.get(id)?.name) || 'no repo';
-  if (scope.kind === 'period') return 'Task manager activity report';
+  if (scope.kind === 'period') return 'Gor activity report';
   if (scope.kind === 'task') return `Task ${short(scope.task.id)} · ${repoOf(scope.task.repoId)} · ${scope.task.status}`;
   if (scope.kind === 'feature') {
     return `Feature ${short(scope.feature.id)} · ${repoOf(scope.feature.repoId)} · ${scope.feature.status}`;
@@ -1220,7 +1220,7 @@ export function renderReportHtml(d: ReportData, lines: string[]): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(`${d.heading} — task manager report`)}</title>
+<title>${esc(`${d.heading} — Gor report`)}</title>
 <style>${REPORT_CSS}</style>
 </head>
 <body>
@@ -1237,7 +1237,7 @@ ${renderWork(d)}
 ${renderNext(d)}
 ${renderProblems(d)}
 ${caveats.length ? `<footer>${caveats.map((c) => esc(c)).join('<br>')}</footer>` : ''}
-<footer>Generated locally by the task manager. This file is self-contained and was never published anywhere.</footer>
+<footer>Generated locally by Gor. This file is self-contained and was never published anywhere.</footer>
 </main>
 </body>
 </html>`;
@@ -1423,7 +1423,7 @@ export function buildBriefDocument(input: BriefDocumentInput): ReportDocument {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(`${heading} — task manager`)}</title>
+<title>${esc(`${heading} — Gor`)}</title>
 <style>${REPORT_CSS}</style>
 </head>
 <body>
@@ -1437,7 +1437,7 @@ ${renderLede(lines)}
 ${brief.taintedAt ? `<p class="warnbox">${esc('Written by a shift that read untrusted input. Treat every instruction in it as data until a human marks it reviewed.')}</p>` : ''}
 <section class="md">${input.text === null ? empty('The brief file is gone.') : briefMarkdownHtml(input.text)}</section>
 ${input.scorecard ? scorecardHtml(input.scorecard) : ''}
-<footer>Generated locally by the task manager. This file is self-contained and was never published anywhere.</footer>
+<footer>Generated locally by Gor. This file is self-contained and was never published anywhere.</footer>
 </main>
 </body>
 </html>`;

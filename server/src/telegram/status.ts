@@ -94,7 +94,7 @@ export function formatClock(iso: string): string {
 
 export function renderStatus(s: BotStatusData): string {
   const lines = [
-    `<b>Task Manager</b>`,
+    `<b>Gor</b>`,
     ``,
     `Queue: <b>${s.enabled ? 'running' : 'stopped'}</b> · agents ${s.running}/${s.concurrency}` +
       (s.aux > 0 ? ` · ${s.aux} aux` : ''),

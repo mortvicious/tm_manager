@@ -1,10 +1,14 @@
-# Task Manager
+# Gor
 
 A local control panel that turns a task list into running [Claude Code](https://claude.com/claude-code) agents.
 
 You register local repos, write tasks, and an orchestrator spawns `claude` sessions inside those repo directories. Every run is a real interactive terminal you can open in the browser and type into at any time.
 
 The whole thing binds to `127.0.0.1` and stores its data on your machine. There is no hosted component.
+
+## Name
+
+The product is called **Gor** (since 2026-11-07, docs/magma.md § Owner decisions). The rename covers only the visible brand: the wordmark, page title, Home Screen label, Telegram and push texts, and the menu-bar app's display name (Gor Bar). Everything internal keeps its old name on purpose, because these names are interfaces and renaming them would break stored state and every worker prompt: the repo and npm packages (`task-manager`), the `tm_` table prefix, `TM_*` env vars, `tm.*` localStorage keys, `--tm-*` design tokens, API paths, config keys, log file names, and the `TM Bar.app` bundle (id `com.taskmanager.bar`). Older docs and commits say "Task Manager"; that is the same product.
 
 ## What it does
 

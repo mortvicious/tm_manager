@@ -34,13 +34,13 @@ struct NotificationsView: View {
                     get: { notifier.settings.channel },
                     set: { notifier.setChannel($0) }
                 )) {
-                    Text("TM Bar").tag(DesktopChannel.tmBar)
+                    Text("Gor Bar").tag(DesktopChannel.tmBar)
                     Text("the browser (Web Push)").tag(DesktopChannel.webPush)
                 }
                 .pickerStyle(.radioGroup)
                 Text(notifier.settings.channel == .tmBar
-                     ? "TM Bar posts every kind below. Turn the same kinds off in this Mac's browser (below) so nothing arrives twice."
-                     : "The browser's Web Push posts questions, needs attention, reviews and the memory fuse (Anomalies). TM Bar keeps only what Web Push cannot send: the API stopping, Rebuild & restart, the swap line.")
+                     ? "Gor Bar posts every kind below. Turn the same kinds off in this Mac's browser (below) so nothing arrives twice."
+                     : "The browser's Web Push posts questions, needs attention, reviews and the memory fuse (Anomalies). Gor Bar keeps only what Web Push cannot send: the API stopping, Rebuild & restart, the swap line.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Notify me about") {
@@ -83,13 +83,13 @@ struct NotificationsView: View {
             Label("Notifications allowed", systemImage: "checkmark.circle").foregroundStyle(.green)
         case .denied:
             HStack {
-                Label("Notifications are off for TM Bar", systemImage: "bell.slash").foregroundStyle(.orange)
+                Label("Notifications are off for Gor Bar", systemImage: "bell.slash").foregroundStyle(.orange)
                 Spacer()
                 Button("System Settings…") { Self.openSystemSettings() }
             }
         default:
             HStack {
-                Label("TM Bar has not asked yet", systemImage: "bell").foregroundStyle(.secondary)
+                Label("Gor Bar has not asked yet", systemImage: "bell").foregroundStyle(.secondary)
                 Spacer()
                 Button("Allow…") { Task { await notifier.askIfNeeded() } }
             }
@@ -146,7 +146,7 @@ struct NotificationsView: View {
         return HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(d.label.isEmpty ? "unnamed device" : d.label)
-                Text(overlap.isEmpty ? "nothing TM Bar also sends" : "also sends: \(overlap.joined(separator: ", "))")
+                Text(overlap.isEmpty ? "nothing Gor Bar also sends" : "also sends: \(overlap.joined(separator: ", "))")
                     .font(.caption).foregroundStyle(overlap.isEmpty ? Color.secondary : .orange)
             }
             Spacer()

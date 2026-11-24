@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Build / open TM Bar, the menu-bar status app over the front door
+ * Build / open Gor Bar (TM Bar), the menu-bar status app over the front door
  * (docs/menubar.md). Kept out of the npm workspaces on purpose: `npm run
  * typecheck|build|test` never need Xcode or Swift.
  *
@@ -24,8 +24,12 @@ import { fileURLToPath } from 'node:url';
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = path.join(repo, 'macos', 'TMBar');
 const outDir = path.join(pkg, 'build');
-const APP_NAME = 'TM Bar';
-const app = path.join(outDir, `${APP_NAME}.app`);
+// The bundle keeps its file name and id (docs/magma.md § Owner decisions Q5:
+// display name only), so the login item, notification permission and
+// Keychain carry over; only what macOS shows becomes "Gor Bar".
+const BUNDLE_NAME = 'TM Bar';
+const DISPLAY_NAME = 'Gor Bar';
+const app = path.join(outDir, `${BUNDLE_NAME}.app`);
 const BUNDLE_ID = 'com.taskmanager.bar';
 const EXECUTABLE = 'TMBar';
 
@@ -58,8 +62,9 @@ function infoPlist(repoRoot, version, nodePath) {
   <key>CFBundleExecutable</key><string>${EXECUTABLE}</string>
   <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-  <key>CFBundleName</key><string>${APP_NAME}</string>
-  <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
+  <key>CFBundleName</key><string>${DISPLAY_NAME}</string>
+  <key>CFBundleDisplayName</key><string>${DISPLAY_NAME}</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${plistEscape(version)}</string>
   <key>CFBundleVersion</key><string>${plistEscape(version)}</string>
@@ -78,7 +83,7 @@ function infoPlist(repoRoot, version, nodePath) {
 }
 
 function build() {
-  if (process.platform !== 'darwin') fail('TM Bar is macOS only.');
+  if (process.platform !== 'darwin') fail('Gor Bar is macOS only.');
   const which = spawnSync('xcrun', ['--find', 'swift'], { encoding: 'utf8' });
   if (which.status !== 0) fail('swift not found — install Xcode or the Command Line Tools.');
 
@@ -105,6 +110,14 @@ function build() {
   fs.writeFileSync(path.join(staging, 'Contents', 'Info.plist'), infoPlist(repoRoot, version, nodePath));
   fs.writeFileSync(path.join(staging, 'Contents', 'PkgInfo'), 'APPL????');
 
+  // The Gor app icon: the binary draws it (GorMark.swift, one drawing with the
+  // menu-bar mark) into an .iconset, iconutil packs it.
+  const iconset = path.join(outDir, 'AppIcon.iconset');
+  fs.rmSync(iconset, { recursive: true, force: true });
+  run(binary, ['--export-iconset', iconset]);
+  run('iconutil', ['-c', 'icns', '-o', path.join(staging, 'Contents', 'Resources', 'AppIcon.icns'), iconset]);
+  fs.rmSync(iconset, { recursive: true, force: true });
+
   // Ad-hoc signature: enough for Gatekeeper on the machine that built it.
   run('codesign', ['--force', '--sign', '-', '--timestamp=none', staging]);
 
@@ -116,7 +129,7 @@ function build() {
 function open() {
   if (!fs.existsSync(path.join(app, 'Contents', 'MacOS', EXECUTABLE))) build();
   run('open', [app]);
-  console.log(`✓ opened ${APP_NAME} — look for its icon in the menu bar`);
+  console.log(`✓ opened ${DISPLAY_NAME} — look for its icon in the menu bar`);
 }
 
 if (cmd === 'build') build();

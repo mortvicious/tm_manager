@@ -98,10 +98,10 @@ enum Service {
         guard let root = Config.repoRoot,
               FileManager.default.fileExists(atPath: URL(fileURLWithPath: root).appendingPathComponent("scripts/service.mjs").path)
         else {
-            return ServiceOutcome(command: command, exitCode: 1, output: "✗ scripts/service.mjs not found — rebuild TM Bar from the checkout (npm run menubar:build)")
+            return ServiceOutcome(command: command, exitCode: 1, output: "✗ scripts/service.mjs not found — rebuild Gor Bar from the checkout (npm run menubar:build)")
         }
         guard let node = Config.nodePath() else {
-            return ServiceOutcome(command: command, exitCode: 1, output: "✗ no node found — rebuild TM Bar with the node the service should use (v24), or `defaults write com.taskmanager.bar nodePath /path/to/node`")
+            return ServiceOutcome(command: command, exitCode: 1, output: "✗ no node found — rebuild Gor Bar with the node the service should use (v24), or `defaults write com.taskmanager.bar nodePath /path/to/node`")
         }
         var env = ProcessInfo.processInfo.environment
         let nodeDir = (node as NSString).deletingLastPathComponent
