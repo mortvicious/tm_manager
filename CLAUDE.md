@@ -17,7 +17,7 @@ A local web app ("task manager") that collects tasks for registered repos and au
 - `npm run menubar:build` / `menubar:open` — TM Bar, the native macOS menu-bar app (`macos/TMBar/`, SwiftPM, `scripts/menubar.mjs` → ad-hoc-signed `macos/TMBar/build/TM Bar.app`; docs/menubar.md). Needs Xcode/Swift; deliberately outside the workspaces, so typecheck/build/test never do. Its Service section runs `scripts/service.mjs` (never a copy; exit 3 = guard refusal → two-press Force), and it logs in via `SMAppService.mainApp` (verified ad-hoc; menubar.md § Service / § Open at login)
 - `npm run typecheck` — tsc --noEmit over both server and web (CI runs this plus `npm run build`)
 - `npm run rebuild:restart` — Rebuild & restart from a terminal: build the SPA (staged + swapped), typecheck, restart the API (`-- --force`, `-- --no-typecheck`); through the front door's job when one runs
-- `npm test` — node:test through tsx over `server/src/**/*.test.ts` (real git in temp dirs, a temp SQLite DB; CI runs it). Few tests so far (`push-health.test.ts`); otherwise verify with curl against the REST API and the flows in `docs/design.md` § Verification.
+- `npm test` — node:test through tsx over `server/src/**/*.test.ts` and the SPA's DOM-free `web/src/**/*.test.ts` (`navCounts.test.ts`) (real git in temp dirs, a temp SQLite DB; CI runs it). Few tests so far (`push-health.test.ts`); otherwise verify with curl against the REST API and the flows in `docs/design.md` § Verification.
 
 ## Architecture (big picture)
 

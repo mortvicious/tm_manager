@@ -899,6 +899,51 @@ textarea {
   background: var(--tm-accent-subtle);
 }
 
+/* the desktop sidebar's groups and live counters (docs/magma.md § 11):
+   a hairline between groups (a border, never an <hr>: not a reading stop) and
+   a quiet right-aligned count — no pill, no fill, tabular figures */
+.side-nav {
+  display: flex;
+  flex-direction: column;
+}
+
+.side-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.side-group + .side-group {
+  margin-top: var(--tm-space-3);
+  padding-top: var(--tm-space-3);
+  border-top: 1px solid var(--tm-border);
+}
+
+.nav-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  margin-left: auto;
+  padding-left: var(--tm-space-2);
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.nav-count-n.running {
+  color: var(--tm-status-running);
+}
+
+.nav-count-n.urgent {
+  color: var(--tm-status-attention);
+}
+
+.nav-link.active .nav-count {
+  color: var(--tm-accent);
+}
+
 .sidebar-foot {
   margin-top: auto;
   padding: var(--tm-space-2);

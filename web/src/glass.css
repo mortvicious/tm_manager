@@ -192,6 +192,15 @@
   color: var(--tm-accent);
 }
 
+/* the sidebar's group hairline is the pane's own rim; counters set in the body face */
+:is([data-design='glass'], [data-design='magma']) .side-group + .side-group {
+  border-top-color: var(--tm-glass-rim);
+}
+
+:is([data-design='glass'], [data-design='magma']) .nav-count {
+  font-family: var(--tm-font-body);
+}
+
 :is([data-design='glass'], [data-design='magma']) .sidebar .nav-link:active {
   transform: scale(0.97);
   transition-duration: var(--tm-dur-press);

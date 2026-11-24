@@ -46,7 +46,7 @@
     "menubar:build": "node scripts/menubar.mjs build",
     "menubar:open": "node scripts/menubar.mjs open",
     "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
-    "test": "tsx --test 'server/src/**/*.test.ts'"
+    "test": "tsx --test 'server/src/**/*.test.ts' 'web/src/**/*.test.ts'"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",

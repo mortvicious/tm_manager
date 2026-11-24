@@ -1313,3 +1313,83 @@ every non-GET and every WebSocket blocked:
   (the `corner-shape` path), and on the board and Config at both widths in
   WebKit (the `clip-path` fallback).
 
+
+## Build notes (nav card: grouped side-nav with live counters)
+
+What the nav card built, and where it departs from § 11 and § 12. The card's
+own text is the instruction where they differ; each departure is listed here.
+
+**Groups.** The desktop sidebar is drawn from `SIDEBAR_GROUPS`
+(`components/Layout.tsx`): **Board · Office · Features | Jobs | Inbox · Queue ·
+Timeline · Dashboard · Chat · Reports · Shared · Terminal · Repos · Config ·
+Handbook**, a hairline between groups. That is the card's grouping, not § 11's
+Work / Agents / Setup, and there are no visible captions (a "Jobs" caption over
+a lone Jobs link would only repeat it); each group is a `<div role="group">`
+with an `aria-label` (Main / Scheduled / Everything else) inside
+`<nav aria-label="Main">`, so focus order is the visual order with no extra tab
+stop. The separator is a `border-top` on the group (never an `<hr>`), with
+`--tm-space-3` above and below.
+- `NAV` and its order are untouched: the phone tab bar, the More sheet (and
+  its Glass-only `GLASS_HIDDEN` filter) and the ⌘K palette's pages still read
+  it. The More sheet keeps its flat layout and has no counters (§ 11's tile
+  sections are not built).
+- `navCoverage()` (`web/src/navCounts.ts`) checks that the groups list every
+  NAV path exactly once; a dev build logs a `console.error` otherwise, and in
+  every build a missing path is still drawn at the end of the last group, so a
+  page added to NAV later cannot drop out of the sidebar.
+
+**Counters** (pure, DOM-free, in `web/src/navCounts.ts`, unit-tested in
+`navCounts.test.ts`, which `npm test` runs):
+
+| Link | Shows | Predicate |
+|---|---|---|
+| Board | `live · drafts` | in scope, not hidden; live = `running`/`waiting`, drafts = `draft` |
+| Queue | queued | `queued` in scope, held and hidden included (the Queue page lists them) |
+| Features | in flight | not `draft`/`done`/`failed`/`cancelled`, in scope |
+| Inbox | `decisions · urgent!` | `useInbox()` (already scoped) less stale drafts; urgent = question/attention (Q7: urgent as its own number) |
+| Jobs | `running · need you!` | jobs in scope `running`; jobs in scope with an unacknowledged attention/error run (`jobRunNeedsHuman`, one per job) |
+| Office | pending proposals | `pending`, by repo when it names one, else the office's workspace (the Inbox's rule) |
+| Terminal | live | shells `running` in scope |
+
+- Rendering: the label, then the non-zero parts right-aligned
+  (`margin-left: auto`), `tabular-nums`, `--tm-text-xs` 600, muted, no pill;
+  nothing at all at zero; "99+" above 99; live in `--tm-status-running`, an
+  urgent part in `--tm-status-attention` **and** marked "!" (never colour
+  alone); the active row's muted parts in `--tm-accent`. The link's
+  `aria-label` carries the non-zero parts ("Board, 2 running, 54 drafts"), the
+  drawn numbers are `aria-hidden`, no `aria-live`. Glass sets them in the body
+  face and draws the hairline in `--tm-glass-rim`; Magma in mono 700 (the tab
+  bar's HUD numerals, without the badge) with a `--tm-border` hairline.
+- **Not built here:** Chat · unread and Office group chat · unread need § 13's
+  per-device read model and an office-chat store slice; they belong to the
+  messenger card.
+
+**Render cost.** § 12's single `useNavCounts()` hook became one memoised
+component per counted link: `Sidebar` is `memo` and apart from `Layout`
+(which re-renders on every slice `useInbox()` reads), and each link reads its
+number with `useAppSelector` returning a primitive off a WeakMap cache keyed
+on (array identity, scope Set) — the `runIndex.ts` pattern — so a publish that
+did not touch the array costs two WeakMap lookups and a link re-renders only
+when its own number moves. No link calls `useApp()`. The Inbox link is the one
+exception by design: it reads `useInbox()`, so it follows `tasks`/`runs`/
+`questions`… (never `activity`) — and only it re-renders on them.
+
+**Verification.** `npm run typecheck`, `npm test`, `npm run build`, and a
+Playwright harness (Chromium 1243, in a heavy lease) against this worktree's
+Vite dev server with every `/api` GET answered from fixtures, every non-GET
+aborted and `/ws/events` mocked. Renders are counted exactly: the harness
+rewrites the served `Layout.tsx` module so each sidebar component function
+bumps a counter when React calls it (a stub devtools-hook fiber walk was tried
+first and dropped — it missed renders the DOM proved had happened). Every
+render counts twice under StrictMode in dev:
+- the groups and order above, a 1px solid separator and tabular figures in
+  Classic, Glass and Magma;
+- 30 `run.activity` frames: zero renders of `Sidebar`, every link component
+  and `Layout` (with the board's activity readers rendering, as the positive
+  control);
+- a queued task going `running` over WS: Board `2·2 → 3·2`, Queue `3 → 2`, and
+  one render each of `BoardLink`, `QueueLink` and `InboxLink` (whose inputs
+  changed), none of `Sidebar`, Features, Jobs, Office or the plain links; a
+  title-only edit renders only `InboxLink`;
+- Queue hidden once it reaches 0; Board's drafts capped at `99+`;
+- the phone tab bar and the More sheet's order are exactly NAV's.

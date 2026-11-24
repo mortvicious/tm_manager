@@ -1,11 +1,11 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { UsageSnapshot, UsageWindow } from '@tm/shared';
 import { NavLink } from 'react-router-dom';
 import { api } from '../api.ts';
 import { onTick } from '../clock.ts';
 import { toggleScheme, useLook } from '../appearance.ts';
 import type { InboxReturn, ReturnTo } from '../returnTo.ts';
-import { useApp } from '../state.tsx';
+import { useApp, useAppSelector } from '../state.tsx';
 import { useArm } from '../arm.ts';
 import { toastError, toastSticky } from '../toast.ts';
 import { BUILD_ID, cancelRebuildDrain, dismissRebuildFailure, rebuildRunning, startRebuild, useRebuild } from '../rebuild.ts';
@@ -19,6 +19,19 @@ import { InboxChip, InboxSheet, ReviewDeckChip, decisions, useInbox } from './In
 import { Explainable } from './Explain.tsx';
 import { MemoryFuseBanner } from './MemoryFuseBanner.tsx';
 import { openPalette } from '../palette.ts';
+import {
+  cachedBoardCounts,
+  cachedFeaturesCount,
+  cachedJobsCounts,
+  cachedOfficeProposalsCount,
+  cachedQueueCount,
+  cachedTerminalsCount,
+  formatCount,
+  inboxCounts,
+  navCountLabel,
+  navCoverage,
+  type RepoScope,
+} from '../navCounts.ts';
 import {
   IconBoard,
   IconBook,
@@ -853,6 +866,43 @@ function navItem(to: string): NavItem {
   return NAV.find((n) => n.to === to)!;
 }
 
+/**
+ * The DESKTOP sidebar's order and groups (docs/magma.md § 11, docs/design.md
+ * § Side-nav): Board, Office, Features | Jobs | the rest, a separator between
+ * groups. Only the sidebar reads it — NAV's order stays the More sheet's and
+ * the ⌘K palette's. A NAV path left out here is still drawn, at the end of the
+ * last group, and a dev build says so on the console.
+ */
+export const SIDEBAR_GROUPS: { id: 'core' | 'jobs' | 'rest'; label: string; paths: string[] }[] = [
+  { id: 'core', label: 'Main', paths: ['/board', '/office', '/features'] },
+  { id: 'jobs', label: 'Scheduled', paths: ['/jobs'] },
+  {
+    id: 'rest',
+    label: 'Everything else',
+    paths: ['/inbox', '/queue', '/timeline', '/dashboard', '/chat', '/reports', '/shared', '/terminals', '/repos', '/config', '/handbook'],
+  },
+];
+
+const SIDEBAR_COVERAGE = navCoverage(
+  NAV.map((n) => n.to),
+  SIDEBAR_GROUPS,
+);
+if (import.meta.env.DEV && (SIDEBAR_COVERAGE.missing.length || SIDEBAR_COVERAGE.duplicate.length || SIDEBAR_COVERAGE.unknown.length)) {
+  console.error('SIDEBAR_GROUPS must list every NAV path exactly once (Layout.tsx)', SIDEBAR_COVERAGE);
+}
+
+/** the groups as drawn: unknown and repeated paths dropped, missing ones appended to the last group */
+const SIDEBAR: { id: string; label: string; items: NavItem[] }[] = (() => {
+  const seen = new Set<string>();
+  const groups = SIDEBAR_GROUPS.map((g) => ({
+    id: g.id,
+    label: g.label,
+    items: g.paths.filter((p) => !seen.has(p) && seen.add(p) && NAV.some((n) => n.to === p)).map(navItem),
+  }));
+  groups[groups.length - 1].items.push(...SIDEBAR_COVERAGE.missing.map(navItem));
+  return groups;
+})();
+
 function navClass({ isActive }: { isActive: boolean }) {
   return `nav-link ${isActive ? 'active' : ''}`;
 }
@@ -1126,6 +1176,173 @@ function TabBar({ onMore, moreOpen }: { onMore: () => void; moreOpen: boolean })
   );
 }
 
+/** one number of a nav counter, and what it counts (for the link's accessible name) */
+interface CountPart {
+  n: number;
+  what: string;
+  /** coloured: a live session, or something that waits on the human (also marked "!", never colour alone) */
+  tone?: 'running' | 'urgent';
+}
+
+/**
+ * A sidebar link with its counter (docs/magma.md § 11): label, then the
+ * non-zero parts right-aligned, tabular, "99+" capped, nothing at all at zero.
+ * The counts go into the link's `aria-label`; the drawn numbers are
+ * aria-hidden, and there is no aria-live (a moving count would talk over
+ * everything).
+ */
+function CountedLink({ item, href, parts }: { item: NavItem; href: string; parts?: readonly CountPart[] }) {
+  const shown = parts?.filter((p) => p.n > 0) ?? [];
+  return (
+    <NavLink
+      to={href}
+      className={navClass}
+      aria-label={shown.length ? navCountLabel(item.label, shown.map((p) => [p.n, p.what] as const)) : undefined}
+    >
+      {item.icon} {item.label}
+      {shown.length > 0 && (
+        <span className="nav-count" aria-hidden="true">
+          {shown.map((p, i) => (
+            <Fragment key={p.what}>
+              {i > 0 && <span className="nav-count-sep">·</span>}
+              <span className={p.tone ? `nav-count-n ${p.tone}` : 'nav-count-n'}>
+                {formatCount(p.n)}
+                {p.tone === 'urgent' ? '!' : ''}
+              </span>
+            </Fragment>
+          ))}
+        </span>
+      )}
+    </NavLink>
+  );
+}
+
+interface SideLinkProps {
+  item: NavItem;
+  href: string;
+  scope: RepoScope;
+  workspaceId: string | null;
+}
+
+/*
+ * One component per counted path. Each reads its numbers with useAppSelector
+ * returning a primitive off a per-(array, scope) cache (navCounts.ts), so it
+ * re-renders only when ITS number moves — never on a run.activity frame — and
+ * none of them calls useApp(), whose tracked reads are never forgotten.
+ */
+const BoardLink = memo(function BoardLink({ item, href, scope }: SideLinkProps) {
+  const live = useAppSelector((s) => cachedBoardCounts(s.tasks, scope).live);
+  const drafts = useAppSelector((s) => cachedBoardCounts(s.tasks, scope).drafts);
+  return (
+    <CountedLink
+      item={item}
+      href={href}
+      parts={[
+        { n: live, what: 'running', tone: 'running' },
+        { n: drafts, what: 'drafts' },
+      ]}
+    />
+  );
+});
+
+const QueueLink = memo(function QueueLink({ item, href, scope }: SideLinkProps) {
+  const n = useAppSelector((s) => cachedQueueCount(s.tasks, scope));
+  return <CountedLink item={item} href={href} parts={[{ n, what: 'queued' }]} />;
+});
+
+const FeaturesLink = memo(function FeaturesLink({ item, href, scope }: SideLinkProps) {
+  const n = useAppSelector((s) => cachedFeaturesCount(s.features, scope));
+  return <CountedLink item={item} href={href} parts={[{ n, what: 'in progress' }]} />;
+});
+
+const JobsLink = memo(function JobsLink({ item, href, scope }: SideLinkProps) {
+  const running = useAppSelector((s) => cachedJobsCounts(s.jobs, s.jobRuns, scope).running);
+  const needsYou = useAppSelector((s) => cachedJobsCounts(s.jobs, s.jobRuns, scope).needsYou);
+  return (
+    <CountedLink
+      item={item}
+      href={href}
+      parts={[
+        { n: running, what: 'running', tone: 'running' },
+        { n: needsYou, what: 'need you', tone: 'urgent' },
+      ]}
+    />
+  );
+});
+
+const OfficeLink = memo(function OfficeLink({ item, href, scope, workspaceId }: SideLinkProps) {
+  const n = useAppSelector((s) => cachedOfficeProposalsCount(s.officeProposals, scope, workspaceId));
+  return <CountedLink item={item} href={href} parts={[{ n, what: 'pending proposals' }]} />;
+});
+
+const TerminalsLink = memo(function TerminalsLink({ item, href, scope }: SideLinkProps) {
+  const n = useAppSelector((s) => cachedTerminalsCount(s.shells, scope));
+  return <CountedLink item={item} href={href} parts={[{ n, what: 'live' }]} />;
+});
+
+/**
+ * The Inbox's count is THE `useInbox()` list (the tab bar's, the chip's), so
+ * this one link follows the slices `buildInbox` reads (tasks, runs, questions…)
+ * — still never `activity` — and only it re-renders on them.
+ */
+const InboxLink = memo(function InboxLink({ item, href }: SideLinkProps) {
+  const { decisions, urgent } = inboxCounts(useInbox());
+  return (
+    <CountedLink
+      item={item}
+      href={href}
+      parts={[
+        { n: decisions, what: 'decisions' },
+        { n: urgent, what: 'urgent', tone: 'urgent' },
+      ]}
+    />
+  );
+});
+
+const PlainLink = memo(function PlainLink({ item, href }: SideLinkProps) {
+  return <CountedLink item={item} href={href} />;
+});
+
+const SIDE_LINKS: Record<string, typeof PlainLink> = {
+  '/board': BoardLink,
+  '/queue': QueueLink,
+  '/features': FeaturesLink,
+  '/jobs': JobsLink,
+  '/office': OfficeLink,
+  '/terminals': TerminalsLink,
+  '/inbox': InboxLink,
+};
+
+/**
+ * The desktop sidebar, its own memoised component: Layout re-renders on every
+ * slice `useInbox()` reads, and the sidebar must not follow it. It re-renders
+ * on navigation and a workspace change (useWorkspace) only; each counted link
+ * subscribes to its own number.
+ */
+const Sidebar = memo(function Sidebar() {
+  const { wsHref, repoIds, workspace } = useWorkspace();
+  const workspaceId = workspace?.id ?? null;
+  return (
+    <aside className="sidebar">
+      <div className="brand">
+        <span className="tm">tm_</span>manager
+        <span className="sub">tasks · agents · terminals</span>
+      </div>
+      <nav className="side-nav" aria-label="Main">
+        {SIDEBAR.map((g) => (
+          <div key={g.id} className="side-group" role="group" aria-label={g.label}>
+            {g.items.map((item) => {
+              const Link = SIDE_LINKS[item.to] ?? PlainLink;
+              return <Link key={item.to} item={item} href={wsHref(item.to)} scope={repoIds} workspaceId={workspaceId} />;
+            })}
+          </div>
+        ))}
+      </nav>
+      <div className="sidebar-foot">{servedFrom()}</div>
+    </aside>
+  );
+});
+
 export function Layout({
   children,
   onOpenTerminal,
@@ -1139,7 +1356,6 @@ export function Layout({
   inboxReturn: InboxReturn | null;
 }) {
   const mobile = useIsMobile();
-  const nav = useNav();
   // moving between pages keeps the workspace (docs/workspaces.md § Current workspace)
   const { wsHref } = useWorkspace();
   const [moreOpen, setMoreOpen] = useState(false);
@@ -1186,18 +1402,7 @@ export function Layout({
   return (
     <div className={`app${mobile ? ' mobile' : ''}`}>
       {!mobile && (
-        <aside className="sidebar">
-          <div className="brand">
-            <span className="tm">tm_</span>manager
-            <span className="sub">tasks · agents · terminals</span>
-          </div>
-          {nav.map((n) => (
-            <NavLink key={n.to} to={wsHref(n.to)} className={navClass}>
-              {n.icon} {n.label}
-            </NavLink>
-          ))}
-          <div className="sidebar-foot">{servedFrom()}</div>
-        </aside>
+        <Sidebar />
       )}
       {/* Glass only: the blur the page scrolls under (glass.css § the shell) */}
       <div className="edge-top" aria-hidden="true" />

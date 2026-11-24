@@ -118,6 +118,18 @@
   pointer-events: none;
 }
 
+/* the sidebar's groups: a hard hairline, not the glass rim; the counters read
+   like the tab bar's HUD numerals (mono, tabular, 700) but stay quiet — no
+   badge, no fill, no glow (docs/magma.md § 11) */
+[data-design='magma'] .side-group + .side-group {
+  border-top-color: var(--tm-border);
+}
+
+[data-design='magma'] .nav-count {
+  font-family: var(--tm-font-mono);
+  font-weight: 700;
+}
+
 /* ---------- materials: panels with a hard bevel ---------- */
 
 [data-design='magma'] :is(.panel, .tile, .chart-card) {

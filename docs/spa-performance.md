@@ -118,6 +118,15 @@ read a context value that changes on every event.
 - **`useAppSelector(sel)`** subscribes to one value. The selector must return a
   stable value: a slice, a row, a primitive, never a new array. `TaskRow`
   reads its run's activity line through it, so a line re-renders that row only.
+- **The desktop sidebar** (`Sidebar` in `components/Layout.tsx`, docs/magma.md
+  § Build notes (nav card)) is a `memo` component apart from `Layout`, which
+  re-renders on every slice `useInbox()` reads. Each counted link reads its
+  number with `useAppSelector` off a per-(array, scope) WeakMap cache in
+  `web/src/navCounts.ts`, so a link re-renders only when its own number
+  moves, and none of them calls `useApp()`. Measured by instrumenting the
+  component functions: 30 `run.activity` frames render nothing in the sidebar
+  (nor `Layout`), and a queued task starting renders only `BoardLink`,
+  `QueueLink` and `InboxLink`.
 
 ## Batched events
 
