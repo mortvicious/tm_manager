@@ -2709,14 +2709,92 @@ ordinary chat); `getChatMessage`, `setChatMessageChannel` on both drivers.
 `components/OfficeChat.tsx`: the group chat thread — inside the
 **Conversations** panel on /office (desktop, § Conversation list below), a
 `<Sheet>` from the phone bar's **Chat** button. The newest chat opens (a picker
-when there are several, **New chat**), bubbles name the role (`you → 🧭 Ada`,
-`🔎 Mira`), a tainted reply has the `tainted` chip and an attention border, and
-each of your messages has a two-press **Send to channel** (then `sent to the
-channel ✓`). The composer's **@-autocomplete** opens on `@` (↑/↓, Enter/Tab
-to pick, Esc to close; a tap keeps the keyboard up) and inserts the role's
-first name (its key when that is ambiguous); a line under it says who will
-answer (`answers: … (the Director — no @mention)`, or the refusal). While a
-turn runs, Send becomes Stop.
+when there are several, **New chat**) as a messenger thread (§ The thread
+below). A tainted reply has the `tainted` chip and a dashed rim, and each of
+your messages says who it went to (`→ 🧭 Ada`) and has a two-press **Send to
+channel** (then `sent to the channel ✓`). The composer's **@-autocomplete**
+opens on `@` (↑/↓, Enter/Tab to pick, Esc to close; a tap keeps the keyboard
+up) and inserts the role's first name (its key when that is ambiguous); a line
+under it says who will answer (`answers: … (the Director — no @mention)`, or
+the refusal). While a turn runs, Send becomes Stop.
+
+### The thread
+
+The group chat is rendered as a messenger thread (docs/magma.md § 13 Messenger
+chat anatomy). The layout is structural only, in `theme.css` (`.thread-*`);
+per-design polish is a later card.
+
+- **Bubbles.** Your messages (`role: 'user'`, actor `human` or `telegram`) sit
+  on the right. Roles sit on the left with their avatar and `name · title`,
+  max 72 % wide (86 % on a phone). The body is `Reply` (text and fenced code,
+  never markdown, never `innerHTML`). A failed turn shows `⚠ <error>` under
+  its bubble.
+- **Grouping.** Consecutive messages from one sender (the stakeholder is one
+  sender whichever role a message went to; a role is `actor` + `roleId`)
+  join one group while each is within **5 minutes** of the one before. The
+  name and avatar appear once, and the `hh:mm` (plus `Ns · $x` on a role's
+  group) appears once under the last bubble. The full date-time is each
+  bubble's `title` and its screen-reader text.
+- **Day pills.** A pill comes before each local day's first message: Today,
+  Yesterday, the weekday within 6 days, else `7 Nov 2026`. A day pill always
+  ends a group.
+- **Task-link cards.** Built only from references that resolve in the
+  `tasks` store: a full task id (a bare uuid, a `Task:` trailer or a
+  `?task=<uuid>` link), or an 8-hex id naming exactly one task. Unknown and
+  ambiguous ids stay plain text. At most 3 cards per message. Each card is
+  the task's own title, `StatusBadge` and repo chip, and opens the panel
+  (`openTaskFromAnywhere`). A tainted message's card shows nothing from the
+  message.
+- **Scrolling.** The thread follows new messages only when you were already
+  at the bottom (within 24 px), or when you just sent one. Scrolled up, it
+  stays put. A **jump pill** over the composer reads `N new ↓` (others'
+  messages since you left the bottom) or `↓`. It shows when you are more
+  than a viewport up, or anywhere above the bottom once something new
+  arrived. Tapping it scrolls smoothly, or instantly under Reduce Motion. In
+  a phone Sheet the sheet's own scroller is the thread's scroller (no nested
+  scroller), and the composer is `position: sticky` at its end.
+- **Read marks.** Reaching the bottom with the document visible calls the
+  conversation list's `markRead(conversationKey('chat', id), {count, at})`
+  (`src/officeConversations.ts`, `localStorage['tm.office.read']`, per device,
+  advance-only). `count` is `Chat.messageCount`, floored at the loaded
+  transcript's length; `at` is the newest message's `createdAt`. That is the
+  same key the list's unread badges and its read sentinel (`endSlot`) use, so
+  one store drives both. On a phone, where the sheet has no list yet, the
+  thread's write is the only one.
+- **Working row.** While `chat.status === 'thinking'`, a left-side row shows
+  the answering role's avatar, `Toby is answering…` and three **static**
+  dots (never animated, so they are not in the calm lists).
+- **Composer.** It is docked under the log. The textarea grows 1–6 lines.
+  Enter sends and Shift+Enter is a newline. On a phone Return is a newline
+  and the round button sends. An IME composition's Enter never sends. The
+  send path, the @-mentions and the `Waiting for the reply…` state are
+  unchanged.
+
+The pure layer is `src/officeThread.ts`: `buildThread`, `dayLabel`,
+`countNewSince`, `taskRefCandidates` and `resolveTaskRefs`. It is tested in
+`officeThread.test.ts`.
+Groups are `React.memo`'d on their messages (id plus every field that can
+change), their role and their own armed/busy state. A task card subscribes
+through `useAppSelector` to a joined id string, so a task update elsewhere
+re-renders nothing in the thread.
+
+**Measured, no windowing (2026-11-24).** The setup was the production build
+in headless Chromium 1440×900, a 500-message transcript (190 groups, 10 day
+pills, 71 task cards, ≈ 3.8k DOM nodes), live read-only GETs, and a mocked
+`/ws/events`.
+
+| Pass | 1× CPU: frames dropped (> 25 ms) | 4× CPU throttle: frames dropped | Longest task |
+|---|---|---|---|
+| Idle | 0/59 | — | — |
+| 20 arrivals at the bottom, 250 ms apart | 1/332 (worst 33 ms) | 10/340 (worst 33 ms) | none > 50 ms |
+| Wheel sweep bottom → top | 0/185 | 11/197 (worst 67 ms) | one 75 ms (4× only) |
+| Composer typing + send | 1/254 | — | — |
+
+A MutationObserver saw exactly **one** group touched per arriving message,
+so the memo holds. The machine was under memory pressure during the run
+(swap ≈ 70 %, load ≈ 8.7, per the heavy lease's report), so these numbers
+are pessimistic. At real speed the thread does not drop frames, so it is not
+windowed. Revisit if a transcript passes a few thousand messages.
 
 A reply's Web Push (kind `chat`) names the role, says `tainted` when it is,
 and opens `/office?ws=<slug>` rather than the Chat page.

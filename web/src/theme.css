@@ -14979,14 +14979,6 @@ button.explain-tap:active {
   padding: var(--tm-space-2) 0;
 }
 
-.office-chat-tainted .chat-body {
-  border-color: var(--tm-status-attention);
-}
-
-.office-chat-tainted .chip.office-taint {
-  margin-left: var(--tm-space-2);
-}
-
 .office-chat-actions {
   margin-top: var(--tm-space-1);
   display: flex;
@@ -15045,6 +15037,273 @@ button.explain-tap:active {
 .office-chat-mention.active,
 .office-chat-mention:hover {
   background: var(--tm-accent-subtle);
+}
+
+/* The office group chat as a messenger thread (docs/magma.md § 13,
+   docs/office.md § Group chat › The thread). Structure only: own bubbles on
+   the right, roles on the left with one avatar + name per sender group, day
+   pills, the jump pill over the docked composer. Per-design polish (Magma's
+   ember send button, Glass materials) is a later card. */
+.office-chat-log.thread-log {
+  gap: var(--tm-space-3);
+  overscroll-behavior: contain;
+}
+
+.thread-day {
+  display: flex;
+  justify-content: center;
+}
+
+.thread-day span {
+  padding: 2px var(--tm-space-3);
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-bg-overlay);
+  color: var(--tm-text-muted);
+  font-size: var(--tm-text-xs);
+}
+
+.thread-group {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--tm-space-2);
+  max-width: 72%;
+}
+
+.thread-group.own {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+.thread-avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--tm-radius-pill);
+  background: var(--tm-bg-overlay);
+  border: 1px solid var(--tm-border);
+  font-size: var(--tm-text-sm);
+  line-height: 1;
+}
+
+.thread-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.thread-group.own .thread-stack {
+  align-items: flex-end;
+}
+
+.thread-sender {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-muted);
+  margin-bottom: 2px;
+}
+
+.thread-item {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.thread-group.own .thread-item {
+  align-items: flex-end;
+}
+
+.thread-bubble {
+  padding: var(--tm-space-2) var(--tm-space-3);
+  border-radius: var(--tm-radius-lg);
+  background: var(--tm-bg-inset);
+  border: 1px solid var(--tm-border);
+  font-size: var(--tm-text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.thread-group.own .thread-bubble {
+  background: var(--tm-accent-subtle);
+  border-color: var(--tm-accent);
+}
+
+/* joined bubbles: the corner on the sender's side tightens */
+.thread-group.other .thread-item + .thread-item .thread-bubble {
+  border-top-left-radius: var(--tm-radius-sm);
+}
+.thread-group.other .thread-item:has(+ .thread-item) .thread-bubble {
+  border-bottom-left-radius: var(--tm-radius-sm);
+}
+.thread-group.own .thread-item + .thread-item .thread-bubble {
+  border-top-right-radius: var(--tm-radius-sm);
+}
+.thread-group.own .thread-item:has(+ .thread-item) .thread-bubble {
+  border-bottom-right-radius: var(--tm-radius-sm);
+}
+
+.thread-bubble.tainted {
+  border: 1px dashed var(--tm-status-review);
+}
+
+.thread-bubble-meta {
+  margin-top: var(--tm-space-1);
+  white-space: normal;
+}
+
+.thread-error {
+  font-size: var(--tm-text-xs);
+  margin-top: 2px;
+}
+
+.thread-own-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+  font-size: var(--tm-text-xs);
+  margin-top: 2px;
+}
+
+.thread-time {
+  font-size: var(--tm-text-xs);
+  color: var(--tm-text-faint);
+  margin-top: 2px;
+}
+
+.thread-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  margin-top: var(--tm-space-2);
+  white-space: normal;
+}
+
+.thread-task {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-1);
+  width: 100%;
+  min-width: 0;
+  padding: var(--tm-space-2);
+  border-radius: var(--tm-radius-md);
+  border: 1px solid var(--tm-border);
+  background: var(--tm-bg);
+  color: var(--tm-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.thread-task:hover {
+  border-color: var(--tm-border-strong);
+}
+
+.thread-task-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tm-text-sm);
+}
+
+.thread-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tm-space-2);
+}
+
+.thread-working-bubble {
+  color: var(--tm-text-muted);
+  font-style: italic;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tm-space-2);
+}
+
+/* three STATIC dots (§ 8: never animated, so not in the calm lists) */
+.thread-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+.thread-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--tm-radius-pill);
+  background: currentColor;
+  opacity: 0.6;
+}
+
+/* the composer is docked: the last child under the log, never position: fixed */
+.thread-compose {
+  position: relative;
+  background: var(--tm-bg-raised);
+}
+
+/* in a phone Sheet the sheet's scroller scrolls, so the composer sticks to its end */
+.office-chat.in-sheet .thread-compose {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.thread-compose .chat-composer textarea {
+  resize: none;
+  /* 1–6 lines; src/components/OfficeChat.tsx autoGrow sets the height */
+  max-height: calc(6lh + 18px);
+  overflow-y: auto;
+}
+
+.btn.thread-send {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: var(--tm-radius-pill);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.thread-jump {
+  position: absolute;
+  bottom: calc(100% + var(--tm-space-2));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  padding: var(--tm-space-1) var(--tm-space-3);
+  border-radius: var(--tm-radius-pill);
+  border: 1px solid var(--tm-border-strong);
+  background: var(--tm-bg-overlay);
+  color: var(--tm-text);
+  font-size: var(--tm-text-xs);
+  box-shadow: var(--tm-shadow-md);
+  cursor: pointer;
+  animation: thread-jump-in var(--tm-dur-base) var(--tm-ease-out);
+}
+
+@keyframes thread-jump-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-jump {
+    animation: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .thread-group {
+    max-width: 86%;
+  }
 }
 
 /* The office planner (docs/office.md § Office planner) — the wizard, the
