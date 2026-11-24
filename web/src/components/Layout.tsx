@@ -12,6 +12,7 @@ import { BUILD_ID, cancelRebuildDrain, dismissRebuildFailure, rebuildRunning, st
 import { CommandsLauncher } from './Commands.tsx';
 import { EmulatorLauncher } from './Emulator.tsx';
 import { Sheet } from './Sheet.tsx';
+import { GorMark } from './GorMark.tsx';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher.tsx';
 import { useWorkspace, WorkspaceGuard } from '../workspace.ts';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -339,7 +340,7 @@ function useServerStart() {
       : 'not running';
   const startTitle = blocked
     ? `${busyAgents} agent(s) are recorded as working — refresh once the API is back before starting it.`
-    : `Start the task-manager API on :${host?.api.port ?? ''}`;
+    : `Start the Gor API on :${host?.api.port ?? ''}`;
   const start = async () => {
     setStarting(true);
     setErr(null);
@@ -381,13 +382,13 @@ function ServerControl({ panel = false }: { panel?: boolean }) {
     if (
       !confirm(
         live > 0 || liveShells > 0
-          ? `Restart the task-manager server? ${[
+          ? `Restart the Gor server? ${[
               live > 0 ? `${live} running command(s) will be stopped` : null,
               liveShells > 0 ? `${liveShells} open terminal(s) will be closed` : null,
             ]
               .filter(Boolean)
               .join(' and ')}.`
-          : 'Restart the task-manager server?',
+          : 'Restart the Gor server?',
       )
     )
       return;
@@ -458,8 +459,8 @@ function ServerControl({ panel = false }: { panel?: boolean }) {
             blocked
               ? `${busyAgents} agent(s) are working (${orch.running} worker session(s), ${auxLive} aux session(s)) — restarting would kill them and fail their tasks. Pause all first: it suspends them so each resumes in its own session on Continue.`
               : live > 0
-                ? `Restart the task-manager server (${live} running command(s) will be stopped)`
-                : 'Restart the task-manager server'
+                ? `Restart the Gor server (${live} running command(s) will be stopped)`
+                : 'Restart the Gor server'
           }
           disabled={restarting || blocked || rebuilding}
           onClick={restart}
@@ -749,7 +750,7 @@ function NewBuildWatcher() {
   const served = host?.host.buildId ?? null;
   useEffect(() => {
     if (!served || BUILD_ID === 'dev' || served === BUILD_ID || mine) return;
-    toastSticky('new-build', 'A new version of the task manager is being served.', {
+    toastSticky('new-build', 'A new version of Gor is being served.', {
       label: 'Reload',
       run: () => location.reload(),
     });
@@ -1044,7 +1045,7 @@ function ConnDot() {
   })();
   const explain =
     tone === 'up'
-      ? { title: 'connected', what: `Connected to the task-manager server${uptime}. The board is live.` }
+      ? { title: 'connected', what: `Connected to the Gor server${uptime}. The board is live.` }
       : tone === 'stopped'
         ? {
             title: 'server stopped',
@@ -1324,9 +1325,12 @@ const Sidebar = memo(function Sidebar() {
   const workspaceId = workspace?.id ?? null;
   return (
     <aside className="sidebar">
-      <div className="brand">
-        <span className="tm">tm_</span>manager
-        <span className="sub">tasks · agents · terminals</span>
+      <div className="brand" role="img" aria-label="Gor">
+        <GorMark size={24} className="brand-mark" />
+        <span className="brand-text" aria-hidden="true">
+          <span className="brand-word">Gor</span>
+          <span className="sub">tasks · agents · terminals</span>
+        </span>
       </div>
       <nav className="side-nav" aria-label="Main">
         {SIDEBAR.map((g) => (

@@ -194,7 +194,7 @@ export function normalizeTask(t: Task): Task {
  */
 function statusText(res: Response): string {
   if (res.status === 502 || res.status === 503 || res.status === 504)
-    return `can't reach the task-manager server (${res.status})`;
+    return `can't reach the Gor server (${res.status})`;
   return res.statusText ? `${res.status} ${res.statusText}` : `request failed (${res.status})`;
 }
 
@@ -211,7 +211,7 @@ async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
     // "Failed to fetch", "NetworkError when…"): the server or the network is gone.
     // An abort is the caller's own doing and keeps its identity.
     if ((e as Error).name === 'AbortError') throw e;
-    throw new Error("can't reach the task-manager server — check that it is running");
+    throw new Error("can't reach the Gor server — check that it is running");
   }
   if (!res.ok) {
     let msg = statusText(res);

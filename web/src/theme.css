@@ -858,8 +858,32 @@ textarea {
   padding: var(--tm-space-1) var(--tm-space-2) var(--tm-space-4);
 }
 
-.brand .tm {
-  color: var(--tm-accent);
+/* the Gor lockup (docs/magma.md § 10 Wordmark): mark 24 px beside the word
+   and its sub-line. Classic keeps the mono face; glass.css/magma.css restyle
+   the word. */
+.brand {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--tm-space-2);
+}
+
+.brand-mark {
+  flex: none;
+  display: block;
+}
+
+.brand .brand-mark {
+  margin-top: 1px;
+}
+
+.brand-text {
+  min-width: 0;
+}
+
+.brand-word {
+  font-size: var(--tm-text-lg);
+  line-height: 1.1;
+  color: var(--tm-text);
 }
 
 .brand .sub {
@@ -7300,8 +7324,9 @@ pre.check-tail {
   white-space: nowrap;
 }
 
-.brand-mini .tm {
-  color: var(--tm-accent);
+.ws-title-brand {
+  display: inline-flex;
+  align-items: center;
 }
 
 /* ---- the workspace switcher (WorkspaceSwitcher.tsx, docs/workspaces.md § Switcher) ---- */

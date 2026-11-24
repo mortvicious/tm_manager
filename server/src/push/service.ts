@@ -99,7 +99,7 @@ export class PushService {
     if (!d) return null;
     const error = await this.sendTo(
       d,
-      { kind: 'test', title: 'Task Manager', body: 'Notifications work on this device.', tag: 'test', url: '/config' },
+      { kind: 'test', title: 'Gor', body: 'Notifications work on this device.', tag: 'test', url: '/config' },
       { urgency: 'high', ttlSec: 300 },
     );
     return { ok: error === null, error };

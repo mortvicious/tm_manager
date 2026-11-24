@@ -15,13 +15,13 @@ overlapping kinds off ([menubar.md § Notifications](menubar.md#notifications)).
 1. Open `https://<remote.hostname>` in Safari on the tailnet, then Share → **Add to
    Home Screen**. iOS (16.4+) delivers Web Push **only** to a Home Screen web app.
    A Safari tab has no `PushManager` at all.
-2. Open Task Manager **from the Home Screen** → Config → **Notifications** →
+2. Open Gor **from the Home Screen** → Config → **Notifications** →
    **Turn on** → Allow.
 3. **Send test**. It should arrive within seconds. Pick the kinds you want below
    it. They save on click and are per device, separate from the page's Save.
 
 If the prompt was denied once, iOS never asks again. Go to Settings → Notifications →
-Task Manager → Allow Notifications. Removing the app from the Home Screen kills its
+Gor → Allow Notifications. Removing the app from the Home Screen kills its
 subscription. The next send gets `410` and the server forgets the device.
 
 Web Push needs a **secure context**. It works over the tailnet name (HTTPS via

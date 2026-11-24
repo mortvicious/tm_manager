@@ -1,5 +1,5 @@
 /*
- * Task Manager service worker — Web Push ONLY (docs/push.md).
+ * Gor service worker — Web Push ONLY (docs/push.md).
  *
  * Deliberately no `fetch` handler and no cache: every page load goes to the
  * network, so a stale shell can never outlive a deploy, and /api and /ws are
@@ -26,7 +26,7 @@ self.addEventListener('push', (event) => {
   }
   // iOS revokes the subscription of a worker that receives a push and shows
   // nothing, so even an unreadable payload draws a notification.
-  const title = (msg && msg.title) || 'Task Manager';
+  const title = (msg && msg.title) || 'Gor';
   const options = {
     body: (msg && msg.body) || '',
     tag: (msg && msg.tag) || undefined,

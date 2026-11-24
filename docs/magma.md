@@ -1502,3 +1502,53 @@ PTY in the harness; the theme object is the plumbing card's `termTheme.ts`),
 each of the office's twelve phone sheets, huddles and the group chat's push
 nav, the timeline drag grip mid-drag, and the board drag ghost. They use the
 components and tokens audited above.
+
+## Build notes (rebrand card: the web app and PWA become Gor)
+
+Visible brand only (owner decision Q2). Internal identifiers stay: `--tm-*`
+tokens, `tm.*` localStorage keys (`tm.design`, `tm.theme`, …), `tm_` tables,
+API paths, package names, the `TM_*` env vars.
+
+- **`GorMark`** (`web/src/components/GorMark.tsx`): the § 10 master as inline
+  SVG, `aria-hidden`, gradient id per instance via `useId()` (the sidebar and
+  the phone title can both be mounted, and a `url(#id)` resolving into a
+  `display: none` copy paints nothing). At `size ≤ 18` it draws the
+  small-size spark at (54,10) r 5. The mark's colours are literals — it is
+  the logo asset, identical to the icon files, not a themed surface.
+- **Sidebar lockup** (`Layout.tsx` `Sidebar`): mark 24 px + `.brand-word`
+  "Gor" + the sub-line; the block is `role="img"` `aria-label="Gor"`. Classic:
+  mono 600 (`theme.css` `.brand`); Glass/Magma: display 700 (`glass.css`);
+  Magma fills the word with `--tm-ember-text` inside an `@supports
+  (background-clip: text)` block, `--tm-text` otherwise (`magma.css`).
+- **Phone title** (`WorkspaceSwitcher.tsx`, All repos, 431–768 px): the mark
+  only (18 px, small spark), as § 10 says; under 430 px it still reads
+  "All repos".
+- **`web/index.html`**: `<title>Gor</title>`, `application-name` and
+  `apple-mobile-web-app-title` "Gor". No SVG favicon link on purpose: the
+  browser would prefer it at 16 px over the ICO, and the SVG carries the
+  master's spark that merges into the stroke at that size.
+- **`site.webmanifest`**: `name`/`short_name` "Gor", `theme_color` and
+  `background_color` `#0a0605`, the two `any` icons plus
+  `android-chrome-maskable-512x512.png` (`purpose: maskable`, the mark scaled
+  to 0.8 about the centre so the spark's far edge sits at r ≈ 23.4/64 inside the
+  25.6 safe circle).
+- **`sw.js`**: fallback notification title "Gor" (no cache keys exist to
+  rename — the worker has no cache). The server's test push title
+  (`server/src/push/service.ts`) is "Gor" as well.
+- **UI copy**: "Start the Gor API", "Restart the Gor server", "A new version
+  of Gor is being served", "can't reach the Gor server" (`api.ts`), the
+  Memory card's process label, the `done` badge explanation, the push
+  settings' Home Screen hints, and docs/push.md's setup steps.
+- **Icons** (`web/public`, same file names, so every reference stays valid;
+  `gor-mark.svg` is the committed master). Rasterised without a new
+  dependency: `qlmanage -t -s 1024` (WebKit) renders four 1024 px sources —
+  master, small-spark, full-bleed (no `rx`), maskable — then ImageMagick
+  (Lanczos) downsizes them: `favicon.ico` 16 (small spark) / 32 / 48,
+  `favicon-16x16.png` (small spark), `favicon-32x32.png`,
+  `android-chrome-192x192.png`, `android-chrome-512x512.png` (master, tile
+  with transparent corners), `apple-touch-icon.png` 180 (full-bleed, alpha
+  removed onto `#0a0605`), the maskable 512 (opaque). The 16 px comparison
+  kept the small-spark variant: the master's spark merges into a blob there.
+- **Intentional leftovers**: code comments (`theme.css` header, a
+  `MemoryCard.tsx` comment) and identifiers; the Telegram/HTML report
+  headers and TM Bar's display name are server/macOS cards of their own.

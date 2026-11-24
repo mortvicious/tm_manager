@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Gor">
+  <defs>
+    <linearGradient id="gor-ember" x1="14" y1="50" x2="50" y2="14" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff4a3d"/>
+      <stop offset=".6" stop-color="#ff8a3d"/>
+      <stop offset="1" stop-color="#ffc93d"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0a0605"/>
+  <path d="M44.73 19.27A18 18 0 1 0 50 32H34" fill="none" stroke="url(#gor-ember)"
+        stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="49" cy="14" r="4.5" fill="#ffc93d"/>
+</svg>

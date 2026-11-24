@@ -94,14 +94,14 @@ export function PushSettings() {
   let blocker: string | null = null;
   if (status && !status.enabled) blocker = 'Push is turned off on the server (push.enabled in data/config.json).';
   else if (support === 'needs-install')
-    blocker = 'On iPhone and iPad, notifications work only in the Home Screen app: Share → Add to Home Screen, open Task Manager from the Home Screen, then turn them on here.';
+    blocker = 'On iPhone and iPad, notifications work only in the Home Screen app: Share → Add to Home Screen, open Gor from the Home Screen, then turn them on here.';
   else if (support === 'insecure')
-    blocker = 'Notifications need HTTPS: open Task Manager at its tailnet address (https://…) or on localhost.';
+    blocker = 'Notifications need HTTPS: open Gor at its tailnet address (https://…) or on localhost.';
   else if (support === 'unsupported')
     blocker = isIOS() ? 'This iOS version has no Web Push (it needs iOS 16.4 or later).' : 'This browser does not support Web Push.';
   else if (permission === 'denied' && !me)
     blocker = isIOS()
-      ? 'Notifications are blocked for this app: Settings → Notifications → Task Manager → Allow Notifications, then reopen it.'
+      ? 'Notifications are blocked for this app: Settings → Notifications → Gor → Allow Notifications, then reopen it.'
       : 'Notifications are blocked for this site in the browser settings.';
 
   return (

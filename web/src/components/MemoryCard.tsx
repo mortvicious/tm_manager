@@ -58,7 +58,7 @@ export function MemoryCard({ onOpenTask }: { onOpenTask: (id: string) => void })
         )}
         <span className="mem-fig">
           <span className="mem-fig-value">{formatMb(pm.totalMb)}</span>
-          <span className="mem-fig-label">task manager{pm.physMb > 0 ? ` of ${formatMb(pm.physMb)}` : ''}</span>
+          <span className="mem-fig-label">Gor{pm.physMb > 0 ? ` of ${formatMb(pm.physMb)}` : ''}</span>
         </span>
       </div>
       {pm.memoryHigh.high && (

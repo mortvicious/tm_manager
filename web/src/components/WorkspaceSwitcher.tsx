@@ -5,6 +5,7 @@ import { useApp } from '../state.tsx';
 import { useWorkspace } from '../workspace.ts';
 import { IconCheck, IconChevron } from './Icons.tsx';
 import { Sheet } from './Sheet.tsx';
+import { GorMark } from './GorMark.tsx';
 
 /** A workspace's palette slot; uncoloured ones take a stable slot from the id, like groups. */
 function wsDot(ws: Workspace | null): CSSProperties | undefined {
@@ -102,7 +103,7 @@ export function WorkspaceSwitcher({ mobile }: { mobile: boolean }) {
           ) : (
             <>
               <span className="ws-title-brand">
-                <span className="tm">tm_</span>manager
+                <GorMark size={18} className="brand-mark" />
               </span>
               <span className="ws-title-all">All repos</span>
             </>

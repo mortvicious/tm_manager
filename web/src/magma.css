@@ -122,6 +122,17 @@
   position: relative;
 }
 
+/* the wordmark in the ember gradient (§ 10); --tm-text stays the colour
+   wherever background-clip: text is unsupported */
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  [data-design='magma'] .brand-word {
+    background: var(--tm-ember-text);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}
+
 [data-design='magma'] .sidebar .brand::after {
   content: '';
   position: absolute;

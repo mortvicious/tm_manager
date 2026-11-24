@@ -65,7 +65,7 @@ const PLAIN: Record<TaskStatus, { what: string; todo?: string }> = {
   },
   review: { what: 'The agent finished its turn; the change waits for you.', todo: 'Read the summary, then Publish, Mark done or Follow up.' },
   published: { what: 'Committed and pushed by the agent that did the work.' },
-  done: { what: 'Closed without a push from the task manager.' },
+  done: { what: 'Closed without a push from Gor.' },
   failed: { what: 'The run ended with an error — the reason is in the task panel.', todo: 'Retry or Resume it.' },
   cancelled: { what: 'Cancelled.', todo: 'Retry starts it again.' },
 };
